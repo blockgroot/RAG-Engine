@@ -34,6 +34,7 @@ from ..auth.github_oauth import GitHubAppProvider
 from ..auth.google_oauth import GoogleOAuthProvider
 from ..auth.linear_oauth import LinearOAuthProvider
 from ..auth.notion_oauth import NotionOAuthProvider
+from ..auth.slack_oauth import SlackOAuthProvider
 from ..auth.oauth_state import consume_link_state, create_state
 from ..auth.user_connections import (
     UserTokens,
@@ -42,7 +43,13 @@ from ..auth.user_connections import (
     save_user_connection,
 )
 from ..auth.users import get_user
-from ..config.settings import ActionsSettings, ApiSettings, GoogleSettings, NotionSettings
+from ..config.settings import (
+    ActionsSettings,
+    ApiSettings,
+    GoogleSettings,
+    NotionSettings,
+    SlackSettings,
+)
 from ..core.exceptions import (
     ActionConflict,
     ActionError,
@@ -73,7 +80,7 @@ router = APIRouter(tags=["act"])
 #: Providers a person can connect for actions, and the state value of each.
 ACT_PROVIDERS = {
     "linear": "linear_act", "github": "github_act",
-    "notion": "notion_act", "google": "google_act",
+    "notion": "notion_act", "google": "google_act", "slack": "slack_act",
 }
 ACT_STATES = {v: k for k, v in ACT_PROVIDERS.items()}
 #: Where a person lands after connecting an account for Act: its section on
@@ -230,7 +237,7 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
         "id": row.id,
         "action": row.action,
         "label": cls.label if cls else row.action,
-        "attribution": cls.attribution if cls else None,
+        "attribution": cls().attribution_for(row.payload) if cls else None,
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
@@ -271,16 +278,6 @@ def act_status(session: SessionClaims = Depends(get_session)):
             "needs_reauth": bool(conn and conn.needs_reauth),
             "account": conn.external_user_name or conn.external_user_id if conn else None,
             "available": _available(provider),
-        })
-    if any(a.provider == "slack" for n, a in ACTIONS.items() if n in enabled):
-        # No personal Slack account to connect: the bot posts, naming the
-        # person. It only needs to know who they are in Slack.
-        from ..actions.factory import slack_available
-
-        providers.append({
-            "provider": "slack", "needed": True, "bot": True,
-            "connected": bool(slack_available(session.org_id, session.user_id)),
-            "needs_reauth": False, "account": None, "available": True,
         })
     return {
         "enabled": True,
@@ -459,8 +456,9 @@ def _act_oauth(provider: str, settings: ActionsSettings | None = None):
     """The OAuth client a PERSON connects through for actions.
 
     Notion: the separate "Handbook Actions" connection, never the read one.
-    Google: the same client, asking for ``drive.file`` alone. Linear and
-    GitHub: their usual clients (Linear's write scopes go in the URL).
+    Google: the same client, asking for ``drive.file`` alone. Linear,
+    GitHub and Slack: their usual clients (Linear's write scopes and Slack's
+    user scopes go in the URL).
     """
     from dataclasses import replace
 
@@ -501,6 +499,8 @@ def connect(provider: str, session: SessionClaims = Depends(get_session)):
         return RedirectResponse(url=oauth.authorize_url(state, scopes=WRITE_SCOPES))
     if isinstance(oauth, GoogleOAuthProvider):
         return RedirectResponse(url=oauth.authorize_url(state, include_granted=False))
+    if isinstance(oauth, SlackOAuthProvider):
+        return RedirectResponse(url=oauth.authorize_user_url(state))
     return RedirectResponse(url=oauth.authorize_url(state))
 
 
@@ -597,6 +597,24 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
                 expires_at=tokens.expires_at, external_user_id=tokens.external_workspace_id,
                 external_user_name=tokens.external_workspace_name, scopes=(DRIVE_FILE,),
             )
+        elif provider == "slack" and isinstance(oauth, SlackOAuthProvider):
+            token, slack_user, team = oauth.exchange_user_code(code)
+            # The company's Slack wherever it connected one (company-wide or a
+            # space), and always the person's own work address in it.
+            teams = _slack_teams(org_id)
+            if teams and team not in teams:
+                return back("connect_error=slack&reason=workspace")
+            from .slack_events import _slack_email
+
+            email = _slack_email(token, slack_user)
+            if not _is_own_address(org_id, user_id, email):
+                return back("connect_error=slack&reason=account")
+            # ponytail: assumes the Slack app has token rotation off (its
+            # tokens never expire); with rotation on, store and refresh them.
+            user_tokens = UserTokens(
+                access_token=token, external_user_id=slack_user, external_user_name=email,
+                scopes=tuple(SlackSettings.from_env().act_user_scopes.split(",")),
+            )
         elif provider == "github" and isinstance(oauth, GitHubAppProvider):
             tokens, login, name = oauth.exchange_user_code(code)
             user_tokens = UserTokens(
@@ -615,9 +633,20 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
     return back(f"connected={provider}")
 
 
+def _slack_teams(org_id: str) -> set[str]:
+    """Every Slack team the company connected, company-wide or in a space."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT external_workspace_id FROM oauth_connections "
+            "WHERE org_id = %s::uuid AND provider = 'slack'",
+            (org_id,),
+        ).fetchall()
+    return {r[0] for r in rows if r[0]}
+
+
 def _is_own_address(org_id: str, user_id: str, email: str | None) -> bool:
-    """Is this Google account the person's work address (or a prior one)?
-    Company content must never be written into a personal Drive."""
+    """Is this Google or Slack account the person's work address (or a prior
+    one)? Company content must never be written into a personal account."""
     from ..auth.email_change import aliases_for
 
     user = get_user(user_id)

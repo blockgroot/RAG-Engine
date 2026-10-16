@@ -518,7 +518,7 @@ class FakeAction:
     edit = Action.edit
     raises: Exception | None = None
 
-    def token_for(self, org_id, user_id):
+    def token_for(self, org_id, user_id, surface="web"):
         from app.auth.user_connections import fresh_user_token
 
         return fresh_user_token(org_id, user_id, self.provider)

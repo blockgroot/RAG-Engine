@@ -30,7 +30,7 @@ const CONNECT_ERROR: Record<string, string> = {
   workspace:
     "That account is in a different workspace from your company's. Connect the account you use for work.",
   account:
-    "That Google account isn't your work account. Connect the one you sign in to Handbook with.",
+    "That account isn't your work account. Connect the one that uses the email you sign in to Handbook with.",
 };
 
 const HISTORY_STATUS: Record<ActCard["status"], string> = {
@@ -193,17 +193,7 @@ export function ActPanel() {
                     <span className="act-provider-name">
                       {PROVIDER_LABEL[p.provider] ?? p.provider}
                     </span>
-                    {p.bot ? (
-                      <span
-                        className={
-                          p.connected ? "act-status-ready" : "act-status-note"
-                        }
-                      >
-                        {p.connected
-                          ? "Ready through the Handbook bot"
-                          : "Use Act in Slack once to link"}
-                      </span>
-                    ) : !p.available && !p.connected ? (
+                    {!p.available && !p.connected ? (
                       <span className="act-status-note">
                         Admin setup required
                       </span>
@@ -217,7 +207,7 @@ export function ActPanel() {
                       </span>
                     )}
                   </div>
-                  {p.connected && !p.bot ? (
+                  {p.connected ? (
                     <button
                       type="button"
                       className="act-text-button"
@@ -225,7 +215,7 @@ export function ActPanel() {
                     >
                       Disconnect
                     </button>
-                  ) : !p.bot && p.available ? (
+                  ) : p.available ? (
                     <a
                       className="button button-secondary button-sm"
                       href={api.actConnectUrl(p.provider)}

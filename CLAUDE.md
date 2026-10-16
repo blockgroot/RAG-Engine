@@ -306,7 +306,9 @@ on its own; a refused one never stops the rest and is said):
 a write runs only from `confirm`, by the person who proposed it, before
 `expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
 the one conditional UPDATE), and every outcome is recorded in `actions`. A write
-uses the asker's own `user_connections` token, never `oauth_connections`. The
+uses the asker's own `user_connections` token, never `oauth_connections`; Slack
+too, from the web (their own sign-in, `user_scope` only, a channel they named
+and are in). Only a request asked INSIDE Slack is answered by the bot there. The
 asker may edit a pending draft's words, never its target (`Action.edit`): the
 edit replaces the stored payload under the same guards as `claim`, counts as
 their own words, and keeps the sources and exposure (the tick is asked again). "Ask for

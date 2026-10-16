@@ -1,18 +1,24 @@
-"""Slack action: post a message, as the Handbook bot, naming who asked.
+"""Slack action: post a message.
 
-The one action that does not run on the person's own token. Slack forbids an
-app posting as a person ("DON'T impersonate a user"), so the bot posts and the
-message opens with "<@person> asked Handbook to post this". Because the tool
-cannot check the person's rights here, these checks are ours:
+From the WEB it runs on the person's own Slack sign-in, like every other tool:
+the message is theirs, and Slack itself refuses a channel they are not in. The
+channel must be one they named and are a member of (``is_member`` on their own
+token's listing), whether public or private.
+
+Asked INSIDE Slack, the Handbook bot replies there, and the message opens with
+"<@person> asked Handbook to post this". The bot cannot check the person's
+rights, so these checks are ours:
 
 * Asked from a CHANNEL, the only place it may post is that same thread: a
   mention in one room never posts into another.
-* Otherwise the channel must be named by the asker, the bot must already be in
+* From a DM, the channel must be named by the asker, the bot must already be in
   it (it never joins one), and the asker must be a member -- read from Slack
   with a bounded walk; a list cut short is "can't check", never "yes".
-* A public channel is a public destination, so private sources never go there.
-* The text is escaped like every bot reply, so a drafted ``<!channel>`` or a
-  disguised ``<url|text>`` link arrives as inert text, and nobody is pinged.
+
+Either way a public channel is a public destination, so private sources never
+go there, and the text is escaped like every bot reply, so a drafted
+``<!channel>`` or a disguised ``<url|text>`` link arrives as inert text, and
+nobody is pinged.
 """
 
 from __future__ import annotations
@@ -63,14 +69,14 @@ def _pages(token: str, method: str, params: dict, key: str) -> tuple[list, bool]
     return items, False
 
 
-def _channel_by_name(token: str, name: str) -> dict:
+def _channel_by_name(token: str, name: str, hint: str = "") -> dict:
     wanted = name.lstrip("#").casefold().strip()
     channels, _complete = _pages(token, "conversations.list", {
         "types": "public_channel,private_channel", "exclude_archived": "true"}, "channels")
     for channel in channels:
         if (channel.get("name") or "").casefold() == wanted:
             return channel
-    raise ActionRejected(f"I can't see a channel called #{wanted}. Invite @Handbook to it first.")
+    raise ActionRejected(f"I can't see a channel called #{wanted}.{hint}")
 
 
 def _members(token: str, channel_id: str) -> tuple[list[str], bool]:
@@ -192,13 +198,18 @@ class SlackPostMessage(Action):
         },
     }
 
-    # The stored text is "<@asker> asked Handbook to post this:" + a newline +
-    # the escaped message. Only the message is the person's to edit; the
-    # first line, naming who asked, is rebuilt as it was.
+    # Posted as the person (``as_person``), the stored text is the message.
+    # Posted by the bot, it is "<@asker> asked Handbook to post this:" + a
+    # newline + the message; only the message is the person's to edit, and
+    # the first line, naming who asked, is rebuilt as it was.
     editable_fields = ("body",)
 
+    def attribution_for(self, payload: dict[str, Any]) -> str:
+        return "as you" if payload.get("as_person") else self.attribution
+
     def editable(self, payload: dict[str, Any]) -> dict[str, str]:
-        return {"body": unescape(payload.get("text", "").partition("\n")[2])}
+        text = payload.get("text", "")
+        return {"body": unescape(text if payload.get("as_person") else text.partition("\n")[2])}
 
     def edit(self, payload: dict[str, Any], fields: dict[str, Any], *,
              asked: str | None = None) -> dict[str, Any]:
@@ -210,15 +221,22 @@ class SlackPostMessage(Action):
         body = clean_body(text, text if asked is None else asked, ())
         if not body:
             raise ActionRejected("The draft is empty.")
+        if payload.get("as_person"):
+            return {**payload, "text": _mrkdwn(body)}
         lead = payload.get("text", "").partition("\n")[0]
         return {**payload, "text": f"{lead}\n{_mrkdwn(body)}"}
 
-    def token_for(self, org_id: str, user_id: str) -> str:
-        """The company's bot token: Slack lets an app post, never a person."""
+    def token_for(self, org_id: str, user_id: str, surface: str = "web") -> str:
+        """From the web, the person's own Slack sign-in; inside Slack, the
+        company's bot, replying where it was asked."""
+        if surface == "web":
+            return super().token_for(org_id, user_id, surface)
         return get_live_connection_token(org_id, "slack", workspace_id=None)
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         surface = ctx.surface or {}
+        if surface.get("kind", "web") == "web":
+            return self._prepare_as_person(args, ctx)
         asker = surface.get("slack_user")
         if not asker:
             raise ActionRejected(
@@ -237,7 +255,8 @@ class SlackPostMessage(Action):
             thread_ts = surface.get("thread_ts")
             members = None
         else:
-            channel = _channel_by_name(ctx.token, require_named(named, ctx.question, "Slack channel"))
+            channel = _channel_by_name(ctx.token, require_named(named, ctx.question, "Slack channel"),
+                                       " Invite @Handbook to it first.")
             if not channel.get("is_member"):
                 raise ActionRejected(f"Invite @Handbook to #{channel.get('name')} first.")
             members, complete = _members(ctx.token, channel["id"])
@@ -253,6 +272,24 @@ class SlackPostMessage(Action):
             payload={"text": f"<@{asker}> asked Handbook to post this:\n{_mrkdwn(body)}",
                      "thread_ts": thread_ts},
             audience=channel_audience(ctx.token, channel, members),
+        )
+
+    def _prepare_as_person(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
+        """A post from the web, on the person's own token: a channel they named
+        and are in. Their listing shows every public channel and only the
+        private ones they belong to; ``is_member`` is read from it."""
+        named = (args.get("channel") or "").strip() if isinstance(args.get("channel"), str) else ""
+        channel = _channel_by_name(ctx.token, require_named(named, ctx.question, "Slack channel"))
+        if not channel.get("is_member"):
+            raise ActionRejected(f"You need to be a member of #{channel.get('name')} to post there.")
+        body = clean_body(args.get("text"), ctx.question, [s.uri for s in ctx.sources if s.uri])
+        if not body:
+            raise ActionRejected("The draft is empty.")
+        return Proposal(
+            action=self.name,
+            target=ActionTarget("slack_channel", channel["id"], f"#{channel.get('name') or channel['id']}"),
+            payload={"text": _mrkdwn(body), "thread_ts": None, "as_person": True},
+            audience=channel_audience(ctx.token, channel),
         )
 
     def execute(self, key, target, payload, token) -> ActionResult:

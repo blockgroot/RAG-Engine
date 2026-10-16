@@ -50,7 +50,7 @@ from . import policy, store
 from .base import Action, ActionContext, Source
 from .draft import asked_in
 from .exposure import NEEDS_ACK, PUBLIC, Exposure, assess
-from .factory import ACTIONS, get_action, slack_available, slack_user_for
+from .factory import ACTIONS, get_action, slack_available
 from .store import ActionRow
 
 logger = logging.getLogger("actions")
@@ -261,12 +261,14 @@ def offered_actions(
     enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
     if not enabled:
         return [], "Your admin hasn't switched on any actions yet."
-    providers = connected_providers(org_id, user_id) | slack_available(org_id, user_id, slack_user)
+    # From the web every tool is the person's own connection, Slack included.
+    # Asked inside Slack, the bot replies there for the person it saw.
+    providers = connected_providers(org_id, user_id)
+    if slack_user:
+        providers = (providers - {"slack"}) | slack_available(org_id, user_id, slack_user)
     offered = [ACTIONS[n]() for n in ACTIONS if n in enabled and ACTIONS[n].provider in providers]
     if not offered:
-        needed = {ACTIONS[n].provider for n in enabled} - {"slack"}
-        if not needed:
-            return [], "Ask the Handbook bot to do something in Slack once, so it knows your Slack account."
+        needed = {ACTIONS[n].provider for n in enabled}
         return [], f"Connect your {_names(needed)} account on Handbook's Act page to let it act for you."
     return offered, None
 
@@ -303,8 +305,6 @@ def propose(
     kind = surface.get("kind", "web")
     if policy.act_on(org_id) and not policy.surface_enabled(org_id, kind):
         return ActOutcome("Your admin hasn't turned on Act here. You can use it on Handbook's Act page.")
-    if kind == "web":
-        surface["slack_user"] = slack_user_for(org_id, user_id)
     offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"),
                                        scope_workspace_id)
     if why_not:
@@ -366,7 +366,7 @@ def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, s
         sources = []
     name = PROVIDER_NAMES.get(action.provider, action.provider)
     try:
-        token = action.token_for(org_id, user_id)
+        token = action.token_for(org_id, user_id, kind)
         ctx = ActionContext(org_id, scope_workspace_id, user_id, email, question, token,
                             tuple(sources), viewer, surface)
         proposal = action.prepare(args, ctx)
@@ -521,7 +521,7 @@ def confirm(
         raise ActionRejected("Your admin has turned off Act here.")
     if not policy.within_rate(org_id, user_id, settings=settings):
         raise ActionRejected("You've reached the hourly limit for actions. Try again later.")
-    token = action.token_for(org_id, user_id)
+    token = action.token_for(org_id, user_id, row.surface)
 
     claimed = store.claim(org_id, user_id, action_id, shown_hash=shown_hash,
                           acknowledged=acknowledged)

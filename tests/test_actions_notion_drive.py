@@ -337,6 +337,32 @@ def test_google_asks_for_drive_file_only_and_only_the_work_account(client, org, 
 
 
 @requires_db
+def test_slack_connects_the_persons_own_account_in_the_company_slack(client, org, monkeypatch):
+    from app.auth.slack_oauth import SlackOAuthProvider
+
+    monkeypatch.setenv("SLACK_CLIENT_ID", "s-cid")
+    monkeypatch.setenv("SLACK_CLIENT_SECRET", "s-secret")
+    monkeypatch.setenv("SLACK_REDIRECT_URI", "https://api.example.com/auth/slack/callback")
+    save_connection(org.id, "slack", OAuthTokens("xoxb", None, None, "T-COMPANY", "Acme"))
+    emails = {"U1": org.admin.email, "U2": "me@gmail.com"}
+    monkeypatch.setattr("app.api.slack_events._slack_email", lambda token, user: emails[user])
+
+    def finish(team, user):
+        _location, state = _start(client, org, "slack")
+        monkeypatch.setattr(SlackOAuthProvider, "exchange_user_code",
+                            lambda self, code: ("xoxp", user, team))
+        return client.get(f"/auth/slack/callback?code=c&state={state}",
+                          follow_redirects=False).headers["location"]
+
+    location, _state = _start(client, org, "slack")
+    assert "user_scope=chat" in location and "&scope=" not in location  # no bot install
+    assert "connect_error=slack&reason=workspace" in finish("T-OTHER", "U1")
+    assert "connect_error=slack&reason=account" in finish("T-COMPANY", "U2")
+    assert "connected=slack" in finish("T-COMPANY", "U1")
+    assert get_user_token(org.id, org.admin.id, "slack").access_token == "xoxp"
+
+
+@requires_db
 def test_status_says_which_providers_are_set_up(client, org, monkeypatch):
     monkeypatch.delenv("NOTION_ACT_CLIENT_ID")
     body = client.get("/act/status", cookies={"session": create_session_token(org.admin)}).json()

@@ -130,8 +130,13 @@ class Action(ABC):
     #: only where the tool records the person; a bot-recorded write says so.
     attribution: ClassVar[str] = "as you"
 
-    def token_for(self, org_id: str, user_id: str) -> str:
-        """The token this action writes with: the asker's own, refreshed."""
+    def attribution_for(self, payload: dict[str, Any]) -> str:
+        """Whose name the result carries, for this draft."""
+        return self.attribution
+
+    def token_for(self, org_id: str, user_id: str, surface: str = "web") -> str:
+        """The token this action writes with: the asker's own, refreshed.
+        ``surface`` is where it was asked (only Slack's bot replies differ)."""
         from ..auth.user_connections import fresh_user_token
 
         return fresh_user_token(org_id, user_id, self.provider)

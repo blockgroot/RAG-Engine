@@ -243,8 +243,6 @@ export interface ActProvider {
   account: string | null;
   /** False when this Handbook isn't set up to connect it (e.g. no Notion Act client). */
   available: boolean;
-  /** Slack: nothing to connect; the Handbook bot posts, naming the person. */
-  bot?: boolean;
 }
 
 export interface ActStatus {

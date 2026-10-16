@@ -911,6 +911,7 @@ class GoogleSettings:
 # never lets Handbook message or modify anything in Slack. Existing
 # connections must reconnect once to pick up a newly added scope (Slack
 # re-consents on scope change, it doesn't apply retroactively).
+DEFAULT_SLACK_ACT_USER_SCOPES = "chat:write,channels:read,groups:read,users:read,users:read.email"
 DEFAULT_SLACK_BOT_SCOPES = (
     "channels:history,channels:read,channels:join,"
     "groups:history,groups:read,"
@@ -958,6 +959,10 @@ class SlackSettings:
     client_secret: str | None
     redirect_uri: str | None
     scopes: str = DEFAULT_SLACK_BOT_SCOPES
+    # A PERSON's own Slack sign-in for Act (``user_scope``): post as them, find
+    # the channels they are in, and read a private channel's members' emails
+    # for the audience check. Never asked of the bot install.
+    act_user_scopes: str = DEFAULT_SLACK_ACT_USER_SCOPES
     backfill_days: int = DEFAULT_SLACK_BACKFILL_DAYS
     min_thread_chars: int = DEFAULT_SLACK_MIN_THREAD_CHARS
     max_thread_messages: int = DEFAULT_SLACK_MAX_THREAD_MESSAGES
@@ -975,6 +980,7 @@ class SlackSettings:
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
             redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
+            act_user_scopes=os.getenv("SLACK_ACT_USER_SCOPES", DEFAULT_SLACK_ACT_USER_SCOPES),
             signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
             backfill_days=int(
                 os.getenv("SLACK_BACKFILL_DAYS") or DEFAULT_SLACK_BACKFILL_DAYS

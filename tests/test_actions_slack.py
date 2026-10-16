@@ -311,10 +311,35 @@ def test_a_drafted_ping_or_disguised_link_is_inert(fake_slack):
     assert "evil.example" not in body  # not in the asker's words, so removed
 
 
-def test_slack_writes_with_the_company_bot(monkeypatch):
+def test_inside_slack_the_bot_writes_and_from_the_web_the_person_does(monkeypatch):
     monkeypatch.setattr(slack_action, "get_live_connection_token",
                         lambda org, provider, workspace_id=None: f"{provider}:{workspace_id}")
-    assert slack_action.SlackPostMessage().token_for("o", "u") == "slack:None"
+    monkeypatch.setattr("app.auth.user_connections.fresh_user_token",
+                        lambda org, user, provider: f"own:{provider}:{user}")
+    post = slack_action.SlackPostMessage()
+    assert post.token_for("o", "u", "slack_dm") == "slack:None"
+    assert post.token_for("o", "u", "slack_channel") == "slack:None"
+    assert post.token_for("o", "u", "web") == "own:slack:u"
+
+
+def test_from_the_web_it_posts_as_the_person_in_a_channel_they_named_and_are_in(fake_slack):
+    web = {"kind": "web"}
+    post = slack_action.SlackPostMessage()
+    fake_slack(FakeSlack([ENG, GENERAL, SECRET], ["U1", "U2"], users=[
+        {"id": "U1", "profile": {"email": "a@x.com"}}, {"id": "U2", "profile": {"email": "b@x.com"}}]))
+    proposal = post.prepare({"channel": "#eng", "text": "Deploy is done"}, _sctx("post in #eng: deploy is done", web))
+    assert proposal.payload == {"text": "Deploy is done", "thread_ts": None, "as_person": True}
+    assert proposal.audience == Audience(members=("a@x.com", "b@x.com"))
+    assert post.attribution_for(proposal.payload) == "as you"
+    assert post.editable(proposal.payload) == {"body": "Deploy is done"}
+    edited = post.edit(proposal.payload, {"body": "Deploy is done, please test"})
+    assert edited["text"] == "Deploy is done, please test" and edited["as_person"] is True
+    public = post.prepare({"channel": "general", "text": "x"}, _sctx("post in general", web))
+    assert public.audience == Audience(public=True)
+    with pytest.raises(ActionRejected, match="member of #secret"):
+        post.prepare({"channel": "secret", "text": "Hi"}, _sctx("post in secret", web))
+    with pytest.raises(ActionRejected, match="Name the Slack channel"):
+        post.prepare({"channel": "#eng", "text": "Hi"}, _sctx("post the summary", web))
 
 
 # --------------------------------------------------------------------------

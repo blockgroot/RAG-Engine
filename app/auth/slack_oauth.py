@@ -56,7 +56,46 @@ class SlackOAuthProvider(OAuthProvider):
         }
         return f"{_AUTHORIZE_URL}?{urlencode(params)}"
 
+    def authorize_user_url(self, state: str) -> str:
+        """A PERSON's sign-in (``user_scope`` only, no bot scopes): Act posts
+        with their own token, as them, like every other tool."""
+        params = {
+            "client_id": self._settings.client_id,
+            "redirect_uri": self._settings.redirect_uri,
+            "user_scope": self._settings.act_user_scopes,
+            "state": state,
+        }
+        return f"{_AUTHORIZE_URL}?{urlencode(params)}"
+
+    def exchange_user_code(self, code: str) -> tuple[str, str, str]:
+        """``(user token, Slack user id, team id)`` from a person's sign-in."""
+        data = self._access(code)
+        user = data.get("authed_user") or {}
+        team_id = (data.get("team") or {}).get("id")
+        if not (user.get("access_token") and user.get("id") and team_id):
+            raise OAuthError("Slack OAuth response missing the user's token")
+        return user["access_token"], user["id"], team_id
+
     def exchange_code(self, code: str) -> OAuthTokens:
+        data = self._access(code)
+        access_token = data.get("access_token")
+        if not access_token:
+            raise OAuthError("Slack OAuth response missing access_token")
+
+        team = data.get("team") or {}
+        team_id = team.get("id")
+        if not team_id:
+            raise OAuthError("Slack OAuth response missing team.id")
+
+        return OAuthTokens(
+            access_token=access_token,
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id=team_id,
+            external_workspace_name=team.get("name"),
+        )
+
+    def _access(self, code: str) -> dict:
         try:
             response = httpx.post(
                 _TOKEN_URL,
@@ -76,20 +115,4 @@ class SlackOAuthProvider(OAuthProvider):
         if not data.get("ok"):
             # Slack's failure shape: HTTP 200 with {"ok": false, "error": "..."}.
             raise OAuthError(f"Slack OAuth code exchange failed: {data.get('error')}")
-
-        access_token = data.get("access_token")
-        if not access_token:
-            raise OAuthError("Slack OAuth response missing access_token")
-
-        team = data.get("team") or {}
-        team_id = team.get("id")
-        if not team_id:
-            raise OAuthError("Slack OAuth response missing team.id")
-
-        return OAuthTokens(
-            access_token=access_token,
-            refresh_token=None,
-            expires_at=None,
-            external_workspace_id=team_id,
-            external_workspace_name=team.get("name"),
-        )
+        return data
