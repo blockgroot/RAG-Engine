@@ -1284,25 +1284,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </span>
                   {deepMode && <CheckIcon />}
                 </button>
-                {deepMode && (
-                  <button
-                    type="button"
-                    role="menuitemcheckbox"
-                    aria-checked={extraEffort}
-                    className="composer-menu-item"
-                    onClick={() => {
-                      setToolsOpen(false);
-                      setExtraEffort(!extraEffort);
-                    }}
-                  >
-                    <DeepIcon />
-                    <span className="composer-menu-text">
-                      <strong>Extra effort</strong>
-                      <small>Also reads across many documents, for company-wide and list questions. Uses more tokens</small>
-                    </span>
-                    {extraEffort && <CheckIcon />}
-                  </button>
-                )}
+                {/* Always listed, so it can be found: choosing it turns Deep on too. */}
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={extraEffort}
+                  className="composer-menu-item"
+                  onClick={() => {
+                    setToolsOpen(false);
+                    if (!extraEffort && !deepMode) toggleDeepMode(true);
+                    setExtraEffort(!extraEffort);
+                  }}
+                >
+                  <DeepIcon />
+                  <span className="composer-menu-text">
+                    <strong>Deep analysis · Extra effort</strong>
+                    <small>Also reads across many documents, for company-wide and list questions. Uses more tokens</small>
+                  </span>
+                  {extraEffort && <CheckIcon />}
+                </button>
                 {me.act_enabled && spaceActOn && (
                   <button
                     type="button"
