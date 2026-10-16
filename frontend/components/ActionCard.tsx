@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, api, type ActCard } from "@/lib/api";
+import { pickFolder } from "@/lib/googlePicker";
 import { DraftText } from "./AnswerText";
 
 /**
@@ -79,7 +80,13 @@ export function ActionCard({
   const provider = PROVIDER_LABEL[card.provider ?? ""] ?? card.provider ?? "the tool";
   const draft = card.draft ?? card.payload;
   const bodyLabel =
-    draft.title !== undefined ? "Description" : card.provider === "slack" ? "Message" : "Comment";
+    card.action === "drive.create_sheet"
+      ? "Table"
+      : draft.title !== undefined
+        ? "Description"
+        : card.provider === "slack"
+          ? "Message"
+          : "Comment";
 
   async function approve() {
     setBusy(true);
@@ -134,6 +141,23 @@ export function ActionCard({
     }
   }
 
+  async function chooseFolder() {
+    setBusy(true);
+    setError(null);
+    try {
+      const folderId = await pickFolder(await api.googlePicker());
+      if (folderId) {
+        const { action } = await api.chooseActionFolder(card.id, card.payload_hash, folderId);
+        setAck(false);
+        onChange(action);
+      }
+    } catch (err) {
+      setError(err instanceof ApiError || err instanceof Error ? err.message : "Could not choose the folder.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function cancel() {
     setBusy(true);
     setError(null);
@@ -173,6 +197,14 @@ export function ActionCard({
             card.target.name
           )}
         </dd>
+        {/* Settings the write carries (assignee, labels, due date...): shown,
+            never editable. To change one, cancel and ask again. */}
+        {card.payload.details?.map(([label, value]) => (
+          <div key={label} style={{ display: "contents" }}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
         {draft.title !== undefined && (
           <>
             <dt>
@@ -317,6 +349,11 @@ export function ActionCard({
           >
             Ask for changes
           </button>
+          {card.folder_choice && (
+            <button type="button" className="button button-secondary" onClick={chooseFolder} disabled={busy}>
+              Choose folder
+            </button>
+          )}
           <button type="button" className="button button-secondary" onClick={cancel} disabled={busy}>
             Cancel
           </button>

@@ -24,8 +24,8 @@ from ..core.exceptions import (
     ActionRejected,
     OAuthReauthRequiredError,
 )
-from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal
-from .draft import clean_body, clean_title, require_named
+from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, details
+from .draft import asked_in, clean_body, clean_title, require_named
 
 GRAPHQL_URL = "https://api.linear.app/graphql"
 #: What a person grants when they connect Linear for actions. Never ``write``
@@ -35,6 +35,11 @@ _TIMEOUT = 15.0
 #: Members read for an audience. More than this and the audience is unknown.
 MEMBER_LIMIT = 250
 _IDENTIFIER = re.compile(r"\b[A-Za-z][A-Za-z0-9]{0,9}-\d{1,7}\b")
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: Linear's priority numbers. 0 ("no priority") is the default, never asked for.
+PRIORITIES = {"urgent": 1, "high": 2, "medium": 3, "low": 4}
+#: Labels, members or projects listed to match a name. Past this, refuse.
+LIST_LIMIT = 250
 
 _REQUEST_WORDS = {
     "type": "string",
@@ -135,6 +140,99 @@ def _team_for(token: str, name: str) -> dict:
     )
 
 
+def _optional(args: dict[str, Any], key: str) -> str:
+    value = args.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _one(nodes: list[dict], wanted: str, what: str, *keys: str) -> dict:
+    """The single node whose name (or other key) is what the asker wrote."""
+    folded = wanted.casefold().lstrip("@")
+    found = [n for n in nodes if any((n.get(k) or "").casefold() == folded for k in keys)]
+    if not found:
+        raise ActionRejected(f"I can't find a {what} called {wanted!r} that you can use here.")
+    if len(found) > 1:
+        raise ActionRejected(f"More than one {what} is called {wanted!r}. Be more specific.")
+    return found[0]
+
+
+def _parent_issue(token: str, ident: str) -> dict:
+    if not _IDENTIFIER.fullmatch(ident):
+        raise ActionRejected("Name the parent issue by its identifier, like ENG-42.")
+    issue = gql(token, "query($id: String!) { issue(id: $id) { id identifier title "
+                       "team { id key name visibility } } }", {"id": ident.upper()}).get("issue")
+    if not issue:
+        raise ActionRejected(f"You can't see a Linear issue {ident.upper()}.")
+    return issue
+
+
+def _settings(args: dict[str, Any], ctx: ActionContext, team: dict, parent: dict | None):
+    """The optional settings, each only when the asker's own words chose it,
+    each resolved among what their token can see in this team. Nothing is
+    created: an unknown label, person or project is refused, not made up."""
+    q, chosen, shown = ctx.question, {}, []
+    if parent:
+        chosen["parentId"] = parent["id"]
+        shown.append(("Sub-issue of", f"{parent['identifier']}: {parent.get('title') or ''}".strip()))
+
+    assignee = _optional(args, "assignee")
+    if assignee:
+        require_named(assignee, q, "assignee")
+        if assignee.casefold() in ("me", "myself"):
+            # "me" is inside "meeting": the word itself must be in the request.
+            if not re.search(r"\b(me|myself)\b", q, re.IGNORECASE):
+                raise ActionRejected("Name the assignee in your request, so I know you chose it.")
+            me = viewer(ctx.token)["viewer"]
+            person = {"id": me.get("id"), "name": me.get("name")}
+        else:
+            data = gql(ctx.token, "query($id: String!, $n: Int!) { team(id: $id) { members(first: $n) "
+                                  "{ nodes { id name displayName email active } } } }",
+                       {"id": team["id"], "n": LIST_LIMIT})
+            members = [m for m in (((data.get("team") or {}).get("members") or {}).get("nodes") or [])
+                       if m.get("active", True)]
+            person = _one(members, assignee, "member of this team", "name", "displayName", "email")
+        chosen["assigneeId"] = person["id"]
+        shown.append(("Assignee", person.get("name") or assignee))
+
+    priority = _optional(args, "priority").casefold()
+    if priority:
+        if priority not in PRIORITIES or not asked_in(priority, q):
+            raise ActionRejected("Say the priority in your request: urgent, high, medium or low.")
+        chosen["priority"] = PRIORITIES[priority]
+        shown.append(("Priority", priority.title()))
+
+    labels = [x.strip() for x in (args.get("labels") or []) if isinstance(x, str) and x.strip()]
+    if labels:
+        for label in labels:
+            require_named(label, q, "label")
+        data = gql(ctx.token, "query($n: Int!) { issueLabels(first: $n) { nodes { id name team { id } } } }",
+                   {"n": LIST_LIMIT})
+        usable = [n for n in ((data.get("issueLabels") or {}).get("nodes") or [])
+                  if not n.get("team") or n["team"].get("id") == team["id"]]
+        picked = [_one(usable, label, "label", "name") for label in labels]
+        chosen["labelIds"] = [n["id"] for n in picked]
+        shown.append(("Labels", ", ".join(n["name"] for n in picked)))
+
+    project = _optional(args, "project")
+    if project:
+        require_named(project, q, "project")
+        data = gql(ctx.token, "query($id: String!, $n: Int!) { team(id: $id) { projects(first: $n) "
+                              "{ nodes { id name } } } }", {"id": team["id"], "n": LIST_LIMIT})
+        found = _one(((data.get("team") or {}).get("projects") or {}).get("nodes") or [],
+                     project, "project in this team", "name")
+        chosen["projectId"] = found["id"]
+        shown.append(("Project", found["name"]))
+
+    due = _optional(args, "due_date")
+    if due:
+        # The model turns "due Friday" into a date; the words must be the asker's.
+        if not _DATE.match(due) or not asked_in(_optional(args, "due_words"), q):
+            raise ActionRejected("Say the due date in your request, like 'due 2026-10-30'.")
+        chosen["dueDate"] = due
+        shown.append(("Due", due))
+    return chosen, details(*shown)
+
+
 class LinearCreateIssue(Action):
     name = "linear.create_issue"
     provider = "linear"
@@ -143,35 +241,58 @@ class LinearCreateIssue(Action):
         "type": "function",
         "function": {
             "name": "linear_create_issue",
-            "description": "Create a Linear issue in a team the user named.",
+            "description": (
+                "Create a Linear issue in a team the user named, or a sub-issue under an "
+                "issue they named. Fill an optional setting ONLY when the user asked for it."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "request_words": _REQUEST_WORDS,
                     "team": {
                         "type": "string",
-                        "description": "The team's name or key, exactly as the user wrote it.",
+                        "description": "The team's name or key, exactly as the user wrote it. "
+                                       "May be left empty for a sub-issue (it joins the parent's team).",
                     },
+                    "parent": {"type": "string", "description":
+                               "For a sub-issue: the parent's identifier exactly as written, e.g. ENG-42."},
                     "title": {"type": "string", "description": "A short issue title."},
                     "body": {
                         "type": "string",
                         "description": "The issue description, in Markdown.",
                     },
+                    "assignee": {"type": "string", "description":
+                                 "The person exactly as the user wrote them, or 'me'."},
+                    "priority": {"type": "string", "enum": list(PRIORITIES),
+                                 "description": "Only the word the user used."},
+                    "labels": {"type": "array", "items": {"type": "string"},
+                               "description": "Label names exactly as the user wrote them."},
+                    "project": {"type": "string", "description": "The project exactly as the user wrote it."},
+                    "due_date": {"type": "string", "description": "YYYY-MM-DD."},
+                    "due_words": {"type": "string", "description":
+                                  "The user's words that gave the due date, copied verbatim."},
                 },
-                "required": ["request_words", "team", "title", "body"],
+                "required": ["request_words", "title", "body"],
             },
         },
     }
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
-        name = require_named(args.get("team"), ctx.question, "Linear team")
-        team = _team_for(ctx.token, name)
+        parent_ident = _optional(args, "parent")
+        parent = _parent_issue(ctx.token, require_named(parent_ident, ctx.question, "parent issue")) \
+            if parent_ident else None
+        if _optional(args, "team") or parent is None:
+            team = _team_for(ctx.token, require_named(args.get("team"), ctx.question, "Linear team"))
+        else:
+            team = parent.get("team") or {}
+        chosen, shown = _settings(args, ctx, team, parent)
         return Proposal(
             action=self.name,
             target=ActionTarget("linear_team", team["id"], f"{team.get('name')} ({team.get('key')})"),
             payload={
                 "title": clean_title(args.get("title")),
                 "body": clean_body(args.get("body"), ctx.question, _uris(ctx)),
+                **({"set": chosen, "details": shown} if chosen else {}),
             },
             audience=team_audience(ctx.token, team),
         )
@@ -182,7 +303,8 @@ class LinearCreateIssue(Action):
             "mutation($input: IssueCreateInput!) { issueCreate(input: $input) "
             "{ success issue { id identifier url } } }",
             {"input": {"id": key, "teamId": target["external_id"],
-                       "title": payload["title"], "description": payload["body"]}},
+                       "title": payload["title"], "description": payload["body"],
+                       **(payload.get("set") or {})}},
             write=True,
         )
         issue = (data.get("issueCreate") or {}).get("issue") or {}

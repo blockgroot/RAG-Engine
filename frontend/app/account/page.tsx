@@ -9,6 +9,7 @@ import { LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
 import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
+import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 
 const TOOL_NAMES: Record<string, string> = {
   github: "GitHub",
@@ -18,12 +19,12 @@ const TOOL_NAMES: Record<string, string> = {
   linear: "Linear",
 };
 
-const TOOL_MARKS: Record<string, string> = {
-  github: "GH",
-  slack: "S",
-  google: "G",
-  notion: "N",
-  linear: "L",
+const TOOL_BRANDS: Record<string, BrandName> = {
+  github: "github",
+  slack: "slack",
+  google: "drive",
+  notion: "notion",
+  linear: "linear",
 };
 
 function toolName(provider: string) {
@@ -139,8 +140,8 @@ function AccountContent() {
             <ul className="account-identity-list">
               {data.identities.map((identity) => (
                 <li key={identity.id} className="account-identity-row">
-                  <span className="account-identity-mark" data-provider={identity.provider} aria-hidden="true">
-                    {TOOL_MARKS[identity.provider] ?? toolName(identity.provider).slice(0, 1)}
+                  <span className="account-identity-mark" aria-hidden="true">
+                    <BrandGlyph name={TOOL_BRANDS[identity.provider] ?? "document"} size={26} />
                   </span>
                   <div className="account-identity-copy">
                     <strong>{toolName(identity.provider)}</strong>

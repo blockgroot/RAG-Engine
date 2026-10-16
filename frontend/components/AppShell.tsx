@@ -369,24 +369,33 @@ export function AppShell({
         {me && (
           <div className="rail-foot">
             <div className="rail-user" aria-label="Signed-in account">
-              <span className="rail-avatar" aria-hidden>
-                {initial}
-              </span>
-              <div className="rail-user-copy">
-                <span className="user-name-row">
-                  {firstName && <span className="user-name-chip">{firstName}</span>}
-                  <span className={`role-chip role-${me.role}`}>
-                    {me.role === "admin" ? "Admin" : "Member"}
-                  </span>
+              <div className="rail-user-profile">
+                <span className="rail-avatar" aria-hidden>
+                  {initial}
                 </span>
-                {me.org_name && <span className="org-chip">{me.org_name}</span>}
-                {/* Styled as the sign-out link on purpose: both are about YOUR account,
-                    not destinations in the product, so they sit together, quietly. */}
-                <Link href="/account" className="rail-sign-out">
-                  Linked accounts
+                <div className="rail-user-copy">
+                  <span className="user-name-row">
+                    {firstName && <span className="user-name-chip">{firstName}</span>}
+                    <span className={`role-chip role-${me.role}`}>
+                      {me.role === "admin" ? "Admin" : "Member"}
+                    </span>
+                  </span>
+                  {me.org_name && <span className="org-chip">{me.org_name}</span>}
+                </div>
+              </div>
+              <div className="rail-user-actions">
+                <Link href="/account" className="rail-user-action">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <circle cx="12" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.7" />
+                    <path d="M5 20c.7-4 3.3-6 7-6s6.3 2 7 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                  </svg>
+                  <span>Account</span>
                 </Link>
-                <button type="button" className="rail-sign-out" onClick={handleSignOut}>
-                  Sign out
+                <button type="button" className="rail-user-action rail-user-signout" onClick={handleSignOut}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <path d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4M14 8l4 4-4 4M9 12h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span>Sign out</span>
                 </button>
               </div>
             </div>

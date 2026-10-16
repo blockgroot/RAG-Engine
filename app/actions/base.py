@@ -80,6 +80,13 @@ class Proposal:
     audience: Audience = field(default_factory=Audience)
 
 
+def details(*pairs: tuple[str, str | None]) -> list[list[str]]:
+    """The settings a write carries besides its words ("Assignee", "Labels"),
+    as ``[label, value]`` rows for the card. Part of the stored payload, so
+    the fingerprint covers them; never editable (cancel and ask again)."""
+    return [[label, value] for label, value in pairs if value]
+
+
 @dataclass(frozen=True)
 class ActionResult:
     """What the tool created: its id and an http(s) link from its API."""

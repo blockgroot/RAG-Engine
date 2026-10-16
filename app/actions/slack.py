@@ -23,6 +23,7 @@ nobody is pinged.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -47,6 +48,12 @@ MEMBER_LIMIT = 500
 #: Messages read from the thread a request was asked in.
 THREAD_LIMIT = 50
 _NO_UNFURL = {"unfurl_links": False, "unfurl_media": False}
+#: A Slack message link: .../archives/<channel>/p<ts without the dot>, and for
+#: a reply in a thread, ?thread_ts=<root ts>.
+_MESSAGE_LINK = re.compile(
+    r"https://[\w.-]+\.slack\.com/archives/(?P<channel>[CDG][A-Z0-9]+)/p(?P<ts>\d{10})(?P<frac>\d{6})"
+    r"(?:\?\S*?thread_ts=(?P<root>\d{10}\.\d{6}))?"
+)
 
 
 def _get(token: str, method: str, params: dict) -> dict:
@@ -101,6 +108,39 @@ def _channel_by_name(token: str, name: str, hint: str = "") -> dict:
         if (channel.get("name") or "").casefold() == wanted:
             return channel
     raise ActionRejected(f"I can't see a channel called #{wanted}.{hint}")
+
+
+def _post(token: str, method: str, body: dict) -> dict:
+    """A Slack write that must succeed before the message is sent."""
+    try:
+        response = httpx.post(f"{API}/{method}", json=body, timeout=_TIMEOUT,
+                              headers={"Authorization": f"Bearer {token}"})
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ActionError("Could not reach Slack. Nothing was sent.", cause=exc) from exc
+    if data.get("error") == "missing_scope":
+        raise ActionError("Reconnect Slack on Handbook's Act page to allow direct messages. Nothing was sent.")
+    if not data.get("ok"):
+        raise ActionError(f"Slack: {data.get('error') or 'refused'}. Nothing was sent.")
+    return data
+
+
+def _person(token: str, wanted: str) -> dict:
+    """The one person in this Slack whose email, name or display name the asker
+    wrote. Bots, deleted accounts and a cut-off list are never a match."""
+    users, complete = _pages(token, "users.list", {}, "members")
+    folded = wanted.casefold().lstrip("@")
+    found = [u for u in users if not u.get("deleted") and not _is_bot(users, u.get("id", ""))
+             and folded in {(u.get("name") or "").casefold(),
+                            ((u.get("profile") or {}).get("real_name") or "").casefold(),
+                            ((u.get("profile") or {}).get("display_name") or "").casefold(),
+                            ((u.get("profile") or {}).get("email") or "").casefold()}]
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise ActionRejected(f"More than one person in Slack matches {wanted!r}. Use their email.")
+    raise ActionRejected(f"I can't find {wanted!r} in your Slack" + ("." if complete else
+                         ", and your Slack has more people than I could list. Use their email."))
 
 
 def _members(token: str, channel_id: str) -> tuple[list[str], bool]:
@@ -198,7 +238,8 @@ class SlackPostMessage(Action):
             "name": "slack_post_message",
             "description": (
                 "Post a message in Slack. From a channel, it can only reply in the "
-                "current thread; elsewhere, in a channel the user named."
+                "current thread; elsewhere, in a channel the user named, as a reply in "
+                "a thread whose link they pasted, or as a direct message to a person they named."
             ),
             "parameters": {
                 "type": "object",
@@ -215,6 +256,11 @@ class SlackPostMessage(Action):
                         "description": "The channel exactly as the user wrote it, e.g. #eng. "
                                        "Leave empty to reply in the current thread.",
                     },
+                    "thread": {"type": "string", "description":
+                               "To reply in a thread: the Slack message link exactly as the user pasted it."},
+                    "person": {"type": "string", "description":
+                               "To send a direct message: the person exactly as the user wrote them "
+                               "(name or email)."},
                     "text": {"type": "string", "description": "The message to post."},
                 },
                 "required": ["request_words", "text"],
@@ -300,25 +346,55 @@ class SlackPostMessage(Action):
         )
 
     def _prepare_as_person(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
-        """A post from the web, on the person's own token: a channel they named
-        and are in. Their listing shows every public channel and only the
-        private ones they belong to; ``is_member`` is read from it."""
-        named = (args.get("channel") or "").strip() if isinstance(args.get("channel"), str) else ""
-        channel = _channel_by_name(ctx.token, require_named(named, ctx.question, "Slack channel"))
-        if not channel.get("is_member"):
-            raise ActionRejected(f"You need to be a member of #{channel.get('name')} to post there.")
+        """A post from the web, on the person's own token: in a channel they
+        named and are in, as a reply in a thread whose link they pasted, or as
+        a direct message to a person they named. Their listing shows every
+        public channel and only the private ones they belong to; ``is_member``
+        is read from it. Slack refuses anything else with their token anyway."""
+        def arg(key: str) -> str:
+            return (args.get(key) or "").strip() if isinstance(args.get(key), str) else ""
+
         body = clean_body(args.get("text"), ctx.question, [s.uri for s in ctx.sources if s.uri])
         if not body:
             raise ActionRejected("The draft is empty.")
+        payload = {"text": _mrkdwn(body), "thread_ts": None, "as_person": True}
+        if arg("person"):
+            person = _person(ctx.token, require_named(arg("person"), ctx.question, "person"))
+            name = (person.get("profile") or {}).get("real_name") or person.get("name") or person["id"]
+            email = ((person.get("profile") or {}).get("email") or "").lower()
+            return Proposal(
+                action=self.name,
+                target=ActionTarget("slack_user", person["id"], f"Direct message to {name}"),
+                payload=payload,
+                # The two of them. An unreadable email is an unknown audience.
+                audience=Audience(members=(email, ctx.email.lower())) if email else Audience(members=None),
+            )
+        if arg("thread"):
+            link = _MESSAGE_LINK.search(require_named(arg("thread"), ctx.question, "Slack thread"))
+            if not link:
+                raise ActionRejected("Paste the Slack message's link (Copy link in Slack) to reply in its thread.")
+            channel = _get(ctx.token, "conversations.info", {"channel": link["channel"]}).get("channel") or {}
+            payload["thread_ts"] = link["root"] or f"{link['ts']}.{link['frac']}"
+            where = f"#{channel.get('name') or channel.get('id')} (a thread)"
+        else:
+            channel = _channel_by_name(ctx.token, require_named(arg("channel"), ctx.question, "Slack channel"))
+            where = f"#{channel.get('name') or channel['id']}"
+        if not channel.get("is_member"):
+            raise ActionRejected(f"You need to be a member of #{channel.get('name')} to post there.")
         return Proposal(
             action=self.name,
-            target=ActionTarget("slack_channel", channel["id"], f"#{channel.get('name') or channel['id']}"),
-            payload={"text": _mrkdwn(body), "thread_ts": None, "as_person": True},
+            target=ActionTarget("slack_channel", channel["id"], where),
+            payload=payload,
             audience=channel_audience(ctx.token, channel),
         )
 
     def execute(self, key, target, payload, token) -> ActionResult:
-        message = {"channel": target["external_id"], "text": payload["text"], **_NO_UNFURL}
+        channel = target["external_id"]
+        if target.get("kind") == "slack_user":
+            # The DM is opened only now, at send: preparing a draft never writes.
+            opened = _post(token, "conversations.open", {"users": channel})
+            channel = (opened.get("channel") or {}).get("id") or ""
+        message = {"channel": channel, "text": payload["text"], **_NO_UNFURL}
         if payload.get("thread_ts"):
             message["thread_ts"] = payload["thread_ts"]
         try:
@@ -332,7 +408,7 @@ class SlackPostMessage(Action):
         ts = body.get("ts") or ""
         try:
             link = _get(token, "chat.getPermalink",
-                        {"channel": target["external_id"], "message_ts": ts}).get("permalink")
+                        {"channel": channel, "message_ts": ts}).get("permalink")
         except ActionError:
             link = None  # posted; only the link is missing
         return ActionResult(ts, link)

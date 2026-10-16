@@ -11,10 +11,10 @@ from __future__ import annotations
 from ..auth.user_connections import connected_providers
 from . import policy
 from .base import Action
-from .drive import DriveCreateDoc
+from .drive import DriveCreateDoc, DriveCreateSheet
 from .github import GitHubComment, GitHubCreateIssue
 from .linear import LinearComment, LinearCreateIssue
-from .notion import NotionAppend, NotionComment, NotionCreatePage
+from .notion import NotionAddRow, NotionAppend, NotionComment, NotionCreatePage
 from .slack import SlackPostMessage
 
 #: Every action that exists, by name. Nothing else can ever be proposed.
@@ -22,8 +22,8 @@ ACTIONS: dict[str, type[Action]] = {
     cls.name: cls
     for cls in (
         LinearCreateIssue, LinearComment, GitHubCreateIssue, GitHubComment,
-        NotionComment, NotionAppend, NotionCreatePage, DriveCreateDoc,
-        SlackPostMessage,
+        NotionComment, NotionAppend, NotionCreatePage, NotionAddRow,
+        DriveCreateDoc, DriveCreateSheet, SlackPostMessage,
     )
 }
 

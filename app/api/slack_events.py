@@ -177,7 +177,7 @@ _SOURCE_LABELS = {
 }
 
 
-def _to_slack_mrkdwn(text: str) -> str:
+def _to_slack_mrkdwn(text: str, *, keep_citations: bool = False) -> str:
     """Rewrite the model's Markdown as Slack mrkdwn.
 
     Slack does NOT render Markdown: `**bold**` shows its asterisks, `- item`
@@ -193,8 +193,10 @@ def _to_slack_mrkdwn(text: str) -> str:
     `<url|text>`. Escaped, both arrive as inert text.
     """
     # Inline citation markers are for the web chat's chips; in Slack a bare
-    # "[2]" points at nothing the reader can open.
-    text = strip_citations(text)
+    # "[2]" points at nothing the reader can open. An Act card keeps them:
+    # it shows exactly what will be sent.
+    if not keep_citations:
+        text = strip_citations(text)
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     out: list[str] = []
     for line in text.split("\n"):

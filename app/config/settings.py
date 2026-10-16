@@ -911,7 +911,7 @@ class GoogleSettings:
 # never lets Handbook message or modify anything in Slack. Existing
 # connections must reconnect once to pick up a newly added scope (Slack
 # re-consents on scope change, it doesn't apply retroactively).
-DEFAULT_SLACK_ACT_USER_SCOPES = "chat:write,channels:read,groups:read,users:read,users:read.email"
+DEFAULT_SLACK_ACT_USER_SCOPES = "chat:write,channels:read,groups:read,im:write,users:read,users:read.email"
 DEFAULT_SLACK_BOT_SCOPES = (
     "channels:history,channels:read,channels:join,"
     "groups:history,groups:read,"
@@ -2172,6 +2172,11 @@ class ActionsSettings:
     notion_client_id: str | None = None
     notion_client_secret: str | None = None
     notion_redirect_uri: str | None = None
+    # Google's folder picker, so a Doc or Sheet can go into a folder the person
+    # picks in Google's own window. Both or neither: a browser API key limited
+    # to the Picker API, and the Cloud project NUMBER of the Google client.
+    google_picker_api_key: str | None = None
+    google_picker_app_id: str | None = None
 
     @classmethod
     def from_env(cls) -> "ActionsSettings":
@@ -2182,7 +2187,13 @@ class ActionsSettings:
             notion_client_id=os.getenv("NOTION_ACT_CLIENT_ID") or None,
             notion_client_secret=os.getenv("NOTION_ACT_CLIENT_SECRET") or None,
             notion_redirect_uri=os.getenv("NOTION_ACT_REDIRECT_URI") or None,
+            google_picker_api_key=os.getenv("GOOGLE_PICKER_API_KEY") or None,
+            google_picker_app_id=os.getenv("GOOGLE_PICKER_APP_ID") or None,
         )
+
+    @property
+    def folder_picker(self) -> bool:
+        return bool(self.google_picker_api_key and self.google_picker_app_id)
 
 
 @dataclass(frozen=True)

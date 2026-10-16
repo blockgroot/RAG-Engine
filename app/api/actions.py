@@ -238,6 +238,7 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
         "action": row.action,
         "label": cls.label if cls else row.action,
         "attribution": cls().attribution_for(row.payload) if cls else None,
+        "folder_choice": bool(cls and cls.provider == "google" and ActionsSettings.from_env().folder_picker),
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
@@ -382,6 +383,50 @@ class EditRequest(BaseModel):
     payload_hash: str = Field(min_length=64, max_length=64)
     #: Drafted words only; ``Action.edit`` refuses any other field.
     fields: dict[str, Annotated[str, Field(max_length=20000)]] = Field(max_length=2)
+
+
+class FolderRequest(BaseModel):
+    payload_hash: str = Field(min_length=64, max_length=64)
+    folder_id: str = Field(min_length=10, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@router.get("/act/google/picker")
+def google_picker(session: SessionClaims = Depends(get_session)):
+    """What Google's folder picker needs in the browser: the picker key, the
+    project number, and the person's OWN drive.file token (theirs to use, and
+    it reaches only files Handbook made or they picked). 404 when not set up."""
+    settings = _require_on(session.org_id)
+    if not settings.folder_picker:
+        raise HTTPException(status_code=404, detail="Folder choice isn't set up.")
+    from ..auth.user_connections import fresh_user_token
+
+    try:
+        token = fresh_user_token(session.org_id, session.user_id, "google")
+    except (ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise HTTPException(status_code=409, detail="Connect your Google account on the Act page first.") from exc
+    return {"api_key": settings.google_picker_api_key, "app_id": settings.google_picker_app_id,
+            "token": token}
+
+
+@router.post("/act/actions/{action_id}/folder")
+def choose_folder(action_id: str, body: FolderRequest, session: SessionClaims = Depends(get_session)):
+    """Put a pending Doc or Sheet into the folder the person picked in Google's window."""
+    _require_on(session.org_id)
+    try:
+        row = service.choose_folder(org_id=session.org_id, user_id=session.user_id,
+                                    action_id=_action_id(action_id), shown_hash=body.payload_hash,
+                                    folder_id=body.folder_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="No such action.") from exc
+    except ActionExpired as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except ActionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OAuthReauthRequiredError as exc:
+        raise HTTPException(status_code=409, detail="Reconnect your Google account on the Act page.") from exc
+    except ActionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"action": _card(row)}
 
 
 @router.patch("/act/actions/{action_id}")

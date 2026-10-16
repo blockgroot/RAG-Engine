@@ -361,12 +361,18 @@ def _row(**over):
     return ActionRow(**{**base, **over})
 
 
-def test_the_card_shows_plain_text_and_asks_for_the_tick():
+def test_the_card_formats_the_draft_but_never_as_a_link_or_ping_and_asks_for_the_tick():
     row = _row()
     blocks = slack_act.card_blocks(row, audience_size=40, outsiders=3)
     texts = [b["text"] for b in blocks if b.get("type") == "section"]
-    assert all(t["type"] == "plain_text" for t in texts[1:])
     assert sum("x" * 100 in t["text"] for t in texts) == 2  # 3,500 chars over two sections
+    body = "## Context\n- [ ] Document it\n<!channel> see <https://evil.example|here> [1]"
+    shown = " ".join(b["text"]["text"] for b in slack_act.card_blocks(
+        _row(payload={"title": "T", "body": body}), audience_size=None, outsiders=None)
+        if b.get("type") == "section")
+    assert "*Context*" in shown and "☐ Document it" in shown
+    assert "<!channel>" not in shown and "&lt;!channel&gt;" in shown and "<https://" not in shown
+    assert "[1]" in shown                                   # exactly what is sent
     assert any(b.get("block_id") == "act_ack" for b in blocks)
     approve = next(b for b in blocks if b.get("block_id") == "act_decide")["elements"][0]
     assert approve["value"] == f"{row.id}:{row.payload_hash}"
@@ -494,3 +500,13 @@ def test_a_person_is_found_by_a_prior_work_address(org):
     assert get_member_by_address(old.upper(), org.id).id == org.admin.id
     assert get_member_by_address(org.admin.email, org.id).id == org.admin.id
     assert get_member_by_address(old, str(uuid.uuid4())) is None  # never across orgs
+
+
+def test_a_dm_says_it_is_drafting_then_becomes_the_card(act_env, monkeypatch):
+    posts = []
+    monkeypatch.setattr(slack_act, "_post", lambda token, method, body: posts.append((method, body)) or {"ts": "9.9"})
+    slack_act.handle_act(request="file it", org_id="o", token="t",
+                         user=USER, slack_user="U1", channel="D1", thread_ts=None, is_dm=True)
+    assert posts[0][0] == "chat.postMessage" and "Drafting" in posts[0][1]["text"]
+    assert posts[1] == ("chat.update", {"channel": "D1", "ts": "9.9", "text": "noted"})
+    assert act_env["said"] == []                              # replaced in place, not posted again

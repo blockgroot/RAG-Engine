@@ -216,6 +216,28 @@ function renderBold(text: string, keyPrefix: string): ReactNode[] {
  *  Unlike an answer, nothing is stripped: "[1]" in a draft is text that will
  *  be sent, so the card must show it. */
 export function DraftText({ text }: { text: string }) {
+  // A draft that is one Markdown table (a Sheet) is shown as that table.
+  const lines = text.trim().split("\n");
+  if (lines.length > 1 && lines.every((l) => l.trim().startsWith("|"))) {
+    const rows = lines
+      .map((l) => l.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|")))
+      .filter((cells) => !cells.every((c) => /^:?-{3,}:?$/.test(c)));
+    const [head, ...body] = rows;
+    return (
+      <div className="draft-table-wrap">
+        <table className="draft-table">
+          <thead>
+            <tr>{head.map((c, i) => <th key={i}>{c}</th>)}</tr>
+          </thead>
+          <tbody>
+            {body.map((r, i) => (
+              <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
   return (
     <div className="chat-answer">
       {parseBlocks(text).map((block, i) => {

@@ -321,7 +321,13 @@ can say (GitHub: their access level, a locked issue; Linear: only teams their
 token lists); Notion cannot be asked, so its card says the access a write needs
 and its refusal names it (view only, can't edit). A
 target is taken only from the asker's own words (`draft.require_named`), never
-from a passage; written links and @-mentions only if the asker wrote them.
+from a passage; written links and @-mentions only if the asker wrote them. So is
+every setting a write carries (assignee, labels, project, due date, a DM's
+person, a thread's link, a database's columns): resolved with the asker's token
+among what exists, never created, shown read-only on the card (`payload.details`,
+inside the fingerprint). A Sheet never sends a formula (`drive.sheet_csv`). A
+Drive folder is only the asker's pick in Google's picker, and choosing one checks
+the audience again (`service.choose_folder`, `store.move`).
 Passages are shown only when the request asks to draft from company content
 (`document_words`, quoted from the request); otherwise the model sees the
 request alone. They are found by Ask's own reading (`api.actions.ask_search`:

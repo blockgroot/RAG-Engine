@@ -421,6 +421,50 @@ def edit(
                                 payload=action.edit(row.payload, fields))
 
 
+def choose_folder(
+    *, org_id: str, user_id: str, action_id: str, shown_hash: str, folder_id: str,
+) -> ActionRow:
+    """Put a pending Doc or Sheet into a folder the person picked in Google's
+    own picker. The folder is their click in Google's window, never the
+    model's or a document's, and who can open it is checked again: shared
+    with anyone or the whole domain refuses private sources; any other sharing
+    beyond them asks for the tick (stored sources keep no viewer lists, so
+    narrower cannot be told from wider)."""
+    from ..auth.user_connections import fresh_user_token
+    from .drive import folder_audience
+
+    if not policy.act_on(org_id):
+        raise ActionRejected("Your admin has turned off Act.")
+    row = store.get(org_id, user_id, action_id)
+    if row is None:
+        raise NotFoundError("No such action.")
+    if row.action not in ("drive.create_doc", "drive.create_sheet"):
+        raise ActionRejected("Only a Google Doc or Sheet can go into a folder.")
+    name, audience = folder_audience(fresh_user_token(org_id, user_id, "google"), folder_id)
+    private = any(not s.get("public") for s in row.sources)
+    only_them = audience.members is not None and set(audience.members) <= {_email_of(user_id)}
+    if only_them:
+        exposure = row.exposure
+    elif audience.public and private:
+        raise ActionRejected(f"{name!r} is shared with everyone, and this draft uses private documents. "
+                             "Pick a private folder.")
+    else:
+        exposure = "unknown" if private else "none"
+    shown = [d for d in row.payload.get("details") or [] if d[0] != "Folder"] + [["Folder", name]]
+    where = f"Your Google Drive › {name}" + ("" if only_them else " (shared folder)")
+    return store.move(org_id, user_id, action_id, shown_hash=shown_hash,
+                      target={**row.target, "name": where},
+                      payload={**row.payload, "folder": {"id": folder_id, "name": name}, "details": shown},
+                      exposure=exposure)
+
+
+def _email_of(user_id: str) -> str:
+    from ..auth.users import get_user
+
+    user = get_user(user_id)
+    return (user.email or "").lower() if user else ""
+
+
 #: Longest instruction for a rewrite: a sentence or two about what to change.
 MAX_INSTRUCTION = 1000
 

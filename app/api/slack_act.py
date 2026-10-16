@@ -182,6 +182,18 @@ def _post(token: str, method: str, payload: dict) -> dict | None:
     return body
 
 
+_DRAFTING = "_Drafting that for you… nothing is sent until you approve._"
+
+
+def _drafting(token: str, *, channel: str, user: str, thread_ts: str | None, is_dm: bool) -> str | None:
+    """Say a draft is on its way. Returns the DM message's ts, to edit into the reply."""
+    if is_dm:
+        sent = _post(token, "chat.postMessage", {"channel": channel, "text": _DRAFTING})
+        return (sent or {}).get("ts")
+    _say(token, channel=channel, user=user, thread_ts=thread_ts, is_dm=False, text=_DRAFTING)
+    return None
+
+
 def _say(token: str, *, channel: str, user: str, thread_ts: str | None, is_dm: bool,
          text: str, blocks: list | None = None) -> None:
     """To the asker only. In a DM, a message; in a channel, an ephemeral one,
@@ -205,9 +217,21 @@ def _short(title: str) -> str:
     return title if len(title) <= 60 else title[:57].rstrip() + "…"
 
 
+def _readable(markdown: str) -> str:
+    """A drafted Markdown body as Slack shows it: headings bold, bullets and
+    checkboxes drawn. Escaped FIRST (``_to_slack_mrkdwn``), so the draft still
+    cannot turn into a link or a ping; the words are exactly what is sent."""
+    from .slack_events import _to_slack_mrkdwn
+
+    boxes = re.sub(r"(?m)^(\s*)[-*+]\s+\[([ xX])\]\s+",
+                   lambda m: f"{m.group(1)}{'☑' if m.group(2) in 'xX' else '☐'} ", markdown)
+    return _to_slack_mrkdwn(boxes, keep_citations=True)
+
+
 def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | None) -> list[dict]:
-    """The approval card. Shows exactly what will be sent; plain text, so a
-    draft cannot format itself into a link or a ping."""
+    """The approval card. Shows exactly what will be sent, formatted as Slack
+    shows Markdown but escaped first, so a draft cannot format itself into a
+    link or a ping."""
     cls = ACTIONS.get(row.action)
     label = cls.label if cls else row.action
     who = cls.attribution if cls else "as you"
@@ -216,13 +240,17 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
         {"type": "section", "text": {"type": "mrkdwn", "text":
             f"*{_escape(label)}*  ·  {_escape(who)}, in {tool}\n*Where:* {_escape(row.target.get('name'))}"}},
     ]
+    if row.payload.get("details"):
+        blocks.append({"type": "section", "text": {"type": "plain_text", "text": "\n".join(
+            f"{label}: {value}" for label, value in row.payload["details"])}})
     for key, title in (("title", "Title"), ("body", "Text"), ("text", "Message")):
         value = row.payload.get(key)
         if value is None:
             continue
-        for i in range(0, max(len(value), 1), _SECTION_LIMIT):
+        shown = _readable(value) if key != "text" else value  # a Slack post is mrkdwn already
+        for i in range(0, max(len(shown), 1), _SECTION_LIMIT):
             blocks.append({"type": "section", "text": {
-                "type": "plain_text", "text": (f"{title}: " if i == 0 else "") + (value[i:i + _SECTION_LIMIT] or "(empty)")}})
+                "type": "mrkdwn", "text": (f"*{title}:*\n" if i == 0 else "") + (shown[i:i + _SECTION_LIMIT] or "_(empty)_")}})
     if row.action.startswith("notion."):
         need = "comment on" if row.action == "notion.comment" else "edit"
         blocks.append({"type": "context", "elements": [{"type": "plain_text", "text":
@@ -264,13 +292,24 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
 
     Asked inside a channel THREAD, a draft that refers to it reads that thread
     live (``thread_context``), never a search of the channel."""
-    say = lambda text, blocks=None: _say(  # noqa: E731
+    send = lambda text, blocks=None: _say(  # noqa: E731
         token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm,
         text=text, blocks=blocks)
     _remember_slack_account(org_id, slack_user, user.email)
     if not request:
-        say(USAGE)
+        send(USAGE)
         return
+    # Drafting reads documents and calls the model: seconds of silence that
+    # read as "ignored". In a DM the note becomes the first reply (edited in
+    # place); an ephemeral one cannot be edited, so in a channel it stays.
+    placeholder = [_drafting(token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm)]
+
+    def say(text, blocks=None):
+        ts, placeholder[0] = placeholder[0], None
+        if not (ts and _post(token, "chat.update", {"channel": channel, "ts": ts, "text": text,
+                                                     **({"blocks": blocks} if blocks else {})})):
+            send(text, blocks)
+
     # A space's Slack connection carries the same bot: which connection posts
     # never decides what a draft may read (a DM reads as the person, a channel
     # only that channel, as the room).

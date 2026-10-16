@@ -41,7 +41,7 @@ from ..core.exceptions import (
     SourceError,
 )
 from ..githublive.repos import resolve_repo, scope_from_config
-from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal
+from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, details
 from .draft import clean_body, clean_title, require_named
 
 API = "https://api.github.com"
@@ -88,6 +88,8 @@ def _call(method: str, path: str, token: str, *, json: dict | None = None) -> di
         raise ActionRejected("Issues are turned off for that repository.")
     if response.status_code >= 400:
         raise ActionError(f"GitHub answered {response.status_code}.")
+    if response.status_code == 204:  # "yes", with no body (e.g. a checkable assignee)
+        return {}
     try:
         return response.json() or {}
     except ValueError as exc:
@@ -198,6 +200,10 @@ class GitHubCreateIssue(Action):
                     },
                     "title": {"type": "string", "description": "A short issue title."},
                     "body": {"type": "string", "description": "The issue body, in Markdown."},
+                    "labels": {"type": "array", "items": {"type": "string"}, "description":
+                               "Only if the user asked: label names exactly as they wrote them."},
+                    "assignees": {"type": "array", "items": {"type": "string"}, "description":
+                                  "Only if the user asked: GitHub usernames exactly as they wrote them."},
                 },
                 "required": ["request_words", "repo", "title", "body"],
             },
@@ -214,12 +220,17 @@ class GitHubCreateIssue(Action):
         # draft, not as a failed send.
         if repo.get("permissions") is not None and _level(repo) is None:
             raise ActionRejected(f"Your GitHub account has no access to {full}, so it can't open issues there.")
+        chosen = _issue_settings(args, ctx, full, repo)
         return Proposal(
             action=self.name,
             target=ActionTarget("github_repo", full, full, repo.get("html_url")),
             payload={
                 "title": clean_title(args.get("title")),
                 "body": clean_body(args.get("body"), ctx.question, _uris(ctx)),
+                **({"set": chosen, "details": details(
+                    ("Labels", ", ".join(chosen.get("labels") or [])),
+                    ("Assignees", ", ".join(chosen.get("assignees") or [])),
+                )} if chosen else {}),
             },
             audience=_repo_audience(repo),
         )
@@ -227,10 +238,49 @@ class GitHubCreateIssue(Action):
     def execute(self, key, target, payload, token) -> ActionResult:
         full = target["external_id"]
         made = _call("POST", f"/repos/{full}/issues", scoped_token(token, full),
-                     json={"title": payload["title"], "body": payload["body"]})
+                     json={"title": payload["title"], "body": payload["body"],
+                           **(payload.get("set") or {})})
         if not made.get("number"):
             raise ActionError("GitHub did not open the issue.")
         return ActionResult(f"{target['external_id']}#{made['number']}", made.get("html_url"))
+
+
+def _names(args: dict[str, Any], key: str) -> list[str]:
+    return [x.strip().lstrip("@") for x in (args.get(key) or []) if isinstance(x, str) and x.strip()]
+
+
+def _issue_settings(args: dict[str, Any], ctx: ActionContext, full: str, repo: dict) -> dict:
+    """Labels and assignees, each named by the asker and existing in the repo.
+
+    GitHub silently drops both on a new issue from anyone without write
+    access, so that is refused here rather than sent and lost. A label is
+    never created, and an assignee must be one GitHub lets this repo assign."""
+    labels, people = _names(args, "labels"), _names(args, "assignees")
+    if not (labels or people):
+        return {}
+    for name in [*labels, *people]:
+        require_named(name, ctx.question, "label or assignee")
+    if _level(repo) not in ("push", "maintain", "admin"):
+        raise ActionRejected(
+            f"Only people with write access to {full} can set labels or assignees, and your "
+            "account doesn't have it. Ask without them."
+        )
+    chosen: dict[str, list[str]] = {}
+    if labels:
+        existing = {l["name"].casefold(): l["name"]
+                    for l in _call("GET", f"/repos/{full}/labels?per_page=100", ctx.token) or []}
+        missing = [l for l in labels if l.casefold() not in existing]
+        if missing:
+            raise ActionRejected(f"{full} has no label called {missing[0]!r}.")
+        chosen["labels"] = [existing[l.casefold()] for l in labels]
+    if people:
+        for login in people:
+            try:
+                _call("GET", f"/repos/{full}/assignees/{login}", ctx.token)
+            except ActionRejected as exc:
+                raise ActionRejected(f"{login!r} can't be assigned issues in {full}.") from exc
+        chosen["assignees"] = people
+    return chosen
 
 
 class GitHubComment(Action):

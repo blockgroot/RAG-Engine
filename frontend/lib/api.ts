@@ -212,8 +212,10 @@ export interface ActCard {
   /** Whose name the tool will show: "as you", or "via Handbook Actions, for you"
    *  where the tool records its own bot (Notion pages). */
   attribution: string | null;
+  /** A Google Doc or Sheet whose folder can be picked in Google's picker. */
+  folder_choice?: boolean;
   target: { kind: string; external_id: string; name: string; url: string | null };
-  payload: { title?: string; body?: string; text?: string };
+  payload: { title?: string; body?: string; text?: string; details?: [string, string][] };
   /** The drafted words as shown and edited (a Slack post without the line
    *  naming who asked). Only these can be edited, never where it goes. */
   draft: { title?: string; body?: string };
@@ -842,6 +844,13 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
   actStatus: () => request<ActStatus>("/act/status"),
+  googlePicker: () =>
+    request<{ api_key: string; app_id: string; token: string }>("/act/google/picker"),
+  chooseActionFolder: (actionId: string, payloadHash: string, folderId: string) =>
+    request<{ action: ActCard }>(`/act/actions/${actionId}/folder`, {
+      method: "POST",
+      body: JSON.stringify({ payload_hash: payloadHash, folder_id: folderId }),
+    }),
   /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
   act: (question: string, workspaceId?: string | null, model?: string | null) =>
     request<{ reply: string; action: ActCard | null; actions?: ActCard[] }>("/act", {
