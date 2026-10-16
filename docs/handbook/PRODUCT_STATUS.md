@@ -320,6 +320,11 @@ Now opt-in (`fix/small-fixes`): all of the above runs only when the asker turns 
 effort** under Deep analysis (chat `mode: "deep_extra"`). Plain Deep reads the top documents in
 depth as before, and normal Ask no longer gets the assemble rule, so neither pays for breadth
 it did not ask for.
+Extra effort also reads wide on every question (one strong match used to keep the read
+narrow: 28 of 61 broad questions read 2-3 documents) and adds documents down to
+`RAG_DEEP_WIDE_INCLUDE_RATIO` (0.05) x the best score. Benchmark 4, 16 Oct, Claude Sonnet,
+graded by Claude Opus, the 61 broad questions: 69% -> 75% correct, right documents found
+74% -> 81%, 11.7k -> 12.9k tokens per question, median time unchanged; none got worse.
 
 **Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
 Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a

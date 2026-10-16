@@ -240,11 +240,13 @@ def main() -> None:
     ap.add_argument("--deep-multi-doc", action="store_true",
                     help="Handbook: Deep analysis for questions whose answer needs more than one "
                          "document (as a person would pick it), normal mode for the rest")
+    ap.add_argument("--extra", action="store_true",
+                    help="Handbook: Deep analysis asked with Extra effort (wide read, longer answer)")
     args = ap.parse_args()
     if args.deep:
         from app.rag.deep import use_deep_read
 
-        use_deep_read(True)
+        use_deep_read(True, extra=args.extra)
     for kv in args.set:
         key, _, value = kv.partition("=")
         os.environ[key] = value
@@ -270,11 +272,11 @@ def main() -> None:
             if args.deep_multi_doc:
                 from app.rag.deep import use_deep_read
 
-                use_deep_read(len(q["expected_doc_ids"]) > 1)
+                use_deep_read(len(q["expected_doc_ids"]) > 1, extra=args.extra)
             if args.deep_broad:
                 from app.rag.deep import use_deep_read
 
-                use_deep_read(_broad(q))
+                use_deep_read(_broad(q), extra=args.extra)
             t0 = time.time()
             try:
                 out = system.ask(q["question"])
@@ -283,7 +285,8 @@ def main() -> None:
             t1 = time.time()
             row = {
                 "system": name, "question_id": q["question_id"], "question_type": q["question_type"],
-                "run": run, "deep": args.deep or (args.deep_multi_doc and len(q["expected_doc_ids"]) > 1),
+                "run": run, "deep": args.deep or (args.deep_multi_doc and len(q["expected_doc_ids"]) > 1)
+                or (args.deep_broad and _broad(q)), "extra": args.extra,
                 "q_start": t0, "q_end": t1, "seconds": round(t1 - t0, 2), **out,
             }
             with records.open("a") as f:

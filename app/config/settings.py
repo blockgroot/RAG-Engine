@@ -468,6 +468,8 @@ class RagSettings:
     # add documents down to this share of the best score. 0 = same as
     # ``wide_doc_ratio``. 0.15 from calibrate_wide on the fixed search (RCA, 9 Oct).
     wide_include_ratio: float = 0.0
+    # Read wide even when only one document is strong (Deep's extra effort).
+    wide_always: bool = False
     # 0 = scale ``max_context_chars`` by wide_max_hits / top_k.
     wide_max_context_chars: int = 0
     # Answer the part CONTEXT covers and say what is missing, instead of the
@@ -491,6 +493,11 @@ class RagSettings:
     # Deep's answer may run longer than normal Ask's cap: a complete list of 30-40
     # items does not fit 700 tokens, and a cut-off list reads as the whole list.
     deep_max_answer_tokens: int = 2000
+    # Extra effort reads wide on EVERY question and adds documents down to this
+    # x the best score: Benchmark 4 (Sonnet) read 2-3 documents on 28 of 61 broad
+    # questions, because one strong match kept the read narrow, and a document
+    # answering one part of a question scores under the usual 0.15.
+    deep_wide_include_ratio: float = 0.05
 
     def deep(self, *, extra: bool = False) -> "RagSettings":
         """These settings with the deep read on, one budget for ranked and wide reads.
@@ -505,6 +512,8 @@ class RagSettings:
             self = replace(
                 self,
                 wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
+                wide_always=True,
+                wide_include_ratio=self.deep_wide_include_ratio,
                 max_answer_tokens=(None if self.max_answer_tokens is None
                                    else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
             )
@@ -571,6 +580,7 @@ class RagSettings:
             deep_max_context_chars=int(os.getenv("RAG_DEEP_MAX_CONTEXT_CHARS") or 30000),
             deep_wide_max_hits=int(os.getenv("RAG_DEEP_WIDE_MAX_HITS") or 20),
             deep_max_answer_tokens=int(os.getenv("RAG_DEEP_MAX_ANSWER_TOKENS") or 2000),
+            deep_wide_include_ratio=float(os.getenv("RAG_DEEP_WIDE_INCLUDE_RATIO") or 0.05),
         )
 
 

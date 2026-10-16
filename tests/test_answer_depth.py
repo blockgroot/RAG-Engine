@@ -376,6 +376,15 @@ def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left()
     assert "a" * 400 in out[0].content  # depth still taken where room was left
 
 
+def test_extra_effort_reads_wide_even_with_one_strong_document():
+    from app.rag.retrieval import _spread
+
+    pool = [_scored("a", 0, 1.0), _scored("a", 1, 0.9), _scored("c", 0, 0.08), _scored("d", 0, 0.02)]
+    assert _spread(pool, 2, 10, 0.3, 1, 0.15, pool=pool) == pool[:2]  # narrow as usual
+    out = [h.document_id for h in _spread(pool, 2, 10, 0.3, 1, 0.05, pool=pool, always=True)]
+    assert out == ["a", "a", "c"]  # c (0.08) added; d (0.02) under the 0.05 floor
+
+
 def test_a_broad_read_includes_partly_relevant_documents_a_narrow_one_never_does():
     from app.rag.retrieval import _drop_weak, _spread
 

@@ -182,7 +182,7 @@ class HybridRetriever:
             final = _drop_weak(reranked, self._settings.rerank_min_ratio)
             if not graph_cross:
                 final = _spread(final, top_k, rag.wide_max_hits, rag.wide_doc_ratio, rag.wide_per_doc,
-                                rag.wide_include_ratio, pool=reranked)
+                                rag.wide_include_ratio, pool=reranked, always=rag.wide_always)
         else:
             final = pool_candidates[: keep if graph_cross else rag.ranked_max_hits]
         if graph_cross:
@@ -453,7 +453,7 @@ def _drop_weak(hits: list[RetrievedChunk], ratio: float) -> list[RetrievedChunk]
 
 def _spread(
     hits: list[RetrievedChunk], top_k: int, max_hits: int, ratio: float, per_doc: int,
-    include_ratio: float = 0.0, pool: list[RetrievedChunk] | None = None,
+    include_ratio: float = 0.0, pool: list[RetrievedChunk] | None = None, always: bool = False,
 ) -> list[RetrievedChunk]:
     """``top_k`` hits, plus more documents when the evidence is spread out.
 
@@ -473,7 +473,8 @@ def _spread(
     cutoff). A broad question's right documents are often pieces that answer
     only PART of it, which the reranker scores low (RCA, 9 Oct: 66% -> 74% of
     the right documents for many-document questions at 0.15). A question with
-    one strong document is untouched.
+    one strong document is untouched, unless ``always`` (Deep's extra effort,
+    where the asker chose breadth).
     """
     base = hits[:top_k]
     if max_hits <= top_k or ratio <= 0 or not hits:
@@ -486,7 +487,7 @@ def _spread(
         if h.rerank_score is not None:
             doc_best.setdefault(h.document_id, h.rerank_score)
     strong = {d for d, s in doc_best.items() if s >= ratio * best}
-    if len(strong) <= 1:
+    if len(strong) <= 1 and not always:
         return base
     pool = pool if pool is not None else hits
     floor = min(include_ratio, ratio) if include_ratio > 0 else ratio
