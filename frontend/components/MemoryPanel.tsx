@@ -51,13 +51,13 @@ export function MemoryPanel() {
 
   const active = data.org_enabled && data.enabled;
   return (
-    <section id="memory" className="studio-panel stack" aria-labelledby="memory-title">
+    <section id="memory" className="studio-panel account-setting-card memory-setting-card" aria-labelledby="memory-title">
       <div className="studio-section-head">
+        <span className="account-setting-kicker">Personalisation</span>
         <h2 id="memory-title">What Handbook remembers about you</h2>
         <p className="muted">
-          Handbook keeps a few facts from your own questions, like your team or how you like
-          answers, so a new chat doesn’t start from nothing. They only help it understand what
-          you mean; answers still come from your company’s documents. Only you can see them.
+          Small details from your questions help new chats understand you. They are private to
+          you and are never used as answer sources.
         </p>
       </div>
 
@@ -71,18 +71,21 @@ export function MemoryPanel() {
         <p className="muted">Your company has turned memory off, so nothing is remembered.</p>
       )}
 
-      <label className="memory-switch">
+      <label className="memory-switch account-setting-toggle">
         <input
           type="checkbox"
           checked={data.enabled}
           disabled={busy === "switch" || !data.org_enabled}
           onChange={(e) => run("switch", () => api.setMemoryEnabled(e.target.checked))}
         />
-        Remember things from my questions
+        <span>
+          <strong>Personal memory</strong>
+          <small>Remember useful details from my questions.</small>
+        </span>
       </label>
 
       {data.facts.length === 0 ? (
-        <p className="muted">
+        <p className="account-memory-empty">
           {active ? "Nothing yet. Mention your team or office and it will show up here." : "Nothing remembered."}
         </p>
       ) : (
@@ -138,14 +141,17 @@ export function MemoryPanel() {
       )}
 
       {data.can_manage_org && (
-        <label className="memory-switch memory-switch-org">
+        <label className="memory-switch memory-switch-org account-setting-toggle">
           <input
             type="checkbox"
             checked={data.org_enabled}
             disabled={busy === "org"}
             onChange={(e) => run("org", () => api.setOrgMemoryEnabled(e.target.checked))}
           />
-          Allow memory for everyone in the company (admin)
+          <span>
+            <strong>Company memory</strong>
+            <small>Allow personal memory for everyone in the company.</small>
+          </span>
         </label>
       )}
     </section>

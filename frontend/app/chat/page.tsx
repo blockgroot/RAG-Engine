@@ -1267,42 +1267,46 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </span>
                   {chartMode && <CheckIcon />}
                 </button>
-                <button
-                  type="button"
-                  role="menuitemcheckbox"
-                  aria-checked={deepMode}
-                  className="composer-menu-item"
-                  onClick={() => {
-                    setToolsOpen(false);
-                    toggleDeepMode(!deepMode);
-                  }}
-                >
-                  <DeepIcon />
-                  <span className="composer-menu-text">
-                    <strong>Deep analysis</strong>
-                    <small>Reads whole documents for broad questions</small>
-                  </span>
-                  {deepMode && <CheckIcon />}
-                </button>
-                {/* Always listed, so it can be found: choosing it turns Deep on too. */}
-                <button
-                  type="button"
-                  role="menuitemcheckbox"
-                  aria-checked={extraEffort}
-                  className="composer-menu-item"
-                  onClick={() => {
-                    setToolsOpen(false);
-                    if (!extraEffort && !deepMode) toggleDeepMode(true);
-                    setExtraEffort(!extraEffort);
-                  }}
-                >
-                  <DeepIcon />
-                  <span className="composer-menu-text">
-                    <strong>Deep analysis · Extra effort</strong>
-                    <small>Also reads across many documents, for company-wide and list questions. Uses more tokens</small>
-                  </span>
-                  {extraEffort && <CheckIcon />}
-                </button>
+                <div className="composer-menu-group" role="presentation">
+                  <p className="composer-menu-group-label">For broader questions</p>
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={deepMode}
+                    className="composer-menu-item"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      toggleDeepMode(!deepMode);
+                    }}
+                  >
+                    <DeepIcon />
+                    <span className="composer-menu-text">
+                      <strong>Deep analysis</strong>
+                      <small>Read full documents for summaries and broad questions</small>
+                    </span>
+                    {deepMode && <CheckIcon />}
+                  </button>
+                  {/* Extra effort remains a separate opt-in, nested under Deep. */}
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={extraEffort}
+                    className="composer-menu-item composer-menu-subitem"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      if (!extraEffort && !deepMode) toggleDeepMode(true);
+                      setExtraEffort(!extraEffort);
+                    }}
+                  >
+                    <span className="composer-menu-subline" aria-hidden="true" />
+                    <span className="composer-menu-text">
+                      <strong>Use extra effort</strong>
+                      <small>Search more documents for large or company-wide questions</small>
+                    </span>
+                    <span className="composer-menu-usage">More AI usage</span>
+                    {extraEffort && <CheckIcon />}
+                  </button>
+                </div>
                 {me.act_enabled && spaceActOn && (
                   <button
                     type="button"
