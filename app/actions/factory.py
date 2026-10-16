@@ -42,15 +42,16 @@ def build_actions(org_id: str, workspace_id: str | None, user_id: str) -> list[A
 
 
 def slack_available(org_id: str, user_id: str, slack_user: str | None = None) -> set[str]:
-    """``{"slack"}`` when the bot can post for this person: the company has an
-    org-wide Slack connection and we know the person's Slack account (from the
-    event, or an identity Handbook already linked)."""
+    """``{"slack"}`` when the bot can post for this person: the company has a
+    Slack connection (company-wide or a space's: it is the same bot in the same
+    Slack) and we know the person's Slack account (from the event, or an
+    identity Handbook already linked)."""
     from ..db.connection import get_connection
 
     with get_connection() as conn:
         connected = conn.execute(
             "SELECT EXISTS (SELECT 1 FROM oauth_connections WHERE org_id = %s::uuid "
-            "AND provider = 'slack' AND workspace_id IS NULL AND NOT needs_reauth)",
+            "AND provider = 'slack' AND NOT needs_reauth)",
             (org_id,),
         ).fetchone()[0]
     return {"slack"} if connected and (slack_user or slack_user_for(org_id, user_id)) else set()

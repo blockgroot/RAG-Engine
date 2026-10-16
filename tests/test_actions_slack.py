@@ -176,7 +176,7 @@ USER = SimpleNamespace(id="u1", email="a@b.com")
 
 
 def test_a_dm_drafts_as_the_person(act_env):
-    slack_act.handle_act(request="file it", org_id="o", token="t", token_workspace_id=None,
+    slack_act.handle_act(request="file it", org_id="o", token="t",
                          user=USER, slack_user="U1", channel="D1", thread_ts=None, is_dm=True)
     [kw] = act_env["propose"]
     assert kw["viewer"] == Viewer(email="a@b.com") and kw["tags"] is None
@@ -185,7 +185,7 @@ def test_a_dm_drafts_as_the_person(act_env):
 
 def test_a_channel_drafts_from_that_channel_only_as_the_room(act_env, monkeypatch):
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda org, tag: None)
-    slack_act.handle_act(request="file it", org_id="o", token="t", token_workspace_id=None,
+    slack_act.handle_act(request="file it", org_id="o", token="t",
                          user=USER, slack_user="U1", channel="C9", thread_ts="5.5", is_dm=False)
     [kw] = act_env["propose"]
     assert kw["viewer"] == Viewer(public_only=True, channels=("C9",))  # never the asker's access
@@ -195,10 +195,13 @@ def test_a_channel_drafts_from_that_channel_only_as_the_room(act_env, monkeypatc
     assert act_env["said"][0]["is_dm"] is False  # shown to the asker only
 
 
-def test_a_space_slack_connection_cannot_act(act_env):
-    slack_act.handle_act(request="file it", org_id="o", token="t", token_workspace_id="ws",
-                         user=USER, slack_user="U1", channel="D1", thread_ts=None, is_dm=True)
-    assert act_env["propose"] == []
+def test_a_spaces_slack_bot_carries_act_too(monkeypatch):
+    """A space's connection is the same bot in the same Slack: the post goes
+    through it when there is no company-wide one."""
+    monkeypatch.setattr(slack_action, "_bot_scope", lambda org: "space-1")
+    monkeypatch.setattr(slack_action, "get_live_connection_token",
+                        lambda org, provider, workspace_id=None: f"{provider}:{workspace_id}")
+    assert slack_action.SlackPostMessage().token_for("o", "u", "slack_channel") == "slack:space-1"
 
 
 def test_the_card_shown_in_a_channel_is_ephemeral(monkeypatch):
@@ -312,6 +315,7 @@ def test_a_drafted_ping_or_disguised_link_is_inert(fake_slack):
 
 
 def test_inside_slack_the_bot_writes_and_from_the_web_the_person_does(monkeypatch):
+    monkeypatch.setattr(slack_action, "_bot_scope", lambda org: None)
     monkeypatch.setattr(slack_action, "get_live_connection_token",
                         lambda org, provider, workspace_id=None: f"{provider}:{workspace_id}")
     monkeypatch.setattr("app.auth.user_connections.fresh_user_token",

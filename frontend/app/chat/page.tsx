@@ -1301,9 +1301,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                     <span className="composer-menu-subline" aria-hidden="true" />
                     <span className="composer-menu-text">
                       <strong>Use extra effort</strong>
-                      <small>Search more documents for large or company-wide questions</small>
+                      <small>Search more documents · higher AI usage</small>
                     </span>
-                    <span className="composer-menu-usage">More AI usage</span>
                     {extraEffort && <CheckIcon />}
                   </button>
                 </div>

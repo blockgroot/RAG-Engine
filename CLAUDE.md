@@ -349,7 +349,9 @@ asking words must be in the message, only where that surface is on, or `act …`
 (`slack_act.slack_request`); a failed check is a question; a DM drafts as the
 person, a channel drafts from that channel only as the room (like a channel
 reply), its card is ephemeral, and a Slack post from a channel is a reply in that
-thread. Each Slack surface has its own admin switch. Nothing runs unattended.
+thread. Each Slack surface has its own admin switch. The bot may come through
+any of the company's Slack connections, company-wide or a space's (`slack._bot_scope`);
+which one posts never decides what a draft reads. Nothing runs unattended.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
 owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only

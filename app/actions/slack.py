@@ -28,7 +28,12 @@ from typing import Any
 import httpx
 
 from ..auth.credentials import get_live_connection_token
-from ..core.exceptions import ActionError, ActionOutcomeUnknown, ActionRejected
+from ..core.exceptions import (
+    ActionError,
+    ActionOutcomeUnknown,
+    ActionRejected,
+    ConfigurationError,
+)
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, Source
 from .draft import clean_body, require_named
 
@@ -67,6 +72,25 @@ def _pages(token: str, method: str, params: dict, key: str) -> tuple[list, bool]
         if not cursor:
             return items, True
     return items, False
+
+
+def _bot_scope(org_id: str) -> str | None:
+    """Which Slack connection's bot posts: company-wide first, else a space's.
+    Any of them is the same bot in the same Slack; WHAT a draft may read is
+    decided by the surface, never by this."""
+    from ..db.connection import get_connection
+
+    # ponytail: assumes one Slack workspace per company; with several, pick
+    # the connection whose team matches the event's.
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT workspace_id::text FROM oauth_connections WHERE org_id = %s::uuid "
+            "AND provider = 'slack' AND NOT needs_reauth ORDER BY workspace_id NULLS FIRST LIMIT 1",
+            (org_id,),
+        ).fetchone()
+    if row is None:
+        raise ConfigurationError("Slack isn't connected to Handbook.")
+    return row[0]
 
 
 def _channel_by_name(token: str, name: str, hint: str = "") -> dict:
@@ -228,10 +252,11 @@ class SlackPostMessage(Action):
 
     def token_for(self, org_id: str, user_id: str, surface: str = "web") -> str:
         """From the web, the person's own Slack sign-in; inside Slack, the
-        company's bot, replying where it was asked."""
+        company's bot (through any of its Slack connections), replying where
+        it was asked."""
         if surface == "web":
             return super().token_for(org_id, user_id, surface)
-        return get_live_connection_token(org_id, "slack", workspace_id=None)
+        return get_live_connection_token(org_id, "slack", workspace_id=_bot_scope(org_id))
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         surface = ctx.surface or {}

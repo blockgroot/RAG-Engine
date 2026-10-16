@@ -198,3 +198,59 @@ export function AnswerText({ text, cited }: { text: string; cited?: CitedSource[
     </div>
   );
 }
+
+function renderBold(text: string, keyPrefix: string): ReactNode[] {
+  return text
+    .split(/(\*\*[^*]+\*\*)/g)
+    .filter(Boolean)
+    .map((part, i) =>
+      part.startsWith("**") && part.endsWith("**") ? (
+        <strong key={`${keyPrefix}-${i}`}>{part.slice(2, -2)}</strong>
+      ) : (
+        <Fragment key={`${keyPrefix}-${i}`}>{part}</Fragment>
+      )
+    );
+}
+
+/** A draft's Markdown as the tool will show it (bold, bullets, headings).
+ *  Unlike an answer, nothing is stripped: "[1]" in a draft is text that will
+ *  be sent, so the card must show it. */
+export function DraftText({ text }: { text: string }) {
+  return (
+    <div className="chat-answer">
+      {parseBlocks(text).map((block, i) => {
+        if (block.kind === "heading") {
+          const Tag = block.level === 3 ? "h3" : "h4";
+          return (
+            <Tag key={i} className="answer-heading">
+              {renderBold(block.text, `${i}`)}
+            </Tag>
+          );
+        }
+        if (block.kind === "list") {
+          return (
+            <ul key={i} className="answer-list">
+              {block.items.map((item, j) => {
+                // "- [ ] task" is a checklist item in Linear, Notion and GitHub.
+                const task = item.match(/^\[([ xX])\]\s+(.*)$/);
+                return task ? (
+                  <li key={j} className="draft-task">
+                    <input type="checkbox" checked={task[1] !== " "} disabled readOnly aria-label={task[2]} />{" "}
+                    {renderBold(task[2], `${i}-${j}`)}
+                  </li>
+                ) : (
+                  <li key={j}>{renderBold(item, `${i}-${j}`)}</li>
+                );
+              })}
+            </ul>
+          );
+        }
+        return (
+          <p key={i} className="answer-paragraph">
+            {renderBold(block.text, `${i}`)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}

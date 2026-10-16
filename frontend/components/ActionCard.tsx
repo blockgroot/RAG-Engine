@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, api, type ActCard } from "@/lib/api";
+import { DraftText } from "./AnswerText";
 
 /**
  * The approval card for one proposed write.
@@ -208,7 +209,7 @@ export function ActionCard({
                   onChange={(e) => setEditing({ ...editing, body: e.target.value })}
                 />
               ) : (
-                draft.body || <span className="muted">(empty)</span>
+                draft.body ? <DraftText text={draft.body} /> : <span className="muted">(empty)</span>
               )}
             </dd>
           </>

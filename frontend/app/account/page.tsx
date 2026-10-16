@@ -18,6 +18,14 @@ const TOOL_NAMES: Record<string, string> = {
   linear: "Linear",
 };
 
+const TOOL_MARKS: Record<string, string> = {
+  github: "GH",
+  slack: "S",
+  google: "G",
+  notion: "N",
+  linear: "L",
+};
+
 function toolName(provider: string) {
   return TOOL_NAMES[provider] ?? provider;
 }
@@ -128,39 +136,32 @@ function AccountContent() {
               in with, they won’t link on their own.
             </p>
           ) : (
-            <table className="gap-table">
-              <thead>
-                <tr>
-                  <th>Tool</th>
-                  <th>Account</th>
-                  <th>Linked by</th>
-                  <th aria-label="Actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {data.identities.map((identity) => (
-                  <tr key={identity.id}>
-                    <td>{toolName(identity.provider)}</td>
-                    <td>{accountLabel(identity)}</td>
-                    <td className="muted">
-                      {identity.verified_by === "oauth" ? "You signed in" : "Matching email"}
-                    </td>
-                    <td>
-                      {identity.can_unlink && (
-                        <button
-                          type="button"
-                          className="button button-secondary button-sm"
-                          disabled={busy === identity.id}
-                          onClick={() => unlink(identity)}
-                        >
-                          {busy === identity.id ? "Unlinking…" : "Unlink"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="account-identity-list">
+              {data.identities.map((identity) => (
+                <li key={identity.id} className="account-identity-row">
+                  <span className="account-identity-mark" data-provider={identity.provider} aria-hidden="true">
+                    {TOOL_MARKS[identity.provider] ?? toolName(identity.provider).slice(0, 1)}
+                  </span>
+                  <div className="account-identity-copy">
+                    <strong>{toolName(identity.provider)}</strong>
+                    <span>{accountLabel(identity)}</span>
+                  </div>
+                  <span className="account-identity-method">
+                    {identity.verified_by === "oauth" ? "Signed in by you" : "Matched by email"}
+                  </span>
+                  {identity.can_unlink && (
+                    <button
+                      type="button"
+                      className="account-identity-unlink"
+                      disabled={busy === identity.id}
+                      onClick={() => unlink(identity)}
+                    >
+                      {busy === identity.id ? "Unlinking…" : "Unlink"}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </section>
 

@@ -258,8 +258,7 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
     return blocks
 
 
-def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str | None,
-               user, slack_user: str, channel: str, thread_ts: str | None, is_dm: bool,
+def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, channel: str, thread_ts: str | None, is_dm: bool,
                in_thread: bool = False) -> None:
     """Propose one write for a Slack ``act`` command and show the card. Never raises.
 
@@ -272,9 +271,9 @@ def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str
     if not request:
         say(USAGE)
         return
-    if token_workspace_id is not None:
-        say("Act works through your company's own Slack connection, which isn't set up here.")
-        return
+    # A space's Slack connection carries the same bot: which connection posts
+    # never decides what a draft may read (a DM reads as the person, a channel
+    # only that channel, as the room).
     if is_dm:
         from ..sources.google_groups import viewer_for_person
 
