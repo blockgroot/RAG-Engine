@@ -454,6 +454,15 @@ def callback(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     is_github = isinstance(oauth_provider, GitHubAppProvider)
 
+    # A person connecting their OWN account for Act mode shares the provider's
+    # one registered callback. Routed on the state's provider and finished by
+    # consuming it under that provider, so it can never complete a source
+    # connect (or the reverse).
+    from .actions import finish_act_connect, is_act_state
+
+    if is_act_state(state):
+        return finish_act_connect(code, state, settings)
+
     if not code:
         if not is_github:
             raise HTTPException(

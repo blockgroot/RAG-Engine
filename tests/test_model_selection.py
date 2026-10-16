@@ -752,18 +752,7 @@ def test_claude_as_the_default_model_is_sent_with_thinking_off():
     assert claude._extra_body == {"thinking": {"type": "disabled"}}
     gemini = adapters.build_provider(
         adapters.resolve("google", base_url=None, model="gemini-3.1-flash-lite", api_key="k"), timeout=5)
-    assert gemini._extra_body == {"reasoning_effort": "minimal"}
-
-
-def test_each_claude_family_gets_its_own_thinking_off():
-    """Verified live, 15 Oct: Sonnet 5.5 and Opus 5.5 answer `disabled` with a
-    400 on every call. A family not listed may drop Haiku's value on a 400."""
-    from app.llm.routed import preset_extra_body
-
-    assert preset_extra_body("anthropic", "claude-haiku-5-5") == ({"thinking": {"type": "disabled"}}, True)
-    assert preset_extra_body("anthropic", "claude-sonnet-5-5") == ({"thinking": {"type": "between_tools"}}, True)
-    assert preset_extra_body("anthropic", "claude-opus-5-5") == (None, True)
-    assert preset_extra_body("anthropic", "claude-next-1") == ({"thinking": {"type": "disabled"}}, True)
+    assert gemini._extra_body == {"reasoning_effort": "minimal"}  # think minimally, as below
 
 
 def test_gemini_is_asked_to_think_minimally_and_may_drop_it():

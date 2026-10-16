@@ -1,31 +1,31 @@
-"""Rate an answer, and read what the company could not answer.
+"""Rate an answer, and read what people could not get answered.
 
-Two routes with two different audiences, deliberately in one module because
-they are two ends of one pipe: a member marks an answer wrong, an admin reads
-the list of what to write down. Splitting them would put the writer and the
-reader of the same table in two files that have to agree.
+Two ends of one pipe, deliberately in one module: a member marks an answer
+wrong, and whoever can fix it reads the topics. Company-wide topics are an
+admin's; a space's are its OWNER's (a company admin may not be a member of
+that space, and a non-member never reads its contents).
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.exceptions import AuthError
 from ..feedback import (
-    MAX_ROWS,
     RATING_REASONS,
-    list_downvoted,
-    list_chart_gaps,
-    list_gaps,
-    rating_counts,
+    Topic,
+    assign_topics_soon,
+    list_topics,
+    mark_handled,
     record_rating,
 )
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from ..auth.session import SessionClaims
-from .deps import get_session, require_admin
+from .deps import get_session, require_admin, require_workspace_owner
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,6 @@ router = APIRouter(tags=["feedback"])
 #: wrong, not a document -- and it is member-supplied text going into a table
 #: an admin reads, so it is bounded at the boundary like every other upload.
 MAX_COMMENT_CHARS = 1000
-
-#: The gap view's window, in days. Clamped rather than free: `days` is bound as
-#: a parameter, but an unbounded window on a busy tenant is a slow query
-#: nobody asked for.
-MAX_WINDOW_DAYS = 365
 
 
 @router.post("/chat/feedback")
@@ -107,77 +102,52 @@ def submit_feedback(
     return {"id": row_id, "rating": int(rating)}
 
 
-@router.get("/admin/feedback")
-def admin_feedback(
-    days: int = 30,
-    session: SessionClaims = Depends(require_admin),
-):
-    """What this company asked and could not get answered.
-
-    ONE round trip for all three lists, the `/insights/dashboard` posture: a
-    page that arrives in pieces on a cold free instance reads as broken rather
-    than slow.
-    """
-    days = max(1, min(int(days), MAX_WINDOW_DAYS))
-    gaps = list_gaps(org_id=session.org_id, days=days, limit=MAX_ROWS)
-    downvoted = list_downvoted(org_id=session.org_id, days=days, limit=MAX_ROWS)
-    charts = list_chart_gaps(org_id=session.org_id, days=days, limit=MAX_ROWS)
+def _topic(t: Topic) -> dict:
     return {
-        "days": days,
-        "figures": _figure_health(session),
-        "counts": rating_counts(org_id=session.org_id, days=days),
-        "gaps": [
-            {
-                "question": g.question,
-                "asked_by": g.asked_by,
-                "refusals": g.refusals,
-                "downvotes": g.downvotes,
-                # NULL means retrieval matched nothing at all; a number means
-                # something was close but under the gate. Different fixes:
-                # write the document, versus find out why the one we have is
-                # unreachable.
-                "best_gate_score": g.best_gate_score,
-                "last_asked": g.last_asked,
-            }
-            for g in gaps
-        ],
-        "chart_gaps": [
-            {"question": c.question, "asked_by": c.asked_by, "times": c.times,
-             "why": c.why, "last_asked": c.last_asked}
-            for c in charts
-        ],
-        "downvoted": [
-            {
-                "id": r.id,
-                "question": r.question,
-                "answer": r.answer,
-                "agent": r.agent,
-                "reason": r.reason,
-                "comment": r.comment,
-                "created_at": r.created_at,
-            }
-            for r in downvoted
-        ],
+        "id": t.id, "label": t.label, "alerting": t.alerting,
+        "missing_people": t.missing_people, "wrong_people": t.wrong_people,
+        "questions": t.questions, "best_score": t.best_score,
+        "wrong_answer": t.wrong_answer, "wrong_reason": t.wrong_reason,
+        "wrong_comment": t.wrong_comment, "surfaces": t.surfaces,
+        "last_asked": t.last_asked,
     }
 
 
-def _figure_health(session) -> dict | None:
-    """Figures read from documents: what is stored, retried and given up.
-    None when it cannot be read; the rest of the page still loads."""
-    from ..doctables.store import figure_health
-    from ..ingestion.pipeline import MAX_UNREADABLE_READS
-    from .deps import viewer_for
+def _topics(org_id: str, workspace_id: str | None) -> dict:
+    assign_topics_soon(org_id)
+    return {"topics": [_topic(t) for t in list_topics(org_id, workspace_id)]}
 
+
+def _handled(org_id: str, workspace_id: str | None, topic_id: str) -> dict:
     try:
-        h = figure_health(org_id=session.org_id, viewer=viewer_for(session),
-                          max_tries=MAX_UNREADABLE_READS)
-    except Exception:  # noqa: BLE001 - one panel, never the page
-        logger.warning("admin feedback: figure health unavailable", exc_info=True)
-        return None
-    return {
-        "pages_with_figures": h.pages_with_figures, "tables": h.tables,
-        "no_figures": h.no_figures, "retrying": h.retrying, "gave_up": h.gave_up,
-        "waiting": h.waiting, "max_tries": MAX_UNREADABLE_READS,
-        "problems": [{"title": t, "provider": p, "tries": a, "last_try": w}
-                     for t, p, a, w in h.problems],
-    }
+        uuid.UUID(topic_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="No such topic") from exc
+    if not mark_handled(org_id, workspace_id, topic_id):
+        raise HTTPException(status_code=404, detail="No such topic")
+    return {"id": topic_id, "handled": True}
+
+
+@router.get("/admin/feedback")
+def admin_feedback(session: SessionClaims = Depends(require_admin)):
+    """Company-wide topics people could not get answered, alerting first."""
+    return _topics(session.org_id, None)
+
+
+@router.post("/admin/feedback/topics/{topic_id}/handled")
+def admin_topic_handled(topic_id: str, session: SessionClaims = Depends(require_admin)):
+    return _handled(session.org_id, None, topic_id)
+
+
+@router.get("/workspaces/{workspace_id}/feedback")
+def space_feedback(workspace_id: str, session: SessionClaims = Depends(get_session),
+                   _owner: str = Depends(require_workspace_owner)):
+    """This space's topics, for its owner only."""
+    return _topics(session.org_id, workspace_id)
+
+
+@router.post("/workspaces/{workspace_id}/feedback/topics/{topic_id}/handled")
+def space_topic_handled(workspace_id: str, topic_id: str,
+                        session: SessionClaims = Depends(get_session),
+                        _owner: str = Depends(require_workspace_owner)):
+    return _handled(session.org_id, workspace_id, topic_id)

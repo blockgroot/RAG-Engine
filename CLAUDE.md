@@ -212,8 +212,8 @@ similarity and the any-word keyword match Ask uses, on the chunk text or the
 title (`tables.document_similarity`); the gate never removes one (a table-heavy
 page embeds as numbers). A one-time data fix goes
 in `schema.sql` behind a `schema_marks` row, never as a bare UPDATE.
-A refused chart is a CHART gap (`feedback.list_chart_gaps`, with the refusal's
-heading as why), never on the documentation-gap list; a reply in
+A refused chart is recorded with `agent = insights` for us and never grouped
+into a gap topic an admin sees; a reply in
 `routing.NOT_CHART_GAPS` (wanted words, model can't chart, Chart mode off) is
 neither. Chart-mode starters come from the scope's metrics and discovered fields
 and its document tables (columns + page title), never page copy
@@ -259,8 +259,8 @@ column in it is context for every figure there. A year is four bare digits
 the column name when the column shares it, else onto the row's measure label,
 never summed across units. A percentage column (its cells' `%`) is averaged by default and a sum of it is refused (`tables._default_measure`). A reply that is not valid JSON keeps every complete fact
 (`salvage_facts`); one with none is `UnreadableReply`, retried by later syncs
-(`MAX_UNREADABLE_READS`), never "no figures"; the admin feedback page shows it
-(`store.figure_health`). A table chart with no breakdown uses the table's first
+(`MAX_UNREADABLE_READS`), never "no figures"; `store.figure_health` counts it
+for us, not for admins. A table chart with no breakdown uses the table's first
 column; the asker's period word makes that column the axis and a column the
 question names by its header the series (`resolve._table_period_axis`). A 429 at ingest leaves the document unchecked so a
 later sync's backfill reads it. A figure another measure governs is dropped,
@@ -298,6 +298,69 @@ origin at `/api`; Next rewrites to FastAPI. Do not point `NEXT_PUBLIC_API_BASE_U
 at Render. `render.yaml` does not configure production Hand-Book. Supabase uses the
 session pooler (5432).
 
+**Act (writes).** `app/actions/` and its own routes (UI: the chat's Act mode,
+Account → Act, Admin › Actions); Ask, Chart, sync and
+the Slack bot import nothing from it. The model only fills in action forms (at
+most `service.MAX_ACTIONS` per request, each its own card, checked and approved
+on its own; a refused one never stops the rest and is said):
+a write runs only from `confirm`, by the person who proposed it, before
+`expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
+the one conditional UPDATE), and every outcome is recorded in `actions`. A write
+uses the asker's own `user_connections` token, never `oauth_connections`. The
+asker may edit a pending draft's words, never its target (`Action.edit`): the
+edit replaces the stored payload under the same guards as `claim`, counts as
+their own words, and keeps the sources and exposure (the tick is asked again). "Ask for
+changes" (`service.revise`) is the same edit written by the model from their
+instruction: the draft is fenced as data, and a link or @-mention survives only
+if the draft they saw or their instruction had it. What the
+person may do there is checked with THEIR token before any card, where the tool
+can say (GitHub: their access level, a locked issue; Linear: only teams their
+token lists); Notion cannot be asked, so its card says the access a write needs
+and its refusal names it (view only, can't edit). A
+target is taken only from the asker's own words (`draft.require_named`), never
+from a passage; written links and @-mentions only if the asker wrote them.
+Passages are shown only when the request asks to draft from company content
+(`document_words`, quoted from the request); otherwise the model sees the
+request alone. They are found by Ask's own reading (`api.actions.ask_search`:
+Ask's routing on the words naming the content, then that agent's
+`retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
+can open), never a search of Act's own. Several tools the words name are each
+read, interleaved so each gets its share; the graph plan, when on, is built
+once and used as the chat uses it. A private repo's readers are unknown,
+so any audience needs the tick. Asked inside a Slack channel thread, that thread is read live
+(`slack.thread_context`), never a search of the channel. Every
+passage shown to the model is a source for `exposure.assess`: private content
+never goes somewhere public (refused in code and by a CHECK), and a wider or
+unknown audience needs the stored tick. A timeout after sending is `unknown`,
+never retried. No action touches git refs, contents, pulls or merges; the GitHub
+App gets Issues: write only (no Contents, no Pull requests write), every
+installation token is minted READ-ONLY (`mint_installation_token`), and each
+write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
+Notion writes use a SEPARATE connection from the read one: a Notion token always
+carries its connection's every capability. An Act account must be the company's
+(its Linear/Notion workspace, the person's own work address on Google, a repo in
+its GitHub installation), or company content leaves the company. From Slack only
+a message that ASKS for an action proposes: a model check whose quote of the
+asking words must be in the message, only where that surface is on, or `act …`
+(`slack_act.slack_request`); a failed check is a question; a DM drafts as the
+person, a channel drafts from that channel only as the room (like a channel
+reply), its card is ephemeral, and a Slack post from a channel is a reply in that
+thread. Each Slack surface has its own admin switch. Nothing runs unattended.
+Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
+row), never an env var; reading it fails closed. In a space it also takes the
+owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only
+narrows; company-wide use follows the company switch alone. Admins see switches only,
+never what a person drafted or sent.
+
+**Gaps.** What people could not get answered reaches the person who can fix it,
+grouped by meaning (`feedback/topics.py`): company-wide topics the admin, a
+space's topics its OWNER only (a non-member gets 403). Embeddings only pick
+candidate topics (paraphrases and different subjects overlap in cosine); the
+background model names the same one or none, and code keeps only a number it
+offered, else a new topic. Grouping runs in the background when they open the
+bell or the page, never on the answer path. Counts are distinct
+people, never names. Chart refusals and figure failures are ours, never shown.
+
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
 live read the answer cites (`api/chat.py::_shown_live`). Personal
@@ -325,6 +388,7 @@ app/insights/        charts: registry, query grammar, document-table picks
 app/doctables/       tables inside documents, kept as typed rows for charts
 app/graph/           knowledge graph
 app/livetools/       live re-reads
+app/actions/         Act: approved writes into connected tools
 app/memory/          chats and personal facts
 app/jobs/            ingest queue and automatic sync
 app/db/schema.sql    tables

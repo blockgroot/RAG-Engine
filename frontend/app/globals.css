@@ -826,13 +826,17 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .chat-composer-input {
   flex: 1;
   min-width: 0;
+  max-height: 10rem;
   border: none;
   outline: none;
   background: transparent;
   font-family: inherit;
   font-size: 1.02rem;
+  line-height: 1.45;
   color: var(--ink);
   padding: 0.6rem 0;
+  resize: none;
+  overflow-x: hidden;
 }
 .chat-composer-send {
   flex: none;
@@ -2325,7 +2329,7 @@ table .role-chip.role-admin,
 
 .chat-composer {
   position: relative;
-  border-radius: 999px;
+  border-radius: 24px;
   padding: 0.5rem 0.5rem 0.5rem 0.55rem;
   background: rgba(255,255,255,0.92);
   backdrop-filter: blur(14px);
@@ -6023,48 +6027,141 @@ a.people-card:hover { color: inherit; }
   }
 }
 
-/* ---------------------------------------------------------------------------
-   Company > Model — bring your own model.
-
-   The form was one narrow column in a full-width panel, so the right half sat
-   empty. It is now a two-column split whose right side carries a live preview
-   of the dropdown entry the team will actually see, which fills the space with
-   the one thing an admin cannot otherwise check before saving.
-
-   Inputs here tint toward the mint end of the accent ramp rather than sitting
-   on flat white — same tokens as the rest of the app, just used at a warmer
-   weight so a page that is mostly form does not read as a blank sheet.
---------------------------------------------------------------------------- */
-
-/* Two columns from 760px up. The panel is full-width now that the "your team
-   will see" preview is gone, and three stacked fields in a wide card read as
-   an unfinished page — but the key and the submit row must span, since a
-   40-character credential in a half-width box is unreadable. */
-.model-form { display: grid; gap: var(--space-3); }
+/* Company > Model: one setup task, with the consequences kept beside it. */
+.model-admin-page {
+  max-width: 920px;
+  gap: 1.15rem;
+}
+.model-admin-page > .page-header { margin-bottom: 0.15rem; }
+.model-admin-page .page-header-copy { max-width: 40rem; }
+.model-setup-panel,
+.model-current-panel {
+  gap: 1.4rem;
+  padding: 1.6rem;
+  border-radius: 20px;
+  box-shadow: 0 16px 42px -34px rgba(16, 24, 40, 0.38);
+}
+.model-setup-panel {
+  overflow: visible;
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.model-setup-panel::before {
+  position: absolute;
+  top: 0;
+  right: 1.6rem;
+  left: 1.6rem;
+  height: 2px;
+  border-radius: 0 0 999px 999px;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 18%, transparent));
+  content: "";
+}
+.model-section-label {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+.model-setup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+.model-setup-head > div {
+  display: grid;
+  gap: 0.35rem;
+}
+.model-setup-head h2 { font-size: 1.32rem; }
+.model-setup-head p:last-child {
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+}
+.model-setup-head > span {
+  flex: none;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.model-form {
+  display: grid;
+  gap: 1.15rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
 @media (min-width: 760px) {
   .model-form {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
-    column-gap: var(--space-4);
+    column-gap: 1.15rem;
   }
   .model-form > .field-wide,
   .model-form > .model-form-actions { grid-column: 1 / -1; }
 }
+.model-form .field { gap: 0.48rem; }
+.model-form .field label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+.model-form .field label > span {
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+.model-form .field .muted {
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
 .model-form-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.model-test-note {
+  display: flex;
+  align-items: center;
+  gap: 0.48rem;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+}
+.model-test-note svg {
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--provenance-policy);
+}
+.model-form-actions .button {
+  min-height: 2.8rem;
+  padding-inline: 1.25rem;
+  white-space: nowrap;
 }
 
-/* Mint-tinted fields. Focus still uses the shared --accent/--accent-glow ring,
-   so keyboard focus is identical to every other input in the product. */
 .model-form .input {
-  background: linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--accent-soft) 34%, #ffffff));
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  min-height: 3rem;
+  border-radius: 12px;
+  background: #ffffff;
+  border-color: var(--border-strong);
 }
 .model-form .input:hover {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-strong));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-strong));
 }
 .model-form select.input {
   appearance: none;
@@ -6089,59 +6186,97 @@ a.people-card:hover { color: inherit; }
   pointer-events: none;
 }
 
-/* "What your key is used for" — four facts as cards, not a rule book.
-   Each carries a stance: yes / no / bill / fallback. */
-.model-facts {
+.model-boundary {
+  display: grid;
+  gap: 1.15rem;
+  padding: 1.4rem 1.55rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.66);
+}
+.model-boundary > header {
+  display: grid;
+  gap: 0.28rem;
+}
+.model-boundary > header h2 { font-size: 1.08rem; }
+.model-boundary > header > p:last-child {
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+.model-boundary-routes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem 1.25rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-elevated);
 }
-@media (max-width: 720px) {
-  .model-facts { grid-template-columns: minmax(0, 1fr); }
-}
-/* Rows, not cards. Four bordered boxes stacked two-up read as heavier than the
-   four short facts they carry; a hairline rule between rows is enough
-   separation and roughly halves the block's height. */
-.model-fact {
+.model-boundary-routes article {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.7rem;
   align-items: start;
-  padding: 0.7rem 0;
-  border-top: 1px solid var(--border);
+  gap: 0.8rem;
+  padding: 1rem;
 }
-.model-facts > .model-fact:first-child,
-.model-facts > .model-fact:nth-child(2) { border-top: 0; }
-@media (max-width: 720px) {
-  .model-facts > .model-fact:nth-child(2) { border-top: 1px solid var(--border); }
-}
-.model-fact-mark {
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 7px;
+.model-boundary-routes article + article { border-left: 1px solid var(--border); }
+.model-route-icon {
   display: grid;
   place-items: center;
-  flex: none;
-  color: #ffffff;
-  margin-top: 0.1rem;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
-.model-fact-mark svg { width: 12px; height: 12px; }
-.model-fact-yes  { background: linear-gradient(145deg, #14b8a6, var(--accent-strong)); }
-.model-fact-no   { background: linear-gradient(145deg, #98a2b3, #667085); }
-.model-fact-bill { background: linear-gradient(145deg, #f79009, #b54708); }
-.model-fact-back { background: linear-gradient(145deg, #5eead4, #0f766e); }
-.model-fact strong { display: block; font-size: 0.92rem; }
-.model-fact p { margin: 0.1rem 0 0; color: var(--ink-muted); font-size: 0.85rem; line-height: 1.45; }
+.model-route-icon-muted {
+  background: var(--surface-muted);
+  color: #475467;
+}
+.model-route-icon svg { width: 1.2rem; height: 1.2rem; }
+.model-boundary-routes article > div {
+  display: grid;
+  gap: 0.12rem;
+}
+.model-boundary-routes article > div > span {
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.model-boundary-routes strong { font-size: 0.9rem; }
+.model-boundary-routes p {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.model-boundary > footer {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+}
+.model-boundary > footer strong { color: var(--ink); }
 
-/* Saved-state summary row. */
 .model-current {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.model-current-identity {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
+  gap: 0.45rem 0.7rem;
+  min-width: 0;
+}
+.model-current-identity > span:last-child,
+.model-current-checked {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
 }
 .model-current-name {
   font-family: var(--font-mono);
@@ -6151,6 +6286,23 @@ a.people-card:hover { color: inherit; }
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-weight: 600;
+}
+@media (max-width: 640px) {
+  .model-setup-head,
+  .model-form-actions,
+  .model-boundary > footer { align-items: flex-start; flex-direction: column; }
+  .model-setup-head > span { display: none; }
+  .model-form-actions .button { width: 100%; }
+  .model-boundary-routes { grid-template-columns: 1fr; }
+  .model-boundary-routes article + article {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+  .model-current { grid-template-columns: 1fr; align-items: start; }
+  .model-current .button { justify-self: start; }
+  .model-setup-panel,
+  .model-current-panel,
+  .model-boundary { padding: 1.1rem; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -7926,22 +8078,29 @@ a.people-card:hover { color: inherit; }
   color: var(--ink-muted);
 }
 .bell-close-btn {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1.35rem;
   height: 1.35rem;
+  padding: 0;
   border-radius: 50%;
   border: none;
+  appearance: none;
   background: var(--surface-muted);
   color: var(--ink-muted);
   cursor: pointer;
-  font-size: 0.95rem;
-  line-height: 1;
   transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
+.bell-close-btn svg {
+  display: block;
+  flex: none;
+  width: 0.85rem;
+  height: 0.85rem;
+}
 .bell-close-btn:hover {
-  background: var(--border);
-  color: var(--ink);
+  background: #fee4e2;
+  color: #b42318;
 }
 .bell-empty {
   margin: 0;
@@ -8152,6 +8311,42 @@ a.people-card:hover { color: inherit; }
   opacity: 0.72;
 }
 
+/* With a mode selected, keep the prompt on its own row. Otherwise the chip
+   steals horizontal space from the text and the controls no longer align. */
+@media (min-width: 641px) {
+  .chat-composer:has(.composer-mode-chip) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    column-gap: 0.55rem;
+    row-gap: 0.25rem;
+    padding: 0.5rem;
+  }
+  .chat-composer:has(.composer-mode-chip) .chat-composer-input {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    width: 100%;
+    padding: 0.45rem 0.55rem 0.3rem;
+  }
+  .chat-composer:has(.composer-mode-chip) .composer-tools {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .chat-composer:has(.composer-mode-chip) .composer-mode-chip {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .chat-composer:has(.composer-mode-chip) .composer-model-wrap {
+    grid-column: 3;
+    grid-row: 2;
+  }
+  .chat-composer:has(.composer-mode-chip) .chat-composer-send {
+    grid-column: 4;
+    grid-row: 2;
+  }
+}
+
 /* —— Ask composer on phones ——
    One row could not hold the text field, the + menu, the Chart chip, the
    model picker and Send: the field shrank to a few letters. Phones get the
@@ -8296,10 +8491,665 @@ a.people-card:hover { color: inherit; }
 .chat-drop-card strong { font-size: 1.05rem; color: var(--accent-strong); }
 .chat-drop-card span { font-size: 0.88rem; color: var(--ink-muted); }
 
+/* A recoverable model outage should inform, not block, the whole workspace. */
+.act-model-toast {
+  position: fixed;
+  z-index: 100;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  width: min(calc(100% - 2rem), 36rem);
+  padding: 0.85rem 0.9rem;
+  border: 1px solid #fedf89;
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  box-shadow: 0 14px 36px -20px rgba(16, 24, 40, 0.32);
+  animation: act-toast-in 0.2s var(--ease) both;
+}
+@keyframes act-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+.act-model-toast-mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  border-radius: 9px;
+  background: #fff7e8;
+  color: #b54708;
+  font-weight: 750;
+}
+.act-model-toast-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+  flex: 1;
+}
+.act-model-toast-copy strong { font-size: 0.92rem; }
+.act-model-toast-copy span {
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 /* What each bar or point is, in one sentence -- above the caveats, in body
    text, because it is how the chart is read, not a footnote. */
 .viz-panel-explain {
   margin: 10px 0 2px;
   font-size: 0.88rem;
   color: var(--ink);
+}
+
+/* Act: the approval card, connected accounts, the admin catalogue and log. */
+.act-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+}
+.act-card[data-status="proposed"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.act-card-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; justify-content: space-between; }
+.act-card-label { font-weight: 700; }
+.act-card-as { font-size: 0.85rem; color: var(--ink-muted); }
+.act-card-fields { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 0; }
+.act-card-fields dt { font-size: 0.8rem; font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; padding-top: 0.15rem; }
+.act-card-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.act-card-target-link {
+  color: #344054;
+  font-weight: 600;
+  text-decoration-color: #98a2b3;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+.act-card-target-link:hover {
+  color: var(--accent-strong);
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.act-card-title { font-weight: 600; }
+.act-card-body { white-space: pre-wrap; max-height: 18rem; overflow: auto; font-size: 0.93rem; }
+.act-card-edit-title,
+.act-card-edit-body { width: 100%; font: inherit; font-size: 0.93rem; }
+.act-card-edit-body { resize: vertical; min-height: 6rem; white-space: pre-wrap; }
+.act-card-fields dd:has(.act-card-edit-body) { max-height: none; overflow: visible; }
+.act-card-edited { margin: 0; font-size: 0.82rem; }
+.act-card-note { margin: 0; font-size: 0.82rem; }
+/* Act mode in chat: the wrapper takes no box, so bubbles keep their own
+   alignment in .chat-log; the draft card sits under its reply. */
+.chat-turn { display: contents; }
+.chat-act-card { align-self: flex-start; width: min(100%, 44rem); }
+.act-card-exposure {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: var(--radius-sm);
+  color: #b54708;
+  background: #fffaeb;
+  border: 1px solid #fedf89;
+  font-size: 0.92rem;
+}
+.act-card-exposure p { margin: 0; }
+.act-card-ack { display: flex; gap: 0.5rem; align-items: flex-start; font-weight: 600; cursor: pointer; }
+.act-card-ack input { margin-top: 0.2rem; }
+.act-card-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.act-card-ask { flex: 1 1 16rem; min-width: 0; }
+.act-card-timer { font-size: 0.85rem; }
+.act-card-status { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; margin: 0; }
+.act-card-result-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--accent-strong);
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease), color 0.18s var(--ease);
+}
+.act-card-result-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 32%, white);
+  color: var(--accent-strong);
+}
+.act-card-error { margin: 0; color: var(--provenance-none); font-size: 0.9rem; }
+/* Act on the Account page: one section, heading and "Open Act in chat"
+   side by side, then the accounts and the history. */
+.act-panel {
+  gap: 1.5rem;
+  padding: clamp(1.25rem, 2.5vw, 1.75rem);
+}
+.act-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.act-panel-head .studio-section-head { gap: 0.3rem; }
+.act-panel-head .studio-section-head p { max-width: 42rem; }
+.act-panel-head .button {
+  flex: none;
+  min-height: 2.5rem;
+  padding-inline: 1rem;
+}
+.account-act-accounts {
+  display: grid;
+  gap: 0.75rem;
+}
+.account-act-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.account-act-section-head h3 {
+  font-size: 0.95rem;
+}
+.account-act-section-head p {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+.act-providers {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+}
+.act-provider {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  min-height: 5.25rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.act-provider-copy {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+.act-provider-name {
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.act-status-ready,
+.act-status-note {
+  overflow: hidden;
+  font-size: 0.73rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+}
+.act-status-ready { color: var(--provenance-policy); }
+.act-status-note { color: var(--ink-muted); }
+.act-provider .button-sm {
+  min-height: 2.25rem;
+  padding: 0.4rem 0.72rem;
+  font-size: 0.76rem;
+}
+.act-text-button {
+  flex: 0 0 auto;
+  min-height: 2rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+.act-text-button:hover {
+  border-color: var(--border);
+  background: var(--surface-elevated);
+  color: var(--accent-strong);
+}
+.act-recent { display: grid; gap: 0.6rem; }
+.act-recent-title { margin: 0; font-size: 0.95rem; }
+.act-history-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+.act-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(8.5rem, auto);
+  align-items: center;
+  gap: 1rem;
+  min-height: 3.6rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.act-history-copy {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+}
+.act-history-copy strong,
+.act-history-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.act-history-copy strong { font-size: 0.82rem; }
+.act-history-copy span,
+.act-history-row > time {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+.act-history-row > time { white-space: nowrap; }
+.act-history-outcome {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  font-size: 0.74rem;
+}
+.act-history-outcome > span {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+.act-history-outcome > span[data-status="succeeded"] { color: var(--provenance-policy); }
+.act-history-outcome > span[data-status="failed"],
+.act-history-outcome > span[data-status="unknown"] { color: var(--provenance-none); }
+.act-history-outcome a {
+  color: var(--accent-strong);
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.act-history-outcome a:hover { text-decoration: underline; text-underline-offset: 0.18em; }
+
+/* Account page action history: separate the action, destination and outcome
+   so repeated entries stay easy to scan. */
+.account-actions {
+  gap: 0;
+  overflow: hidden;
+  margin-top: 0.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+}
+.account-actions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 4.25rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.account-actions-head p {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+.account-actions-list {
+  display: grid;
+  padding: 0 1rem;
+}
+.account-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem 16.5rem;
+  align-items: center;
+  gap: 1rem;
+  min-height: 4.75rem;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.account-action-row:last-child { border-bottom: 0; }
+.account-action-copy {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.18rem 0.55rem;
+  min-width: 0;
+}
+.account-action-provider {
+  padding: 0.14rem 0.42rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.account-action-copy strong {
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-action-target {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-action-date {
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+  text-align: center;
+  white-space: nowrap;
+}
+.account-action-outcome {
+  display: grid;
+  grid-template-columns: 4.75rem 11rem;
+  align-items: center;
+  justify-content: end;
+  gap: 0.5rem;
+}
+.account-action-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: stretch;
+  min-height: 1.65rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.account-action-status[data-status="succeeded"] {
+  background: color-mix(in srgb, var(--accent-soft) 48%, white);
+  color: var(--provenance-policy);
+}
+.account-action-status[data-status="failed"],
+.account-action-status[data-status="unknown"] {
+  background: #fff4ed;
+  color: var(--provenance-none);
+}
+.account-action-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 11rem;
+  gap: 0.3rem;
+  min-height: 2rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--accent-strong);
+  font-size: 0.73rem;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.account-action-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 26%, white);
+  color: var(--accent-strong);
+}
+
+/* Actions admin: permissions read as a small control surface, not a legal
+   document. The switches are grouped by destination and the audit trail is
+   readable without a six-column table. */
+.actions-admin-page { max-width: 1040px; gap: 1rem; }
+.actions-admin-page > .page-header { margin-bottom: 0; }
+.actions-admin-page .page-header-copy { max-width: 42rem; }
+.action-safety-note {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.8rem 1rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--accent-soft) 34%, white);
+  color: var(--ink-muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.action-safety-note strong { flex: none; color: var(--accent-strong); }
+.actions-permissions-panel,
+.actions-slack-panel {
+  gap: 1.1rem;
+  padding: 1.35rem;
+  border-radius: 18px;
+  box-shadow: 0 8px 28px -24px rgba(16, 24, 40, 0.22);
+}
+.actions-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: stretch;
+}
+.actions-provider-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-elevated);
+}
+.actions-provider-group header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 5rem;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.actions-provider-group h3 { font-size: 1rem; }
+.actions-provider-group header p {
+  margin-top: 0.25rem;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+.actions-provider-group header > span {
+  flex: none;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.actions-provider-group ul {
+  flex: 1;
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem 1.1rem;
+}
+.actions-provider-group li + li { border-top: 1px solid var(--border); }
+.act-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.action-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3rem;
+  cursor: pointer;
+}
+.act-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.act-mode-option[data-checked="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--surface));
+}
+.act-mode-option input { margin-top: 0.2rem; accent-color: var(--accent); }
+.act-mode-option > span { display: grid; gap: 0.22rem; }
+.act-mode-option strong { font-size: 0.88rem; }
+.act-mode-option small { color: var(--ink-muted); font-size: 0.74rem; line-height: 1.4; }
+@media (max-width: 700px) {
+  .act-mode-options { grid-template-columns: 1fr; }
+}
+.action-surface {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3.25rem;
+  cursor: pointer;
+}
+.action-toggle > span {
+  min-width: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.action-toggle input,
+.action-surface input {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2.5rem;
+  height: 1.4rem;
+  margin: 0;
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: #d0d5dd;
+  cursor: pointer;
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease);
+}
+.action-toggle input::after,
+.action-surface input::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.22);
+  content: "";
+  transition: transform 0.18s var(--ease);
+}
+.action-toggle input:checked,
+.action-surface input:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.action-toggle input:checked::after,
+.action-surface input:checked::after { transform: translateX(1.08rem); }
+.action-toggle input:focus-visible,
+.action-surface input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.action-toggle input:disabled,
+.action-surface input:disabled { cursor: wait; opacity: 0.6; }
+.actions-surface-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.action-surface {
+  min-height: 5rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.action-surface > span { display: grid; gap: 0.22rem; }
+.action-surface strong { font-size: 0.88rem; }
+.action-surface small {
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+.actions-privacy-note {
+  margin: 0;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.actions-privacy-note strong { color: var(--ink); }
+
+@media (max-width: 900px) {
+  .act-providers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .account-action-row {
+    grid-template-columns: minmax(0, 1fr) 5.75rem 16.5rem;
+    gap: 0.75rem;
+  }
+}
+@media (max-width: 700px) {
+  .actions-provider-grid,
+  .actions-surface-list { grid-template-columns: 1fr; }
+  .action-safety-note { align-items: flex-start; flex-direction: column; gap: 0.15rem; }
+  .account-act-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .account-actions-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .account-action-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.55rem;
+    padding: 0.9rem 0;
+  }
+  .account-action-copy,
+  .account-action-date,
+  .account-action-outcome {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .account-action-date { text-align: left; }
+  .account-action-outcome { justify-content: start; }
+}
+@media (max-width: 600px) {
+  .act-panel-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .act-panel-head .button { align-self: flex-start; }
+  .act-providers { grid-template-columns: 1fr; }
+  .act-history-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.35rem 0.75rem;
+    padding: 0.7rem 0;
+  }
+  .act-history-row > time { grid-column: 1; grid-row: 2; }
+  .act-history-outcome { grid-column: 2; grid-row: 1 / 3; flex-direction: column; align-items: flex-end; gap: 0.15rem; }
+  .actions-permissions-panel,
+  .actions-slack-panel { padding: 1.05rem; }
 }

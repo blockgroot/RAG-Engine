@@ -45,12 +45,14 @@ class LinearOAuthProvider(OAuthProvider):
             )
         self._settings = settings
 
-    def authorize_url(self, state: str) -> str:
+    def authorize_url(self, state: str, *, scopes: str | None = None) -> str:
+        """``scopes`` overrides the read-only default for a person connecting
+        Linear for Act mode; the org's read connection never passes it."""
         params = {
             "client_id": self._settings.client_id,
             "redirect_uri": self._settings.redirect_uri,
             "response_type": "code",
-            "scope": self._settings.scopes,
+            "scope": scopes or self._settings.scopes,
             "state": state,
         }
         return f"{_AUTHORIZE_URL}?{urlencode(params)}"

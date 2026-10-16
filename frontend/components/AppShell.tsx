@@ -47,6 +47,15 @@ function IconReports() {
   );
 }
 
+function IconAct() {
+  // A bolt: Handbook doing something in a tool, not only reading it.
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M13 2.75 4.75 13.5H11l-1 7.75 8.25-10.75H12l1-7.75Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function IconSources() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -82,20 +91,6 @@ function IconModel() {
         strokeWidth="1.75"
         strokeLinecap="round"
       />
-    </svg>
-  );
-}
-
-function IconFeedback() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 3.5V16.5H5A1.5 1.5 0 0 1 3.5 15V7A1.5 1.5 0 0 1 5 5.5Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path d="M8 10h8M8 13h5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
     </svg>
   );
 }
@@ -351,18 +346,19 @@ export function AppShell({
                     <span className="rail-link-hint">Grow the team</span>
                   </span>
                 </Link>
+                {/* Always shown to admins: this is where they turn Act on. */}
                 <Link
-                  href="/admin/feedback"
+                  href="/admin/actions"
                   className="rail-link"
-                  data-active={pathname.startsWith("/admin/feedback") ? "true" : "false"}
-                  aria-current={pathname.startsWith("/admin/feedback") ? "page" : undefined}
+                  data-active={pathname.startsWith("/admin/actions") ? "true" : "false"}
+                  aria-current={pathname.startsWith("/admin/actions") ? "page" : undefined}
                 >
                   <span className="rail-ico">
-                    <IconFeedback />
+                    <IconAct />
                   </span>
                   <span className="rail-link-copy">
-                    <span className="rail-link-title">Feedback</span>
-                    <span className="rail-link-hint">Gaps, charts, data health</span>
+                    <span className="rail-link-title">Actions</span>
+                    <span className="rail-link-hint">What Handbook may do</span>
                   </span>
                 </Link>
               </>

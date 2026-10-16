@@ -6,6 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
+import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
 
@@ -173,6 +174,8 @@ function AccountContent() {
             </div>
           </section>
         )}
+
+        {me.act_enabled && <ActPanel />}
 
         <SignInEmailPanel />
 

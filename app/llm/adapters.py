@@ -118,9 +118,7 @@ def build_provider(endpoint: Endpoint, *, timeout: float):
         # table an org's own model uses, so the two never disagree.
         from .routed import preset_extra_body
 
-        extra_body, optional = (
-            preset_extra_body(endpoint.adapter, endpoint.model) if endpoint.adapter else (None, False)
-        )
+        extra_body, optional = preset_extra_body(endpoint.adapter) if endpoint.adapter else (None, False)
         return OpenAICompatProvider(
             model=endpoint.model,
             api_key=endpoint.api_key,

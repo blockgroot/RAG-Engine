@@ -1,6 +1,6 @@
 "use client";
 
-import type { TurnMeta } from "@/lib/api";
+import type { ActCard, TurnMeta } from "@/lib/api";
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
@@ -22,6 +22,9 @@ export interface Message {
   chartPeriod?: string;
   /** Who answered, for an answer loaded from history. */
   meta?: TurnMeta;
+  /** Act mode: the draft to approve. Shown by the page, never stored as a turn. */
+  /** Act drafts from one request, each approved on its own. */
+  acts?: ActCard[] | null;
 }
 
 /**
@@ -191,6 +194,15 @@ export function DeepIcon() {
       <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
       <path d="M16 16l5 5M8.5 11h5M11 8.5v5" stroke="currentColor" strokeWidth="2"
         strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function ActIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"
+        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

@@ -58,60 +58,25 @@ export const FEEDBACK_REASONS = [
 
 export type FeedbackReason = (typeof FEEDBACK_REASONS)[number]["value"];
 
-export interface FeedbackGap {
-  question: string;
-  /** DISTINCT people, not repeats — one person asking five times is one. */
-  asked_by: number;
-  refusals: number;
-  downvotes: number;
-  /** null = retrieval matched nothing at all; a number = something was close
-   *  but under the confidence gate. Different fixes. */
-  best_gate_score: number | null;
-  last_asked: string;
-}
-
-/** A chart someone asked for and did not get. `why` is the latest refusal's
- *  heading: connect a source, record a field, or add a live read. */
-export interface FeedbackChartGap {
-  question: string;
-  asked_by: number;
-  times: number;
-  why: string;
-  last_asked: string;
-}
-
-export interface FeedbackDownvote {
+/** Questions people couldn't get answered, grouped by meaning. Counts only,
+ *  never who asked. */
+export interface GapTopic {
   id: string;
-  question: string;
-  answer: string | null;
-  agent: string | null;
-  reason: FeedbackReason | null;
-  comment: string | null;
-  created_at: string;
-}
-
-export interface FigureHealth {
-  pages_with_figures: number;
-  tables: number;
-  no_figures: number;
-  /** Unusable model reply; read again by a later sync. */
-  retrying: number;
-  /** Unusable `max_tries` times; left until the page changes. */
-  gave_up: number;
-  waiting: number;
-  max_tries: number;
-  problems: { title: string; provider: string; tries: number; last_try: string }[];
-}
-
-export interface FeedbackSummary {
-  days: number;
-  /** Null when it could not be read; absent from an older server. */
-  figures?: FigureHealth | null;
-  counts: { up: number; down: number; refusals: number };
-  gaps: FeedbackGap[];
-  /** Absent from a server older than this list. */
-  chart_gaps?: FeedbackChartGap[];
-  downvoted: FeedbackDownvote[];
+  /** The first question asked on this topic, in the asker's own words. */
+  label: string;
+  /** Enough different people hit it for the bell to say so. */
+  alerting: boolean;
+  missing_people: number;
+  wrong_people: number;
+  questions: string[];
+  /** Null: nothing came close (the document is missing). A number: something
+   *  related exists but was too weak a match. */
+  best_score: number | null;
+  wrong_answer: string | null;
+  wrong_reason: string | null;
+  wrong_comment: string | null;
+  surfaces: string[];
+  last_asked: string;
 }
 
 export interface ConversationSummary {
@@ -229,10 +194,78 @@ export interface Me {
   ready_to_ask: boolean;
   policy_ready: boolean;
   github_connected: boolean;
+  /** Act (writes into connected tools) is switched on for Handbook. */
+  act_enabled?: boolean;
   slack_ready: boolean;
   linear_ready: boolean;
   notion_ready: boolean;
   drive_ready: boolean;
+}
+
+/** One proposed (or finished) write, as the Act page shows it. The payload
+ *  is exactly what will be sent; approving sends back its hash. */
+export interface ActCard {
+  id: string;
+  action: string;
+  label: string;
+  provider: string | null;
+  /** Whose name the tool will show: "as you", or "via Handbook Actions, for you"
+   *  where the tool records its own bot (Notion pages). */
+  attribution: string | null;
+  target: { kind: string; external_id: string; name: string; url: string | null };
+  payload: { title?: string; body?: string; text?: string };
+  /** The drafted words as shown and edited (a Slack post without the line
+   *  naming who asked). Only these can be edited, never where it goes. */
+  draft: { title?: string; body?: string };
+  /** The person changed the model's draft before approving. */
+  edited: boolean;
+  payload_hash: string;
+  status: "proposed" | "executing" | "succeeded" | "failed" | "unknown" | "rejected" | "expired";
+  /** none | narrower: nobody new sees private content. wider | unknown: the
+   *  person must tick the acknowledgement before Approve works. */
+  exposure: "none" | "narrower" | "wider" | "unknown";
+  acknowledged: boolean;
+  /** Titles of the private documents the draft drew on. */
+  sources: string[];
+  audience_size: number | null;
+  outsiders: number | null;
+  result: { external_id?: string; url?: string | null; error?: string } | null;
+  expires_at: string;
+  created_at: string;
+  user_email?: string | null;
+}
+
+export interface ActProvider {
+  provider: string;
+  needed: boolean;
+  connected: boolean;
+  needs_reauth: boolean;
+  account: string | null;
+  /** False when this Handbook isn't set up to connect it (e.g. no Notion Act client). */
+  available: boolean;
+  /** Slack: nothing to connect; the Handbook bot posts, naming the person. */
+  bot?: boolean;
+}
+
+export interface ActStatus {
+  enabled: boolean;
+  actions: { name: string; label: string; provider: string }[];
+  providers: ActProvider[];
+  recent?: ActCard[];
+}
+
+export interface SpaceAct {
+  company: "off" | "on";
+  enabled: boolean;
+  can_change: boolean;
+}
+
+export interface AdminActions {
+  enabled: boolean;
+  block_wider: boolean;
+  catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
+  /** Slack DMs / Slack channels, each switched on apart. */
+  surfaces: { name: string; label: string; enabled: boolean }[];
 }
 
 export interface MemberRecord {
@@ -269,6 +302,8 @@ export interface ConnectionSourceConfig {
   folder_id?: string;
   folder_name?: string;
   installation_id?: string;
+  /** GitHub: the installation's own settings page (organization or personal). */
+  manage_url?: string;
   account_login?: string;
   repository_selection?: "all" | "selected";
   repos?: GitHubRepoRef[];
@@ -656,7 +691,7 @@ export type ConnectorFreshness = {
 };
 
 export type Notification = {
-  kind: "reauth" | "scope" | "injection";
+  kind: "reauth" | "scope" | "injection" | "gap";
   severity: "high" | "medium";
   provider: string;
   scope: string;
@@ -783,6 +818,59 @@ export const api = {
       `/workspaces/${workspaceId}/connections/${connectionId}/forms`,
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
+  actStatus: () => request<ActStatus>("/act/status"),
+  /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
+  act: (question: string, workspaceId?: string | null, model?: string | null) =>
+    request<{ reply: string; action: ActCard | null; actions?: ActCard[] }>("/act", {
+      method: "POST",
+      body: JSON.stringify({
+        question,
+        workspace_id: workspaceId ?? null,
+        model: model && model !== "auto" ? model : null,
+      }),
+    }),
+  confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
+    }),
+  /** Ask the model to rework a pending draft's words; where it goes never changes. */
+  reviseAction: (id: string, payloadHash: string, instruction: string, model?: string | null) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/revise`, {
+      method: "POST",
+      body: JSON.stringify({
+        payload_hash: payloadHash,
+        instruction,
+        model: model && model !== "auto" ? model : null,
+      }),
+    }),
+  editAction: (id: string, payloadHash: string, fields: { title?: string; body?: string }) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ payload_hash: payloadHash, fields }),
+    }),
+  /** Act in one space: whether it works there, and whether this person (its
+   *  owner) may change it. Only within what the company allows. */
+  spaceAct: (workspaceId: string) =>
+    request<SpaceAct>(`/act/spaces/${encodeURIComponent(workspaceId)}`),
+  setSpaceAct: (workspaceId: string, enabled: boolean) =>
+    request<SpaceAct>(`/act/spaces/${encodeURIComponent(workspaceId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  rejectAction: (id: string) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+    }),
+  actConnectUrl: (provider: string) => `${API_BASE_URL}/act/connect/${provider}`,
+  disconnectActProvider: (provider: string) =>
+    request<{ deleted: boolean }>(`/act/connections/${provider}`, { method: "DELETE" }),
+  adminActions: () => request<AdminActions>("/admin/actions"),
+  setAdminAction: (name: string, enabled: boolean) =>
+    request<{ name: string; enabled: boolean }>(`/admin/actions/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
   getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),
@@ -907,8 +995,17 @@ export const api = {
 
   clearMemory: () => request<{ deleted: number }>("/account/memory", { method: "DELETE" }),
 
-  feedbackSummary: (days = 30) =>
-    request<FeedbackSummary>(`/admin/feedback?days=${days}`),
+  /** Company-wide topics (admin), or one space's (its owner). */
+  gapTopics: (workspaceId?: string | null) =>
+    request<{ topics: GapTopic[] }>(
+      workspaceId ? `/workspaces/${encodeURIComponent(workspaceId)}/feedback` : "/admin/feedback",
+    ),
+
+  markTopicHandled: (topicId: string, workspaceId?: string | null) =>
+    request<{ id: string; handled: boolean }>(
+      `${workspaceId ? `/workspaces/${encodeURIComponent(workspaceId)}/feedback` : "/admin/feedback"}/topics/${encodeURIComponent(topicId)}/handled`,
+      { method: "POST" },
+    ),
 
   uploadAttachments: async (
     conversationId: string,

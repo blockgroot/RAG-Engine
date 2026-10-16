@@ -94,12 +94,26 @@ def test_app_jwt_requires_client_id_and_private_key(pem: str) -> None:
 # -- mint_installation_token ----------------------------------------------
 
 
-def test_mint_installation_token_authenticates_with_the_app_jwt(monkeypatch, pem: str) -> None:
+GRANTED = {"contents": "read", "metadata": "read", "issues": "write",
+           "pull_requests": "read", "workflows": "write"}
+
+
+@pytest.fixture
+def granted(monkeypatch):
+    """The installation's grant, as GET /app/installations/{id} returns it."""
+    monkeypatch.setattr(
+        "app.auth.github_app.httpx.get",
+        lambda url, headers=None, timeout=None: _FakeResponse({"permissions": dict(GRANTED)}),
+    )
+
+
+def test_mint_installation_token_authenticates_with_the_app_jwt(monkeypatch, pem: str, granted) -> None:
     seen: dict = {}
 
-    def _fake_post(url, headers=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None):
         seen["url"] = url
         seen["headers"] = headers
+        seen["json"] = json
         return _FakeResponse({"token": "ghs_live_token", "expires_at": "2026-08-05T12:00:00Z"})
 
     monkeypatch.setattr("app.auth.github_app.httpx.post", _fake_post)
@@ -120,10 +134,40 @@ def test_mint_installation_token_authenticates_with_the_app_jwt(monkeypatch, pem
     assert claims["iss"] == "Iv1.abc123"
 
 
-def test_mint_installation_token_raises_when_response_has_no_token(monkeypatch, pem: str) -> None:
+def test_installation_tokens_are_read_only_even_when_the_app_can_write(
+    monkeypatch, pem: str, granted
+) -> None:
+    """Act gives the App Issues: write; a token minted for reading must not carry it."""
+    seen: dict = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        seen["json"] = json
+        return _FakeResponse({"token": "ghs_x"})
+
+    monkeypatch.setattr("app.auth.github_app.httpx.post", _fake_post)
+    mint_installation_token("1", GitHubSettings(client_id="Iv1.abc123", private_key=pem))
+    assert seen["json"] == {"permissions": {
+        "contents": "read", "metadata": "read", "issues": "read", "pull_requests": "read"}}
+
+
+def test_no_token_is_minted_when_the_grant_cannot_be_read(monkeypatch, pem: str) -> None:
+    import httpx
+
+    def _boom(url, headers=None, timeout=None):
+        raise httpx.ConnectError("network down")
+
+    minted = []
+    monkeypatch.setattr("app.auth.github_app.httpx.get", _boom)
+    monkeypatch.setattr("app.auth.github_app.httpx.post", lambda *a, **k: minted.append(1))
+    with pytest.raises(OAuthError):
+        mint_installation_token("1", GitHubSettings(client_id="Iv1.abc123", private_key=pem))
+    assert minted == []
+
+
+def test_mint_installation_token_raises_when_response_has_no_token(monkeypatch, pem: str, granted) -> None:
     monkeypatch.setattr(
         "app.auth.github_app.httpx.post",
-        lambda url, headers=None, timeout=None: _FakeResponse({"message": "Not Found"}),
+        lambda url, headers=None, json=None, timeout=None: _FakeResponse({"message": "Not Found"}),
     )
     settings = GitHubSettings(client_id="Iv1.abc123", private_key=pem)
 
@@ -131,10 +175,10 @@ def test_mint_installation_token_raises_when_response_has_no_token(monkeypatch, 
         mint_installation_token("12345678", settings)
 
 
-def test_mint_installation_token_wraps_transport_errors(monkeypatch, pem: str) -> None:
+def test_mint_installation_token_wraps_transport_errors(monkeypatch, pem: str, granted) -> None:
     import httpx
 
-    def _boom(url, headers=None, timeout=None):
+    def _boom(url, headers=None, json=None, timeout=None):
         raise httpx.ConnectError("network down")
 
     monkeypatch.setattr("app.auth.github_app.httpx.post", _boom)
@@ -173,3 +217,15 @@ def test_settings_default_to_none_when_unset(monkeypatch) -> None:
 
     assert settings.app_slug is None
     assert settings.private_key is None
+
+
+def test_the_manage_link_is_githubs_own_for_an_organization(monkeypatch):
+    """A hand-built /settings/installations/<id> is a 404 for an org install."""
+    from app.auth import github_app
+
+    org_url = "https://github.com/organizations/18-sana/settings/installations/42"
+    monkeypatch.setattr(github_app, "_installation", lambda iid, settings=None: {"html_url": org_url})
+    assert github_app.installation_settings_url("42") == org_url
+    monkeypatch.setattr(github_app, "_installation",
+                        lambda iid, settings=None: {"html_url": "javascript:alert(1)"})
+    assert github_app.installation_settings_url("42") is None

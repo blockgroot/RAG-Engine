@@ -347,6 +347,42 @@ class GitHubAgent(Agent):
 
     # -- internals ---------------------------------------------------------
 
+    def read_evidence(
+        self,
+        question: str,
+        org_id: str,
+        *,
+        workspace_id: str | None = None,
+        viewer: Viewer | None = None,
+    ) -> tuple[str, str, bool, str | None] | None:
+        """What ``answer`` reads live, without writing an answer: for a caller
+        that drafts from it (Act). The same repos the asker can open, the same
+        one-tool decision and the same bounded read.
+
+        ``(repo, evidence, public, url)``, where ``public`` is True only when
+        GitHub says the repository is public (unknown counts as private, as in
+        ``githublive.access``). ``None`` when there is nothing to read.
+        """
+        try:
+            reader = restrict(self._build_reader(org_id, workspace_id), org_id, viewer)
+            repos = reader.list_repos()
+        except (ConfigurationError, ProviderError):
+            return None
+        if restricted_message(reader):
+            return None
+        decision = self._decide_tool(question, repos)
+        if decision is None:
+            return None
+        evidence = self._run_tool(reader, decision, known_repos=repos)
+        if evidence is None:
+            return None
+        block, citations = evidence
+        repo = str(decision[1].get("repo") or "")
+        ref = next((r for r in repos if r.full_name.lower() == repo.lower()
+                    or r.full_name.lower().endswith("/" + repo.lower())), None)
+        url = next((c.url for c in citations if (c.url or "").startswith("https://")), None)
+        return (ref.full_name if ref else repo), block, bool(ref and ref.private is False), url
+
     def _fallback_response(self) -> AgentResponse:
         """The single place a GitHub refusal is constructed.
 

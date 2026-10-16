@@ -1230,6 +1230,43 @@ class RagPipeline:
                 and (h.document_id, h.chunk_index) not in top_keys]
         return joined + rest
 
+    def retrieve_passages(
+        self,
+        question: str,
+        org_id: str,
+        *,
+        about: str | None = None,
+        workspace_id: str | None = None,
+        tags: list[str] | None = None,
+        viewer: Viewer | None = None,
+    ) -> list[RetrievedChunk]:
+        """Ask's retrieval without an answer: the corpus spelling fix, the
+        hybrid keyword + meaning search, rerank, and the same 0.35 gate on the
+        best match. ``[]`` when the gate misses.
+
+        For a caller that drafts from passages (Act). ``about`` is the part of
+        a longer request that names the content ("the Slack message about
+        mixing cases"); it is searched alongside the request and is what the
+        reranker orders by, so the action words around it ("create an issue
+        titled …") do not outrank the content. No answer, memory rewrite or
+        decomposition: those serve generating a reply, not finding sources.
+        """
+        query = self._normalize_for_retrieval(question, org_id)
+        vec = self._embedder.embed([query])[0]
+        if about and self._retriever is not None:
+            about_q = self._normalize_for_retrieval(about, org_id)
+            result = self._retriever.retrieve(
+                org_id, query, vec,
+                extra_queries=[(about_q, self._embedder.embed([about_q])[0])],
+                rerank_query=about_q,
+                workspace_id=workspace_id, tags=tags, viewer=viewer,
+            )
+            hits, gate = result.hits, result.gate_score
+        else:
+            hits, gate, _ = self._retrieve_once(
+                org_id, query, vec, workspace_id=workspace_id, tags=tags, viewer=viewer)
+        return [] if self._gate_miss(hits, gate) else hits
+
     def _gate_miss(
         self, hits: list[RetrievedChunk], top_score: float | None
     ) -> bool:

@@ -5,7 +5,8 @@ import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
-import { ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
+import { ActionCard } from "@/components/ActionCard";
+import { ActIcon, ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -116,6 +117,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const askInputRef = useRef<HTMLTextAreaElement>(null);
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -147,6 +149,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // Deep's opt-in for company-wide and list questions: reads many documents as
   // well as deeply, and answers longer. Costs more, so it is off unless chosen.
   const [extraEffort, setExtraEffort] = useState(false);
+  // Act: ask Handbook to DO something in a connected tool. A separate mode and
+  // a separate endpoint (/act): the reply is a draft card, nothing is sent
+  // until the person approves it, and the turn is not saved as a chat answer.
+  const [actMode, setActMode] = useState(false);
+  // In a space, Act also needs that space's own switch (its owner's choice,
+  // within what the company allows). Company-wide, the company switch alone.
+  const [spaceActOn, setSpaceActOn] = useState(true);
+  const [modelError, setModelError] = useState<string | null>(null);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -295,6 +305,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       block: "end",
     });
   }, [messages, busy]);
+
+  useEffect(() => {
+    const field = askInputRef.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(field.scrollHeight, 160)}px`;
+    field.style.overflowY = field.scrollHeight > 160 ? "auto" : "hidden";
+  }, [input]);
 
   useEffect(() => {
     if (!me) return;
@@ -653,9 +671,45 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     }
   }
 
+  /** Act mode: one draft for the person to check, edit and approve. */
+  async function draftAction(question: string) {
+    setInput("");
+    setModelError(null);
+    setBusy(true);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: question },
+      { role: "assistant", text: "", streaming: true, steps: ["Drafting…"] },
+    ]);
+    let reply: Message;
+    try {
+      const out = await api.act(question, workspaceId, model);
+      // `actions` is every draft; an older server sends only `action`.
+      reply = {
+        role: "assistant",
+        text: out.reply,
+        acts: out.actions?.length ? out.actions : out.action ? [out.action] : null,
+      };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 503) {
+        setModelError(err.message);
+        setMessages((prev) => prev.slice(0, -1));
+        setBusy(false);
+        return;
+      }
+      reply = {
+        role: "assistant",
+        text: err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.",
+      };
+    }
+    setMessages((prev) => (prev.length ? [...prev.slice(0, -1), reply] : [reply]));
+    setBusy(false);
+  }
+
   /** `mode` overrides the composer's, for "Try Deep analysis" under an answer. */
   async function ask(question: string, mode?: "deep") {
     if (!question || busy) return;
+    if (actMode && !mode) return draftAction(question);
     setInput("");
     setBusy(true);
 
@@ -729,6 +783,33 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // question here, once, as whoever opened it -- their own access decides
   // what the chart shows. Two steps so Chart mode (and a chart-capable model)
   // is in place before the question goes.
+  useEffect(() => {
+    if (!workspaceId || !me?.act_enabled) {
+      setSpaceActOn(true);
+      return;
+    }
+    let live = true;
+    api
+      .spaceAct(workspaceId)
+      .then((s) => live && setSpaceActOn(s.enabled))
+      .catch(() => live && setSpaceActOn(false));
+    return () => {
+      live = false;
+    };
+  }, [workspaceId, me?.act_enabled]);
+  useEffect(() => {
+    if (!spaceActOn) setActMode(false);
+  }, [spaceActOn]);
+
+  // "Open Act in chat" from the Act page: /chat?mode=act starts in Act mode.
+  const actLink = searchParams.get("mode") === "act" && !searchParams.get("q");
+  useEffect(() => {
+    if (!actLink || !me?.act_enabled || !spaceActOn) return;
+    toggleActMode(true);
+    router.replace(pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actLink, me]);
+
   const linkQuestion = searchParams.get("q");
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   useEffect(() => {
@@ -826,12 +907,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     codeAvailable && "GitHub",
   ].filter(Boolean) as string[];
 
-  const emptyTitle = chartMode
+  const emptyTitle = actMode
+    ? "Ask Handbook to do it"
+    : chartMode
     ? "Create a chart"
     : deepMode
       ? "Deep analysis"
       : workspaceId ? "Ask this space" : "Ask your company";
-  const emptyCopy = chartMode
+  const emptyCopy = actMode
+    ? "File an issue, leave a comment, or post a message in your tools. Handbook drafts it, you check or edit it, and nothing is sent until you approve. It acts with your own accounts."
+    : chartMode
     ? "Charts count activity in your connected apps, figures in tables inside your documents, and files you upload here (Excel, CSV, PDF or Word). Describe what you want to see."
     : deepMode
       ? "Reads the most relevant documents in full. Best for broad questions: a whole project, a summary, or a list of everything. Uses more of your AI quota per answer."
@@ -840,8 +925,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       : workspaceId
         ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
         : "Leave, benefits, remote work and more — answered from your connected documents.";
-  const starters = chartMode ? chartStarters : suggestedQuestions;
-  const composerPlaceholder = chartMode
+  const starters = actMode ? [] : chartMode ? chartStarters : suggestedQuestions;
+  const composerPlaceholder = actMode
+    ? "e.g. file a Linear issue in Platform about the login timeout"
+    : chartMode
     ? "Describe a chart, e.g. issues by priority"
     : deepMode
       ? "Ask a broad question, e.g. summarise the project"
@@ -852,7 +939,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   function toggleChartMode(on: boolean) {
     setChartMode(on);
-    if (on) setDeepMode(false);
+    if (on) {
+      setDeepMode(false);
+      setActMode(false);
+    }
     setModelNote(null);
     const current = models.find((m) => m.id === model);
     if (on && current && current.charts === false) {
@@ -863,13 +953,37 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   function toggleDeepMode(on: boolean) {
     setDeepMode(on);
-    if (on) toggleChartMode(false);
-    else setExtraEffort(false);
+    if (on) {
+      toggleChartMode(false);
+      setActMode(false);
+    } else setExtraEffort(false);
+  }
+
+  function toggleActMode(on: boolean) {
+    setActMode(on);
+    if (on) {
+      setChartMode(false);
+      setDeepMode(false);
+      setExtraEffort(false);
+      setModelNote(null);
+    }
   }
 
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
+        {modelError && (
+          <aside className="act-model-toast" role="alert" aria-live="assertive">
+            <div className="act-model-toast-mark" aria-hidden="true">!</div>
+            <div className="act-model-toast-copy">
+              <strong>The model is busy</strong>
+              <span>{modelError}</span>
+            </div>
+            <button type="button" className="button button-sm" onClick={() => setModelError(null)}>
+              Okay
+            </button>
+          </aside>
+        )}
         {dragging && (
           <div className="chat-drop-overlay" aria-hidden="true">
             <div className="chat-drop-card">
@@ -988,8 +1102,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           ) : (
             <div className="chat-log" ref={logRef} aria-live="polite">
               {messages.map((m, i) => (
+                <div key={i} className="chat-turn">
                 <ChatMessageView
-                  key={i}
                   message={m}
                   conversationId={conversationId.current}
                   // The question this answer replied to is the message before
@@ -1005,6 +1119,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                     void ask(q, "deep");
                   }}
                 />
+                {m.acts?.map((card) => (
+                  <div className="chat-act-card" key={card.id}>
+                    <ActionCard
+                      card={card}
+                      model={model}
+                      onChange={(next) =>
+                        setMessages((prev) =>
+                          prev.map((x, j) =>
+                            j === i
+                              ? { ...x, acts: x.acts?.map((c) => (c.id === next.id ? next : c)) }
+                              : x,
+                          ),
+                        )
+                      }
+                    />
+                  </div>
+                ))}
+                </div>
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
             </div>
@@ -1171,6 +1303,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                     {extraEffort && <CheckIcon />}
                   </button>
                 )}
+                {me.act_enabled && spaceActOn && (
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={actMode}
+                    className="composer-menu-item"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      toggleActMode(!actMode);
+                    }}
+                  >
+                    <ActIcon />
+                    <span className="composer-menu-text">
+                      <strong>Act</strong>
+                      <small>File an issue, comment or post, after you approve</small>
+                    </span>
+                    {actMode && <CheckIcon />}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1188,6 +1339,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               >
                 {/* An icon, not the "×" character: a glyph sits on the text
                     baseline and drops below the chart icon beside it. */}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </span>
+          )}
+          {actMode && (
+            <span className="composer-mode-chip">
+              <ActIcon />
+              <span>Act</span>
+              <button
+                type="button"
+                className="composer-mode-chip-remove"
+                onClick={() => toggleActMode(false)}
+                disabled={busy}
+                aria-label="Turn off Act"
+                title="Turn off Act"
+              >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
                 </svg>
@@ -1212,12 +1381,26 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               </button>
             </span>
           )}
-          <input
+          <textarea
+            ref={askInputRef}
             id="ask-input"
             className="chat-composer-input"
+            rows={1}
             placeholder={composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                if (!busy && !uploading && input.trim()) {
+                  e.currentTarget.form?.requestSubmit();
+                }
+              }
+            }}
             // A file copied in Finder/Explorer and pasted here attaches it;
             // pasted TEXT is left to the input as usual.
             onPaste={(e) => {
@@ -1286,7 +1469,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
           </button>
         </form>
-        {(chartMode || modelNote) && (
+        {actMode ? (
+          <p className="muted chat-model-note" role="status">
+            Act drafts up to three actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
+            in this chat; find them under <Link href="/account#act">Account → Act</Link>.
+          </p>
+        ) : (chartMode || modelNote) && (
           <p className="muted chat-model-note" role="status">
             {modelNote ??
               "Chart mode only builds charts. Turn it off for a written answer."}
