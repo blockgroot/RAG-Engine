@@ -30,6 +30,7 @@ from ..feedback import assign_topics_soon, list_topics
 from ..feedback.topics import WINDOW_DAYS
 from ..guard.flagged import MAX_LISTED, flagged_documents
 from ..auth.session import SessionClaims
+from ..auth.user_connections import list_user_connections
 from ..jobs.autosync import SCOPE_KEYS
 from ..workspaces.store import list_my_workspaces
 from .deps import get_session
@@ -107,6 +108,28 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
     )
 
 
+def _act_items(org_id: str, user_id: str) -> list[dict]:
+    """The caller's OWN Act sign-ins that need reconnecting. Only they can fix
+    one, so everyone sees theirs, admin or not. Never fails the bell."""
+    try:
+        broken = [c for c in list_user_connections(org_id, user_id) if c.needs_reauth]
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    return [
+        {
+            "kind": "reauth",
+            "severity": "high",
+            "provider": c.provider,
+            "scope": "Act",
+            "title": f"Your {_label(c.provider)} account needs reconnecting",
+            "detail": f"Act can't draft or send anything in {_label(c.provider)} for you until you reconnect it.",
+            "action": "Reconnect",
+            "href": "/account#act",
+        }
+        for c in broken
+    ]
+
+
 def _gap_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
     """Topics enough different people could not get answered. Never fails the bell."""
     try:
@@ -174,8 +197,8 @@ def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str)
 @router.get("")
 def list_notifications(session: SessionClaims = Depends(get_session)):
     """Everything wrong that this caller can fix, highest severity first."""
-    items: list[dict] = []
-    owned = [s for s in list_my_workspaces(session.org_id, session.user_id) if s.role == "owner"]
+    items: list[dict] = _act_items(session.org_id, session.user_id)
+    owned =[s for s in list_my_workspaces(session.org_id, session.user_id) if s.role == "owner"]
     if session.role == "admin" or owned:
         assign_topics_soon(session.org_id)
     if session.role == "admin":

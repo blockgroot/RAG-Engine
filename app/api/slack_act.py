@@ -93,7 +93,8 @@ def build_intent_prompt(text: str) -> str:
     return (
         "Decide whether this Slack message asks Handbook to DO something in a "
         "work tool: create or file an issue or ticket, comment on one, write or "
-        "add to a page, create a document, or post a message.\n"
+        "add to a page, add a row to a database, create a document or a sheet, "
+        "post a message, or send someone a direct message.\n"
         "act: true only when the message itself asks for that to be done. false "
         "for a question, including questions ABOUT tickets or how to do "
         "something (\"did anyone file a ticket for this?\", \"how do I create a "
@@ -164,7 +165,8 @@ def plain_slack_text(text: str) -> str:
     text = _CHANNEL_REF.sub(lambda m: f"#{m.group(1)}", text)
     text = _USER_REF.sub(lambda m: f"@{m.group(1)}", text)
     text = _MENTION.sub("", text)
-    text = _LINK.sub(lambda m: m.group(1), text)
+    # A typed email arrives as <mailto:a@b|a@b>: keep the address as typed.
+    text = _LINK.sub(lambda m: m.group(1).removeprefix("mailto:"), text)
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
@@ -376,11 +378,14 @@ def _remember_slack_account(org_id: str, slack_user: str, email: str) -> None:
 
 
 def _respond(response_url: str | None, text: str, *, replace: bool = True) -> None:
+    _respond_raw(response_url, {"replace_original": replace, "response_type": "ephemeral", "text": text})
+
+
+def _respond_raw(response_url: str | None, body: dict) -> None:
     if not response_url or not response_url.startswith("https://hooks.slack.com/"):
         return
     try:
-        httpx.post(response_url, timeout=_TIMEOUT, json={
-            "replace_original": replace, "response_type": "ephemeral", "text": text})
+        httpx.post(response_url, timeout=_TIMEOUT, json=body)
     except httpx.HTTPError as exc:
         logger.warning("slack.act response_url failed: %s", exc)
 
@@ -390,12 +395,21 @@ def _acked(payload: dict) -> bool:
     return bool((values.get("act_ack") or {}).get("selected_options"))
 
 
+_TOOL_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
+               "drive": "Google Drive", "slack": "Slack"}
+
+
 def _outcome_text(row: ActionRow) -> str:
     result = row.result or {}
     if row.status == "succeeded":
         link = result.get("url")
-        made = _escape(str(result.get("external_id") or "it"))
-        return f"✅ Done: <{link}|{made}>" if link else f"✅ Done: {made}"
+        # Linear's SYV-21 and GitHub's owner/repo#12 are how people name
+        # things; Slack's message ts and Notion's or Google's ids are not.
+        named = row.action.startswith(("linear.", "github."))
+        made = _escape(str((result.get("external_id") if named else None)
+                           or row.payload.get("title") or row.target.get("name") or "it"))
+        tool = _TOOL_NAMES.get(row.action.split(".")[0], "the tool")
+        return f"✅ Done: *{made}* · <{link}|Open in {tool}>" if link else f"✅ Done: *{made}*"
     if row.status == "unknown":
         return f"⚠️ This may have gone through. Check before trying again. {_escape(result.get('error') or '')}"
     if row.status == "rejected":
@@ -418,10 +432,25 @@ def decide(payload: dict, act: dict) -> None:
     except ProviderError:
         return
     slack_user = (payload.get("user") or {}).get("id") or ""
+    # A private card inside a thread is not replaced in place by Slack: the
+    # response URL's reply lands at the bottom of the channel. So there the
+    # card is removed and the outcome is posted privately in that thread.
+    container = payload.get("container") or {}
+    in_thread = container.get("is_ephemeral") and container.get("thread_ts") and container.get("channel_id")
+
+    def respond(text: str, *, replace: bool = True) -> None:
+        if not in_thread:
+            _respond(response_url, text, replace=replace)
+            return
+        if replace:
+            _respond_raw(response_url, {"delete_original": True})
+        _post(token, "chat.postEphemeral", {"channel": container["channel_id"], "user": slack_user,
+                                            "text": text, "thread_ts": container["thread_ts"]})
+
     email = _slack_email(token, slack_user)
     user = get_member_by_address(email, org_id) if email else None
     if user is None:
-        _respond(response_url, "You don't have a Handbook account, so you can't approve this.", replace=False)
+        respond("You don't have a Handbook account, so you can't approve this.", replace=False)
         return
 
     action_id, _, shown_hash = str(act.get("value") or "").partition(":")
@@ -431,24 +460,32 @@ def decide(payload: dict, act: dict) -> None:
         return
     if act.get("action_id") == "act_cancel":
         if store.reject(org_id, user.id, action_id):
-            _respond(response_url, "Cancelled. Nothing was sent.")
+            respond("Cancelled. Nothing was sent.")
         elif store.get(org_id, user.id, action_id) is None:
-            _respond(response_url, "Only the person who asked can cancel this.", replace=False)
+            respond("Only the person who asked can cancel this.", replace=False)
         return
     try:
         row = service.confirm(org_id=org_id, user_id=user.id, action_id=action_id,
                               shown_hash=shown_hash, acknowledged=_acked(payload))
     except NotFoundError:
-        _respond(response_url, "Only the person who asked can approve this.", replace=False)
+        respond("Only the person who asked can approve this.", replace=False)
         return
     except ActionConflict as exc:
-        # A missing tick keeps the card, so they can tick and approve.
-        _respond(response_url, str(exc), replace="Tick" not in str(exc))
+        # A second click (or a click that came twice) finds it decided: show
+        # what happened, with its link, rather than "already succeeded".
+        done = store.get(org_id, user.id, action_id)
+        if done is not None and done.status in ("succeeded", "failed", "unknown", "rejected"):
+            respond(_outcome_text(done))
+        elif done is not None and done.status == "executing":
+            respond("Still sending… the link appears here when it's done.", replace=False)
+        else:
+            # A missing tick keeps the card, so they can tick and approve.
+            respond(str(exc), replace="Tick" not in str(exc))
         return
     except (ActionExpired, OAuthReauthRequiredError, ConfigurationError, ActionError) as exc:
-        _respond(response_url, str(exc))
+        respond(str(exc))
         return
-    _respond(response_url, _outcome_text(row))
+    respond(_outcome_text(row))
 
 
 @router.post("/interactivity")

@@ -398,6 +398,7 @@ def click_env(monkeypatch):
 
     monkeypatch.setattr(slack_act.service, "confirm", confirm)
     monkeypatch.setattr(slack_act.store, "reject", lambda org, user, aid: seen["reject"].append(user) or True)
+    monkeypatch.setattr(slack_act.store, "get", lambda org, user, aid: None)
     return seen
 
 
@@ -413,7 +414,7 @@ def test_approve_sends_the_shown_hash_and_the_tick(click_env):
     slack_act.decide(*_click("U1", "act_approve", f"{aid}:{'h' * 64}", ticked=True))
     [kw] = click_env["confirm"]
     assert kw["action_id"] == aid and kw["shown_hash"] == "h" * 64 and kw["acknowledged"] is True
-    assert click_env["said"][-1][0].startswith("✅ Done: <https://linear.app/x|PLA-9>")
+    assert click_env["said"][-1][0].startswith("✅ Done: *PLA-9* · <https://linear.app/x|Open in Linear>")
 
 
 def test_someone_else_cannot_approve(click_env):
@@ -510,3 +511,62 @@ def test_a_dm_says_it_is_drafting_then_becomes_the_card(act_env, monkeypatch):
     assert posts[0][0] == "chat.postMessage" and "Drafting" in posts[0][1]["text"]
     assert posts[1] == ("chat.update", {"channel": "D1", "ts": "9.9", "text": "noted"})
     assert act_env["said"] == []                              # replaced in place, not posted again
+
+
+@pytest.mark.parametrize("action, result, payload, target, shown, tool", [
+    ("linear.create_issue", {"external_id": "SYV-21"}, {"title": "T"}, {}, "SYV-21", "Linear"),
+    ("slack.post_message", {"external_id": "1792146193.424979"}, {"text": "x"},
+     {"name": "#rag-updates (this thread)"}, "#rag-updates (this thread)", "Slack"),
+    ("drive.create_doc", {"external_id": "1AbCdEf"}, {"title": "Retro"}, {"name": "Your Google Drive"},
+     "Retro", "Google Drive"),
+])
+def test_done_names_what_was_made_and_links_to_it(action, result, payload, target, shown, tool):
+    row = _row(action=action, status="succeeded", payload=payload, target=target,
+               result={**result, "url": "https://x.example/y"})
+    assert slack_act._outcome_text(row) == f"✅ Done: *{shown}* · <https://x.example/y|Open in {tool}>"
+
+
+def test_a_second_click_shows_the_outcome_with_its_link(click_env, monkeypatch):
+    """A double click (or a click Slack delivered twice) used to replace Done
+    with "already succeeded", losing the link."""
+    from app.core.exceptions import ActionConflict
+
+    def conflict(**kw):
+        raise ActionConflict("This action was already succeeded.")
+
+    monkeypatch.setattr(slack_act.service, "confirm", conflict)
+    monkeypatch.setattr(slack_act.store, "get", lambda org, user, aid: _row(
+        action="drive.create_doc", status="succeeded", payload={"title": "Retro"},
+        result={"external_id": "1Ab", "url": "https://docs.google.com/d/1Ab"}))
+    slack_act.decide(*_click("U1", "act_approve", f"{uuid.uuid4()}:{'h' * 64}"))
+    assert click_env["said"][-1][0] == "✅ Done: *Retro* · <https://docs.google.com/d/1Ab|Open in Google Drive>"
+
+
+def test_a_click_on_a_card_in_a_thread_answers_in_that_thread(click_env, monkeypatch):
+    """Slack drops a response-URL reply to a private card in a thread at the
+    bottom of the channel, so there the card goes and the outcome is posted
+    privately in the thread itself."""
+    raw, posted = [], []
+    monkeypatch.setattr(slack_act, "_respond_raw", lambda url, body: raw.append(body))
+    monkeypatch.setattr(slack_act, "_post", lambda token, method, body: posted.append((method, body)) or {})
+    payload, act = _click("U1", "act_approve", f"{uuid.uuid4()}:{'h' * 64}")
+    payload["container"] = {"type": "message", "is_ephemeral": True, "channel_id": "C9", "thread_ts": "5.5"}
+    slack_act.decide(payload, act)
+    assert raw == [{"delete_original": True}]
+    [(method, body)] = posted
+    assert method == "chat.postEphemeral" and body["thread_ts"] == "5.5" and body["user"] == "U1"
+    assert body["text"].startswith("✅ Done:")
+    assert click_env["said"] == []                  # never the channel-bottom reply
+
+
+def test_a_typed_email_reads_as_typed_so_the_dm_request_is_found():
+    """Slack sends <mailto:a@b|a@b>; with "mailto:" kept, the model's quote
+    "DM a@b" was not in the text and the DM was answered as a question."""
+    text = "DM <mailto:raj@syvora.com|raj@syvora.com> on Slack: fix is pushed"
+    assert slack_act.plain_slack_text(text) == "DM raj@syvora.com on Slack: fix is pushed"
+
+    class Model:
+        def generate(self, prompt, max_tokens=None):
+            return '{"act": true, "request_words": "DM raj@syvora.com on Slack"}'
+
+    assert slack_act.asks_to_act(slack_act.plain_slack_text(text), llm=Model())

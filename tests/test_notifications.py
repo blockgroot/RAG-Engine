@@ -35,11 +35,12 @@ def _session(role="admin"):
     )
 
 
-def _patch(monkeypatch, *, by_scope, spaces=()):
+def _patch(monkeypatch, *, by_scope, spaces=(), mine=()):
     monkeypatch.setattr(
         notif, "list_connections", lambda org, ws=None: by_scope.get(ws, [])
     )
     monkeypatch.setattr(notif, "list_my_workspaces", lambda org, uid: list(spaces))
+    monkeypatch.setattr(notif, "list_user_connections", lambda org, uid: list(mine))
 
 
 def test_an_expired_connection_is_reported_to_the_admin(monkeypatch):
@@ -127,3 +128,16 @@ def test_expired_sorts_above_unconfigured(monkeypatch):
         "high",
         "medium",
     ]
+
+
+def test_anyone_is_told_their_own_act_sign_in_needs_reconnecting(monkeypatch):
+    """Only they can fix it, so a member sees it too; a working one says nothing."""
+    from app.auth.user_connections import UserConnectionInfo
+
+    mine = [UserConnectionInfo("linear", "x", "Sana", (), True, datetime(2026, 1, 1)),
+            UserConnectionInfo("google", "y", "Sana", (), False, datetime(2026, 1, 1))]
+    _patch(monkeypatch, by_scope={}, mine=mine)
+    result = notif.list_notifications(session=_session("member"))
+    assert result["count"] == 1
+    item = result["items"][0]
+    assert (item["kind"], item["provider"], item["href"]) == ("reauth", "linear", "/account#act")

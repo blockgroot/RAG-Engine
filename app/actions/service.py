@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 
 from ..auth.user_connections import (
-    connected_providers,
+    list_user_connections,
     mark_user_needs_reauth,
 )
 from ..config.settings import ActionsSettings, GuardSettings, RagSettings
@@ -263,7 +263,10 @@ def offered_actions(
         return [], "Your admin hasn't switched on any actions yet."
     # From the web every tool is the person's own connection, Slack included.
     # Asked inside Slack, the bot replies there for the person it saw.
-    providers = connected_providers(org_id, user_id)
+    # A connection that needs reconnecting is still offered: its draft answers
+    # "Reconnect your X account" (no token, nothing sent). Hiding it left the
+    # model saying it had no X tool at all.
+    providers = {c.provider for c in list_user_connections(org_id, user_id)}
     if slack_user:
         providers = (providers - {"slack"}) | slack_available(org_id, user_id, slack_user)
     offered = [ACTIONS[n]() for n in ACTIONS if n in enabled and ACTIONS[n].provider in providers]

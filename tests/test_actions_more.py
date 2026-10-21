@@ -339,3 +339,19 @@ def test_a_folder_only_the_asker_sees_keeps_the_draft_private(org, monkeypatch):
     moved = service.choose_folder(org_id=org.id, user_id=org.admin.id, action_id=row.id,
                                   shown_hash=row.payload_hash, folder_id="F1aaaaaaaaaa")
     assert moved.exposure == "none" and "(shared folder)" not in moved.target["name"]
+
+
+def test_a_connection_needing_reconnect_is_still_offered(monkeypatch):
+    """Hidden, the model said it had no Linear tool; offered, the draft says
+    "Reconnect your Linear account" and nothing is sent (no token)."""
+    from datetime import datetime
+
+    from app.actions import service
+    from app.auth.user_connections import UserConnectionInfo
+
+    monkeypatch.setattr(service.policy, "act_on", lambda org, ws=None: True)
+    monkeypatch.setattr(service.policy, "enabled_actions", lambda org, ws=None: {"linear.create_issue"})
+    monkeypatch.setattr(service, "list_user_connections", lambda org, uid: [
+        UserConnectionInfo("linear", "x", "Sana", (), True, datetime(2026, 1, 1))])
+    offered, why = service.offered_actions("org", "u1", None)
+    assert [a.name for a in offered] == ["linear.create_issue"] and why is None

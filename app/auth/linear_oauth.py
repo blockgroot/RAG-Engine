@@ -3,9 +3,9 @@
 Structurally closest to ``google_oauth.py``: Linear's token response carries
 no workspace identity the way Notion's does, so a follow-up GraphQL call
 (``query { organization { id name } } ``) resolves who the token belongs to.
-Unlike Google, a standard Linear OAuth app issues an access token that does
-not expire and no refresh token — same non-expiring shape as Notion/Slack —
-so ``refresh()`` stays the ABC's default ``NotImplementedError``.
+Linear now issues access tokens that expire (about a day) with a refresh token
+that ROTATES on every use, so ``refresh()`` returns the new pair. Without it an
+expired token was marked "Reconnect" the next day.
 
 This is a SEPARATE, non-fallback-linked credential path from the legacy
 ``LINEAR_TOKEN_<NAME>`` personal-API-key path (``LinearSettings`` in
@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import httpx
 
 from ..config.settings import LinearSettings
-from ..core.exceptions import ConfigurationError, OAuthError
+from ..core.exceptions import ConfigurationError, OAuthError, OAuthReauthRequiredError
 from .base import OAuthProvider, OAuthTokens, compute_expires_at
 
 _AUTHORIZE_URL = "https://linear.app/oauth/authorize"
@@ -88,6 +88,41 @@ class LinearOAuthProvider(OAuthProvider):
             expires_at=expires_at,
             external_workspace_id=workspace_id,
             external_workspace_name=workspace_name,
+        )
+
+    def refresh(self, refresh_token: str) -> OAuthTokens:
+        """A new access token and the NEW refresh token (the old one stops
+        working). Identity fields are placeholders; the caller keeps its row's."""
+        try:
+            response = httpx.post(
+                _TOKEN_URL,
+                data={
+                    "client_id": self._settings.client_id,
+                    "client_secret": self._settings.client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                },
+                timeout=_TIMEOUT,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (400, 401):
+                raise OAuthReauthRequiredError(
+                    "Linear refused the refresh token; reconnect Linear.", cause=exc
+                ) from exc
+            raise OAuthError(f"Linear OAuth token refresh failed: {exc}", cause=exc) from exc
+        except httpx.HTTPError as exc:
+            raise OAuthError(f"Linear OAuth token refresh failed: {exc}", cause=exc) from exc
+
+        data = response.json()
+        if not data.get("access_token"):
+            raise OAuthError("Linear OAuth refresh response missing access_token")
+        return OAuthTokens(
+            access_token=data["access_token"],
+            refresh_token=data.get("refresh_token"),
+            expires_at=compute_expires_at(data.get("expires_in")),
+            external_workspace_id="",
+            external_workspace_name=None,
         )
 
     def _resolve_identity(self, access_token: str) -> tuple[str, str | None]:

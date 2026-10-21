@@ -138,9 +138,24 @@ def test_exchange_code_raises_oauth_error_on_http_failure(_linear_oauth_settings
         provider.exchange_code("auth-code-1")
 
 
-def test_refresh_not_implemented(_linear_oauth_settings):
-    # A standard Linear OAuth app issues a non-expiring access token with no
-    # refresh token — same non-expiring shape as Notion/Slack.
-    provider = LinearOAuthProvider(settings=_linear_oauth_settings)
-    with pytest.raises(NotImplementedError):
-        provider.refresh("irrelevant")
+def test_refresh_returns_the_rotated_pair(_linear_oauth_settings, monkeypatch):
+    # Linear's access tokens expire and the refresh token rotates: keep the new one.
+    sent = {}
+    monkeypatch.setattr(
+        "app.auth.linear_oauth.httpx.post",
+        lambda url, data, timeout: sent.update(data) or FakeResponse(
+            {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 86399}),
+    )
+    tokens = LinearOAuthProvider(settings=_linear_oauth_settings).refresh("old-refresh")
+    assert sent["grant_type"] == "refresh_token" and sent["refresh_token"] == "old-refresh"
+    assert (tokens.access_token, tokens.refresh_token) == ("new-access", "new-refresh")
+    assert tokens.expires_at is not None
+
+
+def test_refresh_refused_means_reconnect(_linear_oauth_settings, monkeypatch):
+    from app.core.exceptions import OAuthReauthRequiredError
+
+    monkeypatch.setattr("app.auth.linear_oauth.httpx.post",
+                        lambda url, data, timeout: FakeResponse({"error": "invalid_grant"}, 400))
+    with pytest.raises(OAuthReauthRequiredError):
+        LinearOAuthProvider(settings=_linear_oauth_settings).refresh("revoked")
