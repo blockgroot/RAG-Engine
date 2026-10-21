@@ -1,4 +1,5 @@
-"""GitHub actions: open an issue, comment on an issue or pull request.
+"""GitHub actions: open an issue, comment on an issue or pull request, label or
+assign an issue.
 
 Both run on the asker's GitHub App user-to-server token, so GitHub attributes
 them to the person (with the App's badge) and allows them only where the
@@ -249,7 +250,8 @@ def _names(args: dict[str, Any], key: str) -> list[str]:
     return [x.strip().lstrip("@") for x in (args.get(key) or []) if isinstance(x, str) and x.strip()]
 
 
-def _issue_settings(args: dict[str, Any], ctx: ActionContext, full: str, repo: dict) -> dict:
+def _issue_settings(args: dict[str, Any], ctx: ActionContext, full: str, repo: dict,
+                    allowed: tuple[str, ...] = ("push", "maintain", "admin")) -> dict:
     """Labels and assignees, each named by the asker and existing in the repo.
 
     GitHub silently drops both on a new issue from anyone without write
@@ -260,10 +262,11 @@ def _issue_settings(args: dict[str, Any], ctx: ActionContext, full: str, repo: d
         return {}
     for name in [*labels, *people]:
         require_named(name, ctx.question, "label or assignee")
-    if _level(repo) not in ("push", "maintain", "admin"):
+    if _level(repo) not in allowed:
+        need = "triage" if "triage" in allowed else "write"
         raise ActionRejected(
-            f"Only people with write access to {full} can set labels or assignees, and your "
-            "account doesn't have it. Ask without them."
+            f"Only people with {need} access to {full} can set labels or assignees, and your "
+            "account doesn't have it."
         )
     chosen: dict[str, list[str]] = {}
     if labels:
@@ -352,6 +355,86 @@ class GitHubComment(Action):
         if not made.get("id"):
             raise ActionError("GitHub did not add the comment.")
         return ActionResult(str(made["id"]), made.get("html_url"))
+
+
+class GitHubLabelAssign(Action):
+    """Add labels or assignees to an existing issue. Both ADD (GitHub's own
+    add endpoints); nothing is removed. Labels must exist, assignees must be
+    assignable, and the person needs triage access, as GitHub itself asks.
+    Pull requests are left out: the App holds no Pull requests permission."""
+
+    name = "github.label_assign"
+    provider = "github"
+    label = "GitHub: add labels or assignees to an issue"
+    editable_fields = ()
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "github_label_assign",
+            "description": (
+                "Add labels and/or assignees to a GitHub issue the user named, as "
+                "'owner/repo#123', 'repo#123' or its github.com address."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_words": _REQUEST_WORDS,
+                    "issue": {"type": "string", "description": "The issue exactly as the user wrote it."},
+                    "labels": {"type": "array", "items": {"type": "string"},
+                               "description": "Label names exactly as the user wrote them."},
+                    "assignees": {"type": "array", "items": {"type": "string"},
+                                  "description": "GitHub usernames exactly as the user wrote them."},
+                },
+                "required": ["request_words", "issue"],
+            },
+        },
+    }
+
+    def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
+        ref = require_named(args.get("issue"), ctx.question, "issue")
+        match = _REF.match(ref)
+        if not match:
+            raise ActionRejected("Name it like owner/repo#123 or paste its GitHub address.")
+        full = company_repo(ctx.org_id, match.group("repo"))
+        number = int(match.group("number"))
+        repo = _your_repo(full, ctx.token)
+        try:
+            issue = _call("GET", f"/repos/{full}/issues/{number}", ctx.token)
+        except ActionRejected as exc:
+            raise ActionRejected(f"There's no #{number} in {full} that your account can see.") from exc
+        if "pull_request" in issue:
+            raise ActionRejected("Handbook can label and assign issues, not pull requests.")
+        chosen = _issue_settings(args, ctx, full, repo, allowed=("triage", "push", "maintain", "admin"))
+        if not chosen:
+            raise ActionRejected("Say which labels or people to add to the issue.")
+        return Proposal(
+            action=self.name,
+            target=ActionTarget("github_issue", f"{full}#{number}",
+                                f"{full}#{number}: {issue.get('title') or ''}".strip(),
+                                issue.get("html_url")),
+            payload={"set": chosen, "details": details(
+                ("Add labels", ", ".join(chosen.get("labels") or [])),
+                ("Add assignees", ", ".join(chosen.get("assignees") or [])),
+            )},
+            audience=_repo_audience(repo),
+        )
+
+    def execute(self, key, target, payload, token) -> ActionResult:
+        full, number = target["external_id"].rsplit("#", 1)
+        narrowed = scoped_token(token, full)
+        chosen = payload.get("set") or {}
+        if chosen.get("labels"):
+            _call("POST", f"/repos/{full}/issues/{number}/labels", narrowed,
+                  json={"labels": chosen["labels"]})
+        if chosen.get("assignees"):
+            made = _call("POST", f"/repos/{full}/issues/{number}/assignees", narrowed,
+                         json={"assignees": chosen["assignees"]})
+            # GitHub ignores, without an error, an assignee it won't accept.
+            got = {(a.get("login") or "").casefold() for a in made.get("assignees") or []}
+            missing = [a for a in chosen["assignees"] if a.casefold() not in got]
+            if missing:
+                raise ActionError(f"GitHub did not assign {', '.join(missing)}.")
+        return ActionResult(target["external_id"], target.get("url"))
 
 
 def _uris(ctx: ActionContext) -> list[str]:

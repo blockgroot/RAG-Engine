@@ -34,6 +34,7 @@ const PROVIDER_LABEL: Record<string, string> = {
 const APP_LABEL: Record<string, string> = {
   "drive.create_doc": "Google Docs",
   "drive.create_sheet": "Google Sheets",
+  "drive.append_rows": "Google Sheets",
 };
 
 const STATUS_LINE: Record<ActCard["status"], string> = {
@@ -88,7 +89,7 @@ export function ActionCard({
   const openIn = APP_LABEL[card.action] ?? provider;
   const draft = card.draft ?? card.payload;
   const bodyLabel =
-    card.action === "drive.create_sheet"
+    card.action === "drive.create_sheet" || card.action === "drive.append_rows"
       ? "Table"
       : draft.title !== undefined
         ? "Description"
@@ -341,22 +342,27 @@ export function ActionCard({
           >
             {busy ? "Sending…" : "Approve"}
           </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => setEditing({ ...draft })}
-            disabled={busy}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => setAsking("")}
-            disabled={busy}
-          >
-            Ask for changes
-          </button>
+          {/* A change with no drafted words (a status, a label) has nothing to edit. */}
+          {Object.keys(draft).length > 0 && (
+            <>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setEditing({ ...draft })}
+                disabled={busy}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setAsking("")}
+                disabled={busy}
+              >
+                Ask for changes
+              </button>
+            </>
+          )}
           {card.folder_choice && (
             <button type="button" className="button button-secondary" onClick={chooseFolder} disabled={busy}>
               Choose folder

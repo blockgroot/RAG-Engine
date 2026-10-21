@@ -348,6 +348,9 @@ never retried. No action touches git refs, contents, pulls or merges; the GitHub
 App gets Issues: write only (no Contents, no Pull requests write), every
 installation token is minted READ-ONLY (`mint_installation_token`), and each
 write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
+Changing what exists only ADDS or sets (Linear `issueUpdate`, GitHub's add-labels/assignees on
+issues, never PRs; a Sheet's rows appended RAW under its unchanged header, only Sheets `drive.file`
+reaches); Linear's `write` scope is asked only while `linear.update_issue` is on (`linear.scopes_for`).
 Notion writes use a SEPARATE connection from the read one: a Notion token always
 carries its connection's every capability. An Act account must be the company's
 (a Linear/Notion/Slack workspace or a repo in a GitHub installation it connected,

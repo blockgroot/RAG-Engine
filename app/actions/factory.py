@@ -11,9 +11,9 @@ from __future__ import annotations
 from ..auth.user_connections import connected_providers
 from . import policy
 from .base import Action
-from .drive import DriveCreateDoc, DriveCreateSheet
-from .github import GitHubComment, GitHubCreateIssue
-from .linear import LinearComment, LinearCreateIssue
+from .drive import DriveAppendRows, DriveCreateDoc, DriveCreateSheet
+from .github import GitHubComment, GitHubCreateIssue, GitHubLabelAssign
+from .linear import LinearComment, LinearCreateIssue, LinearUpdateIssue
 from .notion import NotionAddRow, NotionAppend, NotionComment, NotionCreatePage
 from .slack import SlackPostMessage
 
@@ -21,9 +21,10 @@ from .slack import SlackPostMessage
 ACTIONS: dict[str, type[Action]] = {
     cls.name: cls
     for cls in (
-        LinearCreateIssue, LinearComment, GitHubCreateIssue, GitHubComment,
+        LinearCreateIssue, LinearComment, LinearUpdateIssue,
+        GitHubCreateIssue, GitHubComment, GitHubLabelAssign,
         NotionComment, NotionAppend, NotionCreatePage, NotionAddRow,
-        DriveCreateDoc, DriveCreateSheet, SlackPostMessage,
+        DriveCreateDoc, DriveCreateSheet, DriveAppendRows, SlackPostMessage,
     )
 }
 

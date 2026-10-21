@@ -28,7 +28,7 @@ from ..actions.factory import get_action
 from ..actions import service, store
 from ..actions.exposure import Exposure
 from ..actions.drive import DRIVE_FILE
-from ..actions.linear import WRITE_SCOPES, viewer as linear_viewer
+from ..actions.linear import scopes_for as linear_scopes, viewer as linear_viewer
 from ..actions.store import ActionRow
 from ..auth.factory import build_oauth_provider
 from ..auth.github_oauth import GitHubAppProvider
@@ -246,7 +246,8 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
         "action": row.action,
         "label": cls.label if cls else row.action,
         "attribution": cls.attribution_for(row.payload) if cls else None,
-        "folder_choice": bool(cls and cls.provider == "google" and ActionsSettings.from_env().folder_picker),
+        "folder_choice": bool(cls and cls.name in ("drive.create_doc", "drive.create_sheet")
+                              and ActionsSettings.from_env().folder_picker),
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
@@ -549,7 +550,7 @@ def connect(provider: str, session: SessionClaims = Depends(get_session)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state = create_state(session.org_id, ACT_PROVIDERS[provider], user_id=session.user_id)
     if isinstance(oauth, LinearOAuthProvider):
-        return RedirectResponse(url=oauth.authorize_url(state, scopes=WRITE_SCOPES))
+        return RedirectResponse(url=oauth.authorize_url(state, scopes=linear_scopes(session.org_id)))
     if isinstance(oauth, GoogleOAuthProvider):
         return RedirectResponse(url=oauth.authorize_url(state, include_granted=False))
     if isinstance(oauth, SlackOAuthProvider):
@@ -626,7 +627,7 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
                 expires_at=tokens.expires_at,
                 external_user_id=str(who["viewer"].get("id") or ""),
                 external_user_name=who["viewer"].get("name") or who["viewer"].get("email"),
-                scopes=tuple(WRITE_SCOPES.split(",")),
+                scopes=tuple(linear_scopes(org_id).split(",")),
             )
         elif provider == "notion" and isinstance(oauth, NotionOAuthProvider):
             tokens = oauth.exchange_code(code)

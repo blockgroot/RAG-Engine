@@ -239,6 +239,7 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
     label = cls.label if cls else row.action
     who = cls.attribution_for(row.payload) if cls else "as you"  # a DM as the person says so
     tool = _PROVIDER.get(cls.provider if cls else "", label.split(":")[0])
+    words = bool(cls and cls.editable(row.payload))  # a status or label change has none to edit
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text":
             f"*{_escape(label)}*  ·  {_escape(who)}, in {tool}\n*Where:* {_escape(row.target.get('name'))}"}},
@@ -280,11 +281,11 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
         {"type": "actions", "block_id": "act_decide", "elements": [
             {"type": "button", "action_id": "act_approve", "style": "primary",
              "text": {"type": "plain_text", "text": "Approve"}, "value": f"{row.id}:{row.payload_hash}"},
-            {"type": "button", "action_id": "act_edit",
-             "text": {"type": "plain_text", "text": "Edit"}, "value": f"{row.id}:{row.payload_hash}"},
-            {"type": "button", "action_id": "act_revise",
-             "text": {"type": "plain_text", "text": "Ask for changes"},
-             "value": f"{row.id}:{row.payload_hash}"},
+            *([{"type": "button", "action_id": "act_edit",
+                 "text": {"type": "plain_text", "text": "Edit"}, "value": f"{row.id}:{row.payload_hash}"},
+               {"type": "button", "action_id": "act_revise",
+                 "text": {"type": "plain_text", "text": "Ask for changes"},
+                 "value": f"{row.id}:{row.payload_hash}"}] if words else []),
             {"type": "button", "action_id": "act_cancel",
              "text": {"type": "plain_text", "text": "Cancel"}, "value": row.id},
         ]},
@@ -402,7 +403,8 @@ def _acked(payload: dict) -> bool:
 
 
 #: A Doc or Sheet lives in Drive but opens in its own app; say that app.
-_APP_NAMES = {"drive.create_doc": "Google Docs", "drive.create_sheet": "Google Sheets"}
+_APP_NAMES = {"drive.create_doc": "Google Docs", "drive.create_sheet": "Google Sheets",
+              "drive.append_rows": "Google Sheets"}
 _TOOL_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
                "drive": "Google Drive", "slack": "Slack"}
 

@@ -1,8 +1,9 @@
-"""Linear actions: create an issue, comment on one. Both run as the asker.
+"""Linear actions: create an issue, comment on one, update one. All run as the asker.
 
 The asker's token comes from their own Linear consent (``actor=user``, scopes
-``read,issues:create,comments:create``), so Linear itself decides whether they
-may write to a team. We still resolve the team ourselves first: Linear
+``read,issues:create,comments:create``, plus ``write`` only when an admin
+switched "update an issue" on: Linear has no narrower scope for changing an
+issue), so Linear itself decides whether they may write to a team. We still resolve the team ourselves first: Linear
 documents no specific error for a team the person cannot reach, and a clear
 "you can't file in that team" beats parsing one.
 
@@ -28,9 +29,19 @@ from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, P
 from .draft import asked_in, clean_body, clean_title, require_named
 
 GRAPHQL_URL = "https://api.linear.app/graphql"
-#: What a person grants when they connect Linear for actions. Never ``write``
-#: or ``admin``: create-only scopes cannot edit, close or delete anything.
+#: What a person grants when they connect Linear for actions. Never ``admin``.
+#: ``write`` (which could also archive) is asked only when updating is on
+#: (``scopes_for``); our code still sends only ``issueUpdate``.
 WRITE_SCOPES = "read,issues:create,comments:create"
+UPDATE_ACTION = "linear.update_issue"
+
+
+def scopes_for(org_id: str) -> str:
+    """The scopes a sign-in asks for in this company right now."""
+    from . import policy
+
+    on = UPDATE_ACTION in policy.enabled_actions(org_id, None)
+    return f"{WRITE_SCOPES},write" if on else WRITE_SCOPES
 _TIMEOUT = 15.0
 #: Members read for an audience. More than this and the audience is unknown.
 MEMBER_LIMIT = 250
@@ -166,7 +177,8 @@ def _parent_issue(token: str, ident: str) -> dict:
     return issue
 
 
-def _settings(args: dict[str, Any], ctx: ActionContext, team: dict, parent: dict | None):
+def _settings(args: dict[str, Any], ctx: ActionContext, team: dict, parent: dict | None,
+              *, label_key: str = "labelIds"):
     """The optional settings, each only when the asker's own words chose it,
     each resolved among what their token can see in this team. Nothing is
     created: an unknown label, person or project is refused, not made up."""
@@ -210,7 +222,7 @@ def _settings(args: dict[str, Any], ctx: ActionContext, team: dict, parent: dict
         usable = [n for n in ((data.get("issueLabels") or {}).get("nodes") or [])
                   if not n.get("team") or n["team"].get("id") == team["id"]]
         picked = [_one(usable, label, "label", "name") for label in labels]
-        chosen["labelIds"] = [n["id"] for n in picked]
+        chosen[label_key] = [n["id"] for n in picked]
         shown.append(("Labels", ", ".join(n["name"] for n in picked)))
 
     project = _optional(args, "project")
@@ -371,6 +383,109 @@ class LinearComment(Action):
         if not comment.get("id"):
             raise ActionError("Linear did not add the comment.")
         return ActionResult(comment["id"], comment.get("url"))
+
+
+class LinearUpdateIssue(Action):
+    """Change an existing issue's status, assignee, priority, labels, project or
+    due date. Every value is one the asker wrote, resolved among what exists in
+    the issue's team; labels are ADDED, never removed. No text is drafted."""
+
+    name = UPDATE_ACTION
+    provider = "linear"
+    label = "Linear: update an issue"
+    editable_fields = ()
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "linear_update_issue",
+            "description": (
+                "Change a Linear issue the user named by its identifier (e.g. ENG-42): its "
+                "status, assignee, priority, labels to add, project or due date. Fill ONLY "
+                "what the user asked to change."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_words": _REQUEST_WORDS,
+                    "issue": {"type": "string", "description":
+                              "The issue identifier exactly as the user wrote it, e.g. ENG-42."},
+                    "status": {"type": "string", "description": "The status exactly as the user wrote it."},
+                    "assignee": {"type": "string", "description":
+                                 "The person exactly as the user wrote them, or 'me'."},
+                    "priority": {"type": "string", "enum": list(PRIORITIES),
+                                 "description": "Only the word the user used."},
+                    "labels": {"type": "array", "items": {"type": "string"},
+                               "description": "Labels to add, exactly as the user wrote them."},
+                    "project": {"type": "string", "description": "The project exactly as the user wrote it."},
+                    "due_date": {"type": "string", "description": "YYYY-MM-DD."},
+                    "due_words": {"type": "string", "description":
+                                  "The user's words that gave the due date, copied verbatim."},
+                },
+                "required": ["request_words", "issue"],
+            },
+        },
+    }
+
+    def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
+        if not _granted_write(ctx):
+            raise ActionRejected(
+                "Your Linear sign-in can't update issues yet. Reconnect Linear under "
+                "Account → Agent to allow it.")
+        ident = require_named(args.get("issue"), ctx.question, "Linear issue")
+        if not _IDENTIFIER.fullmatch(ident):
+            raise ActionRejected("Name the Linear issue by its identifier, like ENG-42.")
+        issue = gql(ctx.token, "query($id: String!) { issue(id: $id) { id identifier title url "
+                               "state { name } team { id key name visibility } } }",
+                    {"id": ident.upper()}).get("issue")
+        if not issue:
+            raise ActionRejected(f"You can't see a Linear issue {ident.upper()}.")
+        team = issue.get("team") or {}
+        chosen, shown = _settings(args, ctx, team, None, label_key="addedLabelIds")
+        status = _optional(args, "status")
+        if status:
+            require_named(status, ctx.question, "status")
+            data = gql(ctx.token, "query($id: String!) { team(id: $id) { states { nodes { id name } } } }",
+                       {"id": team["id"]})
+            state = _one(((data.get("team") or {}).get("states") or {}).get("nodes") or [],
+                         status, "status in this team", "name")
+            chosen["stateId"] = state["id"]
+            was = (issue.get("state") or {}).get("name")
+            shown = details(("Status", f"{state['name']}" + (f" (was {was})" if was else ""))) + shown
+        if not chosen:
+            raise ActionRejected("Say what to change on the issue: status, assignee, priority, "
+                                 "labels, project or due date.")
+        shown = [["Add labels" if k == "Labels" else k, v] for k, v in shown]
+        return Proposal(
+            action=self.name,
+            target=ActionTarget("linear_issue", issue["id"],
+                                f"{issue['identifier']}: {issue.get('title') or ''}".strip(),
+                                issue.get("url")),
+            payload={"set": chosen, "details": shown},
+            audience=team_audience(ctx.token, team),
+        )
+
+    def execute(self, key, target, payload, token) -> ActionResult:
+        data = gql(
+            token,
+            "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) "
+            "{ success issue { id identifier url } } }",
+            {"id": target["external_id"], "input": payload.get("set") or {}},
+            write=True,
+        )
+        issue = (data.get("issueUpdate") or {}).get("issue") or {}
+        if not (data.get("issueUpdate") or {}).get("success") or not issue.get("id"):
+            raise ActionError("Linear did not update the issue.")
+        return ActionResult(issue.get("identifier") or issue["id"], issue.get("url"))
+
+
+def _granted_write(ctx: ActionContext) -> bool:
+    """The person's Linear sign-in includes ``write`` (asked only once updating was on)."""
+    from ..auth.user_connections import list_user_connections
+
+    for conn in list_user_connections(ctx.org_id, ctx.user_id):
+        if conn.provider == "linear":
+            return "write" in (conn.scopes or ())
+    return False
 
 
 def _uris(ctx: ActionContext) -> list[str]:

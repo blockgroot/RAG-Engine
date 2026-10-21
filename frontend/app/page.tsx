@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FeatureIcon } from "@/components/FeatureIcon";
-import { LandingProductArt } from "@/components/LandingProductArt";
-import { useSpotlight } from "@/components/Reveal";
 import { LandingShell } from "@/components/LandingShell";
-import { LandingSourcesOrbit } from "@/components/LandingSourcesOrbit";
+import { AnswerFigure, AskSteps } from "@/components/site/AnswerFigure";
+import { HeroFigure } from "@/components/site/HeroFigure";
+import { ModesFigure } from "@/components/site/ModesFigure";
+import { Surfaces } from "@/components/site/Surfaces";
+import { AccessFigure } from "@/components/site/AccessFigure";
+import { Background } from "@/components/site/Background";
+import { CloseFigure } from "@/components/site/CloseFigure";
+import { ControlPanel } from "@/components/site/ControlPanel";
+import { Receipts, Scoreboard } from "@/components/site/Proof";
 import { api } from "@/lib/api";
 import { homePathFor } from "@/lib/routing";
 
@@ -26,8 +31,6 @@ import { homePathFor } from "@/lib/routing";
 export default function RootPage() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const heroRef = useRef<HTMLElement>(null);
-  useSpotlight(heroRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,272 +56,194 @@ export default function RootPage() {
   }
 
   return (
-    <LandingShell active="home">
-      <section
-        ref={heroRef}
-        className="landing-hero landing-hero-split landing-wrap has-spotlight"
-        aria-labelledby="landing-title"
-      >
-        <div className="landing-hero-copy">
-          <p className="landing-eyebrow" data-reveal style={{ ["--i" as string]: "0" }}>
-            Your team&rsquo;s answers, in one place
-          </p>
-          <h1
-            id="landing-title"
-            className="landing-title"
-            data-reveal
-            style={{ ["--i" as string]: "1" }}
-          >
-            Ask your workplace
-            <br />
-            <span className="landing-title-accent">anything.</span>
+    <LandingShell>
+      <section className="site-wrap hero" aria-labelledby="landing-title">
+        <div>
+          <p className="site-label">Your company&rsquo;s knowledge, answered</p>
+          <h1 id="landing-title" className="hero-title">
+            Ask your workplace <em>anything.</em>
           </h1>
-          <p className="landing-subtitle" data-reveal style={{ ["--i" as string]: "2" }}>
-            Connect the tools your team already uses. Ask a question in plain
-            English and get a clear answer with a link to the original source.
+          <p className="hero-lead">
+            Handbook connects to Notion, Drive, Slack, Linear and GitHub. Ask a
+            question and get an answer with its source, dig into a broad
+            question, chart the numbers, or draft an update you approve before
+            it&rsquo;s sent.
           </p>
-          <div className="landing-cta-row" data-reveal style={{ ["--i" as string]: "3" }}>
-            <Link href="/signup" className="button landing-cta-primary">
+          <div className="hero-ctas">
+            <Link href="/signup" className="site-btn site-btn-solid">
               Get started
             </Link>
-            <Link href="/how-it-works" className="button button-secondary landing-cta-ghost">
-              See how it works
+            <Link href="#how" className="site-btn site-btn-ghost">
+              See how it works &rarr;
             </Link>
           </div>
-          <p className="landing-privacy-note" data-reveal style={{ ["--i" as string]: "4" }}>
-            Your data stays private. It is used only to answer your team&rsquo;s questions.
+        </div>
+        <HeroFigure />
+      </section>
+
+      <ul className="site-wrap hero-facts" aria-label="At a glance">
+        <li><strong>5</strong><span>tools connected</span></li>
+        <li><strong>4</strong><span>modes in one chat</span></li>
+        <li><strong>0</strong><span>actions sent without approval</span></li>
+      </ul>
+
+      <section id="how" className="site-wrap sec" aria-labelledby="how-title">
+        <div className="sec-head">
+          <p className="site-label">How it works</p>
+          <h2 id="how-title" className="sec-title">One answer, not a list of links.</h2>
+          <p className="sec-lead">
+            Ask the way you would ask a colleague. Handbook reads across your
+            tools and replies with the answer and where it came from, so you
+            never have to open five tabs to find it.
           </p>
         </div>
-        <LandingProductArt />
+        <AnswerFigure />
+        <AskSteps />
       </section>
 
-      {/* Composition varies on purpose: a showcase, then a plain list, then
-          a connected flow, then wash tiles. The page used to be four grids of
-          the same bordered card, which reads as filler however good the copy
-          is. Nothing here is boxed unless the box earns it. */}
-
-      <section id="what" className="show-band landing-wrap" aria-labelledby="what-title">
-        <div className="show-head" data-reveal>
-          <p className="landing-eyebrow">Asking</p>
-          <h2 id="what-title" className="show-title">
-            Ask one question,
-            <span className="show-title-accent"> across your work.</span>
-          </h2>
-          <p className="show-lead">
-            Handbook looks across the connected tools for you. You do not need to
-            remember where the answer was saved.
+      <section id="modes" className="site-wrap sec" aria-labelledby="modes-title">
+        <div className="sec-head">
+          <p className="site-label">Four modes, one chat</p>
+          <h2 id="modes-title" className="sec-title">Answer, investigate, chart or act.</h2>
+          <p className="sec-lead">
+            Pick a mode from the plus menu in the chat. Each one returns a
+            different kind of result, and every result shows where it came from.
           </p>
         </div>
-
-        <ul className="show-list">
-          <li className="show-item" data-reveal style={{ ["--i" as string]: "0" }}>
-            <span className="show-item-mark">
-              <FeatureIcon name="document" />
-            </span>
-            <div>
-              <h3>Get the answer, not a list of links</h3>
-              <p>
-                Policies, expenses, onboarding, decisions. The document it came
-                from is linked underneath.
-              </p>
-              <p className="show-item-ask">&ldquo;How much leave do I have left?&rdquo;</p>
-            </div>
-          </li>
-          <li className="show-item" data-reveal style={{ ["--i" as string]: "1" }}>
-            <span className="show-item-mark">
-              <FeatureIcon name="code" />
-            </span>
-            <div>
-              <h3>Catch up on what your team shipped</h3>
-              <p>
-                GitHub is checked at the moment you ask, so what you read is what
-                is there right now.
-              </p>
-              <p className="show-item-ask">&ldquo;Who reviewed the checkout change?&rdquo;</p>
-            </div>
-          </li>
-          <li className="show-item" data-reveal style={{ ["--i" as string]: "2" }}>
-            <span className="show-item-mark">
-              <FeatureIcon name="chart" />
-            </span>
-            <div>
-              <h3>See a chart when the answer is a number</h3>
-              <p>
-                Counted from the activity in your tools, with the items behind
-                every bar.
-              </p>
-              <p className="show-item-ask">&ldquo;Chart commits by author this quarter&rdquo;</p>
-            </div>
-          </li>
-        </ul>
+        <ModesFigure />
       </section>
 
-      <section id="works-for-you" className="show-band show-band-tint" aria-labelledby="auto-title">
-        <div className="landing-wrap">
-          <div className="show-head" data-reveal>
-            <p className="landing-eyebrow">Running in the background</p>
-            <h2 id="auto-title" className="show-title">
-              Keep work up to date automatically.
-            </h2>
-            <p className="show-lead">
-              Connect your tools once. Handbook keeps information current, sends the
-              reports you choose, and summarises survey feedback for you.
-            </p>
-          </div>
-
-          <ol className="show-flow" aria-label="What happens on its own">
-            <li className="show-step" data-reveal style={{ ["--i" as string]: "0" }}>
-              <span className="show-step-mark">
-                <FeatureIcon name="refresh" />
-              </span>
-              <h3>Automatic updates</h3>
-              <p>
-                New and updated work is picked up throughout the day, so answers use
-                recent information.
-              </p>
-            </li>
-            <li className="show-step" data-reveal style={{ ["--i" as string]: "1" }}>
-              <span className="show-step-mark">
-                <FeatureIcon name="schedule" />
-              </span>
-              <h3>Reports by email</h3>
-              <p>
-                Choose what to track and how often. Handbook emails a summary of what
-                changed since the last report.
-              </p>
-            </li>
-            <li className="show-step" data-reveal style={{ ["--i" as string]: "2" }}>
-              <span className="show-step-mark">
-                <FeatureIcon name="sentiment" />
-              </span>
-              <h3>Survey insights</h3>
-              <p>
-                Connect a Google Form to see which topics your team feels positive or
-                negative about. Responses stay anonymous.
-              </p>
-            </li>
-          </ol>
+      <section id="surfaces" className="site-wrap sec" aria-labelledby="surfaces-title">
+        <div className="sec-head">
+          <p className="site-label">Where you use it</p>
+          <h2 id="surfaces-title" className="sec-title">In the places your team already works.</h2>
         </div>
+        <Surfaces />
       </section>
 
-      <section id="control" className="show-band landing-wrap" aria-labelledby="control-title">
-        <div className="show-head" data-reveal>
-          <p className="landing-eyebrow">Under your control</p>
-          <h2 id="control-title" className="show-title">
-            Set the right boundaries.
-          </h2>
-          <p className="show-lead">
-            Admins choose the tools, people and AI model. These settings can be
-            changed whenever your team needs.
-          </p>
-        </div>
-
-        <div className="show-tiles">
-          <article className="show-tile" data-reveal style={{ ["--i" as string]: "0" }}>
-            <span className="show-tile-mark">
-              <FeatureIcon name="model" />
-            </span>
-            <h3>Choose your AI model</h3>
-            <p>
-              Use the built-in model or connect a provider your company already uses.
-              Handbook checks the connection before saving it.
-            </p>
-          </article>
-          <article className="show-tile" data-reveal style={{ ["--i" as string]: "1" }}>
-            <span className="show-tile-mark">
-              <FeatureIcon name="workspace" />
-            </span>
-            <h3>Separate spaces for teams</h3>
-            <p>
-              Give a project or department its own tools and members. Questions stay
-              within that space.
-            </p>
-          </article>
-          <article className="show-tile" data-reveal style={{ ["--i" as string]: "2" }}>
-            <span className="show-tile-mark">
-              <FeatureIcon name="secure" />
-            </span>
-            <h3>Private by default</h3>
-            <p>
-              Only invited people can sign in, and only your company can search its
-              information. Disconnect a tool and its stored copy is deleted.
-            </p>
-          </article>
-        </div>
-      </section>
-
-      <section id="sources" className="landing-section landing-section-orbit landing-wrap" aria-labelledby="sources-title">
-        <div className="landing-section-head" data-reveal>
+      <section id="security" className="site-wrap sec" aria-labelledby="security-title">
+        <div className="sec-split">
+          <AccessFigure />
           <div>
-            <p className="landing-eyebrow">Works with your tools</p>
-            <h2 id="sources-title" className="landing-section-title">
-              Connect the tools your team already uses.
-            </h2>
+            <p className="site-label">Access and privacy</p>
+            <h2 id="security-title" className="sec-title">Each person sees only what they can open.</h2>
+            <p className="sec-lead">
+              Handbook copies each tool&rsquo;s sharing along with the content and
+              checks it for every person, before anything is searched. Two
+              colleagues can ask the same question and get answers from
+              different documents.
+            </p>
+            <ul className="sec-checks">
+              <li>Never used to train AI models</li>
+              <li>Your company&rsquo;s information is kept apart from every other company</li>
+              <li>Drive, Slack, Linear and GitHub sharing is followed per person</li>
+              <li>Disconnect a tool and its stored copy is deleted</li>
+              <li>Survey results are shown for groups, never for one person</li>
+            </ul>
           </div>
-          <p className="landing-section-lead">
-            Notion, Drive, Slack, Linear and GitHub work together in one place. Add
-            Google Forms when you want survey insights.
-          </p>
         </div>
-        <LandingSourcesOrbit />
       </section>
 
-      <section className="landing-close landing-wrap" aria-labelledby="close-title">
-        <div className="landing-close-panel" data-reveal>
-          <div className="landing-close-orbit-wrap">
-            <div className="landing-close-orbit-ring" aria-hidden>
-              <span className="landing-close-orbit-glow" />
-            </div>
-            <div className="landing-close-orbit-core" aria-hidden>
-              <span>3</span>
-            </div>
-            <ol className="landing-close-orbit" aria-label="Getting started path">
-              <li className="landing-close-step" style={{ ["--step" as string]: "0" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <FeatureIcon name="link" />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Connect</strong>
-                  <span>Notion, Drive, Slack, Linear, or GitHub</span>
-                </span>
-              </li>
-              <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <FeatureIcon name="invite" />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Invite</strong>
-                  <span>Your team, by email</span>
-                </span>
-              </li>
-              <li className="landing-close-step" style={{ ["--step" as string]: "2" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <FeatureIcon name="secure" />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Ask</strong>
-                  <span>Answers from your own tools</span>
-                </span>
-              </li>
-            </ol>
-          </div>
+      <section id="control" className="site-wrap sec" aria-labelledby="control-title">
+        <div className="sec-head">
+          <p className="site-label">Under your control</p>
+          <h2 id="control-title" className="sec-title">Admins set the boundaries.</h2>
+          <p className="sec-lead">
+            Choose the model, separate teams into spaces, and decide what Agent
+            mode may do. Everything can be changed later.
+          </p>
+        </div>
+        <ControlPanel />
+      </section>
 
-          <div className="landing-close-copy">
-            <p className="landing-eyebrow">Start here</p>
-            <h2 id="close-title">Start in three simple steps.</h2>
-            <p className="landing-close-lead">
-              Connect a tool, invite your team and ask your first question. Add more
-              tools whenever you are ready.
+      <section id="background" className="site-wrap sec" aria-labelledby="background-title">
+        <div className="sec-head">
+          <p className="site-label">In the background</p>
+          <h2 id="background-title" className="sec-title">Keeps working after you ask.</h2>
+          <p className="sec-lead">
+            Handbook stays up to date, notices what people could not find, and
+            keeps your conversations ready for next time.
+          </p>
+        </div>
+        <Background />
+      </section>
+
+      <section id="results" className="site-wrap sec" aria-labelledby="results-title">
+        <div className="sec-split">
+          <div>
+            <p className="site-label">Head to head</p>
+            <h2 id="results-title" className="sec-title">Answers you can trust, including &ldquo;I don&rsquo;t know&rdquo;.</h2>
+            <p className="sec-lead">
+              We asked Handbook and another leading assistant the same 150
+              questions about 1,374 company documents, with the same AI model
+              behind both. A separate model graded every answer blind against
+              the documents.
             </p>
-            <div className="landing-close-actions">
-              <Link href="/signup" className="button landing-cta-primary landing-close-primary">
-                Request access
-              </Link>
-              <Link href="/how-it-works" className="landing-close-link">
-                See how it works
-              </Link>
+          </div>
+          <Scoreboard />
+        </div>
+        <div className="sec-split is-flip" style={{ marginTop: "clamp(3rem, 7vw, 5rem)" }}>
+          <div>
+            <p className="site-label">Speed and cost</p>
+            <h2 className="sec-title">Faster answers, a fraction of the text.</h2>
+            <p className="sec-lead">
+              Handbook reads what the question needs instead of everything
+              nearby: about one-sixteenth of the text per question, so answers
+              start sooner and cost less.
+            </p>
+          </div>
+          <Receipts />
+        </div>
+      </section>
+
+      <section id="start" className="site-wrap sec" aria-labelledby="start-title">
+        <div className="sec-head">
+          <p className="site-label">Get started</p>
+          <h2 id="start-title" className="sec-title">Set up what your team needs.</h2>
+          <p className="sec-lead">
+            An admin connects the tools and invites the team. Everything else is
+            optional and can be changed later.
+          </p>
+        </div>
+        <ol className="setup-steps">
+          <li>
+            <span className="steps-n">01</span>
+            <strong>Connect your tools</strong>
+            <p>Notion, Drive, Slack, Linear, GitHub or Google Forms. Choose what Handbook may read.</p>
+          </li>
+          <li>
+            <span className="steps-n">02</span>
+            <strong>Invite your team</strong>
+            <p>By email. People sign in with a secure link, so there is no password to manage.</p>
+          </li>
+          <li>
+            <span className="steps-n">03</span>
+            <strong>Add spaces, if you need them</strong>
+            <p>A project or department gets its own members and tools, kept apart from the rest.</p>
+          </li>
+          <li>
+            <span className="steps-n">04</span>
+            <strong>Pick a model, or use ours</strong>
+            <p>Use the built-in model or your company&rsquo;s own provider. The connection is tested first.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section className="site-wrap sec close" aria-labelledby="close-title">
+        <div className="sec-split">
+          <div>
+            <p className="site-label">Start here</p>
+            <h2 id="close-title" className="sec-title">Connect one tool and ask a question you already know.</h2>
+            <p className="sec-lead">
+              If the answer matches what you expected, and links where it came
+              from, you will know how far to trust the rest.
+            </p>
+            <div className="hero-ctas">
+              <Link href="/signup" className="site-btn site-btn-solid">Request access</Link>
+              <Link href="/login" className="site-btn site-btn-ghost">Sign in</Link>
             </div>
           </div>
+          <CloseFigure />
         </div>
       </section>
     </LandingShell>

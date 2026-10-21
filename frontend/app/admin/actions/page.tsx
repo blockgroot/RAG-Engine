@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
-import { McpServersAdmin } from "@/components/McpServersAdmin";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type AdminActions } from "@/lib/api";
@@ -230,7 +229,6 @@ export default function AdminActionsPage() {
           </section>
         )}
 
-        {data && <McpServersAdmin disabled={!data.enabled} />}
       </main>
     </AppShell>
   );

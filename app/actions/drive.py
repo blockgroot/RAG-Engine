@@ -1,4 +1,5 @@
-"""Google Docs and Sheets actions: create a new Doc or Sheet in the asker's own Drive.
+"""Google Docs and Sheets actions: create a new Doc or Sheet in the asker's own
+Drive, or add rows to a Sheet Handbook can already reach.
 
 It runs on the person's own token with ``drive.file`` only: Google's
 non-sensitive scope that reaches files the app creates (or the person picks),
@@ -29,7 +30,7 @@ from ..core.exceptions import (
     OAuthReauthRequiredError,
 )
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal
-from .draft import clean_body, clean_title, without_title_heading
+from .draft import clean_body, clean_title, require_named, without_title_heading
 
 #: The one Google scope Act asks a person for.
 DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
@@ -99,40 +100,48 @@ def without_rules(text: str) -> str:
 FOLDER = "application/vnd.google-apps.folder"
 
 
+def _drive_get(token: str, path: str, fields: str, refused: str) -> dict:
+    try:
+        response = httpx.get(f"https://www.googleapis.com/drive/v3/files/{path}", timeout=_TIMEOUT,
+                             params={"fields": fields, "supportsAllDrives": "true"},
+                             headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as exc:
+        raise ActionError("Could not reach Google.", cause=exc) from exc
+    if response.status_code == 401:
+        raise OAuthReauthRequiredError("Reconnect your Google account.")
+    if response.status_code in (403, 404):
+        raise ActionRejected(refused)
+    if response.status_code >= 400:
+        raise ActionError(f"Google answered {response.status_code}.")
+    return response.json() or {}
+
+
+def shared_audience(token: str, file_id: str) -> Audience:
+    """Who can open a file or folder. Shared with anyone or a whole domain is
+    public; a group cannot be listed, so it is unknown, and so is sharing
+    Google would not show."""
+    try:
+        perms = _drive_get(token, f"{file_id}/permissions", "permissions(type,emailAddress)",
+                           "no sharing").get("permissions") or []
+    except ActionRejected:
+        return Audience(members=None)
+    if any(p.get("type") in ("anyone", "domain") for p in perms):
+        return Audience(public=True)
+    if any(p.get("type") != "user" or not p.get("emailAddress") for p in perms):
+        return Audience(members=None)
+    return Audience(members=tuple(p["emailAddress"].lower() for p in perms))
+
+
 def folder_audience(token: str, folder_id: str) -> tuple[str, Audience]:
     """A folder the person picked in Google's picker: its name and who can open
-    what is created in it. Picking it is what lets drive.file reach it at all.
-    Shared with anyone or a whole domain is public; a group cannot be listed,
-    so it is unknown, and so is sharing Google would not show."""
-    def get(path: str, fields: str) -> dict:
-        try:
-            response = httpx.get(f"https://www.googleapis.com/drive/v3/files/{path}", timeout=_TIMEOUT,
-                                 params={"fields": fields, "supportsAllDrives": "true"},
-                                 headers={"Authorization": f"Bearer {token}"})
-        except httpx.HTTPError as exc:
-            raise ActionError("Could not reach Google.", cause=exc) from exc
-        if response.status_code == 401:
-            raise OAuthReauthRequiredError("Reconnect your Google account.")
-        if response.status_code in (403, 404):
-            raise ActionRejected("Handbook can't open that folder. Pick it again in Google's window.")
-        if response.status_code >= 400:
-            raise ActionError(f"Google answered {response.status_code}.")
-        return response.json() or {}
-
-    folder = get(folder_id, "id,name,mimeType,trashed,capabilities(canAddChildren)")
+    what is created in it. Picking it is what lets drive.file reach it at all."""
+    folder = _drive_get(token, folder_id, "id,name,mimeType,trashed,capabilities(canAddChildren)",
+                        "Handbook can't open that folder. Pick it again in Google's window.")
     if folder.get("mimeType") != FOLDER or folder.get("trashed"):
         raise ActionRejected("That isn't a folder in your Drive.")
     if not (folder.get("capabilities") or {}).get("canAddChildren"):
         raise ActionRejected(f"You can't add files to {folder.get('name')!r}.")
-    try:
-        perms = get(f"{folder_id}/permissions", "permissions(type,emailAddress)").get("permissions") or []
-    except ActionRejected:
-        return folder.get("name") or "Folder", Audience(members=None)
-    if any(p.get("type") in ("anyone", "domain") for p in perms):
-        return folder.get("name") or "Folder", Audience(public=True)
-    if any(p.get("type") != "user" or not p.get("emailAddress") for p in perms):
-        return folder.get("name") or "Folder", Audience(members=None)
-    return folder.get("name") or "Folder", Audience(members=tuple(p["emailAddress"].lower() for p in perms))
+    return folder.get("name") or "Folder", shared_audience(token, folder_id)
 
 
 def _upload(token: str, title: str, google_type: str, content_type: str, text: str,
@@ -268,3 +277,144 @@ class DriveCreateSheet(Action):
     def execute(self, key, target, payload, token) -> ActionResult:
         return _upload(token, payload["title"], "application/vnd.google-apps.spreadsheet",
                        "text/csv", sheet_csv(table_rows(payload["body"])), "Sheet", payload.get("folder"))
+
+
+SHEET = "application/vnd.google-apps.spreadsheet"
+SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
+
+
+def _sheets(method: str, path: str, token: str, *, params: dict | None = None,
+            json_body: dict | None = None) -> dict:
+    write = method != "GET"
+    try:
+        response = httpx.request(method, f"{SHEETS_API}/{path}", params=params, json=json_body,
+                                 headers={"Authorization": f"Bearer {token}"}, timeout=_TIMEOUT)
+    except httpx.HTTPError as exc:
+        if write:
+            raise ActionOutcomeUnknown("Google did not answer.", cause=exc) from exc
+        raise ActionError("Could not reach Google.", cause=exc) from exc
+    if response.status_code == 401:
+        raise OAuthReauthRequiredError("Reconnect your Google account.")
+    if write and response.status_code >= 500:
+        raise ActionOutcomeUnknown(f"Google answered {response.status_code}.")
+    if response.status_code in (403, 404):
+        raise ActionRejected("Google refused: you may not be allowed to edit that Sheet.")
+    if response.status_code >= 400:
+        raise ActionError(f"Google answered {response.status_code}.")
+    return response.json() or {}
+
+
+def _find_sheet(token: str, name: str) -> dict:
+    """The one Sheet called ``name`` that Handbook can reach. With drive.file
+    that is only Sheets Handbook created or the person picked, so a listing
+    can never wander into the rest of their Drive."""
+    quoted = name.replace("\\", "\\\\").replace("'", "\\'")
+    try:
+        response = httpx.get(
+            "https://www.googleapis.com/drive/v3/files", timeout=_TIMEOUT,
+            params={"q": f"name = '{quoted}' and mimeType = '{SHEET}' and trashed = false",
+                    "fields": "files(id,name,webViewLink,capabilities(canEdit))", "pageSize": "10",
+                    "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"},
+            headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as exc:
+        raise ActionError("Could not reach Google.", cause=exc) from exc
+    if response.status_code == 401:
+        raise OAuthReauthRequiredError("Reconnect your Google account.")
+    if response.status_code >= 400:
+        raise ActionError(f"Google answered {response.status_code}.")
+    found = (response.json() or {}).get("files") or []
+    if not found:
+        raise ActionRejected(
+            f"Handbook can't find a Google Sheet called {name!r}. It can add rows only to Sheets "
+            "it created for you in Agent mode.")
+    if len(found) > 1:
+        raise ActionRejected(f"More than one Sheet is called {name!r}. Rename one and ask again.")
+    if not (found[0].get("capabilities") or {}).get("canEdit"):
+        raise ActionRejected(f"You can't edit {name!r}.")
+    return found[0]
+
+
+class DriveAppendRows(Action):
+    """Add rows under the table in an existing Sheet's first tab. The rows are
+    sent RAW, so Sheets never reads a cell as a formula. The card shows the
+    Sheet's own header with the new rows; only the new rows can be edited."""
+
+    name = "drive.append_rows"
+    provider = "google"
+    label = "Google Sheets: add rows to a sheet"
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "drive_append_rows",
+            "description": "Add rows to the end of an existing Google Sheet the user named.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_words": {
+                        "type": "string",
+                        "description": ("The exact words from the user's message that ask for this "
+                                        "action, copied verbatim (for example 'add to the sheet')."),
+                    },
+                    "sheet": {"type": "string", "description": "The Sheet's name exactly as the user wrote it."},
+                    "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}},
+                             "description": "Only the NEW rows, no header. Plain values, never formulas."},
+                },
+                "required": ["request_words", "sheet", "rows"],
+            },
+        },
+    }
+
+    def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
+        sheet = _find_sheet(ctx.token, require_named(args.get("sheet"), ctx.question, "Sheet"))
+        meta = _sheets("GET", sheet["id"], ctx.token, params={"fields": "sheets.properties.title"})
+        tab = (((meta.get("sheets") or [{}])[0]).get("properties") or {}).get("title") or "Sheet1"
+        got = _sheets("GET", f"{sheet['id']}/values/{_a1(tab)}!1:1", ctx.token)
+        header = [_cell(c) for c in ((got.get("values") or [[]])[0])]
+        raw = args.get("rows") if isinstance(args.get("rows"), list) else []
+        rows = [[_cell(c) for c in r] for r in raw if isinstance(r, list)]
+        _check_size(rows)
+        width = max(len(header), *(len(r) for r in rows))
+        if header and width > len(header):
+            raise ActionRejected(f"{sheet['name']!r} has {len(header)} columns; the rows have more.")
+        header = header or [""] * width
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        body = clean_body(table_markdown([header, *rows]), ctx.question, [s.uri for s in ctx.sources if s.uri])
+        _new_rows(body, header)
+        return Proposal(
+            action=self.name,
+            target=ActionTarget("google_sheet", sheet["id"], f"{sheet['name']} › {tab}", sheet.get("webViewLink")),
+            payload={"body": body, "header": header, "tab": tab},
+            audience=shared_audience(ctx.token, sheet["id"]),
+        )
+
+    editable_fields = ("body",)
+
+    def edit(self, payload, fields, *, asked=None):
+        new = super().edit(payload, fields, asked=asked)
+        _new_rows(new["body"], payload["header"])
+        return new
+
+    def execute(self, key, target, payload, token) -> ActionResult:
+        rows = _new_rows(payload["body"], payload["header"])
+        _sheets("POST", f"{target['external_id']}/values/{_a1(payload['tab'])}!A1:append", token,
+                params={"valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS"},
+                json_body={"values": rows})
+        return ActionResult(target["external_id"], target.get("url"))
+
+
+def _a1(tab: str) -> str:
+    """A tab name quoted for A1 notation."""
+    return "'" + tab.replace("'", "''") + "'"
+
+
+def _new_rows(body: str, header: list[str]) -> list[list[str]]:
+    """The edited table's rows under the Sheet's header, which must be unchanged."""
+    rows = table_rows(body)
+    if rows[0] != header and any(header):
+        raise ActionRejected("Keep the Sheet's header row as it is; change only the new rows.")
+    new = rows[1:]
+    if not new:
+        raise ActionRejected("There are no rows to add.")
+    if any(len(r) != len(header) for r in new):
+        raise ActionRejected(f"Each row needs {len(header)} cells, one per column.")
+    return new

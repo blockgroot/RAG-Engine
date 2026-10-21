@@ -1,60 +1,63 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { BrandMark } from "@/components/BrandMark";
+import "@/app/site.css";
 
-/** Shared public chrome so home and How it works stay on the same grid. */
-export function LandingShell({
-  children,
-  active = "home",
-}: {
-  children: ReactNode;
-  active?: "home" | "how";
-}) {
+/**
+ * Public chrome for the marketing page. White, hairline rules, square
+ * buttons: the product figures carry the colour, the frame stays quiet.
+ * Styles live in app/site.css under `.site`, apart from the app's globals.
+ */
+export function LandingShell({ children }: { children: ReactNode }) {
   return (
-    <main className="landing landing-story">
-      <div className="landing-atmosphere" aria-hidden>
-        <span className="landing-orb landing-orb-a" />
-        <span className="landing-orb landing-orb-b" />
-        <span className="landing-orb landing-orb-c" />
-        <span className="landing-grid" />
-        <span className="landing-sheen" />
-      </div>
-
-      <header className="landing-topnav">
-        <div className="landing-wrap landing-topnav-inner">
-          <Link href="/" className="landing-brand">
+    <main className="landing site">
+      <header className="site-nav">
+        <div className="site-wrap site-nav-inner">
+          <Link href="/" className="site-brand">
             <BrandMark />
             <span>Handbook</span>
           </Link>
-          <nav className="landing-topnav-actions" aria-label="Page">
-            <Link
-              href="/#what"
-              className={`landing-nav-link landing-nav-link-hide-sm${active === "home" ? " is-active" : ""}`}
-            >
-              Product
-            </Link>
-            {/* Stays visible on a phone, unlike "Product" above. That one is
-                an anchor into the page it sits on, so hiding it costs a reader
-                nothing; this is the only OTHER page on the marketing site, and
-                hiding it left a mobile visitor with sign-in and sign-up as the
-                entire navigation. */}
-            <Link
-              href="/how-it-works"
-              className={`landing-nav-link${active === "how" ? " is-active" : ""}`}
-            >
-              How it works
-            </Link>
-            <Link href="/login" className="landing-nav-link">
+          <nav className="site-nav-links" aria-label="Page">
+            <Link href="/#how" className="site-nav-link">How it works</Link>
+            <Link href="/#modes" className="site-nav-link">Modes</Link>
+            <Link href="/#security" className="site-nav-link">Security</Link>
+            <Link href="/#results" className="site-nav-link">Results</Link>
+          </nav>
+          <div className="site-nav-actions">
+            <Link href="/login" className="site-btn site-btn-ghost site-hide-sm">
               Sign in
             </Link>
-            <Link href="/signup" className="button landing-cta-secondary">
+            <Link href="/signup" className="site-btn site-btn-solid">
               Request access
             </Link>
-          </nav>
+          </div>
         </div>
       </header>
 
       {children}
+
+      <footer className="site-foot">
+        <div className="site-wrap">
+          <div className="site-foot-top">
+            <div>
+              <Link href="/" className="site-brand">
+                <BrandMark />
+                <span>Handbook</span>
+              </Link>
+              <p className="site-foot-tag">Answers from your company&rsquo;s tools, with the source.</p>
+            </div>
+            <nav className="site-foot-links" aria-label="Footer">
+              <Link href="/#how">How it works</Link>
+              <Link href="/#modes">Modes</Link>
+              <Link href="/#security">Security</Link>
+              <Link href="/#results">Results</Link>
+              <Link href="/login">Sign in</Link>
+              <Link href="/signup" className="site-foot-cta">Request access</Link>
+            </nav>
+          </div>
+          <p className="site-foot-base">&copy; 2026 Handbook</p>
+        </div>
+      </footer>
     </main>
   );
 }
