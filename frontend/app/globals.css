@@ -1276,6 +1276,9 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .draft-table-wrap { overflow-x: auto; max-width: 100%; }
 .draft-table { border-collapse: collapse; font-size: 0.9em; }
 .draft-table th, .draft-table td { border: 1px solid var(--border, #d9dee3); padding: 0.25rem 0.5rem; text-align: left; }
+/* The card's dd breaks anywhere; in a table that split "ISSUE" into "ISSU E".
+   Words stay whole and a wide table scrolls in its wrapper. */
+.draft-table th, .draft-table td { overflow-wrap: normal; word-break: normal; }
 .answer-list li { margin: 0; padding-left: 0.15rem; }
 .answer-list li + li { margin-top: 0.45rem; }
 .chat-answer strong { font-weight: 700; color: var(--ink); }

@@ -57,7 +57,9 @@ class DriveCreateDoc(Action):
                         ),
                     },
                     "title": {"type": "string", "description": "The Doc's title."},
-                    "body": {"type": "string", "description": "The Doc's text."},
+                    "body": {"type": "string", "description": (
+                        "The Doc's text in Markdown: '## ' headings, '- ' bullets, "
+                        "**bold**. Never lines of '=' or '-' as rules or underlines.")},
                 },
                 "required": ["request_words", "title", "body"],
             },
@@ -72,7 +74,7 @@ class DriveCreateDoc(Action):
         return Proposal(
             action=self.name,
             target=ActionTarget("google_drive", "my-drive", "Your Google Drive (only you can see it)"),
-            payload={"title": title, "body": without_title_heading(body, title)},
+            payload={"title": title, "body": without_rules(without_title_heading(body, title))},
             audience=Audience(members=()),  # nobody but the asker
         )
 
@@ -81,6 +83,17 @@ class DriveCreateDoc(Action):
         # as text/plain the Doc showed the asterisks and hashes.
         return _upload(token, payload["title"], "application/vnd.google-apps.document",
                        "text/markdown", payload["body"], "Doc", payload.get("folder"))
+
+
+_RULE_LINE = re.compile(r"^[ \t]*={3,}[ \t]*(?:\n|\Z)", re.M)
+_BANNER = re.compile(r"^[ \t]*={2,}[ \t]*(\S.*?)[ \t]*=*[ \t]*$", re.M)
+
+
+def without_rules(text: str) -> str:
+    """'=====' rules dropped and '=== PART 1 ===' banners made '## ' headings.
+    Google reads Markdown, where a '===' line under text makes it a heading,
+    so plain-text banners came out as giant headings still showing the '='."""
+    return _BANNER.sub(r"## \1", _RULE_LINE.sub("", text)).strip()
 
 
 FOLDER = "application/vnd.google-apps.folder"

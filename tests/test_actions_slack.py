@@ -570,3 +570,22 @@ def test_a_typed_email_reads_as_typed_so_the_dm_request_is_found():
             return '{"act": true, "request_words": "DM raj@syvora.com on Slack"}'
 
     assert slack_act.asks_to_act(slack_act.plain_slack_text(text), llm=Model())
+
+
+def test_asked_in_a_dm_the_bot_messages_the_person_named(fake_slack):
+    """From Slack the bot posts, and it asked for a channel when the person
+    wanted a DM. It DMs only someone the asker wrote, saying who asked."""
+    raj = {"id": "U7", "name": "raj", "profile": {"email": "Raj@x.com", "real_name": "Raj D"}}
+    fake_slack(FakeSlack([], [], users=[raj, {"id": "U1", "profile": {"email": "a@x.com"}}]))
+    dm = {"kind": "slack_dm", "slack_user": "U1"}
+    post = slack_action.SlackPostMessage()
+    proposal = post.prepare({"person": "raj@x.com", "text": "Demo is live"},
+                            _sctx("DM raj@x.com: Demo is live", dm))
+    assert (proposal.target.kind, proposal.target.external_id) == ("slack_user", "U7")
+    assert proposal.payload["text"].startswith("<@U1> asked Handbook to send you this:\n")
+    assert proposal.audience == Audience(members=("raj@x.com", "a@x.com"))
+    with pytest.raises(ActionRejected):                      # a person they never wrote
+        post.prepare({"person": "raj@x.com", "text": "x"}, _sctx("DM someone: x", dm))
+    here = {"kind": "slack_channel", "slack_user": "U1", "channel": "C1", "thread_ts": "7.7"}
+    with pytest.raises(ActionRejected, match="DM me"):       # never from a channel
+        post.prepare({"person": "raj@x.com", "text": "x"}, _sctx("DM raj@x.com: x", here))

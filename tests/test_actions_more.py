@@ -355,3 +355,12 @@ def test_a_connection_needing_reconnect_is_still_offered(monkeypatch):
         UserConnectionInfo("linear", "x", "Sana", (), True, datetime(2026, 1, 1))])
     offered, why = service.offered_actions("org", "u1", None)
     assert [a.name for a in offered] == ["linear.create_issue"] and why is None
+
+
+def test_a_doc_turns_plain_text_banners_into_headings():
+    """Google reads the Doc as Markdown: a '=====' line made a giant heading
+    that still showed the '=' signs."""
+    from app.actions.drive import without_rules
+
+    drafted = "Intro.\n\n=========\n==== PART 1: LEAVE POLICY ====\nOverview.\nA = B stays\n====="
+    assert without_rules(drafted) == "Intro.\n\n## PART 1: LEAVE POLICY\nOverview.\nA = B stays"

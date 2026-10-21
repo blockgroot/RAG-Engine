@@ -314,6 +314,12 @@ class SlackPostMessage(Action):
                 "Handbook doesn't know your Slack account yet. Ask the Handbook bot to "
                 "do something in Slack once, then try again."
             )
+        person_named = (args.get("person") or "").strip() if isinstance(args.get("person"), str) else ""
+        if person_named:
+            # From a channel the bot only replies in that thread, as for any post.
+            if surface.get("kind") == "slack_channel":
+                raise ActionRejected("From a channel I can only reply in this thread. DM me to message someone.")
+            return self._prepare_bot_dm(person_named, args, ctx, asker)
         named = (args.get("channel") or "").strip() if isinstance(args.get("channel"), str) else ""
         thread_ts = None
         if surface.get("kind") == "slack_channel":
@@ -343,6 +349,23 @@ class SlackPostMessage(Action):
             payload={"text": f"<@{asker}> asked Handbook to post this:\n{_mrkdwn(body)}",
                      "thread_ts": thread_ts},
             audience=channel_audience(ctx.token, channel, members),
+        )
+
+    def _prepare_bot_dm(self, wanted: str, args: dict[str, Any], ctx: ActionContext, asker: str) -> Proposal:
+        """Asked in a DM with the bot: the bot messages the person they named,
+        saying who asked, like its channel posts. The audience is the two of them."""
+        person = _person(ctx.token, require_named(wanted, ctx.question, "person"))
+        body = clean_body(args.get("text"), ctx.question, [s.uri for s in ctx.sources if s.uri])
+        if not body:
+            raise ActionRejected("The draft is empty.")
+        name = (person.get("profile") or {}).get("real_name") or person.get("name") or person["id"]
+        email = ((person.get("profile") or {}).get("email") or "").lower()
+        return Proposal(
+            action=self.name,
+            target=ActionTarget("slack_user", person["id"], f"Direct message to {name}"),
+            payload={"text": f"<@{asker}> asked Handbook to send you this:\n{_mrkdwn(body)}",
+                     "thread_ts": None},
+            audience=Audience(members=(email, ctx.email.lower())) if email else Audience(members=None),
         )
 
     def _prepare_as_person(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
