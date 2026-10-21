@@ -376,13 +376,13 @@ def test_the_content_every_draft_names_is_read(monkeypatch):
 
     question = "From the README of x/y open an issue, and make a sheet of the open Linear bugs"
     form = {"type": "object", "properties": {}}
-    issue = SimpleNamespace(tool={"function": {"name": "github_create_issue", "parameters": form}})
-    sheet = SimpleNamespace(tool={"function": {"name": "drive_create_sheet", "parameters": form}})
+    issue = SimpleNamespace(tool={"function": {"name": "github_create_issue", "parameters": form}}, lookup=False)
+    sheet = SimpleNamespace(tool={"function": {"name": "drive_create_sheet", "parameters": form}}, lookup=False)
     monkeypatch.setattr(service.policy, "act_on", lambda *a: True)
     monkeypatch.setattr(service.policy, "surface_enabled", lambda *a: True)
     monkeypatch.setattr(service, "offered_actions", lambda *a, **k: ([issue, sheet], None))
     monkeypatch.setattr("app.llm.routed.use_model", lambda *a, **k: None)
-    monkeypatch.setattr(service, "_ask", lambda llm, q, passages, tools, offered: [
+    monkeypatch.setattr(service, "_ask_with_lookups", lambda llm, q, passages, tools, offered, **k: [
         (issue, {"document_words": "the README of x/y"}),
         (sheet, {"document_words": "the open Linear bugs"})])
     searched = []
@@ -401,7 +401,7 @@ def test_a_fourth_action_is_said_never_dropped_silently(monkeypatch):
     form = {"type": "object", "properties": {}}
 
     def act(name, label):
-        return SimpleNamespace(tool={"function": {"name": name, "parameters": form}}, label=label)
+        return SimpleNamespace(tool={"function": {"name": name, "parameters": form}}, label=label, lookup=False)
 
     four = [act("a", "Google Docs: create a new doc"), act("b", "Linear: create an issue"),
             act("c", "Slack: post a message or DM"), act("d", "GitHub: open an issue")]
@@ -409,7 +409,7 @@ def test_a_fourth_action_is_said_never_dropped_silently(monkeypatch):
     monkeypatch.setattr(service.policy, "surface_enabled", lambda *a: True)
     monkeypatch.setattr(service, "offered_actions", lambda *a, **k: (four, None))
     monkeypatch.setattr("app.llm.routed.use_model", lambda *a, **k: None)
-    monkeypatch.setattr(service, "_ask", lambda *a: [(x, {}) for x in four])
+    monkeypatch.setattr(service, "_ask_with_lookups", lambda *a, **k: [(x, {}) for x in four])
     drafted = []
     monkeypatch.setattr(service, "_draft", lambda action, args, **k: drafted.append(action) or ("row", None))
     out = service.propose("do all four", org_id="o", user_id="u", email="a@x.com", viewer=None,

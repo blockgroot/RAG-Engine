@@ -35,7 +35,8 @@ from urllib.parse import parse_qs
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 
-from ..actions import ACTIONS, policy, service, store
+from ..actions import policy, service, store
+from ..actions.factory import get_action
 from ..actions.draft import asked_in
 from ..actions.exposure import NEEDS_ACK
 from ..actions.store import ActionRow
@@ -234,10 +235,10 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
     """The approval card. Shows exactly what will be sent, formatted as Slack
     shows Markdown but escaped first, so a draft cannot format itself into a
     link or a ping."""
-    cls = ACTIONS.get(row.action)
+    cls = get_action(row.action, row.org_id)
     label = cls.label if cls else row.action
-    who = cls().attribution_for(row.payload) if cls else "as you"  # a DM as the person says so
-    tool = _PROVIDER.get(cls.provider if cls else "", "the tool")
+    who = cls.attribution_for(row.payload) if cls else "as you"  # a DM as the person says so
+    tool = _PROVIDER.get(cls.provider if cls else "", label.split(":")[0])
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text":
             f"*{_escape(label)}*  ·  {_escape(who)}, in {tool}\n*Where:* {_escape(row.target.get('name'))}"}},
@@ -415,7 +416,10 @@ def _outcome_text(row: ActionRow) -> str:
         named = row.action.startswith(("linear.", "github."))
         made = _escape(str((result.get("external_id") if named else None)
                            or row.payload.get("title") or row.target.get("name") or "it"))
-        tool = _APP_NAMES.get(row.action) or _TOOL_NAMES.get(row.action.split(".")[0], "the tool")
+        tool = _APP_NAMES.get(row.action) or _TOOL_NAMES.get(row.action.split(".")[0])
+        if tool is None:  # an MCP tool: its label names the server ("Asana: create task")
+            found = get_action(row.action, row.org_id)
+            tool = found.label.split(":")[0] if found else "the tool"
         return f"✅ Done: *{made}* · <{link}|Open in {tool}>" if link else f"✅ Done: *{made}*"
     if row.status == "unknown":
         return f"⚠️ This may have gone through. Check before trying again. {_escape(result.get('error') or '')}"
@@ -488,7 +492,7 @@ def open_change(payload: dict, act: dict) -> None:
         return
     editing = act["action_id"] == "act_edit"
     if editing:
-        words = ACTIONS[row.action]().editable(row.payload)
+        words = get_action(row.action, org_id).editable(row.payload)
         blocks = [{"type": "input", "block_id": field, "label": {"type": "plain_text", "text": field.title()},
                    "element": {"type": "plain_text_input", "action_id": field, "multiline": field != "title",
                                "max_length": 255 if field == "title" else 3000,
@@ -532,7 +536,7 @@ def apply_change(payload: dict) -> None:
             row = store.get(org_id, user.id, meta["id"])
             if row is None:
                 return
-            shown = ACTIONS[row.action]().editable(row.payload)
+            shown = get_action(row.action, org_id).editable(row.payload)
             changed = {k: v for k, v in values.items() if k in shown and v != shown[k]}
             if not changed:
                 return

@@ -2179,6 +2179,13 @@ class ActionsSettings:
     # to the Picker API, and the Cloud project NUMBER of the Google client.
     google_picker_api_key: str | None = None
     google_picker_app_id: str | None = None
+    # Other tools through MCP servers an admin adds (docs/plans/2026-10-21-mcp-actions.md).
+    # Where a person's MCP sign-in returns: the browser-facing /api proxy, so
+    # it is registered once and survives a backend move.
+    mcp_redirect_uri: str | None = None
+    mcp_timeout_seconds: float = 20.0
+    #: Lookup calls (admin-marked read tools) one request may make before drafting.
+    mcp_max_lookups: int = 4
 
     @classmethod
     def from_env(cls) -> "ActionsSettings":
@@ -2191,6 +2198,11 @@ class ActionsSettings:
             notion_redirect_uri=os.getenv("NOTION_ACT_REDIRECT_URI") or None,
             google_picker_api_key=os.getenv("GOOGLE_PICKER_API_KEY") or None,
             google_picker_app_id=os.getenv("GOOGLE_PICKER_APP_ID") or None,
+            mcp_redirect_uri=os.getenv("MCP_REDIRECT_URI") or (
+                f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/act/mcp/callback"
+                if os.getenv("FRONTEND_URL") else None),
+            mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "20")),
+            mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "4"))),
         )
 
     @property

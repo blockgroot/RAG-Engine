@@ -133,8 +133,6 @@ def fresh_user_token(org_id: str, user_id: str, provider: str) -> str:
     if stored.expires_at is None or stored.expires_at - REFRESH_MARGIN > datetime.now(timezone.utc):
         return stored.access_token
 
-    from .factory import build_oauth_provider
-
     failed: Exception | None = None
     with get_connection() as conn:
         row = conn.execute(
@@ -150,7 +148,7 @@ def fresh_user_token(org_id: str, user_id: str, provider: str) -> str:
         try:
             if not row[1]:
                 raise OAuthReauthRequiredError("no refresh token")
-            tokens = build_oauth_provider(provider).refresh(decrypt(row[1]))
+            tokens = _refresher(org_id, provider).refresh(decrypt(row[1]))
         except (OAuthError, NotImplementedError) as exc:
             failed = exc
         else:
@@ -165,6 +163,22 @@ def fresh_user_token(org_id: str, user_id: str, provider: str) -> str:
             return tokens.access_token
     mark_user_needs_reauth(org_id, user_id, provider)
     raise OAuthReauthRequiredError(f"Reconnect your {provider} account.", cause=failed) from failed
+
+
+def _refresher(org_id: str, provider: str):
+    """Who refreshes this sign-in: the tool's own OAuth client, or for an MCP
+    server (``mcp:<id>``) that server's registration."""
+    if provider.startswith("mcp:"):
+        from ..actions.mcp_client import McpOAuth
+        from ..actions.mcp_store import get_server
+
+        server = get_server(org_id, provider.split(":", 1)[1])
+        if server is None or not server.oauth:
+            raise NotImplementedError("no sign-in to refresh")
+        return McpOAuth(server.oauth)
+    from .factory import build_oauth_provider
+
+    return build_oauth_provider(provider)
 
 
 def mark_user_needs_reauth(org_id: str, user_id: str, provider: str) -> None:

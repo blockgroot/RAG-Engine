@@ -268,6 +268,34 @@ export interface AdminActions {
   surfaces: { name: string; label: string; enabled: boolean }[];
 }
 
+/** A tool of an MCP server an admin added. "lookup" runs while drafting, without a card. */
+export interface McpTool {
+  name: string;
+  title: string;
+  description: string;
+  read_only: boolean;
+  blocked: boolean;
+  mode: "off" | "lookup" | "write";
+}
+
+export interface McpServerAdmin {
+  id: string;
+  name: string;
+  url: string;
+  auth: "none" | "oauth";
+  enabled: boolean;
+  tools: McpTool[];
+}
+
+export interface McpServerMine {
+  id: string;
+  name: string;
+  auth: "none" | "oauth";
+  tools_on: number;
+  connected: boolean;
+  needs_reauth: boolean;
+}
+
 export interface MemberRecord {
   id: string;
   email: string;
@@ -903,6 +931,27 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+  adminMcp: () => request<{ servers: McpServerAdmin[]; sign_in_ready: boolean }>("/admin/mcp"),
+  addMcpServer: (name: string, url: string) =>
+    request<McpServerAdmin>("/admin/mcp", { method: "POST", body: JSON.stringify({ name, url }) }),
+  refreshMcpServer: (id: string) =>
+    request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
+  setMcpToolMode: (id: string, tool: string, mode: McpTool["mode"]) =>
+    request<McpTool>(`/admin/mcp/${encodeURIComponent(id)}/tools/${encodeURIComponent(tool)}`, {
+      method: "PUT",
+      body: JSON.stringify({ mode }),
+    }),
+  setMcpServerEnabled: (id: string, enabled: boolean) =>
+    request<{ id: string; enabled: boolean }>(`/admin/mcp/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  deleteMcpServer: (id: string) =>
+    request<{ deleted: boolean }>(`/admin/mcp/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  myMcp: () => request<{ servers: McpServerMine[] }>("/act/mcp"),
+  mcpConnectUrl: (id: string) => `${API_BASE_URL}/act/mcp/${encodeURIComponent(id)}/connect`,
+  disconnectMcp: (id: string) =>
+    request<{ deleted: boolean }>(`/act/mcp/${encodeURIComponent(id)}/connection`, { method: "DELETE" }),
   getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),

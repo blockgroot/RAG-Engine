@@ -119,12 +119,43 @@ def _ask(llm, question: str, passages: str | None, tools: list[dict], offered: l
         except json.JSONDecodeError:
             why = why or "Sorry, I lost track of that. Say it again?"
             continue
-        if not isinstance(args, dict) or not asked_in(args.get("request_words"), question):
+        # A lookup is a read the model runs while drafting, not something the
+        # asker asked for by name; every write still needs their words.
+        if not isinstance(args, dict) or (
+                not action.lookup and not asked_in(args.get("request_words"), question)):
             why = why or ("I only act when you ask me to do something directly, "
                           "for example “file an issue in Platform about …”.")
             continue
         picked.append((action, args))
     return picked or ActOutcome(why or "I can't do that here.")
+
+
+def _ask_with_lookups(llm, question: str, passages: str | None, tools: list[dict],
+                      offered: list[Action], *, org_id: str, user_id: str, found: list[str],
+                      looked: set[str], settings: ActionsSettings):
+    """``_ask``, running the lookups the model asks for (each an admin-marked
+    read of an MCP tool, with the person's own sign-in) and asking again with
+    their answers fenced as data, at most ``mcp_max_lookups`` reads per
+    request. ``found`` keeps the answers: they ground a draft's ids."""
+    while True:
+        shown = "\n\n".join(t for t in (passages, *found) if t) or None
+        picked = _ask(llm, question, shown, tools, offered)
+        if isinstance(picked, ActOutcome):
+            return picked
+        reads = [(a, args) for a, args in picked if a.lookup]
+        writes = [(a, args) for a, args in picked if not a.lookup]
+        budget = settings.mcp_max_lookups - len(found)
+        if not reads or budget <= 0:
+            return writes or ActOutcome("I looked that up but couldn't draft anything from it. "
+                                        "Say exactly what to do.")
+        for action, args in reads[:budget]:
+            looked.add(action.server.name)
+            try:
+                token = action.token_for(org_id, user_id)
+            except (ConfigurationError, OAuthReauthRequiredError):
+                found.append(f"[{action.label}: sign in to {action.server.name} again]")
+                continue
+            found.append(action.run(args, token, timeout=settings.mcp_timeout_seconds))
 
 
 def _with_document_words(tool: dict) -> dict:
@@ -260,7 +291,11 @@ def offered_actions(
     if workspace_id is not None and not policy.act_on(org_id, workspace_id):
         return [], "Agent mode isn't turned on in this space. The space's owner can turn it on in the space's settings."
     enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
-    if not enabled:
+    # Tools of MCP servers an admin added, in the modes the admin chose.
+    from .mcp import mcp_actions
+
+    extra = mcp_actions(org_id, user_id)
+    if not enabled and not extra:
         return [], "Your admin hasn't switched on any actions yet."
     # From the web every tool is the person's own connection, Slack included.
     # Asked inside Slack, the bot replies there for the person it saw.
@@ -271,7 +306,8 @@ def offered_actions(
     if slack_user:
         providers = (providers - {"slack"}) | slack_available(org_id, user_id, slack_user)
     offered = [ACTIONS[n]() for n in ACTIONS if n in enabled and ACTIONS[n].provider in providers]
-    if not offered:
+    offered += extra
+    if not any(not a.lookup for a in offered):
         needed = {ACTIONS[n].provider for n in enabled}
         return [], f"Connect your {_names(needed)} account in Handbook (Account → Agent) to let it act for you."
     return offered, None
@@ -320,8 +356,13 @@ def propose(
     # None is the default model (Slack, or no pick). Set here, not by the
     # caller, so a request never inherits another request's choice.
     use_model(model, org_id=org_id)
-    tools = [_with_document_words(a.tool) for a in offered]
-    picked = _ask(llm, question, None, tools, offered)
+    tools = [a.tool if a.lookup else _with_document_words(a.tool) for a in offered]
+    found: list[str] = []
+    looked: set[str] = set()
+    ask = lambda passages: _ask_with_lookups(  # noqa: E731
+        llm, question, passages, tools, offered, org_id=org_id, user_id=user_id,
+        found=found, looked=looked, settings=settings)
+    picked = ask(None)
     if isinstance(picked, ActOutcome):
         return picked
     sources: list[Source] = []
@@ -343,9 +384,14 @@ def propose(
         if not passages:
             return ActOutcome("I couldn't find anything you can see to draft that from. "
                               "Say what it should contain, or name where it's discussed.")
-        picked = _ask(llm, question, passages, tools, offered)
+        picked = ask(passages)
         if isinstance(picked, ActOutcome):
             return picked
+    # What a lookup returned is that tool's content, private to the person who
+    # read it: a source like any private passage, so moving it somewhere
+    # others can read needs the tick, and somewhere public is refused.
+    sources = [*sources, *(Source(f"mcp-lookup:{name}", f"what {name} returned", public=False,
+                                  viewers=(email.lower(),)) for name in sorted(looked))]
 
     # Over the limit: the first ones are drafted and the rest is SAID, never
     # dropped silently (a fourth action simply vanished).
@@ -353,7 +399,8 @@ def propose(
     picked = picked[:MAX_ACTIONS]
     drafts, refusals = [], []
     for action, args in picked:
-        made = _draft(action, args, question=question, sources=sources, org_id=org_id,
+        made = _draft(action, args, question=question, sources=sources, lookups="\n".join(found),
+                      org_id=org_id,
                       user_id=user_id, email=email, viewer=viewer, surface=surface,
                       kind=kind, scope_workspace_id=scope_workspace_id, settings=settings)
         if isinstance(made, str):
@@ -373,7 +420,7 @@ def propose(
 
 
 def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, surface, kind,
-           scope_workspace_id, settings):
+           scope_workspace_id, settings, lookups=""):
     """One form into one stored proposal, ``(row, exposure)``; or why not, in
     the person's terms. Each draft is checked on its own: its target, the
     person's access there, and who would newly see private content."""
@@ -383,7 +430,7 @@ def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, s
     try:
         token = action.token_for(org_id, user_id, kind)
         ctx = ActionContext(org_id, scope_workspace_id, user_id, email, question, token,
-                            tuple(sources), viewer, surface)
+                            tuple(sources), viewer, surface, lookups)
         proposal = action.prepare(args, ctx)
     except OAuthReauthRequiredError:
         return f"Reconnect your {name} account in Handbook (Account → Agent), then ask again."
@@ -429,7 +476,7 @@ def edit(
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
-    action = get_action(row.action)
+    action = get_action(row.action, org_id)
     if action is None:
         raise ActionRejected("This action is no longer available.")
     return store.update_payload(org_id, user_id, action_id, shown_hash=shown_hash,
@@ -531,7 +578,7 @@ def revise(
         raise NotFoundError("No such action.")
     if row.status != "proposed":
         raise ActionConflict(f"This was already {row.status}.")
-    action = get_action(row.action)
+    action = get_action(row.action, org_id)
     if action is None:
         raise ActionRejected("This action is no longer available.")
     current = action.editable(row.payload)
@@ -573,8 +620,8 @@ def confirm(
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
-    action = get_action(row.action)
-    if action is None or not policy.is_enabled(org_id, row.workspace_id, row.action):
+    action = get_action(row.action, org_id)
+    if action is None or not action.enabled_for(org_id, row.workspace_id):
         raise ActionRejected("Your admin has switched this action off.")
     if not policy.surface_enabled(org_id, row.surface):
         raise ActionRejected("Your admin has turned off Agent mode here.")

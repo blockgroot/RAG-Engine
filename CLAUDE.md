@@ -362,7 +362,12 @@ thread. A DM to a person the asker named is sent with THEIR Slack sign-in (endin
 "Sent with Handbook", shown on the card) when they connected one, else by the bot
 naming who asked, with no link to the bot's DM. Each Slack surface has its own admin switch. The bot may come through
 any of the company's Slack connections, company-wide or a space's (`slack._bot_scope`);
-which one posts never decides what a draft reads. Nothing runs unattended.
+which one posts never decides what a draft reads. Other tools come through MCP servers only an admin adds (`actions/mcp*.py`): every tool
+starts off, a write tool is an action like any other (card, approval, the person's own
+sign-in), a lookup must be marked read-only by the server AND chosen by the admin,
+destructive names are blocked, a tool whose schema changed is off again (hash), every
+non-drafted value must be in the asker's words or a lookup's answer, the audience is
+unknown, and every address must be public https. Nothing runs unattended.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
 owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only

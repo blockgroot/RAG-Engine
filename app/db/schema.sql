@@ -1462,3 +1462,28 @@ ALTER TABLE actions ADD CONSTRAINT actions_surface_check
 -- Editable drafts: the model's draft as first proposed, kept on the first
 -- edit so the log shows both what the model wrote and what was approved.
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS original_payload JSONB;
+
+-- Other tools through MCP servers (docs/plans/2026-10-21-mcp-actions.md). Only
+-- an admin adds a server. Every tool starts OFF; ``tool_modes`` holds the
+-- admin's choice per tool ("lookup": a read run without a card, "write":
+-- drafted and approved like every action) with the schema hash it was chosen
+-- for, so a tool the server later changes is off again until re-approved.
+-- ``oauth`` is discovery + client registration (secret encrypted); each person
+-- signs in themselves (user_connections.provider = 'mcp:<id>').
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id      UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    auth        TEXT NOT NULL CHECK (auth IN ('none', 'oauth')),
+    oauth       JSONB,
+    tools       JSONB NOT NULL DEFAULT '[]',
+    tool_modes  JSONB NOT NULL DEFAULT '{}',
+    enabled     BOOLEAN NOT NULL DEFAULT true,
+    created_by  UUID REFERENCES users (id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_org_url ON mcp_servers (org_id, url);
+-- An MCP sign-in uses PKCE; its verifier (encrypted) waits on the state row.
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;

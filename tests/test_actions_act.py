@@ -528,7 +528,9 @@ class FakeAction:
     """Records what confirm sends, and answers as told."""
 
     provider = "linear"
+    name = "linear.create_issue"
     sent: list = []
+    enabled_for = Action.enabled_for
     editable_fields = Action.editable_fields
     editable = Action.editable
     edit = Action.edit
@@ -553,7 +555,7 @@ def proposal(org, monkeypatch):
                                              "team": "Platform", "title": "Login", "body": "b"})
     out = _propose(org, "file an issue in Platform about login", llm)
     FakeAction.sent, FakeAction.raises = [], None
-    monkeypatch.setattr(service, "get_action", lambda name: FakeAction())
+    monkeypatch.setattr(service, "get_action", lambda name, org_id=None: FakeAction())
     return out.action
 
 

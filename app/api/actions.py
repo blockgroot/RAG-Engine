@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from ..actions import ACTIONS, policy
+from ..actions.factory import get_action
 from ..actions import service, store
 from ..actions.exposure import Exposure
 from ..actions.drive import DRIVE_FILE
@@ -239,19 +240,19 @@ def _action_id(raw: str) -> str:
 def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
     """What the Act page shows. Never a token; source titles only (the person
     could read every one of them when they asked)."""
-    cls = ACTIONS.get(row.action)
+    cls = get_action(row.action, row.org_id)
     return {
         "id": row.id,
         "action": row.action,
         "label": cls.label if cls else row.action,
-        "attribution": cls().attribution_for(row.payload) if cls else None,
+        "attribution": cls.attribution_for(row.payload) if cls else None,
         "folder_choice": bool(cls and cls.provider == "google" and ActionsSettings.from_env().folder_picker),
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
         # The drafted words as the person reads and edits them (a Slack post
         # without the line naming who asked), and whether they edited them.
-        "draft": cls().editable(row.payload) if cls else {},
+        "draft": cls.editable(row.payload) if cls else {},
         "edited": row.original_payload is not None,
         "payload_hash": row.payload_hash,
         "status": row.status,

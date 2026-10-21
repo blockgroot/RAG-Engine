@@ -9513,3 +9513,17 @@ a.people-card:hover { color: inherit; }
   .actions-permissions-panel,
   .actions-slack-panel { padding: 1.05rem; }
 }
+
+/* Other tools (MCP) on Admin › Actions */
+.mcp-add { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.mcp-add .input { flex: 1 1 14rem; min-width: 0; }
+.mcp-server header { align-items: flex-start; }
+.mcp-server header p { overflow-wrap: anywhere; }
+.mcp-server-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.mcp-tool { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.mcp-tool > span:first-child { display: grid; gap: 0.15rem; min-width: 0; }
+.mcp-tool small { color: var(--muted, #6b7280); overflow-wrap: anywhere; }
+.mcp-mode { width: auto; max-width: 15rem; flex: 0 0 auto; }
+.mcp-empty { margin: 0.5rem 0 0; }
+.mcp-servers { display: grid; gap: 0.5rem; }
+

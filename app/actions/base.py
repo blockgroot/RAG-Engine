@@ -118,6 +118,9 @@ class ActionContext:
     #: "slack_channel", "slack_user", "channel", "thread_ts"}``. From the
     #: event or session, never from the model.
     surface: dict | None = None
+    #: What lookups (an admin-marked read of an MCP tool) returned while
+    #: drafting: the tool's own answer, so an id taken from it is grounded.
+    lookups: str = ""
 
 
 class Action(ABC):
@@ -133,6 +136,8 @@ class Action(ABC):
     label: ClassVar[str]
     tool: ClassVar[dict[str, Any]]
     destructive: ClassVar[bool] = False
+    #: A read run while drafting (an MCP lookup), never a card or a write.
+    lookup: ClassVar[bool] = False
     #: Whose name the tool will show on the result, said on the card. "as you"
     #: only where the tool records the person; a bot-recorded write says so.
     attribution: ClassVar[str] = "as you"
@@ -140,6 +145,12 @@ class Action(ABC):
     def attribution_for(self, payload: dict[str, Any]) -> str:
         """Whose name the result carries, for this draft."""
         return self.attribution
+
+    def enabled_for(self, org_id: str, workspace_id: str | None) -> bool:
+        """Switched on here right now (checked again when the write is sent)."""
+        from . import policy
+
+        return policy.is_enabled(org_id, workspace_id, self.name)
 
     def token_for(self, org_id: str, user_id: str, surface: str = "web",
                   payload: dict[str, Any] | None = None) -> str:

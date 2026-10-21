@@ -82,7 +82,8 @@ export function ActionCard({
   const secondsLeft = remaining(card.expires_at, now);
   const expired = pending && secondsLeft === 0;
   const needsAck = card.exposure === "wider" || card.exposure === "unknown";
-  const provider = PROVIDER_LABEL[card.provider ?? ""] ?? card.provider ?? "the tool";
+  // An MCP tool's label names its server ("Asana: Create task").
+  const provider = PROVIDER_LABEL[card.provider ?? ""] ?? (card.label.split(":")[0] || "the tool");
   // A Doc or Sheet is stored in Drive but opens in its own app.
   const openIn = APP_LABEL[card.action] ?? provider;
   const draft = card.draft ?? card.payload;

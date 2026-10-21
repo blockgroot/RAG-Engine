@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import { ActionCard } from "@/components/ActionCard";
-import { ApiError, api, type ActCard, type ActStatus } from "@/lib/api";
+import { ApiError, api, type ActCard, type ActStatus, type McpServerMine } from "@/lib/api";
 
 const PROVIDER_LABEL: Record<string, string> = {
   linear: "Linear",
@@ -22,6 +22,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   notion: "Notion",
   google: "Google Docs & Sheets",
   slack: "Slack",
+  mcp: "That tool",
 };
 
 /** Why a connect was refused. Each is about keeping company content inside
@@ -87,14 +88,16 @@ function ActionHistoryRow({ action }: { action: ActCard }) {
 
 export function ActPanel() {
   const [status, setStatus] = useState<ActStatus | null>(null);
+  const [mcp, setMcp] = useState<McpServerMine[]>([]);
   const [recent, setRecent] = useState<ActCard[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const next = await api.actStatus();
+      const [next, other] = await Promise.all([api.actStatus(), api.myMcp().catch(() => ({ servers: [] }))]);
       setStatus(next);
+      setMcp(other.servers);
       setRecent(next.recent ?? []);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not load Agent settings.");
@@ -123,6 +126,16 @@ export function ActPanel() {
     if (connected || failed)
       window.history.replaceState(null, "", "/account#act");
   }, []);
+
+  async function disconnectMcp(id: string) {
+    setError(null);
+    try {
+      await api.disconnectMcp(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not disconnect.");
+    }
+  }
 
   async function disconnect(provider: string) {
     setError(null);
@@ -177,7 +190,7 @@ export function ActPanel() {
         </div>
       )}
 
-      {status && status.actions.length === 0 ? (
+      {status && status.actions.length === 0 && mcp.length === 0 ? (
         <p className="muted">
           Your admin hasn&rsquo;t switched on any actions yet.
         </p>
@@ -225,6 +238,32 @@ export function ActPanel() {
                       {p.needs_reauth ? "Reconnect" : "Connect"}
                     </a>
                   ) : null}
+                </li>
+              ))}
+              {/* Other tools an admin added through MCP: each signed in to apart. */}
+              {mcp.map((m) => (
+                <li key={m.id} className="act-provider">
+                  <div className="act-provider-copy">
+                    <span className="act-provider-name">{m.name}</span>
+                    {m.connected ? (
+                      <span className="act-status-ready">
+                        {m.auth === "none" ? "No sign-in needed" : "Signed in"}
+                      </span>
+                    ) : (
+                      <span className="act-status-note">
+                        {m.needs_reauth ? "Sign-in expired" : "Not signed in"}
+                      </span>
+                    )}
+                  </div>
+                  {m.auth === "none" ? null : m.connected ? (
+                    <button type="button" className="act-text-button" onClick={() => disconnectMcp(m.id)}>
+                      Disconnect
+                    </button>
+                  ) : (
+                    <a className="button button-secondary button-sm" href={api.mcpConnectUrl(m.id)}>
+                      {m.needs_reauth ? "Sign in again" : "Sign in"}
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>

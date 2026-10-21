@@ -70,7 +70,12 @@ def slack_user_for(org_id: str, user_id: str) -> str | None:
     return row[0] if row else None
 
 
-def get_action(name: str) -> Action | None:
-    """The action class for a stored row's name, or ``None`` for an unknown one."""
+def get_action(name: str, org_id: str | None = None) -> Action | None:
+    """The action for a stored row's name, or ``None`` for an unknown one. An
+    MCP tool (``mcp:<server>:<tool>``) is read from that org's server as it is now."""
+    if name.startswith("mcp:"):
+        from .mcp import get_mcp_action
+
+        return get_mcp_action(name, org_id)
     cls = ACTIONS.get(name)
     return cls() if cls else None
