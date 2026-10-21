@@ -24,6 +24,7 @@ nobody is pinged.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -34,8 +35,10 @@ from ..core.exceptions import (
     ActionOutcomeUnknown,
     ActionRejected,
     ConfigurationError,
+    OAuthReauthRequiredError,
 )
-from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, Source
+from .base import (Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, Source,
+                   details)
 from .draft import clean_body, require_named
 
 API = "https://slack.com/api"
@@ -110,6 +113,7 @@ def _channel_by_name(token: str, name: str, hint: str = "") -> dict:
     raise ActionRejected(f"I can't see a channel called #{wanted}.{hint}")
 
 
+_SENT_WITH = "_Sent with Handbook_"
 _NO_DM_PERSON = "Reconnect Slack in Handbook (Account → Agent) to allow direct messages. Nothing was sent."
 #: Inside Slack the BOT sends, so it is the app's scope, not the person's sign-in.
 _NO_DM_BOT = ("The Handbook Slack app can't send direct messages yet: an admin needs to add the "
@@ -236,7 +240,7 @@ def unescape(text: str) -> str:
 class SlackPostMessage(Action):
     name = "slack.post_message"
     provider = "slack"
-    label = "Slack: post a message"
+    label = "Slack: post a message or DM"
     attribution = "as Handbook, naming you"
     tool = {
         "type": "function",
@@ -302,11 +306,13 @@ class SlackPostMessage(Action):
         lead = payload.get("text", "").partition("\n")[0]
         return {**payload, "text": f"{lead}\n{_mrkdwn(body)}"}
 
-    def token_for(self, org_id: str, user_id: str, surface: str = "web") -> str:
+    def token_for(self, org_id: str, user_id: str, surface: str = "web",
+                  payload: dict[str, Any] | None = None) -> str:
         """From the web, the person's own Slack sign-in; inside Slack, the
         company's bot (through any of its Slack connections), replying where
-        it was asked."""
-        if surface == "web":
+        it was asked. A DM drafted as the person is sent with their sign-in
+        wherever it was asked."""
+        if surface == "web" or (payload or {}).get("as_person"):
             return super().token_for(org_id, user_id, surface)
         return get_live_connection_token(org_id, "slack", workspace_id=_bot_scope(org_id))
 
@@ -358,8 +364,16 @@ class SlackPostMessage(Action):
         )
 
     def _prepare_bot_dm(self, wanted: str, args: dict[str, Any], ctx: ActionContext, asker: str) -> Proposal:
-        """Asked in a DM with the bot: the bot messages the person they named,
-        saying who asked, like its channel posts. The audience is the two of them."""
+        """Asked in a DM with the bot: sent AS the asker when they connected
+        their own Slack (Account → Agent), so it arrives from them, noting
+        Handbook; otherwise the bot sends it, saying who asked. The audience is
+        the two of them either way."""
+        try:
+            own = super().token_for(ctx.org_id, ctx.user_id)
+        except (ConfigurationError, OAuthReauthRequiredError):
+            own = None
+        if own:
+            return self._prepare_as_person({**args, "person": wanted}, replace(ctx, token=own))
         person = _person(ctx.token, require_named(wanted, ctx.question, "person"))
         body = clean_body(args.get("text"), ctx.question, [s.uri for s in ctx.sources if s.uri])
         if not body:
@@ -394,7 +408,9 @@ class SlackPostMessage(Action):
             return Proposal(
                 action=self.name,
                 target=ActionTarget("slack_user", person["id"], f"Direct message to {name}"),
-                payload=payload,
+                # Sent as them, so the person reading it knows Handbook wrote it.
+                payload={**payload, "footer": _SENT_WITH,
+                         "details": details(("Ends with", _SENT_WITH.strip("_")))},
                 # The two of them. An unreadable email is an unknown audience.
                 audience=Audience(members=(email, ctx.email.lower())) if email else Audience(members=None),
             )
@@ -424,7 +440,8 @@ class SlackPostMessage(Action):
             opened = _post(token, "conversations.open", {"users": channel},
                            missing=_NO_DM_PERSON if payload.get("as_person") else _NO_DM_BOT)
             channel = (opened.get("channel") or {}).get("id") or ""
-        message = {"channel": channel, "text": payload["text"], **_NO_UNFURL}
+        text = payload["text"] + (f"\n{payload['footer']}" if payload.get("footer") else "")
+        message = {"channel": channel, "text": text, **_NO_UNFURL}
         if payload.get("thread_ts"):
             message["thread_ts"] = payload["thread_ts"]
         try:
@@ -436,6 +453,8 @@ class SlackPostMessage(Action):
         if not body.get("ok"):
             raise ActionError(f"Slack refused the post: {body.get('error')}.")
         ts = body.get("ts") or ""
+        if target.get("kind") == "slack_user" and not payload.get("as_person"):
+            return ActionResult(ts, None)  # the bot's own DM with them: not one the asker can open
         try:
             link = _get(token, "chat.getPermalink",
                         {"channel": channel, "message_ts": ts}).get("permalink")

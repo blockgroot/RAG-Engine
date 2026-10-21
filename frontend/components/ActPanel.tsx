@@ -20,7 +20,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   linear: "Linear",
   github: "GitHub",
   notion: "Notion",
-  google: "Google Drive",
+  google: "Google Docs & Sheets",
   slack: "Slack",
 };
 

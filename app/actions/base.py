@@ -141,9 +141,11 @@ class Action(ABC):
         """Whose name the result carries, for this draft."""
         return self.attribution
 
-    def token_for(self, org_id: str, user_id: str, surface: str = "web") -> str:
+    def token_for(self, org_id: str, user_id: str, surface: str = "web",
+                  payload: dict[str, Any] | None = None) -> str:
         """The token this action writes with: the asker's own, refreshed.
-        ``surface`` is where it was asked (only Slack's bot replies differ)."""
+        ``surface`` is where it was asked (only Slack's bot replies differ);
+        ``payload`` is the stored draft, given at send time."""
         from ..auth.user_connections import fresh_user_token
 
         return fresh_user_token(org_id, user_id, self.provider)

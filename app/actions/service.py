@@ -568,7 +568,7 @@ def confirm(
         raise ActionRejected("Your admin has turned off Agent mode here.")
     if not policy.within_rate(org_id, user_id, settings=settings):
         raise ActionRejected("You've reached the hourly limit for actions. Try again later.")
-    token = action.token_for(org_id, user_id, row.surface)
+    token = action.token_for(org_id, user_id, row.surface, payload=row.payload)
 
     claimed = store.claim(org_id, user_id, action_id, shown_hash=shown_hash,
                           acknowledged=acknowledged)

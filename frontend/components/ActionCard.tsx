@@ -31,6 +31,11 @@ const PROVIDER_LABEL: Record<string, string> = {
   slack: "Slack",
 };
 
+const APP_LABEL: Record<string, string> = {
+  "drive.create_doc": "Google Docs",
+  "drive.create_sheet": "Google Sheets",
+};
+
 const STATUS_LINE: Record<ActCard["status"], string> = {
   proposed: "Waiting for your approval",
   executing: "Sending…",
@@ -78,6 +83,8 @@ export function ActionCard({
   const expired = pending && secondsLeft === 0;
   const needsAck = card.exposure === "wider" || card.exposure === "unknown";
   const provider = PROVIDER_LABEL[card.provider ?? ""] ?? card.provider ?? "the tool";
+  // A Doc or Sheet is stored in Drive but opens in its own app.
+  const openIn = APP_LABEL[card.action] ?? provider;
   const draft = card.draft ?? card.payload;
   const bodyLabel =
     card.action === "drive.create_sheet"
@@ -176,7 +183,7 @@ export function ActionCard({
       <header className="act-card-head">
         <span className="act-card-label">{card.label}</span>
         <span className="act-card-as">
-          {card.attribution ?? "as you"}, in {provider}
+          {card.attribution ?? "as you"}, in {openIn}
         </span>
       </header>
 
@@ -366,7 +373,7 @@ export function ActionCard({
           <span className="studio-chip">{expired ? STATUS_LINE.expired : STATUS_LINE[card.status]}</span>
           {card.status === "succeeded" && card.result?.url && (
             <a className="act-card-result-link" href={card.result.url} target="_blank" rel="noreferrer">
-              Open in {provider}
+              Open in {openIn}
             </a>
           )}
           {(card.status === "failed" || card.status === "unknown") && card.result?.error && (

@@ -18,11 +18,11 @@ import { useMe } from "@/lib/useMe";
 import { ApiError, api, type AdminActions } from "@/lib/api";
 
 const PROVIDERS = [
-  ["linear", "Linear", "Issues and comments"],
-  ["github", "GitHub", "Issues and pull-request comments"],
-  ["notion", "Notion", "Pages, page content and comments"],
-  ["google", "Google Drive", "New documents in a person’s Drive"],
-  ["slack", "Slack", "Messages from the Handbook bot"],
+  ["linear", "Linear", "Issues, sub-issues and comments, as the person"],
+  ["github", "GitHub", "Issues and comments, as the person (never code)"],
+  ["notion", "Notion", "Pages, comments and database rows"],
+  ["google", "Google Docs & Sheets", "New Docs and Sheets, private to the person who asked"],
+  ["slack", "Slack", "Channel posts, thread replies and DMs"],
 ] as const;
 
 type Mode = "off" | "on";
@@ -37,8 +37,8 @@ const MODES: { value: Mode; label: string; hint: string }[] = [
 ];
 
 const SURFACE_COPY: Record<string, string> = {
-  "surface:slack_dm": "People can ask privately in a DM with Handbook.",
-  "surface:slack_channel": "People can ask in a channel; any Slack post stays in that thread.",
+  "surface:slack_dm": "People can ask Agent mode privately in a DM with Handbook.",
+  "surface:slack_channel": "People can ask Agent mode in a channel; any Slack post stays in that thread.",
 };
 
 export default function AdminActionsPage() {

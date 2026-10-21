@@ -520,7 +520,7 @@ def test_a_dm_says_it_is_drafting_then_becomes_the_card(act_env, monkeypatch):
     ("slack.post_message", {"external_id": "1792146193.424979"}, {"text": "x"},
      {"name": "#rag-updates (this thread)"}, "#rag-updates (this thread)", "Slack"),
     ("drive.create_doc", {"external_id": "1AbCdEf"}, {"title": "Retro"}, {"name": "Your Google Drive"},
-     "Retro", "Google Drive"),
+     "Retro", "Google Docs"),
 ])
 def test_done_names_what_was_made_and_links_to_it(action, result, payload, target, shown, tool):
     row = _row(action=action, status="succeeded", payload=payload, target=target,
@@ -541,7 +541,7 @@ def test_a_second_click_shows_the_outcome_with_its_link(click_env, monkeypatch):
         action="drive.create_doc", status="succeeded", payload={"title": "Retro"},
         result={"external_id": "1Ab", "url": "https://docs.google.com/d/1Ab"}))
     slack_act.decide(*_click("U1", "act_approve", f"{uuid.uuid4()}:{'h' * 64}"))
-    assert click_env["said"][-1][0] == "✅ Done: *Retro* · <https://docs.google.com/d/1Ab|Open in Google Drive>"
+    assert click_env["said"][-1][0] == "✅ Done: *Retro* · <https://docs.google.com/d/1Ab|Open in Google Docs>"
 
 
 def test_a_click_on_a_card_in_a_thread_answers_in_that_thread(click_env, monkeypatch):
@@ -574,9 +574,16 @@ def test_a_typed_email_reads_as_typed_so_the_dm_request_is_found():
     assert slack_act.asks_to_act(slack_act.plain_slack_text(text), llm=Model())
 
 
-def test_asked_in_a_dm_the_bot_messages_the_person_named(fake_slack):
+def test_asked_in_a_dm_the_bot_messages_the_person_named(fake_slack, monkeypatch):
     """From Slack the bot posts, and it asked for a channel when the person
     wanted a DM. It DMs only someone the asker wrote, saying who asked."""
+    from app.actions.base import Action
+    from app.core.exceptions import ConfigurationError
+
+    def no_own_slack(self, *a, **k):
+        raise ConfigurationError("not connected")
+
+    monkeypatch.setattr(Action, "token_for", no_own_slack)
     raj = {"id": "U7", "name": "raj", "profile": {"email": "Raj@x.com", "real_name": "Raj D"}}
     fake_slack(FakeSlack([], [], users=[raj, {"id": "U1", "profile": {"email": "a@x.com"}}]))
     dm = {"kind": "slack_dm", "slack_user": "U1"}
@@ -605,3 +612,51 @@ def test_a_missing_dm_scope_names_the_right_fix(monkeypatch, as_person, fix):
     with pytest.raises(slack_action.ActionError, match=fix):
         slack_action.SlackPostMessage().execute(
             "k", {"kind": "slack_user", "external_id": "U7"}, payload, "tok")
+
+
+
+def test_with_their_own_slack_a_dm_asked_in_slack_comes_from_them(fake_slack, monkeypatch):
+    """Raj should get it from Sana, noting Handbook, not from the bot."""
+    from app.actions.base import Action
+
+    monkeypatch.setattr(Action, "token_for", lambda self, *a, **k: "xoxp-own")
+    raj = {"id": "U7", "name": "raj", "profile": {"email": "raj@x.com", "real_name": "Raj D"}}
+    fake_slack(FakeSlack([], [], users=[raj]))
+    post = slack_action.SlackPostMessage()
+    proposal = post.prepare({"person": "raj@x.com", "text": "Demo is live"},
+                            _sctx("DM raj@x.com: Demo is live", {"kind": "slack_dm", "slack_user": "U1"}))
+    assert proposal.payload["as_person"] is True and proposal.payload["text"] == "Demo is live"
+    assert proposal.payload["footer"] == "_Sent with Handbook_"
+    assert ["Ends with", "Sent with Handbook"] in proposal.payload["details"]
+    # Sent with their sign-in, though it was asked in Slack.
+    assert post.token_for("org", "u1", "slack_dm", payload=proposal.payload) == "xoxp-own"
+
+    sent = []
+
+    class Ok:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, json, timeout, headers):
+        sent.append((url.rsplit("/", 1)[1], json))
+        return Ok({"ok": True, "channel": {"id": "D9"}, "ts": "1.2"})
+
+    monkeypatch.setattr(slack_action.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_action, "_get", lambda t, m, p: {"permalink": "https://slack/x"})
+    result = post.execute("k", {"kind": "slack_user", "external_id": "U7"}, proposal.payload, "xoxp-own")
+    assert sent[-1][1]["text"] == "Demo is live\n_Sent with Handbook_"
+    assert result.url == "https://slack/x"           # their own DM with Raj: they can open it
+
+
+def test_the_bots_dm_has_no_link_the_asker_could_not_open(monkeypatch):
+    class Ok:
+        def json(self):
+            return {"ok": True, "channel": {"id": "D9"}, "ts": "1.2"}
+
+    monkeypatch.setattr(slack_action.httpx, "post", lambda *a, **k: Ok())
+    result = slack_action.SlackPostMessage().execute(
+        "k", {"kind": "slack_user", "external_id": "U7"}, {"text": "<@U1> asked…\nhi", "thread_ts": None}, "xoxb")
+    assert result.url is None

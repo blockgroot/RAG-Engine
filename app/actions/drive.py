@@ -40,7 +40,7 @@ _TIMEOUT = 20.0
 class DriveCreateDoc(Action):
     name = "drive.create_doc"
     provider = "google"
-    label = "Google Docs: create a doc in your Drive"
+    label = "Google Docs: create a new doc"
     tool = {
         "type": "function",
         "function": {
@@ -221,7 +221,7 @@ def sheet_csv(rows: list[list[str]]) -> str:
 class DriveCreateSheet(Action):
     name = "drive.create_sheet"
     provider = "google"
-    label = "Google Sheets: create a sheet in your Drive"
+    label = "Google Sheets: create a new sheet"
     tool = {
         "type": "function",
         "function": {

@@ -395,6 +395,8 @@ def _acked(payload: dict) -> bool:
     return bool((values.get("act_ack") or {}).get("selected_options"))
 
 
+#: A Doc or Sheet lives in Drive but opens in its own app; say that app.
+_APP_NAMES = {"drive.create_doc": "Google Docs", "drive.create_sheet": "Google Sheets"}
 _TOOL_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
                "drive": "Google Drive", "slack": "Slack"}
 
@@ -408,7 +410,7 @@ def _outcome_text(row: ActionRow) -> str:
         named = row.action.startswith(("linear.", "github."))
         made = _escape(str((result.get("external_id") if named else None)
                            or row.payload.get("title") or row.target.get("name") or "it"))
-        tool = _TOOL_NAMES.get(row.action.split(".")[0], "the tool")
+        tool = _APP_NAMES.get(row.action) or _TOOL_NAMES.get(row.action.split(".")[0], "the tool")
         return f"✅ Done: *{made}* · <{link}|Open in {tool}>" if link else f"✅ Done: *{made}*"
     if row.status == "unknown":
         return f"⚠️ This may have gone through. Check before trying again. {_escape(result.get('error') or '')}"
