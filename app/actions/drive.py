@@ -207,7 +207,7 @@ def _check_size(rows: list[list[str]]) -> None:
     if not rows or not any(any(c for c in r) for r in rows):
         raise ActionRejected("The table is empty.")
     if len(rows) > MAX_ROWS or max(len(r) for r in rows) > MAX_COLUMNS:
-        raise ActionRejected(f"A Sheet from Act takes at most {MAX_ROWS} rows and {MAX_COLUMNS} columns.")
+        raise ActionRejected(f"A Sheet from Agent mode takes at most {MAX_ROWS} rows and {MAX_COLUMNS} columns.")
 
 
 def sheet_csv(rows: list[list[str]]) -> str:

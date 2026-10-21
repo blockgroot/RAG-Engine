@@ -66,7 +66,7 @@ _PROVIDER = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
              "google": "Google Drive", "slack": "Slack"}
 
 _MENTION = re.compile(r"<@[A-Z0-9]+(?:\|[^>]*)?>")
-_ACT = re.compile(r"^\s*act\b[\s:,\-]*(.*)$", re.IGNORECASE | re.DOTALL)
+_ACT = re.compile(r"^\s*(?:agent|act)\b[\s:,\-]*(.*)$", re.IGNORECASE | re.DOTALL)
 _CHANNEL_REF = re.compile(r"<#[A-Z0-9]+\|([^>]*)>")
 _USER_REF = re.compile(r"<@[A-Z0-9]+\|([^>]*)>")
 _LINK = re.compile(r"<((?:https?|mailto):[^|>]+)(?:\|[^>]*)?>")

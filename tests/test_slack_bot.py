@@ -346,6 +346,8 @@ def _capture_answer_scope(monkeypatch) -> list:
         lambda email, org_id: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
     )
     monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
+    # The asker is in a space that connected this Slack (the gate has its own tests).
+    monkeypatch.setattr(slack_events, "_in_a_slack_space", lambda org, team, uid: True)
     # Default to "no name in the question" so each test exercises the path it
     # names; the named-scope tests override this.
     monkeypatch.setattr(
@@ -786,3 +788,21 @@ def test_the_mention_that_addresses_the_bot_is_not_part_of_the_question(monkeypa
     slack_events._handle({"type": "app_mention", "channel": "C1", "user": "U1", "ts": "1",
                           "text": "<@UBOT1> chart commits by <@U22>"}, "T1")
     assert asked == ["chart commits by <@U22>"]
+
+
+def test_a_space_only_slack_answers_dms_for_that_spaces_members_only(monkeypatch):
+    """Like every connector, a space's Slack serves its members; only a
+    company-wide connection opens DMs to the whole company."""
+    seen = _capture_answer_scope(monkeypatch)
+    said = []
+    monkeypatch.setattr(slack_events, "post_message", lambda tok, ch, text, ts=None, **k: said.append(text))
+    monkeypatch.setattr(slack_events, "_dm_scopes", lambda org, uid: [(None, "Company")])
+    monkeypatch.setattr(slack_events, "_in_a_slack_space", lambda org, team, uid: False)
+    dm = {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1", "text": "q", "ts": "1"}
+    slack_events._handle(dm, "T1")
+    assert seen == [] and said == [slack_events._NO_DM_ACCESS]   # nothing read, nothing drafted
+
+    # A company-wide connection (no space on the token) answers anyone in the company.
+    monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", None))
+    slack_events._handle(dm, "T1")
+    assert seen == [(None, None, "Company")]

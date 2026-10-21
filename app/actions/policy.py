@@ -42,8 +42,8 @@ def act_on(org_id: str, workspace_id: str | None = None) -> bool:
 #: Where Act may be asked from besides the web page, each switched on apart.
 #: Stored as ``action_policies`` rows named ``surface:<kind>``.
 SURFACES = {
-    "slack_dm": "Allow Act from Slack DMs",
-    "slack_channel": "Allow Act from Slack channels (replies stay in the thread)",
+    "slack_dm": "Allow Agent mode from Slack DMs",
+    "slack_channel": "Allow Agent mode from Slack channels (replies stay in the thread)",
 }
 
 

@@ -218,7 +218,7 @@ def _interleave(lists: list[list]) -> list:
 def _require_on(org_id: str) -> ActionsSettings:
     """Act's routes exist for a company only once its admin allowed Act."""
     if not policy.act_on(org_id):
-        raise HTTPException(status_code=404, detail="Act is not switched on.")
+        raise HTTPException(status_code=404, detail="Agent mode is not switched on.")
     return ActionsSettings.from_env()
 
 
@@ -318,7 +318,7 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
     viewer = viewer_for(session)
     if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
         # An asker we cannot name does not act -- never "unrestricted".
-        raise HTTPException(status_code=403, detail="Sign in again to use Act.")
+        raise HTTPException(status_code=403, detail="Sign in again to use Agent mode.")
     if body.model and not _selectable_model(session.org_id, body.model):
         raise HTTPException(status_code=400, detail="Unknown model")
     workspace_id = str(body.workspace_id) if body.workspace_id else None
@@ -403,7 +403,7 @@ def google_picker(session: SessionClaims = Depends(get_session)):
     try:
         token = fresh_user_token(session.org_id, session.user_id, "google")
     except (ConfigurationError, OAuthReauthRequiredError) as exc:
-        raise HTTPException(status_code=409, detail="Connect your Google account on the Act page first.") from exc
+        raise HTTPException(status_code=409, detail="Connect your Google account under Account → Agent first.") from exc
     return {"api_key": settings.google_picker_api_key, "app_id": settings.google_picker_app_id,
             "token": token}
 
@@ -423,7 +423,7 @@ def choose_folder(action_id: str, body: FolderRequest, session: SessionClaims = 
     except ActionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except OAuthReauthRequiredError as exc:
-        raise HTTPException(status_code=409, detail="Reconnect your Google account on the Act page.") from exc
+        raise HTTPException(status_code=409, detail="Reconnect your Google account under Account → Agent.") from exc
     except ActionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"action": _card(row)}
@@ -761,7 +761,7 @@ def set_space_act(workspace_id: str, body: PolicyRequest,
     """The space owner's switch. Narrows, never widens: with Act off for the
     company there is nothing to turn on."""
     if not policy.act_on(session.org_id):
-        raise HTTPException(status_code=409, detail="Your admin hasn't turned on Act for the company.")
+        raise HTTPException(status_code=409, detail="Your admin hasn't turned on Agent mode for the company.")
     policy.set_policy(session.org_id, policy.ACT_KEY, body.enabled,
                       workspace_id=workspace_id, updated_by=session.user_id)
     return space_act(workspace_id, session, "owner")

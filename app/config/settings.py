@@ -925,7 +925,9 @@ DEFAULT_SLACK_BOT_SCOPES = (
     # Slack charts as images: uploading a PNG of a chart into the reply
     # thread needs `files:write`. Existing connections keep getting the
     # numbers as text until an admin reconnects.
-    "files:write"
+    "files:write,"
+    # Act from Slack: the bot DMs a person the asker named (`conversations.open`).
+    "im:write"
 )
 
 # Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as

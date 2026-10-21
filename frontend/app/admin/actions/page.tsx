@@ -120,13 +120,13 @@ export default function AdminActionsPage() {
         {data && (
           <section className="studio-panel stack" aria-labelledby="actions-allow">
             <div className="studio-section-head">
-              <h2 id="actions-allow">Act for your company</h2>
+              <h2 id="actions-allow">Agent mode for your company</h2>
               <p className="muted">
                 People ask Handbook to file issues, comment and post, using their own accounts, and
                 approve each one. Space owners can only narrow what you allow here.
               </p>
             </div>
-            <div className="act-mode-options" role="radiogroup" aria-label="Act for your company">
+            <div className="act-mode-options" role="radiogroup" aria-label="Agent mode for your company">
               {MODES.map((m) => (
                 <label key={m.value} className="act-mode-option" data-checked={mode === m.value}>
                   <input
@@ -200,14 +200,14 @@ export default function AdminActionsPage() {
         {data && (
           <section className="studio-panel actions-slack-panel" aria-labelledby="actions-surfaces">
             <div className="studio-section-head">
-              <h2 id="actions-surfaces">Act in Slack</h2>
-              <p className="muted">The Act page is always available. Choose whether requests may also start in Slack.</p>
+              <h2 id="actions-surfaces">Agent mode in Slack</h2>
+              <p className="muted">Agent mode in the web chat is always available. Choose whether requests may also start in Slack.</p>
             </div>
             <div className="actions-surface-list">
               {data.surfaces.map((surface) => (
                 <label key={surface.name} className="action-surface">
                   <span>
-                    <strong>{surface.label.replace(/^Allow Act from /, "")}</strong>
+                    <strong>{surface.label.replace(/^Allow (Agent mode|Act) from /, "")}</strong>
                     <small>{SURFACE_COPY[surface.name]}</small>
                   </span>
                   <input

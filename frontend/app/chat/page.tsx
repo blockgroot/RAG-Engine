@@ -1319,7 +1319,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   >
                     <ActIcon />
                     <span className="composer-menu-text">
-                      <strong>Act</strong>
+                      <strong>Agent</strong>
                       <small>File an issue, comment or post, after you approve</small>
                     </span>
                     {actMode && <CheckIcon />}
@@ -1351,14 +1351,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           {actMode && (
             <span className="composer-mode-chip">
               <ActIcon />
-              <span>Act</span>
+              <span>Agent</span>
               <button
                 type="button"
                 className="composer-mode-chip-remove"
                 onClick={() => toggleActMode(false)}
                 disabled={busy}
-                aria-label="Turn off Act"
-                title="Turn off Act"
+                aria-label="Turn off Agent mode"
+                title="Turn off Agent mode"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
@@ -1474,8 +1474,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         </form>
         {actMode ? (
           <p className="muted chat-model-note" role="status">
-            Act drafts up to three actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
-            in this chat; find them under <Link href="/account#act">Account → Act</Link>.
+            Agent mode drafts up to three actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
+            in this chat; find them under <Link href="/account#act">Account → Agent</Link>.
           </p>
         ) : (chartMode || modelNote) && (
           <p className="muted chat-model-note" role="status">

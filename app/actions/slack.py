@@ -110,7 +110,13 @@ def _channel_by_name(token: str, name: str, hint: str = "") -> dict:
     raise ActionRejected(f"I can't see a channel called #{wanted}.{hint}")
 
 
-def _post(token: str, method: str, body: dict) -> dict:
+_NO_DM_PERSON = "Reconnect Slack in Handbook (Account → Agent) to allow direct messages. Nothing was sent."
+#: Inside Slack the BOT sends, so it is the app's scope, not the person's sign-in.
+_NO_DM_BOT = ("The Handbook Slack app can't send direct messages yet: an admin needs to add the "
+              "im:write bot scope and reinstall it. Nothing was sent.")
+
+
+def _post(token: str, method: str, body: dict, *, missing: str = _NO_DM_PERSON) -> dict:
     """A Slack write that must succeed before the message is sent."""
     try:
         response = httpx.post(f"{API}/{method}", json=body, timeout=_TIMEOUT,
@@ -119,7 +125,7 @@ def _post(token: str, method: str, body: dict) -> dict:
     except (httpx.HTTPError, ValueError) as exc:
         raise ActionError("Could not reach Slack. Nothing was sent.", cause=exc) from exc
     if data.get("error") == "missing_scope":
-        raise ActionError("Reconnect Slack on Handbook's Act page to allow direct messages. Nothing was sent.")
+        raise ActionError(missing)
     if not data.get("ok"):
         raise ActionError(f"Slack: {data.get('error') or 'refused'}. Nothing was sent.")
     return data
@@ -415,7 +421,8 @@ class SlackPostMessage(Action):
         channel = target["external_id"]
         if target.get("kind") == "slack_user":
             # The DM is opened only now, at send: preparing a draft never writes.
-            opened = _post(token, "conversations.open", {"users": channel})
+            opened = _post(token, "conversations.open", {"users": channel},
+                           missing=_NO_DM_PERSON if payload.get("as_person") else _NO_DM_BOT)
             channel = (opened.get("channel") or {}).get("id") or ""
         message = {"channel": channel, "text": payload["text"], **_NO_UNFURL}
         if payload.get("thread_ts"):

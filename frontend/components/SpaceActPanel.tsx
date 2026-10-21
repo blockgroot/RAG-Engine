@@ -39,7 +39,7 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
   return (
     <section className="studio-panel stack" aria-labelledby="space-act-title">
       <div className="studio-section-head">
-        <h2 id="space-act-title">Act in this space</h2>
+        <h2 id="space-act-title">Agent mode in this space</h2>
         <p className="muted">
           Whether members may ask Handbook to make changes in their tools from this space. Each
           change still runs on the member&rsquo;s own account and waits for their approval.
@@ -47,13 +47,13 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
       </div>
       <label className="action-surface">
         <span>
-          <strong>Allow Act in this space</strong>
+          <strong>Allow Agent mode in this space</strong>
           <small>
             {companyOff
-              ? "Your admin has turned Act off for the company (Admin › Actions). You can switch it on here once they allow it."
+              ? "Your admin has turned Agent mode off for the company (Admin › Actions). You can switch it on here once they allow it."
               : state.enabled
               ? "Members can ask Handbook to file issues, comment and post from this space, using their own accounts, after they approve each one."
-              : "Off for this space. Your admin allows Act; you turned it off here."}
+              : "Off for this space. Your admin allows Agent mode; you turned it off here."}
           </small>
         </span>
         <input
@@ -61,7 +61,7 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
           checked={state.enabled}
           disabled={busy || !state.can_change}
           onChange={(e) => void change(e.target.checked)}
-          aria-label={state.enabled ? "Turn off Act in this space" : "Allow Act in this space"}
+          aria-label={state.enabled ? "Turn off Agent mode in this space" : "Allow Agent mode in this space"}
         />
       </label>
       {error && (

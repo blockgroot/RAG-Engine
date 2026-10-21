@@ -95,7 +95,7 @@ export function ActPanel() {
       setStatus(next);
       setRecent(next.recent ?? []);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not load Act.");
+      setError(err instanceof ApiError ? err.message : "Could not load Agent settings.");
     }
   }, []);
 
@@ -150,7 +150,7 @@ export function ActPanel() {
     >
       <div className="act-panel-head">
         <div className="studio-section-head">
-          <h2 id="act-title">Act</h2>
+          <h2 id="act-title">Agent</h2>
           <p className="muted">
             The accounts Handbook writes with for you, after you approve each
             draft. Ask in the chat.
@@ -160,7 +160,7 @@ export function ActPanel() {
           className="button button-secondary button-sm"
           href="/chat?mode=act"
         >
-          Open Act in chat
+          Open Agent mode in chat
         </Link>
       </div>
 

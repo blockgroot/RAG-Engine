@@ -125,6 +125,27 @@ def _org_for_team(team_id: str) -> tuple[str, str | None] | None:
     return (row[0], row[1]) if row else None
 
 
+_NO_DM_ACCESS = (
+    "Slack is connected to Handbook only in spaces you're not in, so I can't answer "
+    "you here. Ask in the Handbook web app, or ask your admin to connect Slack company-wide."
+)
+
+
+def _in_a_slack_space(org_id: str, team_id: str, user_id: str) -> bool:
+    """With no company-wide Slack connection, a DM belongs to the spaces that
+    connected this Slack: like every connector, a space's connection serves
+    its members, never the whole company. ``_org_for_team`` returned a space
+    token, which (company first) means there is no company connection."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT 1 FROM oauth_connections c JOIN workspace_members m "
+            "ON m.workspace_id = c.workspace_id AND m.user_id = %s::uuid "
+            "WHERE c.org_id = %s::uuid AND c.provider = 'slack' "
+            "AND c.external_workspace_id = %s AND NOT c.needs_reauth LIMIT 1",
+            (user_id, org_id, team_id),
+        ).fetchone() is not None
+
+
 def _scope_for_channel(org_id: str, tag: str):
     """Which scope indexes this channel: ``None`` (org-wide), a space id, or ``_NO_SCOPE``.
 
@@ -599,6 +620,9 @@ def _handle(event: dict, team_id: str) -> None:
     user = get_member_by_address(email, org_id) if email else None
     if user is None:
         post_message(token, channel, _NO_ACCOUNT, thread_ts)
+        return
+    if is_dm and token_workspace_id is not None and not _in_a_slack_space(org_id, team_id, user.id):
+        post_message(token, channel, _NO_DM_ACCESS, thread_ts)
         return
 
     # Act: a message that ASKS for something to be done (plain words, checked

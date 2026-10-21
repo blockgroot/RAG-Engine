@@ -733,7 +733,7 @@ def test_act_is_the_admins_decision_per_company(client, org, proposal):
     assert client.get("/me", cookies=_cookies(org.member)).json()["act_enabled"] is False
     assert client.post("/act", json={"question": "file it"},
                        cookies=_cookies(org.member)).status_code == 404
-    with pytest.raises(ActionRejected, match="turned off Act"):
+    with pytest.raises(ActionRejected, match="turned off Agent mode"):
         service.confirm(org_id=org.id, user_id=org.member.id, action_id=proposal.id,
                         shown_hash=proposal.payload_hash, acknowledged=False, settings=ON)
     assert FakeAction.sent == []

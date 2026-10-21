@@ -55,7 +55,9 @@ GitHub; employees get answers from *their* data.
   the next listing; it does not union.
 - Slack: a public channel is scope-public; a private channel's members are its ACL,
   plus `channel:<id>`. A channel reply is public-only and carries exactly that
-  channel. Linear: a team's membership is its issues' ACL. GitHub: a private repo
+  channel. A Slack DM (question or Agent) is open to the whole company only with a
+  company-wide Slack connection; with only spaces' connections, only those spaces'
+  members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it.
 - A conversation is personal (`conversations.user_id`). `query_answer_cache` stays
   keyed on the scope and the model, not the asker. Do not store an answer when any
@@ -299,8 +301,9 @@ origin at `/api`; Next rewrites to FastAPI. Do not point `NEXT_PUBLIC_API_BASE_U
 at Render. `render.yaml` does not configure production Hand-Book. Supabase uses the
 session pooler (5432).
 
-**Act (writes).** `app/actions/` and its own routes (UI: the chat's Act mode,
-Account → Act, Admin › Actions); Ask, Chart, sync and
+**Act (writes).** Users see it as **Agent mode** (chat chip "Agent", Account → Agent,
+Admin › Actions; Slack `agent …`, old `act …` still works); code, routes and tables
+keep `act`. `app/actions/` and its own routes; Ask, Chart, sync and
 the Slack bot import nothing from it. The model only fills in action forms (at
 most `service.MAX_ACTIONS` per request, each its own card, checked and approved
 on its own; a refused one never stops the rest and is said):

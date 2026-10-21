@@ -181,7 +181,7 @@ def test_a_thread_reply_needs_the_link_the_asker_pasted(sl):
 
 def test_a_dm_is_opened_only_when_sent(monkeypatch):
     calls = []
-    monkeypatch.setattr(slack_action, "_post", lambda token, method, body: calls.append(method) or
+    monkeypatch.setattr(slack_action, "_post", lambda token, method, body, **kw: calls.append(method) or
                         {"ok": True, "channel": {"id": "D9"}})
 
     class Sent:

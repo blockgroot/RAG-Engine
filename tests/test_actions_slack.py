@@ -53,6 +53,8 @@ from .conftest import requires_db
     ("act: comment on ENG-4", "comment on ENG-4"),
     ("ACT post in <#C123|eng> shipped &amp; done", "post in #eng shipped & done"),
     ("<@U0BOT> act", ""),
+    ("<@U0BOT> agent file an issue in Platform", "file an issue in Platform"),  # the new name
+    ("agents of change: who wrote that?", None),
     ("what is the action plan?", None),
     ("actually, who owns billing?", None),
     ("<@U0BOT> can you act on this?", None),
@@ -482,11 +484,11 @@ def test_each_slack_surface_has_its_own_switch(org):
             settings=ActionsSettings(), surface={"kind": kind, "slack_user": "U1"},
         ).reply
 
-    assert "hasn't turned on Act here" in ask("slack_dm")
-    assert "hasn't turned on Act here" in ask("slack_channel")
+    assert "hasn't turned on Agent mode here" in ask("slack_dm")
+    assert "hasn't turned on Agent mode here" in ask("slack_channel")
     policy.set_policy(org.id, policy.surface_key("slack_dm"), True)
-    assert "hasn't turned on Act here" not in ask("slack_dm")  # on to the next check
-    assert "hasn't turned on Act here" in ask("slack_channel")
+    assert "hasn't turned on Agent mode here" not in ask("slack_dm")  # on to the next check
+    assert "hasn't turned on Agent mode here" in ask("slack_channel")
 
 
 @requires_db
@@ -589,3 +591,17 @@ def test_asked_in_a_dm_the_bot_messages_the_person_named(fake_slack):
     here = {"kind": "slack_channel", "slack_user": "U1", "channel": "C1", "thread_ts": "7.7"}
     with pytest.raises(ActionRejected, match="DM me"):       # never from a channel
         post.prepare({"person": "raj@x.com", "text": "x"}, _sctx("DM raj@x.com: x", here))
+
+
+@pytest.mark.parametrize("as_person, fix", [(True, "Reconnect Slack"), (False, "im:write bot scope")])
+def test_a_missing_dm_scope_names_the_right_fix(monkeypatch, as_person, fix):
+    """From Slack the bot sends, so "reconnect your Slack" sent people the wrong way."""
+    class Refused:
+        def json(self):
+            return {"ok": False, "error": "missing_scope"}
+
+    monkeypatch.setattr(slack_action.httpx, "post", lambda *a, **k: Refused())
+    payload = {"text": "hi", "thread_ts": None, **({"as_person": True} if as_person else {})}
+    with pytest.raises(slack_action.ActionError, match=fix):
+        slack_action.SlackPostMessage().execute(
+            "k", {"kind": "slack_user", "external_id": "U7"}, payload, "tok")

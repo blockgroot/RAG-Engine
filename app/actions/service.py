@@ -255,9 +255,9 @@ def offered_actions(
     """The actions to offer, or why there are none, in the person's terms.
     In a space, an action the space switched off is not offered."""
     if not policy.act_on(org_id):
-        return [], "Your admin hasn't turned on Act yet."
+        return [], "Your admin hasn't turned on Agent mode yet."
     if workspace_id is not None and not policy.act_on(org_id, workspace_id):
-        return [], "Act isn't turned on in this space. The space's owner can turn it on in the space's settings."
+        return [], "Agent mode isn't turned on in this space. The space's owner can turn it on in the space's settings."
     enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
     if not enabled:
         return [], "Your admin hasn't switched on any actions yet."
@@ -272,7 +272,7 @@ def offered_actions(
     offered = [ACTIONS[n]() for n in ACTIONS if n in enabled and ACTIONS[n].provider in providers]
     if not offered:
         needed = {ACTIONS[n].provider for n in enabled}
-        return [], f"Connect your {_names(needed)} account on Handbook's Act page to let it act for you."
+        return [], f"Connect your {_names(needed)} account in Handbook (Account → Agent) to let it act for you."
     return offered, None
 
 
@@ -307,7 +307,7 @@ def propose(
     surface = dict(surface or {"kind": "web"})
     kind = surface.get("kind", "web")
     if policy.act_on(org_id) and not policy.surface_enabled(org_id, kind):
-        return ActOutcome("Your admin hasn't turned on Act here. You can use it on Handbook's Act page.")
+        return ActOutcome("Your admin hasn't turned on Agent mode here. You can use it in Handbook's chat.")
     offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"),
                                        scope_workspace_id)
     if why_not:
@@ -374,9 +374,9 @@ def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, s
                             tuple(sources), viewer, surface)
         proposal = action.prepare(args, ctx)
     except OAuthReauthRequiredError:
-        return f"Reconnect your {name} account on Handbook's Act page, then ask again."
+        return f"Reconnect your {name} account in Handbook (Account → Agent), then ask again."
     except ConfigurationError:
-        return f"Connect your {name} account on Handbook's Act page to let it act for you."
+        return f"Connect your {name} account in Handbook (Account → Agent) to let it act for you."
     except ActionError as exc:
         return str(exc)
 
@@ -413,7 +413,7 @@ def edit(
     """
     settings = settings or ActionsSettings.from_env()
     if not policy.act_on(org_id):
-        raise ActionRejected("Your admin has turned off Act.")
+        raise ActionRejected("Your admin has turned off Agent mode.")
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
@@ -437,7 +437,7 @@ def choose_folder(
     from .drive import folder_audience
 
     if not policy.act_on(org_id):
-        raise ActionRejected("Your admin has turned off Act.")
+        raise ActionRejected("Your admin has turned off Agent mode.")
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
@@ -510,7 +510,7 @@ def revise(
     again. Links and @-mentions survive only if the draft they saw or their
     instruction already had them. Nothing is sent."""
     if not policy.act_on(org_id):
-        raise ActionRejected("Your admin has turned off Act.")
+        raise ActionRejected("Your admin has turned off Agent mode.")
     instruction = instruction.strip()[:MAX_INSTRUCTION]
     if not instruction:
         raise ActionRejected("Say what to change.")
@@ -557,7 +557,7 @@ def confirm(
     """
     settings = settings or ActionsSettings.from_env()
     if not policy.act_on(org_id):
-        raise ActionRejected("Your admin has turned off Act.")
+        raise ActionRejected("Your admin has turned off Agent mode.")
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
@@ -565,7 +565,7 @@ def confirm(
     if action is None or not policy.is_enabled(org_id, row.workspace_id, row.action):
         raise ActionRejected("Your admin has switched this action off.")
     if not policy.surface_enabled(org_id, row.surface):
-        raise ActionRejected("Your admin has turned off Act here.")
+        raise ActionRejected("Your admin has turned off Agent mode here.")
     if not policy.within_rate(org_id, user_id, settings=settings):
         raise ActionRejected("You've reached the hourly limit for actions. Try again later.")
     token = action.token_for(org_id, user_id, row.surface)

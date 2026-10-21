@@ -120,9 +120,9 @@ def _act_items(org_id: str, user_id: str) -> list[dict]:
             "kind": "reauth",
             "severity": "high",
             "provider": c.provider,
-            "scope": "Act",
+            "scope": "Agent",
             "title": f"Your {_label(c.provider)} account needs reconnecting",
-            "detail": f"Act can't draft or send anything in {_label(c.provider)} for you until you reconnect it.",
+            "detail": f"Agent mode can't draft or send anything in {_label(c.provider)} for you until you reconnect it.",
             "action": "Reconnect",
             "href": "/account#act",
         }
