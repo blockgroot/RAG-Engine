@@ -390,3 +390,29 @@ def test_the_content_every_draft_names_is_read(monkeypatch):
                     embedder=None, vstore=None, settings=ActionsSettings.from_env(),
                     search=lambda q, about, **k: searched.append(about) or ([], ""))
     assert searched == ["the README of x/y; the open Linear bugs"]
+
+
+def test_a_fourth_action_is_said_never_dropped_silently(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.actions import service
+    from app.config.settings import ActionsSettings
+
+    form = {"type": "object", "properties": {}}
+
+    def act(name, label):
+        return SimpleNamespace(tool={"function": {"name": name, "parameters": form}}, label=label)
+
+    four = [act("a", "Google Docs: create a new doc"), act("b", "Linear: create an issue"),
+            act("c", "Slack: post a message or DM"), act("d", "GitHub: open an issue")]
+    monkeypatch.setattr(service.policy, "act_on", lambda *a: True)
+    monkeypatch.setattr(service.policy, "surface_enabled", lambda *a: True)
+    monkeypatch.setattr(service, "offered_actions", lambda *a, **k: (four, None))
+    monkeypatch.setattr("app.llm.routed.use_model", lambda *a, **k: None)
+    monkeypatch.setattr(service, "_ask", lambda *a: [(x, {}) for x in four])
+    drafted = []
+    monkeypatch.setattr(service, "_draft", lambda action, args, **k: drafted.append(action) or ("row", None))
+    out = service.propose("do all four", org_id="o", user_id="u", email="a@x.com", viewer=None,
+                          llm=None, embedder=None, vstore=None, settings=ActionsSettings.from_env())
+    assert drafted == four[:3] and len(out.drafts) == 3
+    assert "left out: GitHub: open an issue. Ask again for it." in out.reply

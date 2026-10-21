@@ -236,7 +236,7 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
     link or a ping."""
     cls = ACTIONS.get(row.action)
     label = cls.label if cls else row.action
-    who = cls.attribution if cls else "as you"
+    who = cls().attribution_for(row.payload) if cls else "as you"  # a DM as the person says so
     tool = _PROVIDER.get(cls.provider if cls else "", "the tool")
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text":
@@ -279,6 +279,11 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
         {"type": "actions", "block_id": "act_decide", "elements": [
             {"type": "button", "action_id": "act_approve", "style": "primary",
              "text": {"type": "plain_text", "text": "Approve"}, "value": f"{row.id}:{row.payload_hash}"},
+            {"type": "button", "action_id": "act_edit",
+             "text": {"type": "plain_text", "text": "Edit"}, "value": f"{row.id}:{row.payload_hash}"},
+            {"type": "button", "action_id": "act_revise",
+             "text": {"type": "plain_text", "text": "Ask for changes"},
+             "value": f"{row.id}:{row.payload_hash}"},
             {"type": "button", "action_id": "act_cancel",
              "text": {"type": "plain_text", "text": "Cancel"}, "value": row.id},
         ]},
@@ -419,6 +424,133 @@ def _outcome_text(row: ActionRow) -> str:
     return f"❌ Not done. {_escape(result.get('error') or '')}"
 
 
+def _clicker(payload: dict, response_url: str | None, container: dict):
+    """Who clicked, and how to answer them where the card is: ``(org_id, token,
+    user, reply)``, or ``None``. ``reply(body, replace=)`` sends a Slack message
+    body (text and/or blocks). A private card in a thread is removed and the
+    answer posted privately in that thread: a response-URL reply to it lands
+    at the bottom of the channel."""
+    from .slack_events import _org_for_team, _slack_email
+
+    team_id = (payload.get("team") or {}).get("id") or (payload.get("user") or {}).get("team_id") or ""
+    scope = _org_for_team(team_id)
+    if scope is None:
+        return None
+    org_id, token_workspace_id = scope
+    try:
+        token = get_live_connection_token(org_id, "slack", workspace_id=token_workspace_id)
+    except ProviderError:
+        return None
+    slack_user = (payload.get("user") or {}).get("id") or ""
+    in_thread = container.get("is_ephemeral") and container.get("thread_ts") and container.get("channel_id")
+
+    def reply(body: dict, *, replace: bool = True) -> None:
+        if not in_thread:
+            _respond_raw(response_url, {"replace_original": replace, "response_type": "ephemeral", **body})
+            return
+        if replace:
+            _respond_raw(response_url, {"delete_original": True})
+        _post(token, "chat.postEphemeral", {"channel": container["channel_id"], "user": slack_user,
+                                            "thread_ts": container["thread_ts"], **body})
+
+    email = _slack_email(token, slack_user)
+    user = get_member_by_address(email, org_id) if email else None
+    if user is None:
+        reply({"text": "You don't have a Handbook account, so you can't change this."}, replace=False)
+        return None
+    return org_id, token, user, reply
+
+
+def _ids(value: str) -> tuple[str, str] | None:
+    action_id, _, shown_hash = str(value or "").partition(":")
+    try:
+        return str(uuid.UUID(action_id)), shown_hash
+    except ValueError:
+        return None
+
+
+def open_change(payload: dict, act: dict) -> None:
+    """Edit or Ask for changes on a Slack card: a pop-up with the draft's words
+    (Edit) or a box for the instruction (Ask for changes). Only the person who
+    asked may open it, and only while the draft is waiting."""
+    container = payload.get("container") or {}
+    who = _clicker(payload, payload.get("response_url"), container)
+    ids = _ids(act.get("value"))
+    if who is None or ids is None:
+        return
+    org_id, token, user, reply = who
+    row = store.get(org_id, user.id, ids[0])
+    if row is None:
+        reply({"text": "Only the person who asked can change this."}, replace=False)
+        return
+    if row.status != "proposed":
+        reply({"text": "This draft can't be changed any more."}, replace=False)
+        return
+    editing = act["action_id"] == "act_edit"
+    if editing:
+        words = ACTIONS[row.action]().editable(row.payload)
+        blocks = [{"type": "input", "block_id": field, "label": {"type": "plain_text", "text": field.title()},
+                   "element": {"type": "plain_text_input", "action_id": field, "multiline": field != "title",
+                               "max_length": 255 if field == "title" else 3000,
+                               "initial_value": (value or "")[:3000]}}
+                  for field, value in words.items()]
+    else:
+        blocks = [{"type": "input", "block_id": "instruction", "label": {"type": "plain_text",
+                   "text": "What should change?"}, "element": {
+                   "type": "plain_text_input", "action_id": "instruction", "multiline": True,
+                   "max_length": 1000, "placeholder": {"type": "plain_text",
+                   "text": "e.g. make it shorter, add the steps to reproduce"}}}]
+    # Where the card is and which version was shown ride along to the submit.
+    meta = json.dumps({"id": ids[0], "hash": ids[1], "url": payload.get("response_url"),
+                       "container": {k: container.get(k) for k in ("channel_id", "thread_ts", "is_ephemeral")},
+                       "team": (payload.get("team") or {}).get("id")})
+    _post(token, "views.open", {"trigger_id": payload.get("trigger_id"), "view": {
+        "type": "modal", "callback_id": act["action_id"], "private_metadata": meta,
+        "title": {"type": "plain_text", "text": "Edit the draft" if editing else "Ask for changes"},
+        "submit": {"type": "plain_text", "text": "Save" if editing else "Rework"},
+        "close": {"type": "plain_text", "text": "Cancel"}, "blocks": blocks}})
+
+
+def apply_change(payload: dict) -> None:
+    """Save the pop-up's edit or rework the draft from its instruction, under
+    the same guards as the web (``service.edit`` / ``service.revise``), then
+    redraw the card: new words, new fingerprint, the tick asked again."""
+    view = payload.get("view") or {}
+    try:
+        meta = json.loads(view.get("private_metadata") or "{}")
+    except ValueError:
+        return
+    payload = {**payload, "team": payload.get("team") or {"id": meta.get("team")}}
+    who = _clicker(payload, meta.get("url"), meta.get("container") or {})
+    if who is None or not meta.get("id"):
+        return
+    org_id, _token, user, reply = who
+    values = {block: next(iter(fields.values())).get("value") or ""
+              for block, fields in ((view.get("state") or {}).get("values") or {}).items()}
+    try:
+        if view.get("callback_id") == "act_edit":
+            row = store.get(org_id, user.id, meta["id"])
+            if row is None:
+                return
+            shown = ACTIONS[row.action]().editable(row.payload)
+            changed = {k: v for k, v in values.items() if k in shown and v != shown[k]}
+            if not changed:
+                return
+            row = service.edit(org_id=org_id, user_id=user.id, action_id=meta["id"],
+                               shown_hash=meta.get("hash") or "", fields=changed)
+        else:
+            from .actions import _llm
+
+            row = service.revise(org_id=org_id, user_id=user.id, action_id=meta["id"],
+                                 shown_hash=meta.get("hash") or "",
+                                 instruction=values.get("instruction", ""), llm=_llm())
+    except (ProviderError, NotFoundError) as exc:
+        reply({"text": f"{exc} Your draft is unchanged."}, replace=False)
+        return
+    reply({"text": "Handbook updated the draft for you to approve.",
+           "blocks": card_blocks(row, audience_size=None, outsiders=None)})
+
+
 def decide(payload: dict, act: dict) -> None:
     """Handle one Approve or Cancel click, after Slack was acknowledged."""
     from .slack_events import _org_for_team, _slack_email
@@ -514,10 +646,18 @@ async def slack_interactivity(
         payload = json.loads((parse_qs(body.decode()).get("payload") or ["{}"])[0])
     except ValueError:
         return {}
+    if payload.get("type") == "view_submission" and (payload.get("view") or {}).get(
+            "callback_id") in ("act_edit", "act_revise"):
+        background.add_task(apply_change, payload)
+        return {}                                   # closes the pop-up; the card is redrawn
     if payload.get("type") != "block_actions":
         return {}
     act = next((a for a in payload.get("actions") or []
-                if a.get("action_id") in ("act_approve", "act_cancel")), None)
-    if act is not None:  # ticking the checkbox alone needs no answer
+                if a.get("action_id") in ("act_approve", "act_cancel", "act_edit", "act_revise")), None)
+    if act is None:  # ticking the checkbox alone needs no answer
+        return {}
+    if act["action_id"] in ("act_edit", "act_revise"):
+        background.add_task(open_change, payload, act)
+    else:
         background.add_task(decide, payload, act)
     return {}

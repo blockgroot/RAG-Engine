@@ -660,3 +660,75 @@ def test_the_bots_dm_has_no_link_the_asker_could_not_open(monkeypatch):
     result = slack_action.SlackPostMessage().execute(
         "k", {"kind": "slack_user", "external_id": "U7"}, {"text": "<@U1> asked…\nhi", "thread_ts": None}, "xoxb")
     assert result.url is None
+
+
+@pytest.fixture
+def change_env(monkeypatch):
+    seen = {"replies": [], "posts": [], "edits": [], "revises": []}
+    user = SimpleNamespace(id="u1", email="a@x.com")
+    monkeypatch.setattr(slack_act, "_clicker", lambda payload, url, container: (
+        "o", "xoxb", user, lambda body, replace=True: seen["replies"].append((body, replace))))
+    monkeypatch.setattr(slack_act, "_post", lambda token, method, body: seen["posts"].append((method, body)) or {})
+    row = _row(action="slack.post_message", payload={"text": "Hi Raj", "as_person": True},
+               exposure="none")
+    seen["row"] = row
+    monkeypatch.setattr(slack_act.store, "get", lambda org, uid, aid: seen["row"])
+
+    def edit(**kw):
+        seen["edits"].append(kw)
+        return _row(**{**seen["row"].__dict__, "payload": {"text": kw["fields"]["body"], "as_person": True},
+                       "payload_hash": "n" * 64})
+
+    def revise(**kw):
+        seen["revises"].append(kw)
+        return _row(**{**seen["row"].__dict__, "payload": {"text": "Shorter.", "as_person": True},
+                       "payload_hash": "r" * 64})
+
+    monkeypatch.setattr(slack_act.service, "edit", edit)
+    monkeypatch.setattr(slack_act.service, "revise", revise)
+    monkeypatch.setattr("app.api.actions._llm", lambda: object())
+    return seen
+
+
+def _view(callback, values, row):
+    meta = json.dumps({"id": row.id, "hash": row.payload_hash, "url": "https://hooks.slack.com/x",
+                       "container": {}, "team": "T1"})
+    return {"type": "view_submission", "user": {"id": "U1"}, "view": {
+        "callback_id": callback, "private_metadata": meta,
+        "state": {"values": {k: {k: {"value": v}} for k, v in values.items()}}}}
+
+
+def test_edit_on_a_slack_card_opens_the_words_and_redraws_the_card(change_env):
+    """The web card had Edit and Ask for changes; Slack had only Approve."""
+    row = change_env["row"]
+    names = [e["action_id"] for b in slack_act.card_blocks(row, audience_size=None, outsiders=None)
+             if b["type"] == "actions" for e in b["elements"]]
+    assert names == ["act_approve", "act_edit", "act_revise", "act_cancel"]
+
+    slack_act.open_change({"trigger_id": "tr", "team": {"id": "T1"}, "user": {"id": "U1"}},
+                          {"action_id": "act_edit", "value": f"{row.id}:{row.payload_hash}"})
+    method, body = change_env["posts"][-1]
+    assert method == "views.open" and body["trigger_id"] == "tr"
+    assert body["view"]["blocks"][0]["element"]["initial_value"] == "Hi Raj"
+
+    slack_act.apply_change(_view("act_edit", {"body": "Hi Raj, log in today"}, row))
+    [kw] = change_env["edits"]
+    assert kw["fields"] == {"body": "Hi Raj, log in today"} and kw["shown_hash"] == row.payload_hash
+    body, replace = change_env["replies"][-1]
+    assert replace and "n" * 64 in json.dumps(body["blocks"])       # the new fingerprint is what Approve sends
+    assert "as you" in body["blocks"][0]["text"]["text"]           # a DM as the person says so
+
+
+def test_ask_for_changes_reworks_with_the_model_and_an_unchanged_edit_does_nothing(change_env):
+    row = change_env["row"]
+    slack_act.apply_change(_view("act_revise", {"instruction": "make it shorter"}, row))
+    assert change_env["revises"][0]["instruction"] == "make it shorter"
+    assert "r" * 64 in json.dumps(change_env["replies"][-1][0]["blocks"])
+    slack_act.apply_change(_view("act_edit", {"body": "Hi Raj"}, row))
+    assert change_env["edits"] == []
+
+
+def test_a_decided_draft_cannot_be_reopened(change_env):
+    change_env["row"] = _row(status="succeeded")
+    slack_act.open_change({"trigger_id": "tr"}, {"action_id": "act_edit", "value": f"{uuid.uuid4()}:h"})
+    assert change_env["posts"] == [] and "can't be changed" in change_env["replies"][-1][0]["text"]

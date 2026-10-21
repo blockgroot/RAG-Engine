@@ -1396,7 +1396,8 @@ def test_never_more_drafts_than_the_cap_and_never_one_not_asked_for(org, monkeyp
     unasked = ("linear_create_issue", {"request_words": "also post it", "team": "Platform",
                                        "title": "t", "body": "b"})
     out = _propose(org, question, ManyCallsLLM([unasked] + [asked] * 5))
-    assert len(out.drafts) == service.MAX_ACTIONS - 1        # the unasked one used a slot, made nothing
+    assert len(out.drafts) == service.MAX_ACTIONS            # the unasked one made nothing
+    assert "left out" in out.reply                           # and the extra two are said
 
 
 def test_one_tool_failing_does_not_blank_the_others(act_search, monkeypatch):

@@ -96,8 +96,9 @@ DOCUMENT_WORDS = {
 
 
 def _ask(llm, question: str, passages: str | None, tools: list[dict], offered: list[Action]):
-    """One model call: the ``(action, args)`` forms it filled in that the asker
-    asked for (at most ``MAX_ACTIONS``), else the reply to show."""
+    """One model call: every ``(action, args)`` form it filled in that the asker
+    asked for, else the reply to show. ``propose`` keeps ``MAX_ACTIONS`` and
+    says what it left out."""
     result = llm.generate_with_tools(
         [{"role": "user", "content": build_act_prompt(question, passages)}],
         tools=tools,
@@ -108,7 +109,7 @@ def _ask(llm, question: str, passages: str | None, tools: list[dict], offered: l
         return ActOutcome(text or "Tell me what to do, for example: "
                           "“File a Linear issue in Platform about the login timeout.”")
     picked, why = [], None
-    for call in result.tool_calls[:MAX_ACTIONS]:
+    for call in result.tool_calls[:MAX_ACTIONS * 3]:  # bounded; the rest is said, not drafted
         action = next((a for a in offered if a.tool["function"]["name"] == call.name), None)
         if action is None:
             why = why or "I can't do that here."
@@ -147,7 +148,7 @@ def build_act_prompt(question: str, passages: str | None) -> str:
         "are given.\n"
         "- Call a tool only when the QUESTION itself asks for that action. Copy "
         "the words that ask for it into request_words, exactly as written.\n"
-        f"- One call per action the QUESTION asks for, at most {MAX_ACTIONS}: \"an "
+        "- One call per action the QUESTION asks for, every one of them: \"an "
         "issue in Linear and in GitHub\" is two calls. Each is approved on its own.\n"
         "- If the QUESTION asks something, or asks for something no tool does, "
         "call no tool and reply in one or two sentences saying what you can do.\n"
@@ -346,6 +347,10 @@ def propose(
         if isinstance(picked, ActOutcome):
             return picked
 
+    # Over the limit: the first ones are drafted and the rest is SAID, never
+    # dropped silently (a fourth action simply vanished).
+    left_out = [a.label for a, _ in picked[MAX_ACTIONS:]]
+    picked = picked[:MAX_ACTIONS]
     drafts, refusals = [], []
     for action, args in picked:
         made = _draft(action, args, question=question, sources=sources, org_id=org_id,
@@ -361,6 +366,9 @@ def propose(
              f"Here are {len(drafts)} drafts. Each is sent only when you approve it.")
     if refusals:
         reply += " " + " ".join(dict.fromkeys(refusals))
+    if left_out:
+        reply += (f" I draft at most {MAX_ACTIONS} at a time, so I left out: "
+                  f"{'; '.join(left_out)}. Ask again for {'it' if len(left_out) == 1 else 'them'}.")
     return ActOutcome(reply, drafts[0][0], drafts[0][1], tuple(drafts))
 
 
