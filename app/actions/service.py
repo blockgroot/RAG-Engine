@@ -324,8 +324,12 @@ def propose(
     if isinstance(picked, ActOutcome):
         return picked
     sources: list[Source] = []
-    about = next((a["document_words"].strip() for _, a in picked
-                  if asked_in(a.get("document_words"), question)), None)
+    # Every draft's content words, not the first's: an issue drafted "from the
+    # README" and a Sheet "of the Linear bugs" need both read, and taking only
+    # the first left the Sheet with nothing.
+    named = list(dict.fromkeys(a["document_words"].strip() for _, a in picked
+                               if asked_in(a.get("document_words"), question)))
+    about = "; ".join(named) or None
     if about:
         # Found the way Ask finds it, from the whole request, with the words
         # that name the content searched alongside and ordering the results:

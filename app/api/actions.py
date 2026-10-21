@@ -182,17 +182,24 @@ def ask_search(user_id: str):
         token = graph_plan.use_plan(plan)
         try:
             for tool in tools:
-                if tool in ("github", "github_live"):
-                    read = read_github(text, org_id, workspace_id, viewer)
-                    if read is not None:
-                        sources.append(read[0])
-                        texts.append(read[1])
-                        continue
-                    if len(tools) > 1:
-                        continue          # named alongside others: nothing readable here
-                getter = per_source.get(tool) or general(workspace_id)
-                per_tool.append(getter().pipeline.retrieve_passages(
-                    question, org_id, about=about, workspace_id=workspace_id, viewer=viewer))
+                # One tool failing (a renamed repo, an expired token) must not
+                # blank the others: the draft would then say nothing was found.
+                try:
+                    if tool in ("github", "github_live"):
+                        read = read_github(text, org_id, workspace_id, viewer)
+                        if read is not None:
+                            sources.append(read[0])
+                            texts.append(read[1])
+                            continue
+                        if len(tools) > 1:
+                            continue          # named alongside others: nothing readable here
+                    getter = per_source.get(tool) or general(workspace_id)
+                    per_tool.append(getter().pipeline.retrieve_passages(
+                        question, org_id, about=about, workspace_id=workspace_id, viewer=viewer))
+                except Exception:  # noqa: BLE001 - that tool adds nothing; the rest still read
+                    if len(tools) == 1:
+                        raise
+                    logger.warning("Act: reading %s failed; using the other tools", tool, exc_info=True)
         finally:
             graph_plan.reset_plan(token)
         indexed_sources, indexed_text = indexed_context(
@@ -640,7 +647,7 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
                 external_user_name=tokens.external_workspace_name, scopes=(DRIVE_FILE,),
             )
         elif provider == "slack" and isinstance(oauth, SlackOAuthProvider):
-            token, slack_user, team = oauth.exchange_user_code(code)
+            token, slack_user, team, granted = oauth.exchange_user_code(code)
             # Also the person's own work address: a company that connected no
             # Slack anywhere still knows its people by email.
             teams = _company_workspaces(org_id, "slack")
@@ -655,7 +662,7 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
             # tokens never expire); with rotation on, store and refresh them.
             user_tokens = UserTokens(
                 access_token=token, external_user_id=slack_user, external_user_name=email,
-                scopes=tuple(SlackSettings.from_env().act_user_scopes.split(",")),
+                scopes=granted or tuple(SlackSettings.from_env().act_user_scopes.split(",")),
             )
         elif provider == "github" and isinstance(oauth, GitHubAppProvider):
             tokens, login, name = oauth.exchange_user_code(code)

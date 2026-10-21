@@ -9193,7 +9193,7 @@ a.people-card:hover { color: inherit; }
 }
 .account-action-outcome {
   display: grid;
-  grid-template-columns: 4.75rem 11rem;
+  grid-template-columns: 4.75rem minmax(11rem, auto);
   align-items: center;
   justify-content: end;
   gap: 0.5rem;
@@ -9225,7 +9225,9 @@ a.people-card:hover { color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 11rem;
+  /* Wide enough for "Open in Google Sheets"; a fixed 11rem spilled out. */
+  min-width: 11rem;
+  white-space: nowrap;
   gap: 0.3rem;
   min-height: 2rem;
   padding: 0.35rem 0.65rem;

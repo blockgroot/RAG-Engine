@@ -364,3 +364,29 @@ def test_a_doc_turns_plain_text_banners_into_headings():
 
     drafted = "Intro.\n\n=========\n==== PART 1: LEAVE POLICY ====\nOverview.\nA = B stays\n====="
     assert without_rules(drafted) == "Intro.\n\n## PART 1: LEAVE POLICY\nOverview.\nA = B stays"
+
+
+def test_the_content_every_draft_names_is_read(monkeypatch):
+    """An issue "from the README" and a Sheet "of the Linear bugs": only the
+    first draft's words were searched, so the Sheet had no bugs to list."""
+    from types import SimpleNamespace
+
+    from app.actions import service
+    from app.config.settings import ActionsSettings
+
+    question = "From the README of x/y open an issue, and make a sheet of the open Linear bugs"
+    form = {"type": "object", "properties": {}}
+    issue = SimpleNamespace(tool={"function": {"name": "github_create_issue", "parameters": form}})
+    sheet = SimpleNamespace(tool={"function": {"name": "drive_create_sheet", "parameters": form}})
+    monkeypatch.setattr(service.policy, "act_on", lambda *a: True)
+    monkeypatch.setattr(service.policy, "surface_enabled", lambda *a: True)
+    monkeypatch.setattr(service, "offered_actions", lambda *a, **k: ([issue, sheet], None))
+    monkeypatch.setattr("app.llm.routed.use_model", lambda *a, **k: None)
+    monkeypatch.setattr(service, "_ask", lambda llm, q, passages, tools, offered: [
+        (issue, {"document_words": "the README of x/y"}),
+        (sheet, {"document_words": "the open Linear bugs"})])
+    searched = []
+    service.propose(question, org_id="o", user_id="u", email="a@x.com", viewer=None, llm=None,
+                    embedder=None, vstore=None, settings=ActionsSettings.from_env(),
+                    search=lambda q, about, **k: searched.append(about) or ([], ""))
+    assert searched == ["the README of x/y; the open Linear bugs"]

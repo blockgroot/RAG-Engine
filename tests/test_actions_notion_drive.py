@@ -366,7 +366,7 @@ def test_slack_connects_the_persons_own_account_in_the_company_slack(client, org
     def finish(team, user):
         _location, state = _start(client, org, "slack")
         monkeypatch.setattr(SlackOAuthProvider, "exchange_user_code",
-                            lambda self, code: ("xoxp", user, team))
+                            lambda self, code: ("xoxp", user, team, ("chat:write", "im:write")))
         return client.get(f"/auth/slack/callback?code=c&state={state}",
                           follow_redirects=False).headers["location"]
 

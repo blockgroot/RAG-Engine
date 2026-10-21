@@ -44,8 +44,10 @@ const HISTORY_STATUS: Record<ActCard["status"], string> = {
 };
 
 function ActionHistoryRow({ action }: { action: ActCard }) {
+  // The label names the app ("Google Sheets: create a new sheet"): a Doc or
+  // Sheet is stored in Drive but opens in its own app.
   const provider =
-    PROVIDER_LABEL[action.provider ?? ""] ?? action.provider ?? "tool";
+    action.label.split(":")[0] || PROVIDER_LABEL[action.provider ?? ""] || action.provider || "tool";
   const actionName = action.label.replace(/^.*?:\s*/, "");
   return (
     <article className="account-action-row">

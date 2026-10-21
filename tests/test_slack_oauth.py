@@ -148,3 +148,15 @@ def test_refresh_not_implemented(_slack_oauth_settings):
     provider = SlackOAuthProvider(settings=_slack_oauth_settings)
     with pytest.raises(NotImplementedError):
         provider.refresh("irrelevant")
+
+
+def test_a_persons_sign_in_reports_the_scopes_slack_granted(monkeypatch):
+    """Slack grants only the app's configured User Token Scopes, so what was
+    asked for is not what the token can do; the granted list is stored."""
+    from app.auth.slack_oauth import SlackOAuthProvider
+
+    monkeypatch.setattr(SlackOAuthProvider, "_access", lambda self, code: {
+        "authed_user": {"id": "U1", "access_token": "xoxp", "scope": "chat:write,users:read"},
+        "team": {"id": "T1"}})
+    provider = SlackOAuthProvider.__new__(SlackOAuthProvider)
+    assert provider.exchange_user_code("c") == ("xoxp", "U1", "T1", ("chat:write", "users:read"))
