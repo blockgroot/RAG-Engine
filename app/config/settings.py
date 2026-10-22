@@ -1257,6 +1257,23 @@ class GuardSettings:
 
 
 @dataclass(frozen=True)
+class PrivacySettings:
+    """Masking personal identifiers before text leaves for an outside service.
+
+    On by default: Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values
+    are replaced with placeholders in everything sent to the AI models, the
+    remote embedder and reranker, and the Groq guard (``app/privacy``).
+    ``MASK_IDENTIFIERS=false`` is the kill switch if masking ever misbehaves.
+    """
+
+    mask_identifiers: bool = True
+
+    @classmethod
+    def from_env(cls) -> "PrivacySettings":
+        return cls(mask_identifiers=env_bool("MASK_IDENTIFIERS", True))
+
+
+@dataclass(frozen=True)
 class DocTablesSettings:
     """Charts from figures INSIDE documents (``app/doctables``).
 

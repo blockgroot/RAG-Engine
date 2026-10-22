@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from openai import OpenAI, APIError, APITimeoutError, APIConnectionError
 
-from ..core.exceptions import ConfigurationError, EmbeddingProviderError
+from ..core.exceptions import ConfigurationError, EmbeddingProviderError, PrivacyError
+from ..privacy import redact
 from .base import EmbeddingProvider
 
 DEFAULT_TIMEOUT = 60.0
@@ -58,6 +59,13 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        # Identifiers are masked before the text leaves: a vector never needs
+        # the digits, and an exact-number search is the keyword leg's job,
+        # which runs here on the real text.
+        try:
+            batch = redact(batch)
+        except PrivacyError as exc:
+            raise EmbeddingProviderError(str(exc), cause=exc) from exc
         try:
             response = self._client.embeddings.create(model=self.model, input=batch)
         except APITimeoutError as exc:

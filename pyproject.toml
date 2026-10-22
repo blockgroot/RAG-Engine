@@ -33,6 +33,9 @@ dependencies = [
     "pdfplumber>=0.11.0",
     # Slack charts as images (app/chartrender/); lazy-imported.
     "matplotlib==3.9.2",
+    # Identifier masking before text leaves for an outside service (app/privacy/).
+    "python-stdnum>=2.0",
+    "phonenumbers>=8.13",
 ]
 
 [project.optional-dependencies]

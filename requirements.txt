@@ -22,6 +22,9 @@ pyjwt>=2.8.0
 # CLI presentation only (scripts/cli.py) — never imported by the app/ core runtime.
 rich>=13.0.0
 rank-bm25>=0.2.2
+# Masking Aadhaar/PAN/card/mobile numbers before text leaves (app/privacy/).
+python-stdnum>=2.0
+phonenumbers>=8.13
 
 # --- HTTP API layer (app/api/) — Phase 13 ---
 fastapi>=0.110.0

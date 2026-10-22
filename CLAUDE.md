@@ -386,6 +386,15 @@ never a 404) and answers on the row delete; the object-store purge runs after
 the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty
 input stays empty.
 
+**Identifiers leaving.** Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values
+never reach an outside service in readable form (`app/privacy`): found by format and
+check digit only, replaced with `<KIND_n>`. Both LLM factories return a
+`MaskingLLMProvider`, which restores the reply and tool-call arguments before any caller
+sees them (only placeholders that call issued, exact match; an invented one is removed).
+A new outbound client (embedder, reranker, guard) calls `privacy.redact`. A detector
+failure blocks the send, never sends unmasked. Bank account numbers and order ids are not
+masked: no format tells them apart. `MASK_IDENTIFIERS=false` is the kill switch.
+
 ## 6. Where things live
 
 ```
@@ -401,6 +410,7 @@ app/doctables/       tables inside documents, kept as typed rows for charts
 app/graph/           knowledge graph
 app/livetools/       live re-reads
 app/actions/         Act: approved writes into connected tools
+app/privacy/         identifiers masked before text leaves (LLM, search, guard)
 app/memory/          chats and personal facts
 app/jobs/            ingest queue and automatic sync
 app/db/schema.sql    tables
