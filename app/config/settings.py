@@ -2160,7 +2160,7 @@ class ActionsSettings:
     """
 
     ttl_seconds: int = 900
-    rate_per_hour: int = 20
+    rate_per_hour: int = 100
     block_wider: bool = False
     # Agent mode writes only through MCP servers an admin adds (docs/plans/2026-10-22-mcp-only-actions.md).
     # Where a person's MCP sign-in returns: the browser-facing /api proxy, so
@@ -2174,7 +2174,7 @@ class ActionsSettings:
     def from_env(cls) -> "ActionsSettings":
         return cls(
             ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
-            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
+            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "100"))),
             block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),
             mcp_redirect_uri=os.getenv("MCP_REDIRECT_URI") or (
                 f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/act/mcp/callback"
