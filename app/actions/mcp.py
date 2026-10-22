@@ -247,9 +247,27 @@ class McpToolAction(Action):
         if result.get("isError"):
             raise ActionError(f"{self.server.name} refused it: {text[:300] or 'no reason given'}")
         structured = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
-        link = structured.get("url") if str(structured.get("url") or "").startswith("https://") else None
-        link = link or next(iter(_URL.findall(text)), None)
+        candidates = [str(structured.get("url") or ""), *_URL.findall(text)]
+        link = next((page for page in map(_page_link, candidates) if page), None)
         return ActionResult(str(structured.get("id") or structured.get("identifier") or key), link)
+
+
+_GITHUB_API = re.compile(r"^https://api\.github\.com/repos/([^/]+)/([^/]+)/(?:git/refs/heads/(.+)|(issues|pulls)/(\d+))$")
+
+
+def _page_link(url: str) -> str | None:
+    """A link a person can open: a GitHub API address becomes its page (a
+    branch's tree, an issue or pull request), and no other API address is a
+    link (one opened in a browser is a 404 for a private repo)."""
+    url = url.rstrip(".,;")
+    if not url.startswith("https://"):
+        return None
+    m = _GITHUB_API.match(url)
+    if m:
+        owner, repo, branch, kind, number = m.groups()
+        return (f"https://github.com/{owner}/{repo}/tree/{branch}" if branch else
+                f"https://github.com/{owner}/{repo}/{'pull' if kind == 'pulls' else 'issues'}/{number}")
+    return None if url.split("/")[2].startswith("api.") else url
 
 
 def _short(value: Any) -> str:

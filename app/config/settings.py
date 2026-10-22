@@ -2169,6 +2169,10 @@ class ActionsSettings:
     mcp_timeout_seconds: float = 20.0
     #: Lookup calls (admin-marked read tools) one request may make before drafting.
     mcp_max_lookups: int = 4
+    #: Tools one drafting call is offered, each connector's nearest the request
+    #: in turn (``service._fit_tools``). Fewer is faster and cheaper; every
+    #: connector keeps its best few. Never above 128, which models refuse.
+    mcp_max_tools: int = 40
     #: Where Handbook's own MCP servers answer (``app/mcphost``: Slack, Google),
     #: through the same /api proxy; ``HANDBOOK_MCP_URL`` when they move out.
     mcp_host_url: str | None = None
@@ -2184,6 +2188,7 @@ class ActionsSettings:
                 if os.getenv("FRONTEND_URL") else None),
             mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "20")),
             mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "4"))),
+            mcp_max_tools=min(128, max(1, int(os.getenv("MCP_MAX_TOOLS", "40")))),
             mcp_host_url=(os.getenv("HANDBOOK_MCP_URL") or (
                 f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/mcp" if os.getenv("FRONTEND_URL") else None)),
         )

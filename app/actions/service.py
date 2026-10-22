@@ -68,20 +68,20 @@ SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
 #: its own card, approved on its own; a cap keeps one sentence from fanning out.
 MAX_ACTIONS = 5
 
-#: Tools one model call may carry. OpenAI's models (and OpenRouter's routes to
-#: them) and Groq refuse a request with more than 128; an admin who turns on
-#: every tool of four servers passes that, and every request then failed.
-MAX_TOOLS = 128
 #: Embeddings of tool texts, by text. A tool's text changes only when its
 #: server does, so each is embedded once per process.
 _TOOL_VECTORS: dict[str, list[float]] = {}
 
 
-def _fit_tools(offered: list[Action], question: str, embedder) -> list[Action]:
-    """At most ``MAX_TOOLS``, the ones whose name and description are nearest
-    the request in meaning. Narrowing is ranking only: what the model may do
-    with a tool it is offered is checked as always."""
-    if len(offered) <= MAX_TOOLS:
+def _fit_tools(offered: list[Action], question: str, embedder, cap: int) -> list[Action]:
+    """At most ``cap`` tools: each connector's ranked by how near its name and
+    description are to the request in meaning, then taken in turns, so a
+    request that spans connectors keeps each one's best. Every tool of every
+    server costs tokens on each call, and OpenAI's models and Groq refuse more
+    than 128 (with every tool of four servers on, every request failed).
+    Narrowing is ranking only: what the model may do with a tool it is offered
+    is checked as always."""
+    if len(offered) <= cap:
         return offered
     from ..core.exceptions import EmbeddingProviderError
 
@@ -92,17 +92,23 @@ def _fit_tools(offered: list[Action], question: str, embedder) -> list[Action]:
             _TOOL_VECTORS.update(zip(missing, embedder.embed(missing)))
         [q] = embedder.embed([question])
     except EmbeddingProviderError as exc:
-        logger.warning("Act: ranking %d tools failed, offering the first %d: %s", len(offered), MAX_TOOLS, exc)
-        return offered[:MAX_TOOLS]
+        logger.warning("Act: ranking %d tools failed, offering the first %d: %s", len(offered), cap, exc)
+        return offered[:cap]
 
     def cosine(v: list[float]) -> float:
         dot = sum(a * b for a, b in zip(q, v))
         norm = (sum(a * a for a in q) * sum(b * b for b in v)) ** 0.5
         return dot / norm if norm else 0.0
 
-    ranked = sorted(range(len(offered)), key=lambda i: cosine(_TOOL_VECTORS[texts[i]]), reverse=True)
-    keep = set(ranked[:MAX_TOOLS])
-    return [a for i, a in enumerate(offered) if i in keep]
+    by_server: dict[str, list[int]] = {}
+    for i in sorted(range(len(offered)), key=lambda i: cosine(_TOOL_VECTORS[texts[i]]), reverse=True):
+        server = getattr(offered[i], "server", None)
+        by_server.setdefault(server.id if server else offered[i].label, []).append(i)
+    keep: list[int] = []
+    queues = list(by_server.values())
+    while len(keep) < cap:
+        keep += [queue.pop(0) for queue in queues if queue][:cap - len(keep)]
+    return [offered[i] for i in sorted(keep)]
 
 
 @dataclass(frozen=True)
@@ -428,7 +434,7 @@ def propose(
     # None is the default model (Slack, or no pick). Set here, not by the
     # caller, so a request never inherits another request's choice.
     use_model(model, org_id=org_id)
-    offered = _fit_tools(offered, question, embedder)
+    offered = _fit_tools(offered, question, embedder, settings.mcp_max_tools)
     tools = [a.tool if a.lookup else _with_document_words(a.tool) for a in offered]
     progress.report("Reading your request")
     found: list[str] = []

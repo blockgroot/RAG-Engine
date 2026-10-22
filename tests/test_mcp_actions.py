@@ -512,3 +512,12 @@ def test_a_refused_form_goes_back_to_the_model_once(monkeypatch):
                                        found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
     assert picked[0][1] == {"pages": [{"properties": {"title": "Notes"}}]}
     assert shown[0] is None and "has no field title" in shown[1]
+
+
+def test_a_cards_link_is_a_page_never_an_api_address():
+    """GitHub's create_branch returns only its API address, a 404 in a browser."""
+    assert mcp._page_link("https://api.github.com/repos/o/r/git/refs/heads/mcp-suite-1613") == \
+        "https://github.com/o/r/tree/mcp-suite-1613"
+    assert mcp._page_link("https://api.github.com/repos/o/r/pulls/21") == "https://github.com/o/r/pull/21"
+    assert mcp._page_link("https://api.linear.app/graphql") is None
+    assert mcp._page_link("https://linear.app/acme/issue/BEN-1.") == "https://linear.app/acme/issue/BEN-1"

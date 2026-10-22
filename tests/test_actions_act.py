@@ -1145,22 +1145,27 @@ def test_the_last_turn_says_the_lookups_already_ran():
     assert "already looked things up" not in service.build_act_prompt("q", "found")
 
 
-def test_more_tools_than_a_model_takes_are_narrowed_to_the_nearest():
-    """OpenAI's models and Groq refuse over 128 tools; an admin who turns on
-    every tool of four servers passes that. The request's nearest are kept."""
+def test_tools_are_narrowed_per_connector_so_each_keeps_its_best():
+    """Every tool of every server on cost tokens on each call (OpenAI and Groq
+    refuse over 128). Each connector's tools are ranked and taken in turns:
+    a request spanning Linear and Slack keeps the best of both."""
     from types import SimpleNamespace
 
     from app.actions import service
 
-    def tool(i, words):
-        return SimpleNamespace(label=f"T{i}", tool={"function": {"description": words}})
+    def tool(server, i, words):
+        return SimpleNamespace(label=f"{server}{i}", server=SimpleNamespace(id=server),
+                               tool={"function": {"description": words}})
 
-    offered = [tool(i, "archive a notion page") for i in range(150)] + [tool(150, "create a github pull request")]
+    offered = ([tool("linear", i, "archive a project") for i in range(30)] + [tool("linear", 99, "create an issue")]
+               + [tool("slack", i, "set a status") for i in range(30)] + [tool("slack", 99, "post a message")])
 
     class Embedder:
         def embed(self, texts):
-            return [[1.0, 0.0] if "pull request" in t else [0.0, 1.0] for t in texts]
+            return [[1.0, 0.0] if ("issue" in t or "message" in t) else [0.0, 1.0] for t in texts]
 
-    kept = service._fit_tools(offered, "open a pull request", Embedder())
-    assert len(kept) == service.MAX_TOOLS and kept[-1].label == "T150"
-    assert service._fit_tools(offered[:5], "x", None) == offered[:5]
+    kept = service._fit_tools(offered, "file an issue and post a message", Embedder(), 4)
+    labels = [a.label for a in kept]
+    assert len(kept) == 4 and "linear99" in labels and "slack99" in labels
+    assert sum(lbl.startswith("linear") for lbl in labels) == 2
+    assert service._fit_tools(offered[:3], "x", None, 4) == offered[:3]
