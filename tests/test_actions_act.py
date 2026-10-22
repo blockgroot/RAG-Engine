@@ -1065,7 +1065,7 @@ def test_never_more_drafts_than_the_cap_and_never_one_not_asked_for(org, monkeyp
                                      "title": "t", "body": "b"})
     unasked = ("test_create", {"request_words": "also post it", "team": "Platform",
                                        "title": "t", "body": "b"})
-    out = _propose(org, question, ManyCallsLLM([unasked] + [asked] * 5))
+    out = _propose(org, question, ManyCallsLLM([unasked] + [asked] * (service.MAX_ACTIONS + 2)))
     assert len(out.drafts) == service.MAX_ACTIONS            # the unasked one made nothing
     assert "left out" in out.reply                           # and the extra two are said
 

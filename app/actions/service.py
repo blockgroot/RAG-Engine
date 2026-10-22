@@ -65,7 +65,7 @@ SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
 
 #: Drafts one request may make ("an issue in Linear and in GitHub"). Each is
 #: its own card, approved on its own; a cap keeps one sentence from fanning out.
-MAX_ACTIONS = 3
+MAX_ACTIONS = 5
 
 
 @dataclass(frozen=True)
