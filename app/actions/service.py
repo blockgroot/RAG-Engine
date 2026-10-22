@@ -68,6 +68,42 @@ SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
 #: its own card, approved on its own; a cap keeps one sentence from fanning out.
 MAX_ACTIONS = 5
 
+#: Tools one model call may carry. OpenAI's models (and OpenRouter's routes to
+#: them) and Groq refuse a request with more than 128; an admin who turns on
+#: every tool of four servers passes that, and every request then failed.
+MAX_TOOLS = 128
+#: Embeddings of tool texts, by text. A tool's text changes only when its
+#: server does, so each is embedded once per process.
+_TOOL_VECTORS: dict[str, list[float]] = {}
+
+
+def _fit_tools(offered: list[Action], question: str, embedder) -> list[Action]:
+    """At most ``MAX_TOOLS``, the ones whose name and description are nearest
+    the request in meaning. Narrowing is ranking only: what the model may do
+    with a tool it is offered is checked as always."""
+    if len(offered) <= MAX_TOOLS:
+        return offered
+    from ..core.exceptions import EmbeddingProviderError
+
+    texts = [f"{a.label}. {a.tool['function'].get('description', '')}"[:1000] for a in offered]
+    try:
+        missing = [t for t in dict.fromkeys(texts) if t not in _TOOL_VECTORS]
+        if missing:
+            _TOOL_VECTORS.update(zip(missing, embedder.embed(missing)))
+        [q] = embedder.embed([question])
+    except EmbeddingProviderError as exc:
+        logger.warning("Act: ranking %d tools failed, offering the first %d: %s", len(offered), MAX_TOOLS, exc)
+        return offered[:MAX_TOOLS]
+
+    def cosine(v: list[float]) -> float:
+        dot = sum(a * b for a, b in zip(q, v))
+        norm = (sum(a * a for a in q) * sum(b * b for b in v)) ** 0.5
+        return dot / norm if norm else 0.0
+
+    ranked = sorted(range(len(offered)), key=lambda i: cosine(_TOOL_VECTORS[texts[i]]), reverse=True)
+    keep = set(ranked[:MAX_TOOLS])
+    return [a for i, a in enumerate(offered) if i in keep]
+
 
 @dataclass(frozen=True)
 class ActOutcome:
@@ -381,6 +417,7 @@ def propose(
     # None is the default model (Slack, or no pick). Set here, not by the
     # caller, so a request never inherits another request's choice.
     use_model(model, org_id=org_id)
+    offered = _fit_tools(offered, question, embedder)
     tools = [a.tool if a.lookup else _with_document_words(a.tool) for a in offered]
     progress.report("Reading your request")
     found: list[str] = []

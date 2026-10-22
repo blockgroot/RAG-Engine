@@ -1143,3 +1143,24 @@ def test_out_of_lookups_the_model_gets_one_turn_to_draft():
 def test_the_last_turn_says_the_lookups_already_ran():
     assert "already looked things up" in service.build_act_prompt("q", "found", lookups_done=True)
     assert "already looked things up" not in service.build_act_prompt("q", "found")
+
+
+def test_more_tools_than_a_model_takes_are_narrowed_to_the_nearest():
+    """OpenAI's models and Groq refuse over 128 tools; an admin who turns on
+    every tool of four servers passes that. The request's nearest are kept."""
+    from types import SimpleNamespace
+
+    from app.actions import service
+
+    def tool(i, words):
+        return SimpleNamespace(label=f"T{i}", tool={"function": {"description": words}})
+
+    offered = [tool(i, "archive a notion page") for i in range(150)] + [tool(150, "create a github pull request")]
+
+    class Embedder:
+        def embed(self, texts):
+            return [[1.0, 0.0] if "pull request" in t else [0.0, 1.0] for t in texts]
+
+    kept = service._fit_tools(offered, "open a pull request", Embedder())
+    assert len(kept) == service.MAX_TOOLS and kept[-1].label == "T150"
+    assert service._fit_tools(offered[:5], "x", None) == offered[:5]
