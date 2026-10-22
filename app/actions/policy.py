@@ -111,6 +111,23 @@ def set_policy(
         )
 
 
+def space_off(org_id: str, workspace_id: str | None) -> set[str]:
+    """Tools a space's owner switched off for their space: ``mcp:<server>``
+    (the whole server) or ``mcp:<server>:<tool>``. Only narrows: an owner can
+    never turn on a tool the admin left off, because only "off" rows count."""
+    if workspace_id is None:
+        return set()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT action FROM action_policies WHERE org_id = %s::uuid AND workspace_id = %s::uuid "
+            "AND NOT enabled AND action LIKE 'mcp:%%'", (org_id, workspace_id)).fetchall()
+    return {r[0] for r in rows}
+
+
+def off_in_space(off: set[str], server_id: str, tool: str) -> bool:
+    return f"mcp:{server_id}" in off or f"mcp:{server_id}:{tool}" in off
+
+
 def within_rate(org_id: str, user_id: str, *, settings: ActionsSettings | None = None) -> bool:
     """Under the per-person hourly cap on executed writes."""
     settings = settings or ActionsSettings.from_env()

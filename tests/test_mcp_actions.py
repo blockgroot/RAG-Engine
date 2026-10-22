@@ -343,3 +343,39 @@ def test_google_workspace_is_one_tile_adding_drive_and_sheets(client, store, org
     assert {s["group"] for s in after["servers"]} == {"google_workspace"}
     assert next(t for t in after["presets"] if t["key"] == "google_workspace")["added"]
     assert [s["name"] for s in client.get("/act/mcp", cookies=cookies).json()["servers"]] == ["Google Workspace"]
+
+
+@requires_db
+def test_a_space_owner_only_switches_tools_off_for_their_space(client, server, store, org_cleanup):
+    from app.actions import policy
+    from app.actions.factory import get_action
+    from app.auth import create_admin, create_session_token
+    from app.workspaces.store import create_workspace
+
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"mcp-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    cookies = {"session": create_session_token(admin)}
+    policy.set_policy(org_id, policy.ACT_KEY, True)
+    ws = create_workspace(org_id, "Ops", admin.id)
+    sid = client.post("/admin/mcp", json={"name": "Asana", "url": URL}, cookies=cookies).json()["id"]
+    client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "write"}, cookies=cookies)
+    client.put(f"/admin/mcp/{sid}/tools/list_projects", json={"mode": "lookup"}, cookies=cookies)
+
+    def names(workspace):
+        return {a.mcp_tool["name"] for a in mcp.mcp_actions(org_id, admin.id, workspace)}
+
+    listed = client.get(f"/act/spaces/{ws}/tools", cookies=cookies).json()["servers"]
+    assert [t["name"] for t in listed[0]["tools"]] == ["create_task", "list_projects"]   # only what the admin turned on
+    client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": "create_task", "enabled": False},
+               cookies=cookies)
+    assert names(ws) == {"list_projects"} and names(None) == {"create_task", "list_projects"}
+    assert not get_action(f"mcp:{sid}:create_task", org_id).enabled_for(org_id, ws)    # checked again at approval
+    assert get_action(f"mcp:{sid}:create_task", org_id).enabled_for(org_id, None)
+
+    # "On" in a space never turns on what the admin left off.
+    client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": "delete_task", "enabled": True},
+               cookies=cookies)
+    assert "delete_task" not in names(ws)
+    client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": None, "enabled": False}, cookies=cookies)
+    assert names(ws) == set()

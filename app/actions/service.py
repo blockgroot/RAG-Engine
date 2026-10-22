@@ -287,12 +287,18 @@ def offered_actions(
     from .mcp import mcp_actions
     from .mcp_store import list_servers
 
-    offered = mcp_actions(org_id, user_id)
+    offered = mcp_actions(org_id, user_id, workspace_id)
     if any(not a.lookup for a in offered):
         return offered, None
+    off = policy.space_off(org_id, workspace_id)
     # Why not: no tool switched on at all, or switched on where they have not signed in.
-    waiting = [s.name for s in list_servers(org_id) if s.enabled
-               and any(s.mode(t.get("name", "")) == "write" for t in s.tools)]
+    on = [s for s in list_servers(org_id) if s.enabled
+          and any(s.mode(t.get("name", "")) == "write" for t in s.tools)]
+    waiting = [s.name for s in on if any(s.mode(t.get("name", "")) == "write"
+                                         and not policy.off_in_space(off, s.id, t.get("name", ""))
+                                         for t in s.tools)]
+    if on and not waiting:
+        return [], "This space's owner switched off the tools for Agent mode here."
     if not waiting:
         return [], "Your admin hasn't switched on any tools for Agent mode yet."
     return [], f"Sign in to {' or '.join(waiting)} in Handbook (Account → Agent) to let it act for you."

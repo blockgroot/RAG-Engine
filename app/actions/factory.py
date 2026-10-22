@@ -17,7 +17,7 @@ def build_actions(org_id: str, workspace_id: str | None, user_id: str) -> list[A
         return []
     from .mcp import mcp_actions
 
-    return mcp_actions(org_id, user_id)
+    return mcp_actions(org_id, user_id, workspace_id)
 
 
 def get_action(name: str, org_id: str | None = None) -> Action | None:

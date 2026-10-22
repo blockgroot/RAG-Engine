@@ -85,7 +85,9 @@ class McpToolAction(Action):
 
         current = mcp_store.get_server(org_id, self.server.id)
         return bool(current and current.enabled and current.mode(self.mcp_tool["name"]) == "write"
-                    and policy.act_on(org_id, workspace_id))
+                    and policy.act_on(org_id, workspace_id)
+                    and not policy.off_in_space(policy.space_off(org_id, workspace_id),
+                                                self.server.id, self.mcp_tool["name"]))
 
     def token_for(self, org_id: str, user_id: str, surface: str = "web",
                   payload: dict[str, Any] | None = None) -> str:
@@ -203,16 +205,19 @@ class McpLookup(Action):
         raise ActionRejected("That is a lookup, not an action.")
 
 
-def mcp_actions(org_id: str, user_id: str) -> list[Action]:
+def mcp_actions(org_id: str, user_id: str, workspace_id: str | None = None) -> list[Action]:
     """The person's MCP tools now: enabled servers they signed in to (or that
-    need no sign-in), each tool in the mode an admin chose. Never raises."""
+    need no sign-in), each tool in the mode an admin chose, minus what the
+    space's owner switched off there. Never raises."""
     from ..auth.user_connections import list_user_connections
+    from . import policy
 
     try:
         servers = [s for s in mcp_store.list_servers(org_id) if s.enabled]
         if not servers:
             return []
         signed_in = {c.provider for c in list_user_connections(org_id, user_id)}
+        off = policy.space_off(org_id, workspace_id)
     except Exception:  # noqa: BLE001 - MCP adds tools; it must never break Act
         return []
     out: list[Action] = []
@@ -221,6 +226,8 @@ def mcp_actions(org_id: str, user_id: str) -> list[Action]:
             continue
         for tool in server.tools:
             mode = server.mode(tool.get("name", ""))
+            if policy.off_in_space(off, server.id, tool.get("name", "")):
+                continue
             if mode == "write":
                 out.append(McpToolAction(server, tool))
             elif mode == "lookup":

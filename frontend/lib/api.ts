@@ -248,6 +248,26 @@ export interface SpaceAct {
   can_change: boolean;
 }
 
+/** A tool the admin switched on, as a space's owner sees it: on unless they switched it off here. */
+export interface SpaceTool {
+  name: string;
+  title: string;
+  description: string;
+  read_only: boolean;
+  destructive: boolean;
+  on: boolean;
+}
+
+export interface SpaceToolServer {
+  id: string;
+  name: string;
+  group: string | null;
+  group_name: string | null;
+  brand: string | null;
+  on: boolean;
+  tools: SpaceTool[];
+}
+
 export interface AdminActions {
   enabled: boolean;
   block_wider: boolean;
@@ -910,6 +930,14 @@ export const api = {
     request<SpaceAct>(`/act/spaces/${encodeURIComponent(workspaceId)}`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
+    }),
+  spaceTools: (workspaceId: string) =>
+    request<{ servers: SpaceToolServer[] }>(`/act/spaces/${encodeURIComponent(workspaceId)}/tools`),
+  /** ``tool`` null switches the whole server off or back on for this space. */
+  setSpaceTool: (workspaceId: string, serverId: string, tool: string | null, enabled: boolean) =>
+    request<{ servers: SpaceToolServer[] }>(`/act/spaces/${encodeURIComponent(workspaceId)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ server_id: serverId, tool, enabled }),
     }),
   rejectAction: (id: string) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {

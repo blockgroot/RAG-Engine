@@ -361,8 +361,10 @@ the person, a channel drafts from that channel only as the room (like a channel
 reply), and its card is ephemeral. Each Slack surface has its own admin switch.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
-owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only
-narrows; company-wide use follows the company switch alone. Admins see switches only,
+owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. The owner
+may also switch off a tool or a whole server for their space (`policy.space_off`, rows
+`mcp:<server>[:<tool>]`); only "off" rows count, checked when offering and at confirm.
+A space only narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
 
 **Gaps.** What people could not get answered reaches the person who can fix it,

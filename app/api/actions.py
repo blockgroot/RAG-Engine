@@ -472,6 +472,58 @@ def space_act(workspace_id: str, session: SessionClaims = Depends(get_session),
     }
 
 
+@router.get("/act/spaces/{workspace_id}/tools")
+def space_tools(workspace_id: str, session: SessionClaims = Depends(get_session),
+                _owner: str = Depends(require_workspace_owner)):
+    """What the admin switched on, and what the owner switched off here. Only
+    tools the admin turned on are listed: an owner only narrows."""
+    from ..actions.mcp_presets import GROUPS
+    from ..actions.mcp_store import destructive, list_servers
+
+    off = policy.space_off(session.org_id, workspace_id)
+    out = []
+    for server in list_servers(session.org_id):
+        tools = [t for t in server.tools if server.mode(t.get("name", "")) != "off"]
+        if not server.enabled or not tools:
+            continue
+        preset = server.preset
+        group = preset.group if preset else None
+        out.append({
+            "id": server.id, "name": server.name, "group": group,
+            "group_name": GROUPS[group]["name"] if group else None,
+            "brand": group or (preset.key if preset else None),
+            "on": f"mcp:{server.id}" not in off,
+            "tools": [{"name": t["name"], "title": t.get("title") or t["name"],
+                       "description": (t.get("description") or "")[:400],
+                       "read_only": server.is_read(t), "destructive": destructive(t),
+                       "on": not policy.off_in_space(off, server.id, t["name"])} for t in tools]})
+    return {"servers": out}
+
+
+class SpaceToolSwitch(BaseModel):
+    server_id: uuid.UUID
+    #: None switches the whole server.
+    tool: str | None = Field(default=None, max_length=200)
+    enabled: bool
+
+
+@router.put("/act/spaces/{workspace_id}/tools")
+def set_space_tool(workspace_id: str, body: SpaceToolSwitch,
+                   session: SessionClaims = Depends(get_session),
+                   _owner: str = Depends(require_workspace_owner)):
+    """The owner switches a tool (or a whole server) off or back on for their
+    space. "On" only undoes their own "off": the admin's choice is the ceiling."""
+    from ..actions.mcp_store import get_server
+
+    server = get_server(session.org_id, str(body.server_id))
+    if server is None or (body.tool is not None and server.tool(body.tool) is None):
+        raise HTTPException(status_code=404, detail="No such tool.")
+    name = f"mcp:{server.id}" + (f":{body.tool}" if body.tool else "")
+    policy.set_policy(session.org_id, name, body.enabled, workspace_id=workspace_id,
+                      updated_by=session.user_id)
+    return space_tools(workspace_id, session, "owner")
+
+
 @router.put("/act/spaces/{workspace_id}")
 def set_space_act(workspace_id: str, body: PolicyRequest,
                   session: SessionClaims = Depends(get_session),
