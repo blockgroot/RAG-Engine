@@ -447,3 +447,28 @@ def test_reversible_code_writes_are_not_labelled_destructive():
     for name in ("create_branch", "create_or_update_file", "push_files", "rename_file"):
         assert not mcp_store.destructive({"name": name}), name
     assert mcp_store.destructive({"name": "merge_pull_request"}) and mcp_store.destructive({"name": "delete_file"})
+
+
+@requires_db
+def test_servers_on_retired_vendor_addresses_move_onto_handbooks_own(store, org_cleanup, monkeypatch):
+    """The Slack and Google Drive/Sheets rows added when those presets used the
+    vendors' gated servers carry on in the admin's list as Slack and Google
+    Workspace: one row each, switch kept, tools and old sign-ins cleared."""
+    from app.actions import mcp_presets
+
+    monkeypatch.setenv("SLACK_CLIENT_ID", "slack-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "google-id")
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    made = {u: mcp_store.create_server(org_id, name=u, url=u, auth="oauth", oauth={"x": 1},
+                                       tools=[CREATE], created_by=None) for u in mcp_presets.RETIRED}
+    drive = made["https://drivemcp.googleapis.com/mcp/v1"]
+    mcp_store.set_mode(org_id, drive, "create_task", "write")
+    mcp_store.set_enabled(org_id, made["https://mcp.slack.com/mcp"].id, False)
+
+    servers = mcp_store.list_servers(org_id)
+    assert sorted(s.name for s in servers) == ["Google Workspace", "Slack"]
+    slack, google = sorted(servers, key=lambda s: s.name, reverse=True)
+    assert slack.preset is mcp_presets.SLACK and not slack.enabled and slack.oauth["client_id"] == "slack-id"
+    assert google.id == drive.id and google.preset is mcp_presets.GOOGLE_WORKSPACE
+    assert google.tools == [] and google.tool_modes == {}

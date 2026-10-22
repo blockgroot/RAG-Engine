@@ -242,6 +242,16 @@ def in_group(group: str) -> list[Preset]:
     return [p for p in PRESETS.values() if p.group == group]
 
 
+#: Vendor-hosted addresses earlier presets used, and the preset that replaces
+#: each (their gated servers never worked for Handbook). ``mcp_store`` moves
+#: such a row onto the replacement, so the admin's list carries on in place.
+RETIRED: dict[str, str] = {
+    "https://mcp.slack.com/mcp": "slack",
+    "https://drivemcp.googleapis.com/mcp/v1": "google_workspace",
+    "https://sheetsmcp.googleapis.com/mcp/v1": "google_workspace",
+}
+
+
 def preset_for(url: str) -> Preset | None:
     """The preset a server was added from, by its address."""
     clean = (url or "").rstrip("/")

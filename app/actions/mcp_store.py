@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Json
 
 from ..db.connection import get_connection
@@ -126,7 +127,55 @@ def list_servers(org_id: str) -> list[McpServer]:
     with get_connection() as conn:
         rows = conn.execute(f"SELECT {_COLUMNS} FROM mcp_servers WHERE org_id = %s::uuid "
                             "ORDER BY created_at", (org_id,)).fetchall()
-    return [_row(r) for r in rows]
+    servers = [_row(r) for r in rows]
+    from .mcp_presets import RETIRED
+
+    if any(s.url.rstrip("/") in RETIRED for s in servers) and _move_retired(org_id, servers):
+        return list_servers(org_id)
+    return servers
+
+
+def _move_retired(org_id: str, servers: list[McpServer]) -> bool:
+    """Move rows on a retired vendor address onto the preset that replaced it
+    (``mcp_presets.RETIRED``): same row and on/off switch, the new address, and
+    no tools or sign-ins (the tools differ and old sign-ins lack the scopes).
+    A second row for the same replacement (Drive and Sheets) is removed.
+    Returns whether anything changed; a replacement that cannot be set up yet
+    (its app not configured) leaves the row as it was."""
+    from ..core.exceptions import ActionError
+    from .mcp_client import discover
+    from .mcp_presets import PRESETS, RETIRED
+
+    taken = {s.url.rstrip("/") for s in servers}
+    changed = False
+    for s in servers:
+        key = RETIRED.get(s.url.rstrip("/"))
+        if key is None:
+            continue
+        preset = PRESETS[key]
+        with get_connection() as conn:
+            if preset.url.rstrip("/") in taken:
+                conn.execute("DELETE FROM user_connections WHERE org_id = %s::uuid AND provider = %s",
+                             (org_id, s.provider))
+                conn.execute("DELETE FROM mcp_servers WHERE org_id = %s::uuid AND id = %s::uuid", (org_id, s.id))
+                changed = True
+                continue
+            try:
+                oauth = discover(preset.url, "", preset=preset)
+            except ActionError:
+                continue
+            conn.execute("DELETE FROM user_connections WHERE org_id = %s::uuid AND provider = %s",
+                         (org_id, s.provider))
+            try:  # another request moved its twin first: the next listing removes this one
+                conn.execute("UPDATE mcp_servers SET name = %s, url = %s, auth = 'oauth', oauth = %s, "
+                             "tools = '[]', tool_modes = '{}', updated_at = now() "
+                             "WHERE org_id = %s::uuid AND id = %s::uuid",
+                             (preset.name, preset.url, Json(oauth), org_id, s.id))
+            except UniqueViolation:
+                conn.rollback()
+        taken.add(preset.url.rstrip("/"))
+        changed = True
+    return changed
 
 
 def get_server(org_id: str, server_id: str) -> McpServer | None:
