@@ -173,12 +173,20 @@ def test_every_tool_starts_off_and_a_changed_tool_turns_off_again():
     assert changed.mode("create_task") == "off"            # the server changed it: re-approve
 
 
-def test_destructive_tools_are_blocked_and_lookups_must_be_read_only():
-    assert mcp_store.blocked(DELETE) and mcp_store.blocked({"name": "merge_pull_request"})
-    assert not mcp_store.blocked(CREATE) and not mcp_store.blocked({"name": "disclose_report"})
-    assert mcp_store.blocked({"name": "x", "annotations": {"destructiveHint": True}})
+def test_destructive_tools_are_marked_not_blocked_and_lookups_must_be_read_only():
+    assert mcp_store.destructive(DELETE) and mcp_store.destructive({"name": "merge_pull_request"})
+    assert not mcp_store.destructive(CREATE) and not mcp_store.destructive({"name": "disclose_report"})
+    assert mcp_store.destructive({"name": "x", "annotations": {"destructiveHint": True}})
     server = _server({"create_task": "lookup", "delete_task": "write"})
-    assert server.mode("create_task") == "off" and server.mode("delete_task") == "off"
+    assert server.mode("create_task") == "off"             # a lookup must be read-only
+    assert server.mode("delete_task") == "write"           # the admin's choice stands
+    assert mcp_store.tool_view(server, DELETE)["destructive"]
+
+
+def test_a_destructive_card_says_it_cannot_be_undone():
+    action = mcp.McpToolAction(_server({"delete_task": "write"}), DELETE)
+    proposal = action.prepare({"request_words": "delete it"}, _ctx("delete it"))
+    assert proposal.payload["details"][0] == ["Can't be undone", "This deletes or changes something in Asana."]
 
 
 # -- A drafted write --------------------------------------------------------------------------
@@ -295,7 +303,12 @@ def test_an_admin_adds_a_server_and_chooses_each_tools_mode(client, server, stor
     added = client.post("/admin/mcp", json={"name": "Asana", "url": URL}, cookies=cookies).json()
     assert added["auth"] == "none" and {t["mode"] for t in added["tools"]} == {"off"}
     sid = added["id"]
-    assert client.put(f"/admin/mcp/{sid}/tools/delete_task", json={"mode": "write"}, cookies=cookies).status_code == 400
+    assert client.put(f"/admin/mcp/{sid}/tools/delete_task", json={"mode": "write"}, cookies=cookies).json()["mode"] == "write"
+    client.put(f"/admin/mcp/{sid}/tools", json={"choice": "off"}, cookies=cookies)
+    turned = client.put(f"/admin/mcp/{sid}/tools", json={"choice": "recommended"}, cookies=cookies).json()
+    assert {t["name"]: t["mode"] for t in turned["tools"]} == {
+        "create_task": "write", "list_projects": "lookup", "delete_task": "off"}   # never by "turn all on"
+    client.put(f"/admin/mcp/{sid}/tools", json={"choice": "off"}, cookies=cookies)
     assert client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "lookup"}, cookies=cookies).status_code == 400
     assert client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "write"}, cookies=cookies).json()["mode"] == "write"
     mine = client.get("/act/mcp", cookies=cookies).json()["servers"]
@@ -308,3 +321,25 @@ def test_an_admin_adds_a_server_and_chooses_each_tools_mode(client, server, stor
     client.put(f"/admin/mcp/{sid}", json={"enabled": False}, cookies=cookies)
     assert not get_action(f"mcp:{sid}:create_task", org_id).enabled_for(org_id, None)
     assert client.delete(f"/admin/mcp/{sid}", cookies=cookies).json() == {"deleted": True}
+
+
+@requires_db
+def test_google_workspace_is_one_tile_adding_drive_and_sheets(client, store, org_cleanup, monkeypatch):
+    from app.actions import policy
+    from app.auth import create_admin, create_session_token
+
+    monkeypatch.setenv("MCP_REDIRECT_URI", "https://hb.example/api/act/mcp/callback")
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"mcp-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    cookies = {"session": create_session_token(admin)}
+    policy.set_policy(org_id, policy.ACT_KEY, True)
+
+    tiles = {t["key"]: t for t in client.get("/admin/mcp", cookies=cookies).json()["presets"]}
+    assert "google_workspace" in tiles and "google_drive" not in tiles and "google_sheets" not in tiles
+    assert client.post("/admin/mcp", json={"preset": "google_workspace"}, cookies=cookies).status_code == 200
+    after = client.get("/admin/mcp", cookies=cookies).json()
+    assert sorted(s["name"] for s in after["servers"]) == ["Google Drive", "Google Sheets"]
+    assert {s["group"] for s in after["servers"]} == {"google_workspace"}
+    assert next(t for t in after["presets"] if t["key"] == "google_workspace")["added"]
+    assert [s["name"] for s in client.get("/act/mcp", cookies=cookies).json()["servers"]] == ["Google Workspace"]

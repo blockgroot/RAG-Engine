@@ -20,8 +20,8 @@ guards are Handbook's and stay.
 1. **Admin › Actions → Tools.** Add a connector (Linear, Notion, GitHub, Slack,
    Google Drive, Google Sheets) or any server by address. Sign in to it yourself
    under Account → Agent, then **Refresh tools**. Set each tool to Off, **Read**
-   (runs while drafting, no card) or **Write** (a card), or click **Turn on
-   recommended** (reads as Read, allowed writes as Write).
+   (runs while drafting, no card) or **Write** (a card), or click **Turn all
+   on** (reads as Read, writes as Write, destructive tools left as they are).
 2. **Each person signs in** to each server under Account → Agent, with their own
    account. Never a shared key for writes.
 3. **Ask in Agent mode.** Reads run while drafting; each write is a card the
@@ -29,16 +29,20 @@ guards are Handbook's and stay.
 
 ## What each preset adds (`app/actions/mcp_presets.py`)
 
-| Connector | Sign-in | May ever be turned on | Company check |
-|---|---|---|---|
-| Linear | Linear registers Handbook itself | reads, `save_issue`, `save_comment`, `create_issue_label` | after sign-in: `get_workspace` id is a connected workspace |
-| Notion | Notion registers Handbook itself | search, fetch, create, update, comment | none yet (Notion's MCP has no workspace id we use) |
-| GitHub | Handbook's GitHub App (no self-registration at GitHub) | issues, labels, comments, reads; never code, PRs, branches, repos | each write: the repo is in a company installation |
-| Slack | Handbook's Slack app | search, read, send/schedule message | none yet |
-| Google Drive / Sheets | Handbook's Google OAuth client, `drive.file` only | create a file, read; Sheets values, never formulas | after sign-in: the Google email is the person's |
+| Connector | Sign-in | Company check |
+|---|---|---|
+| Linear | Linear registers Handbook itself | after sign-in: `get_workspace` id is a connected workspace |
+| Notion | Notion registers Handbook itself | none yet (Notion's MCP has no workspace id we use) |
+| GitHub | Handbook's GitHub App (no self-registration at GitHub) | each write: the repo is in a company installation |
+| Slack | Handbook's Slack app | none yet |
+| Google Workspace (Drive + Sheets) | Handbook's Google OAuth client, `drive.file` only, one sign-in for both | after sign-in: the Google email is the person's |
 
-GitHub signs in through the GitHub App, which holds **Issues: write** only, so
-even a tool an admin turned on by mistake cannot push or merge: GitHub refuses it.
+**Nothing is blocked (2026-10-22 revision).** Every tool a server lists can be
+switched on; the admin decides. A destructive tool (deletes, merges, closes…) is
+labelled, never switched on by "Turn all on", asks the admin to confirm, and its
+card says it cannot be undone. Every write is still a card the person approves.
+What the vendor allows still applies: the GitHub App's permissions (Issues:
+write today), Slack's user scopes, Google's `drive.file`.
 
 ## Setup outside Handbook
 

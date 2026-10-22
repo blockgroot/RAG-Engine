@@ -9553,6 +9553,10 @@ a.people-card:hover { color: inherit; }
 .mcp-tool-text small { overflow: hidden; color: var(--ink-muted); font-size: 0.76rem; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-kind { margin-left: 0.4rem; padding: 0.05rem 0.35rem; border-radius: 999px; background: var(--surface-muted);
   color: var(--ink-muted); font-size: 0.68rem; font-style: normal; font-weight: 600; }
+.mcp-kind[data-danger="true"] { background: #fef3f2; color: #b42318; }
+.mcp-tool-group { padding: 0.4rem 0.75rem; background: var(--surface); color: var(--ink-muted); font-size: 0.72rem;
+  font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.mcp-tool-group + .mcp-tool, .mcp-tool + .mcp-tool-group { border-top: 1px solid var(--border); }
 .mcp-footer { display: flex; flex-wrap: wrap; gap: 1rem; }
 .mcp-more { display: grid; gap: 0.5rem; }
 .mcp-subhead { margin: 0; color: var(--ink-muted); font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }

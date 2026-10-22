@@ -29,22 +29,13 @@ def _server(preset: mcp_presets.Preset, names: list[str]) -> McpServer:
     return McpServer("s1", "org", preset.name, preset.url, "oauth", {}, [{"name": n} for n in names], {}, True)
 
 
-def test_github_can_only_ever_touch_issues():
-    server = _server(mcp_presets.GITHUB, GITHUB_TOOLS)
-    allowed = {t["name"] for t in server.tools if server.permitted(t)}
-    assert allowed == {"add_issue_comment", "get_file_contents", "get_me", "issue_read", "issue_write",
-                       "list_issues", "search_issues", "sub_issue_write", "update_issue_comment"}
-    for never in ("merge_pull_request", "push_files", "pull_request_review_write", "create_repository",
-                  "update_pull_request_branch", "create_pull_request", "fork_repository"):
-        assert not server.permitted({"name": never})
+def test_nothing_is_blocked_the_admin_decides():
+    from app.actions.mcp_store import tool_hash
 
-
-def test_linear_allows_issues_and_comments_never_deletes_or_merges():
-    server = _server(mcp_presets.LINEAR, LINEAR_TOOLS)
-    allowed = {t["name"] for t in server.tools if server.permitted(t)}
-    assert {"save_issue", "save_comment", "get_issue", "list_issues"} <= allowed
-    assert not allowed & {"delete_comment", "delete_attachment", "merge_diff", "retire_issue_label",
-                          "share_issue", "update_diff", "save_project"}
+    tool = {"name": "merge_pull_request"}
+    server = McpServer("s1", "org", "GitHub", mcp_presets.GITHUB.url, "oauth", {}, [tool],
+                       {"merge_pull_request": {"mode": "write", "hash": tool_hash(tool)}}, True)
+    assert server.mode("merge_pull_request") == "write"
 
 
 def test_a_preset_knows_its_reads_where_the_server_does_not_say():
@@ -52,18 +43,9 @@ def test_a_preset_knows_its_reads_where_the_server_does_not_say():
     assert server.is_read({"name": "get_issue"}) and not server.is_read({"name": "save_issue"})
 
 
-def test_sheets_never_writes_formulas():
-    assert not mcp_presets.GOOGLE_SHEETS.allows("update_formulas")
-    assert mcp_presets.GOOGLE_SHEETS.allows("update_values")
-
-
-def test_a_chosen_mode_on_a_tool_no_longer_allowed_is_off():
-    from app.actions.mcp_store import tool_hash
-
-    tool = {"name": "merge_pull_request"}
-    server = McpServer("s1", "org", "GitHub", mcp_presets.GITHUB.url, "oauth", {}, [tool],
-                       {"merge_pull_request": {"mode": "write", "hash": tool_hash(tool)}}, True)
-    assert server.mode("merge_pull_request") == "off"
+def test_drive_and_sheets_are_one_google_workspace():
+    assert {p.key for p in mcp_presets.in_group("google_workspace")} == {"google_drive", "google_sheets"}
+    assert mcp_presets.GROUPS["google_workspace"]["name"] == "Google Workspace"
 
 
 def test_google_signs_in_with_handbooks_client_and_drive_file_only():

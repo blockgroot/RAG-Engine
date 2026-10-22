@@ -128,8 +128,11 @@ class McpToolAction(Action):
             preset.target_check(ctx.org_id, cleaned)  # e.g. GitHub: a company repository only
 
         payload: dict[str, Any] = {"args": cleaned, "fields": {"title": title_key, "body": body_key},
-                                   "details": details(*((k, _short(v)) for k, v in cleaned.items()
-                                                        if k not in (title_key, body_key)))}
+                                   "details": details(
+                                       ("Can't be undone", f"This deletes or changes something in {self.server.name}."
+                                        if mcp_store.destructive(self.mcp_tool) else None),
+                                       *((k, _short(v)) for k, v in cleaned.items()
+                                         if k not in (title_key, body_key)))}
         if title_key:
             payload["title"] = cleaned[title_key]
         if body_key:

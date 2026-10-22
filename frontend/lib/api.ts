@@ -261,7 +261,8 @@ export interface McpTool {
   title: string;
   description: string;
   read_only: boolean;
-  blocked: boolean;
+  /** Deletes or can't be undone: never turned on by "Turn all on". */
+  destructive: boolean;
   mode: "off" | "lookup" | "write";
 }
 
@@ -271,6 +272,8 @@ export interface McpServerAdmin {
   url: string;
   auth: "none" | "oauth";
   enabled: boolean;
+  /** Servers of one product (Google Workspace) share a row and a sign-in. */
+  group: string | null;
   tools: McpTool[];
 }
 
@@ -278,9 +281,10 @@ export interface McpServerAdmin {
 export interface McpPreset {
   key: string;
   name: string;
-  url: string;
+  url: string | null;
   note: string;
   added: boolean;
+  group?: string;
 }
 
 export interface McpServerMine {

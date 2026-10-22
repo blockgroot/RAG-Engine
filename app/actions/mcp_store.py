@@ -7,8 +7,10 @@ choice is stored with the hash of the tool's schema and description: a tool
 the server later changes is OFF again until an admin looks at it, so an
 update on the server's side never widens what Handbook may do.
 
-A tool whose name or hints say it deletes, merges, closes or edits code is
-BLOCKED: no mode can be set. A server's own hints are only hints (MCP says so),
+Nothing is blocked: the admin decides. A tool whose name or hints say it
+deletes, merges, closes or rewrites is marked DESTRUCTIVE: "turn all on" skips
+it (the admin turns it on by itself), and its card says it cannot be undone.
+Like every write it still runs only on the person's approval. A server's own hints are only hints (MCP says so),
 so "read-only" never makes a tool a lookup by itself; the admin must choose
 it, and only a tool the server ALSO marks read-only can be a lookup.
 """
@@ -27,8 +29,8 @@ from ..db.connection import get_connection
 
 MODES = ("off", "lookup", "write")
 
-#: Names that delete, merge, close, move or rewrite things. Blocked, whatever
-#: the server says: Handbook's writes add things, never take them away.
+#: Names that delete, merge, close, move or rewrite things: destructive,
+#: whatever the server says.
 _DESTRUCTIVE = re.compile(
     r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|close|merge|revoke|transfer|"
     r"push|commit|reset|revert|force|ban|kick|deactivate|disable|cancel|wipe|truncate|"
@@ -62,22 +64,16 @@ class McpServer:
     def tool(self, name: str) -> dict | None:
         return next((t for t in self.tools if t.get("name") == name), None)
 
-    def permitted(self, tool: dict) -> bool:
-        """May an admin turn this tool on at all? A preset's list of allowed
-        tools decides for the connectors; destructive tools never."""
-        preset = self.preset
-        return not blocked(tool) and (preset is None or preset.allows(tool.get("name") or ""))
-
     def is_read(self, tool: dict) -> bool:
         preset = self.preset
         return read_only(tool) or bool(preset and preset.is_read(tool.get("name") or ""))
 
     def mode(self, name: str) -> str:
         """What a tool may do now: its admin-chosen mode, if the tool is still
-        exactly what the admin chose it for and is permitted; else off."""
+        exactly what the admin chose it for; else off."""
         tool = self.tool(name)
         chosen = self.tool_modes.get(name) or {}
-        if tool is None or not self.permitted(tool) or chosen.get("hash") != tool_hash(tool):
+        if tool is None or chosen.get("hash") != tool_hash(tool):
             return "off"
         mode = chosen.get("mode")
         if mode == "lookup" and not self.is_read(tool):
@@ -96,7 +92,7 @@ def read_only(tool: dict) -> bool:
     return bool((tool.get("annotations") or {}).get("readOnlyHint"))
 
 
-def blocked(tool: dict) -> bool:
+def destructive(tool: dict) -> bool:
     hints = tool.get("annotations") or {}
     return bool(_DESTRUCTIVE.search(tool.get("name") or "")) or (
         hints.get("destructiveHint") is True and not hints.get("readOnlyHint"))
@@ -173,5 +169,5 @@ def tool_view(server: McpServer, tool: dict[str, Any]) -> dict:
     """What the admin page shows for one tool."""
     return {"name": tool.get("name"), "title": tool.get("title") or tool.get("name"),
             "description": (tool.get("description") or "")[:400],
-            "read_only": server.is_read(tool), "blocked": not server.permitted(tool),
+            "read_only": server.is_read(tool), "destructive": destructive(tool),
             "mode": server.mode(tool["name"])}

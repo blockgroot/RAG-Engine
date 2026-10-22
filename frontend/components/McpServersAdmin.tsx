@@ -8,12 +8,14 @@ import { ApiError, api, type McpPreset, type McpServerAdmin, type McpTool } from
 
 /**
  * The tools Agent mode may use (Admin › Actions), each through that tool's own
- * MCP server. Laid out like a connector list: added servers first, each opening
+ * MCP server. Laid out like a connector list: added tools first, each opening
  * to its tools with one switch per tool; the connectors not yet added below.
+ * Servers of one product (Google Workspace: Drive and Sheets) share one row.
  *
  * A switch turns a tool on in the only mode it can have: a read-only tool runs
- * while drafting, anything else drafts a card the person approves. Tools Agent
- * mode may never use (deleting, merging, code) are not listed, only counted.
+ * while drafting, anything else drafts a card the person approves. Nothing is
+ * blocked; a destructive tool is marked, never turned on by "Turn all on", and
+ * asks the admin to confirm.
  */
 
 const BRANDS: Record<string, BrandName> = {
@@ -21,15 +23,18 @@ const BRANDS: Record<string, BrandName> = {
   notion: "notion",
   github: "github",
   slack: "slack",
-  google_drive: "drive",
-  google_sheets: "drive",
+  google_workspace: "google",
 };
+
+/** One row: a server, or every server of one product. */
+type Row = { key: string; name: string; brand: BrandName; note: string; servers: McpServerAdmin[] };
 
 /** "notion-create-pages" → "Create pages"; a server's own title wins when it has one. */
 function toolName(tool: McpTool, server: string) {
   const raw = tool.title && tool.title !== tool.name ? tool.title : tool.name;
+  const prefix = (server.split(" ").pop() ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const words = raw
-    .replace(new RegExp(`^${server}[-_ ]`, "i"), "")
+    .replace(new RegExp(`^${prefix}[-_ ]`, "i"), "")
     .replace(/[-_]+/g, " ")
     .trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -75,9 +80,39 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
     }
   }
 
-  const presetOf = (server: McpServerAdmin) =>
-    presets.find((p) => p.url.replace(/\/$/, "") === server.url.replace(/\/$/, ""));
+  const rows: Row[] = [];
+  for (const server of servers ?? []) {
+    const tile = presets.find((p) =>
+      server.group ? p.key === server.group : p.url?.replace(/\/$/, "") === server.url.replace(/\/$/, ""),
+    );
+    const key = server.group ?? server.id;
+    const row = rows.find((r) => r.key === key);
+    if (row) row.servers.push(server);
+    else
+      rows.push({
+        key,
+        name: server.group && tile ? tile.name : server.name,
+        brand: BRANDS[tile?.key ?? ""] ?? "model",
+        note: tile?.note ?? "",
+        servers: [server],
+      });
+  }
   const available = presets.filter((p) => !p.added);
+  const each = (row: Row, work: (s: McpServerAdmin) => Promise<unknown>) =>
+    run(row.key, () => Promise.all(row.servers.map(work)));
+
+  function setTool(server: McpServerAdmin, tool: McpTool, on: boolean, label: string) {
+    if (
+      on &&
+      tool.destructive &&
+      !window.confirm(`${label} can delete or change things in ${server.name} that can't be undone. Each use still waits for the person's approval. Turn it on?`)
+    ) {
+      return;
+    }
+    void run(`${server.id}:${tool.name}`, () =>
+      api.setMcpToolMode(server.id, tool.name, on ? (tool.read_only ? "lookup" : "write") : "off"),
+    );
+  }
 
   return (
     <section className="studio-panel stack mcp" aria-labelledby="actions-tools">
@@ -137,38 +172,33 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
         </form>
       )}
 
-      {servers && servers.length > 0 && (
+      {rows.length > 0 && (
         <ul className="mcp-list">
-          {servers.map((server) => {
-            const preset = presetOf(server);
-            const usable = server.tools.filter((t) => !t.blocked);
-            const hidden = server.tools.length - usable.length;
-            const on = usable.filter((t) => t.mode !== "off").length;
-            const expanded = open === server.id;
+          {rows.map((row) => {
+            const all = row.servers.flatMap((s) => s.tools);
+            const on = all.filter((t) => t.mode !== "off").length;
+            const enabled = row.servers.every((s) => s.enabled);
+            const expanded = open === row.key;
             const q = filter.trim().toLowerCase();
-            const shown = q
-              ? usable.filter((t) => `${t.name} ${t.title} ${t.description}`.toLowerCase().includes(q))
-              : usable;
+            const grouped = row.servers.length > 1;
             return (
-              <li key={server.id} className="mcp-row" data-open={expanded}>
+              <li key={row.key} className="mcp-row" data-open={expanded}>
                 <div className="mcp-row-head">
                   <button
                     type="button"
                     className="mcp-row-main"
                     aria-expanded={expanded}
                     onClick={() => {
-                      setOpen(expanded ? null : server.id);
+                      setOpen(expanded ? null : row.key);
                       setFilter("");
                     }}
                   >
                     <span className="mcp-logo" aria-hidden="true">
-                      <BrandGlyph name={BRANDS[preset?.key ?? ""] ?? "model"} size={22} />
+                      <BrandGlyph name={row.brand} size={22} />
                     </span>
                     <span className="mcp-row-text">
-                      <strong>{server.name}</strong>
-                      <small>
-                        {usable.length ? `${on} of ${usable.length} tools on` : "Sign in to list its tools"}
-                      </small>
+                      <strong>{row.name}</strong>
+                      <small>{all.length ? `${on} of ${all.length} tools on` : "Sign in to list its tools"}</small>
                     </span>
                     <span className="mcp-chevron" aria-hidden="true">
                       {expanded ? "▴" : "▾"}
@@ -177,27 +207,30 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                   <label className="action-toggle mcp-switch">
                     <input
                       type="checkbox"
-                      checked={server.enabled}
-                      disabled={disabled || busy === server.id}
-                      onChange={(e) => void run(server.id, () => api.setMcpServerEnabled(server.id, e.target.checked))}
-                      aria-label={`${server.name} ${server.enabled ? "on" : "off"}`}
+                      checked={enabled}
+                      disabled={disabled || busy === row.key}
+                      onChange={(e) => {
+                        const value = e.target.checked;
+                        void each(row, (s) => api.setMcpServerEnabled(s.id, value));
+                      }}
+                      aria-label={`${row.name} ${enabled ? "on" : "off"}`}
                     />
                   </label>
                 </div>
 
                 {expanded && (
                   <div className="mcp-body">
-                    {preset?.note && <p className="mcp-note">{preset.note}</p>}
+                    {row.note && <p className="mcp-note">{row.note}</p>}
 
-                    {usable.length === 0 ? (
+                    {all.length === 0 ? (
                       <p className="mcp-note">
-                        <Link href="/account#act">Sign in to {server.name}</Link> under Account → Agent; its tools
+                        <Link href="/account#act">Sign in to {row.name}</Link> under Account → Agent; its tools
                         appear here.{" "}
                         <button
                           type="button"
                           className="mcp-link"
-                          disabled={busy === server.id}
-                          onClick={() => void run(server.id, () => api.refreshMcpServer(server.id))}
+                          disabled={busy === row.key}
+                          onClick={() => void each(row, (s) => api.refreshMcpServer(s.id))}
                         >
                           Refresh
                         </button>
@@ -205,11 +238,11 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                     ) : (
                       <>
                         <div className="mcp-toolbar">
-                          {usable.length > 8 && (
+                          {all.length > 8 && (
                             <input
                               className="input mcp-search"
                               placeholder="Search tools"
-                              aria-label={`Search ${server.name} tools`}
+                              aria-label={`Search ${row.name} tools`}
                               value={filter}
                               onChange={(e) => setFilter(e.target.value)}
                             />
@@ -217,71 +250,72 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                           <button
                             type="button"
                             className="mcp-link"
-                            disabled={disabled || busy === server.id}
-                            onClick={() => void run(server.id, () => api.setMcpModes(server.id, "recommended"))}
+                            disabled={disabled || busy === row.key}
+                            title="Destructive tools stay as they are: turn each on by itself"
+                            onClick={() => void each(row, (s) => api.setMcpModes(s.id, "recommended"))}
                           >
                             Turn all on
                           </button>
                           <button
                             type="button"
                             className="mcp-link"
-                            disabled={disabled || busy === server.id || on === 0}
-                            onClick={() => void run(server.id, () => api.setMcpModes(server.id, "off"))}
+                            disabled={disabled || busy === row.key || on === 0}
+                            onClick={() => void each(row, (s) => api.setMcpModes(s.id, "off"))}
                           >
                             Turn all off
                           </button>
                         </div>
                         <ul className="mcp-tools">
-                          {shown.map((tool) => {
-                            const key = `${server.id}:${tool.name}`;
-                            const label = toolName(tool, server.name);
-                            return (
-                              <li key={tool.name} className="mcp-tool">
-                                <span className="mcp-tool-text">
-                                  <strong>
-                                    {label}
-                                    <em className="mcp-kind">{tool.read_only ? "Read" : "Write"}</em>
-                                  </strong>
-                                  {tool.description && <small title={tool.description}>{tool.description}</small>}
-                                </span>
-                                <label className="action-toggle mcp-switch">
-                                  <input
-                                    type="checkbox"
-                                    checked={tool.mode !== "off"}
-                                    disabled={disabled || busy === key}
-                                    onChange={(e) =>
-                                      void run(key, () =>
-                                        api.setMcpToolMode(
-                                          server.id,
-                                          tool.name,
-                                          e.target.checked ? (tool.read_only ? "lookup" : "write") : "off",
-                                        ),
-                                      )
-                                    }
-                                    aria-label={`${label} ${tool.mode !== "off" ? "on" : "off"}`}
-                                  />
-                                </label>
-                              </li>
-                            );
+                          {row.servers.map((server) => {
+                            const shown = q
+                              ? server.tools.filter((t) =>
+                                  `${t.name} ${t.title} ${t.description}`.toLowerCase().includes(q),
+                                )
+                              : server.tools;
+                            return [
+                              grouped && shown.length > 0 && (
+                                <li key={`${server.id}-head`} className="mcp-tool-group">
+                                  {server.name.replace(/^Google /, "")}
+                                </li>
+                              ),
+                              ...shown.map((tool) => {
+                                const label = toolName(tool, server.name);
+                                return (
+                                  <li key={`${server.id}:${tool.name}`} className="mcp-tool">
+                                    <span className="mcp-tool-text">
+                                      <strong>
+                                        {label}
+                                        <em className="mcp-kind" data-danger={tool.destructive}>
+                                          {tool.destructive ? "Destructive" : tool.read_only ? "Read" : "Write"}
+                                        </em>
+                                      </strong>
+                                      {tool.description && <small title={tool.description}>{tool.description}</small>}
+                                    </span>
+                                    <label className="action-toggle mcp-switch">
+                                      <input
+                                        type="checkbox"
+                                        checked={tool.mode !== "off"}
+                                        disabled={disabled || busy === `${server.id}:${tool.name}`}
+                                        onChange={(e) => setTool(server, tool, e.target.checked, label)}
+                                        aria-label={`${label} ${tool.mode !== "off" ? "on" : "off"}`}
+                                      />
+                                    </label>
+                                  </li>
+                                );
+                              }),
+                            ];
                           })}
-                          {shown.length === 0 && <li className="mcp-note">No tool matches.</li>}
                         </ul>
-                        {hidden > 0 && (
-                          <p className="mcp-note">
-                            {hidden} more {hidden === 1 ? "tool isn't" : "tools aren't"} available: Agent mode never
-                            deletes, merges or changes code.
-                          </p>
-                        )}
                       </>
                     )}
 
                     <div className="mcp-footer">
-                      {usable.length > 0 && (
+                      {all.length > 0 && (
                         <button
                           type="button"
                           className="mcp-link"
-                          disabled={busy === server.id}
-                          onClick={() => void run(server.id, () => api.refreshMcpServer(server.id))}
+                          disabled={busy === row.key}
+                          onClick={() => void each(row, (s) => api.refreshMcpServer(s.id))}
                         >
                           Refresh tools
                         </button>
@@ -289,10 +323,10 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                       <button
                         type="button"
                         className="mcp-link mcp-danger"
-                        disabled={busy === server.id}
+                        disabled={busy === row.key}
                         onClick={() => {
-                          if (window.confirm(`Remove ${server.name}? Everyone's sign-in to it is forgotten.`)) {
-                            void run(server.id, () => api.deleteMcpServer(server.id));
+                          if (window.confirm(`Remove ${row.name}? Everyone's sign-in to it is forgotten.`)) {
+                            void each(row, (s) => api.deleteMcpServer(s.id));
                           }
                         }}
                       >
@@ -309,7 +343,7 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
 
       {available.length > 0 && (
         <div className="mcp-more">
-          <h3 className="mcp-subhead">{servers?.length ? "Add more" : "Add a tool"}</h3>
+          <h3 className="mcp-subhead">{rows.length ? "Add more" : "Add a tool"}</h3>
           <ul className="mcp-presets">
             {available.map((preset) => (
               <li key={preset.key} className="mcp-preset" title={preset.note || undefined}>

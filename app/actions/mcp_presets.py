@@ -8,18 +8,20 @@ A preset knows what a bare URL cannot:
   app Handbook already has there (``client``). Google's servers advertise no
   sign-in at all, so the preset carries Google's endpoints and the one scope
   Act uses (``oauth``): ``drive.file``, files Handbook made or the person picked.
-* **Which tools may ever be switched on** (``allow``). A list of what to allow,
-  not of words to block: a vendor adding ``pull_request_review_write`` must not
-  become something an admin can turn on by accident. GitHub is held to issues,
-  labels and comments, and its sign-in goes through the GitHub App, which holds
-  Issues: write only, so GitHub itself refuses code, pull requests and merges.
+* **Nothing about which tools may be switched on.** The admin decides; every
+  tool starts off and every write is approved on a card. GitHub signs in
+  through the GitHub App, so what GitHub itself allows is the App's
+  permissions (set on GitHub, not here).
 * **Which tools are reads** (``reads``), for servers that do not mark them.
 * **That the account is the company's.** Checked after each person signs in
   (``account_check``) or on each write's target (``target_check``), as the
   built-in actions did; company content never lands in a personal workspace.
 
+* **Which servers are one product** (``group``): Google runs one server per
+  app; "Google Workspace" adds them together and one sign-in serves them all.
+
 A server added by URL with no preset keeps the generic rules: every tool off,
-destructive names blocked, lookups only for tools the server marks read-only.
+lookups only for tools the server marks read-only.
 """
 
 from __future__ import annotations
@@ -42,7 +44,6 @@ class Preset:
     client: Callable[[], tuple[str | None, str | None]] | None = None
     #: Sign-in endpoints and scope, when the server advertises none.
     oauth: dict | None = None
-    allow: re.Pattern | None = None
     reads: re.Pattern | None = None
     account_check: Callable[[str, str, str], bool] | None = None  # (org_id, email, token)
     target_check: Callable[[str, dict], None] | None = None       # (org_id, args)
@@ -50,12 +51,11 @@ class Preset:
     #: Which of the scopes a server advertises to ask for (least privilege);
     #: ``None`` asks for all of them.
     scopes: re.Pattern | None = None
+    #: Servers of one product, added together and signed in to once.
+    group: str | None = None
 
     def pick_scopes(self, offered: list[str]) -> list[str]:
         return [s for s in offered if self.scopes is None or self.scopes.search(s)]
-
-    def allows(self, tool: str) -> bool:
-        return self.allow is None or bool(self.allow.search(tool))
 
     def is_read(self, tool: str) -> bool:
         return bool(self.reads and self.reads.search(tool))
@@ -80,9 +80,6 @@ def _linear_account(org_id: str, email: str, token: str) -> bool:
 
 LINEAR = Preset(
     key="linear", name="Linear", url="https://mcp.linear.app/mcp",
-    # Issues, comments, labels, projects and documents; never deletes (none exist
-    # for issues) or label retirement.
-    allow=re.compile(r"^(get_|list_|search_|save_issue$|save_comment$|create_issue_label$)"),
     reads=re.compile(r"^(get_|list_|search_)"),
     account_check=_linear_account,
 )
@@ -93,7 +90,6 @@ LINEAR = Preset(
 NOTION = Preset(
     key="notion", name="Notion", url="https://mcp.notion.com/mcp",
     note="Each person picks which pages Notion shares when they sign in.",
-    allow=re.compile(r"(search|fetch|get|create|update|comment)", re.IGNORECASE),
     reads=re.compile(r"(search|fetch|get-|get_|list)", re.IGNORECASE),
 )
 
@@ -132,11 +128,6 @@ GITHUB = Preset(
     client=_github_client,
     # A GitHub App's sign-in ignores OAuth scopes; its permissions (Issues: write) apply.
     scopes=re.compile(r"^$"),
-    # Issues, their labels and comments, and reads. Never code, branches,
-    # pull requests, releases or repositories.
-    allow=re.compile(r"^(issue_read|issue_write|add_issue_comment|update_issue_comment|"
-                     r"sub_issue_write|get_label|list_label|list_issue|search_issues|"
-                     r"get_me|get_file_contents|search_code|list_commits|get_commit)"),
     reads=re.compile(r"^(issue_read|get_|list_|search_)"),
     target_check=_github_target,
 )
@@ -158,7 +149,6 @@ SLACK = Preset(
     client=_slack_client,
     # Reading and posting messages only: never channel management, files or canvases.
     scopes=re.compile(r"^(channels|groups|im|mpim):(read|history)$|^(users|search)[:.]|^chat:write$"),
-    allow=re.compile(r"(search|read|get|list|send_message|schedule_message|draft)", re.IGNORECASE),
     reads=re.compile(r"(search|read|get|list)", re.IGNORECASE),
 )
 
@@ -196,9 +186,8 @@ _GOOGLE_OAUTH = {
 GOOGLE_DRIVE = Preset(
     key="google_drive", name="Google Drive", url="https://drivemcp.googleapis.com/mcp/v1",
     note="Google's MCP servers are in Developer Preview. Handbook reaches only files it made or you picked.",
-    client=_google_client, oauth=_GOOGLE_OAUTH,
+    client=_google_client, oauth=_GOOGLE_OAUTH, group="google_workspace",
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
-    allow=re.compile(r"^(create_file|get_file_metadata|read_file_content|search_files|list_recent_files)$"),
     reads=re.compile(r"^(get_|read_|search_|list_)"),
     account_check=_google_account,
 )
@@ -206,15 +195,24 @@ GOOGLE_DRIVE = Preset(
 GOOGLE_SHEETS = Preset(
     key="google_sheets", name="Google Sheets", url="https://sheetsmcp.googleapis.com/mcp/v1",
     note="Google's MCP servers are in Developer Preview. Handbook reaches only Sheets it made or you picked.",
-    client=_google_client, oauth=_GOOGLE_OAUTH,
+    client=_google_client, oauth=_GOOGLE_OAUTH, group="google_workspace",
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
-    # Values only: ``update_formulas`` would let a draft fetch outside data.
-    allow=re.compile(r"^(get_values|get_spreadsheet|update_values|insert_dimension)$"),
     reads=re.compile(r"^get_"),
     account_check=_google_account,
 )
 
 PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_DRIVE, GOOGLE_SHEETS)}
+
+
+#: How a group is shown and added: one tile, one sign-in.
+GROUPS: dict[str, dict] = {"google_workspace": {
+    "name": "Google Workspace",
+    "note": "Drive and Sheets, with one Google sign-in. Google's MCP servers are in Developer Preview.",
+}}
+
+
+def in_group(group: str) -> list[Preset]:
+    return [p for p in PRESETS.values() if p.group == group]
 
 
 def preset_for(url: str) -> Preset | None:

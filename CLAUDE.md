@@ -308,10 +308,10 @@ the Slack bot import nothing from it. **Every write goes through an MCP server a
 admin added** (`actions/mcp*.py`; the five connectors are presets in
 `mcp_presets.py`); there are no hand-written per-tool actions. Every tool starts
 off; the admin sets each to off, read ("lookup": runs while drafting, no card) or
-write (a card). A preset's `allow` list decides what may EVER be turned on (a list
-of what to allow, never of words to block; GitHub: issues, labels, comments and
-reads only), a server added by address falls back to blocking destructive names,
-a read must be marked read-only by the server or the preset, and a tool whose
+write (a card). Nothing is blocked by Handbook: the admin decides. A destructive
+tool (name or `destructiveHint`, `mcp_store.destructive`) is never turned on by
+"Turn all on", asks the admin to confirm, and its card says it cannot be undone.
+A read must be marked read-only by the server or the preset, and a tool whose
 schema changed is off again (hash). Each person signs in to each server with their
 own account (`user_connections`, provider `mcp:<id>`), never a shared or admin key
 for writes; a server that cannot register Handbook signs in through Handbook's own
@@ -323,7 +323,8 @@ An account must be the company's: checked after sign-in (`account_check`: Linear
 workspace id is a connected one, Google's email is the person's) or on each write's
 target (`target_check`: a GitHub repo in a company installation), or company content
 leaves the company. Google's servers advertise no sign-in, so the preset carries it,
-with `drive.file` only. The model only fills in tool forms (at most
+with `drive.file` only. Drive and Sheets are one "Google Workspace" (`Preset.group`):
+added together, one row, and one sign-in saved for each server (signed out together). The model only fills in tool forms (at most
 `service.MAX_ACTIONS` per request, each its own card, checked and approved on its
 own; a refused one never stops the rest and is said): a write runs only from
 `confirm`, by the person who proposed it, before `expires_at`, with the STORED
