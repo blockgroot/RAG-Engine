@@ -57,7 +57,7 @@ def _describe(server: mcp_store.McpServer, tool: dict) -> str:
     """The server's own description is outside text: scrubbed and short. The
     admin read it before allowing the tool."""
     said = scrub_untrusted_text(tool.get("description") or "")[:300]
-    return f"In {server.name}: {tool.get('title') or tool['name']}. {said}".strip()
+    return f"In {server.name}: {mcp_store.tool_title(tool, server.name)}. {said}".strip()
 
 
 class McpToolAction(Action):
@@ -70,7 +70,7 @@ class McpToolAction(Action):
         self.mcp_tool = tool
         self.name = action_name(server.id, tool["name"])
         self.provider = server.provider
-        self.label = f"{server.name}: {tool.get('title') or tool['name']}"
+        self.label = f"{server.name}: {mcp_store.tool_title(tool, server.name)}"
         schema = _schema(tool)
         self.tool = {"type": "function", "function": {
             "name": _function_name(server, tool["name"]),
@@ -181,7 +181,7 @@ class McpLookup(Action):
         self.mcp_tool = tool
         self.name = action_name(server.id, tool["name"])
         self.provider = server.provider
-        self.label = f"{server.name}: {tool.get('title') or tool['name']}"
+        self.label = f"{server.name}: {mcp_store.tool_title(tool, server.name)}"
         self.tool = {"type": "function", "function": {
             "name": _function_name(server, tool["name"]),
             "description": "Lookup (read only). " + _describe(server, tool),

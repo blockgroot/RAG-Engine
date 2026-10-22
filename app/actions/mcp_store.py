@@ -92,6 +92,21 @@ def tool_hash(tool: dict) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def tool_title(tool: dict, server: str = "") -> str:
+    """A tool's name as people read it: the server's own short title, else the
+    name in words without the server's prefix ("notion-create-pages" in Notion:
+    "Create pages"; "save_issue": "Save issue"). A sentence-long title (Google
+    gives "Returns a range of values…") is a description, not a name."""
+    own = str(tool.get("title") or (tool.get("annotations") or {}).get("title") or "").strip()
+    if own and len(own) <= 48 and not own.endswith("."):
+        return own
+    words = re.sub(r"[-_]+", " ", str(tool.get("name") or "")).strip()
+    prefix = server.split()[-1].lower() + " " if server.strip() else ""
+    if prefix and words.lower().startswith(prefix) and len(words) > len(prefix):
+        words = words[len(prefix):]
+    return words[:1].upper() + words[1:]
+
+
 def read_only(tool: dict) -> bool:
     return bool((tool.get("annotations") or {}).get("readOnlyHint"))
 
@@ -169,7 +184,7 @@ def delete_server(org_id: str, server_id: str) -> bool:
 
 def tool_view(server: McpServer, tool: dict[str, Any]) -> dict:
     """What the admin page shows for one tool."""
-    return {"name": tool.get("name"), "title": tool.get("title") or tool.get("name"),
+    return {"name": tool.get("name"), "title": tool_title(tool, server.name),
             "description": (tool.get("description") or "")[:400],
             "read_only": server.is_read(tool), "destructive": destructive(tool),
             "mode": server.mode(tool["name"])}

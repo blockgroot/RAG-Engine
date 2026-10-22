@@ -1,4 +1,4 @@
-import { API_BASE_URL, type InsightPanel } from "./api";
+import { API_BASE_URL, type ActCard, type InsightPanel } from "./api";
 
 export interface CitedSource {
   n: number;
@@ -121,43 +121,87 @@ export async function streamChat(
     return;
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const block = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      boundary = buffer.indexOf("\n\n");
-
-      const lines = block.split("\n");
-      const eventLine = lines.find((l) => l.startsWith("event: "));
-      const dataLine = lines.find((l) => l.startsWith("data: "));
-      if (!eventLine || !dataLine) continue;
-
-      const event = eventLine.slice("event: ".length);
-      const data = dataLine.slice("data: ".length);
-
-      if (event === "token") {
-        handlers.onToken(JSON.parse(data) as string);
-      } else if (event === "status") {
-        handlers.onStatus?.(JSON.parse(data) as string);
-      } else if (event === "done") {
-        handlers.onDone(JSON.parse(data) as ChatDonePayload);
-        return;
-      } else if (event === "error") {
-        const payload = JSON.parse(data) as { message?: string };
-        handlers.onError(payload.message || "Something went wrong.");
-        return;
-      }
+  for await (const { event, data } of sseEvents(response.body)) {
+    if (event === "token") {
+      handlers.onToken(JSON.parse(data) as string);
+    } else if (event === "status") {
+      handlers.onStatus?.(JSON.parse(data) as string);
+    } else if (event === "done") {
+      handlers.onDone(JSON.parse(data) as ChatDonePayload);
+      return;
+    } else if (event === "error") {
+      const payload = JSON.parse(data) as { message?: string };
+      handlers.onError(payload.message || "Something went wrong.");
+      return;
     }
   }
 
   handlers.onError("The answer stream ended unexpectedly. Please try again.");
+}
+
+/** Each ``event:``/``data:`` block of a server-sent event stream, as it arrives. */
+async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<{ event: string; data: string }> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const lines = buffer.slice(0, boundary).split("\n");
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+      const eventLine = lines.find((l) => l.startsWith("event: "));
+      const dataLine = lines.find((l) => l.startsWith("data: "));
+      if (eventLine && dataLine) {
+        yield { event: eventLine.slice("event: ".length), data: dataLine.slice("data: ".length) };
+      }
+    }
+  }
+}
+
+export interface ActReply {
+  reply: string;
+  action: ActCard | null;
+  actions?: ActCard[];
+}
+
+/** Agent mode, streamed: ``onStatus`` gets each step it takes while drafting
+ *  ("Looking up in Linear: List teams"); resolves with the drafts. Throws an
+ *  ``Error`` whose ``status`` is the HTTP code (503: the model is down). */
+export async function streamAct(
+  question: string,
+  workspaceId: string | null | undefined,
+  model: string | null | undefined,
+  onStatus: (line: string) => void,
+): Promise<ActReply> {
+  const response = await fetch(`${API_BASE_URL}/act/stream`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      ...(model && model !== "auto" ? { model } : {}),
+    }),
+  });
+  if (!response.ok || !response.body) {
+    const body = await response.json().catch(() => ({ detail: "Request failed" }));
+    throw Object.assign(new Error(typeof body.detail === "string" ? body.detail : "Request failed"), {
+      status: response.status,
+    });
+  }
+  for await (const { event, data } of sseEvents(response.body)) {
+    if (event === "status") onStatus(JSON.parse(data) as string);
+    else if (event === "done") return JSON.parse(data) as ActReply;
+    else if (event === "error") {
+      const payload = JSON.parse(data) as { message?: string; status?: number };
+      throw Object.assign(new Error(payload.message || "Something went wrong. Nothing was sent."), {
+        status: payload.status ?? 500,
+      });
+    }
+  }
+  throw Object.assign(new Error("The draft stream ended unexpectedly. Nothing was sent."), { status: 500 });
 }

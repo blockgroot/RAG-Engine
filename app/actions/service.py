@@ -40,6 +40,7 @@ from ..core.exceptions import (
     OAuthReauthRequiredError,
 )
 from ..db.connection import get_connection
+from ..rag import progress
 from ..security.links import strip_links
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
 from ..security.visibility import viewer_clause
@@ -147,6 +148,7 @@ def _ask_with_lookups(llm, question: str, passages: str | None, tools: list[dict
             return writes or ActOutcome("I looked that up but couldn't draft anything from it. "
                                         "Say exactly what to do.")
         for action, args in reads[:budget]:
+            progress.report(f"Looking up in {action.label}")
             looked.add(action.server.name)
             try:
                 token = action.token_for(org_id, user_id)
@@ -351,6 +353,7 @@ def propose(
     # caller, so a request never inherits another request's choice.
     use_model(model, org_id=org_id)
     tools = [a.tool if a.lookup else _with_document_words(a.tool) for a in offered]
+    progress.report("Reading your request")
     found: list[str] = []
     looked: set[str] = set()
     ask = lambda passages: _ask_with_lookups(  # noqa: E731
@@ -378,6 +381,7 @@ def propose(
         if not passages:
             return ActOutcome("I couldn't find anything you can see to draft that from. "
                               "Say what it should contain, or name where it's discussed.")
+        progress.report(f"Drafting from {len(sources)} {'source' if len(sources) == 1 else 'sources'}")
         picked = ask(passages)
         if isinstance(picked, ActOutcome):
             return picked
@@ -393,6 +397,7 @@ def propose(
     picked = picked[:MAX_ACTIONS]
     drafts, refusals = [], []
     for action, args in picked:
+        progress.report(f"Preparing a card: {action.label}")
         made = _draft(action, args, question=question, sources=sources, lookups="\n".join(found),
                       org_id=org_id,
                       user_id=user_id, email=email, viewer=viewer, surface=surface,

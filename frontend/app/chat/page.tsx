@@ -9,7 +9,7 @@ import { ActionCard } from "@/components/ActionCard";
 import { ActIcon, ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
-import { streamChat } from "@/lib/sse";
+import { streamAct, streamChat } from "@/lib/sse";
 import { api, ApiError, Attachment, ModelChoice } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 import { fileKind } from "@/lib/fileKind";
@@ -683,7 +683,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     ]);
     let reply: Message;
     try {
-      const out = await api.act(question, workspaceId, model);
+      // Each step the server takes replaces the placeholder, then trails, as in Ask.
+      const out = await streamAct(question, workspaceId, model, (line) =>
+        setMessages((prev) => {
+          if (prev.length === 0) return prev;
+          const next = [...prev];
+          const last = next[next.length - 1];
+          const steps = last.steps?.length === 1 && last.steps[0] === "Drafting…" ? [] : (last.steps ?? []);
+          next[next.length - 1] = { ...last, steps: [...steps, line] };
+          return next;
+        }),
+      );
       // `actions` is every draft; an older server sends only `action`.
       reply = {
         role: "assistant",
@@ -691,15 +701,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         acts: out.actions?.length ? out.actions : out.action ? [out.action] : null,
       };
     } catch (err) {
-      if (err instanceof ApiError && err.status === 503) {
-        setModelError(err.message);
+      const message = err instanceof Error ? err.message : "Something went wrong. Nothing was sent.";
+      if ((err as { status?: number }).status === 503) {
+        setModelError(message);
         setMessages((prev) => prev.slice(0, -1));
         setBusy(false);
         return;
       }
       reply = {
         role: "assistant",
-        text: err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.",
+        text: message,
       };
     }
     setMessages((prev) => (prev.length ? [...prev.slice(0, -1), reply] : [reply]));

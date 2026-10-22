@@ -276,8 +276,13 @@ class ActRequest(BaseModel):
     model: str | None = Field(default=None, max_length=200)
 
 
-@router.post("/act")
-def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
+_MODEL_DOWN = ("The model is temporarily unavailable or experiencing high demand. "
+               "Nothing was sent. Please try again in a few minutes.")
+
+
+def _act_args(body: ActRequest, session: SessionClaims) -> dict:
+    """Every check before drafting, raised as HTTP errors BEFORE any stream
+    starts; then what ``service.propose`` takes."""
     settings = _require_on(session.org_id)
     check_rate_limit(f"act:{session.user_id}")
     user = get_user(session.user_id)
@@ -293,29 +298,51 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
             assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    try:
-        outcome = service.propose(
-            body.question.strip(),
-            org_id=session.org_id, user_id=session.user_id, email=user.email,
-            viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
-            settings=settings, scope_workspace_id=workspace_id, model=body.model,
-            search=ask_search(session.user_id),
-        )
-    except LLMProviderError as exc:
-        logger.warning("Act model unavailable: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The model is temporarily unavailable or experiencing high demand. "
-                "Nothing was sent. Please try again in a few minutes."
-            ),
-        ) from exc
+    return dict(question=body.question.strip(), org_id=session.org_id, user_id=session.user_id,
+                email=user.email, viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
+                settings=settings, scope_workspace_id=workspace_id, model=body.model,
+                search=ask_search(session.user_id))
+
+
+def _act_reply(outcome) -> dict:
     return {
         "reply": outcome.reply,
         "action": _card(outcome.action, outcome.exposure) if outcome.action else None,
         # Every draft this request made, each approved on its own.
         "actions": [_card(row, exposure) for row, exposure in outcome.drafts],
     }
+
+
+@router.post("/act")
+def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
+    args = _act_args(body, session)
+    try:
+        outcome = service.propose(args.pop("question"), **args)
+    except LLMProviderError as exc:
+        logger.warning("Act model unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=_MODEL_DOWN) from exc
+    return _act_reply(outcome)
+
+
+@router.post("/act/stream")
+def act_stream(body: ActRequest, session: SessionClaims = Depends(get_session)):
+    """``/act`` as a stream: the steps it takes while drafting ("Looking up in
+    Linear: List teams", "Preparing a card: …"), as Ask shows its own, then the
+    same reply as ``done``. The lines come from steps that ran, never the model."""
+    from fastapi.responses import StreamingResponse
+
+    from .chat import _sse_event, _with_progress
+
+    args = _act_args(body, session)
+
+    def run():
+        try:
+            yield _sse_event("done", _act_reply(service.propose(args.pop("question"), **args)))
+        except LLMProviderError as exc:
+            logger.warning("Act model unavailable: %s", exc)
+            yield _sse_event("error", {"message": _MODEL_DOWN, "status": 503})
+
+    return StreamingResponse(_with_progress(run), media_type="text/event-stream")
 
 
 class ConfirmRequest(BaseModel):
@@ -478,7 +505,7 @@ def space_tools(workspace_id: str, session: SessionClaims = Depends(get_session)
     """What the admin switched on, and what the owner switched off here. Only
     tools the admin turned on are listed: an owner only narrows."""
     from ..actions.mcp_presets import GROUPS
-    from ..actions.mcp_store import destructive, list_servers
+    from ..actions.mcp_store import destructive, list_servers, tool_title
 
     off = policy.space_off(session.org_id, workspace_id)
     sources = policy.space_sources(session.org_id, workspace_id)
@@ -494,7 +521,7 @@ def space_tools(workspace_id: str, session: SessionClaims = Depends(get_session)
             "group_name": GROUPS[group]["name"] if group else None,
             "brand": group or (preset.key if preset else None),
             "on": f"mcp:{server.id}" not in off,
-            "tools": [{"name": t["name"], "title": t.get("title") or t["name"],
+            "tools": [{"name": t["name"], "title": tool_title(t, server.name),
                        "description": (t.get("description") or "")[:400],
                        "read_only": server.is_read(t), "destructive": destructive(t),
                        "on": not policy.off_in_space(off, server.id, t["name"])} for t in tools]})

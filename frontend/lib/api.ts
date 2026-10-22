@@ -892,16 +892,6 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
   actStatus: () => request<ActStatus>("/act/status"),
-  /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
-  act: (question: string, workspaceId?: string | null, model?: string | null) =>
-    request<{ reply: string; action: ActCard | null; actions?: ActCard[] }>("/act", {
-      method: "POST",
-      body: JSON.stringify({
-        question,
-        workspace_id: workspaceId ?? null,
-        model: model && model !== "auto" ? model : null,
-      }),
-    }),
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
       method: "POST",

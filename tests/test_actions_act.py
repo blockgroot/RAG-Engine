@@ -1084,3 +1084,26 @@ def test_one_tool_failing_does_not_blank_the_others(act_search, monkeypatch):
     act_search.search("Read the GitHub README and the Linear bugs", "the GitHub README and the Linear bugs",
                       org_id="o")
     assert [n for n, _ in act_search.searched] == ["linear"]
+
+
+@requires_db
+def test_act_stream_shows_the_steps_then_the_same_reply(client, org, monkeypatch):
+    """Agent mode in the chat streams what it is doing, as Ask does, then the
+    reply /act gives. A check that fails is an HTTP error before any stream."""
+    from app.rag import progress
+
+    for name in ("_llm", "_embedder", "_vstore"):
+        monkeypatch.setattr(f"app.api.actions.{name}", lambda: object())
+
+    def propose(q, **kw):
+        progress.report("Looking up in Linear: List teams")
+        return service.ActOutcome("noted")
+
+    monkeypatch.setattr(service, "propose", propose)
+    r = client.post("/act/stream", json={"question": "file it"}, cookies=_cookies(org.admin))
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    events = [b.split("\n") for b in r.text.strip().split("\n\n")]
+    assert events[0] == ["event: status", 'data: "Looking up in Linear: List teams"']
+    assert events[-1][0] == "event: done" and '"reply": "noted"' in events[-1][1]
+    assert client.post("/act/stream", json={"question": "x", "model": "nope"},
+                       cookies=_cookies(org.admin)).status_code == 400
