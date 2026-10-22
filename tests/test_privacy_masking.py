@@ -162,6 +162,19 @@ def test_tool_calls_get_real_values_and_replayed_arguments_are_masked():
     assert messages[0]["content"] == f"Look up PAN {PAN}"  # caller's list not mutated
 
 
+def test_json_escaped_placeholders_are_restored():
+    """Gemini writes tool-call arguments with ``<``/``>`` as ``\\u003c``/``\\u003e``.
+    Left unrestored, an Agent draft carried ``<PHONE_1>`` and its request_words
+    no longer matched the asker's message (found by the live run)."""
+    import json
+
+    escaped = '{"message": "mobile \\u003cPHONE_1\\u003e, PAN \\u003cPAN_1\\u003e, not \\u003cPAN_9\\u003e"}'
+    inner = _Recorder(tool_args=escaped)
+    llm = MaskingLLMProvider(inner, PatternDetector())
+    result = llm.generate_with_tools([{"role": "user", "content": f"{MOBILE} and {PAN}"}])
+    assert json.loads(result.tool_calls[0].arguments) == {"message": f"mobile {MOBILE}, PAN {PAN}, not "}
+
+
 def test_wrapper_fails_closed_as_an_llm_error():
     inner = _Recorder()
     llm = MaskingLLMProvider(inner, _Broken())

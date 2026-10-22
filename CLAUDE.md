@@ -390,7 +390,8 @@ input stays empty.
 never reach an outside service in readable form (`app/privacy`): found by format and
 check digit only, replaced with `<KIND_n>`. Both LLM factories return a
 `MaskingLLMProvider`, which restores the reply and tool-call arguments before any caller
-sees them (only placeholders that call issued, exact match; an invented one is removed).
+sees them (only placeholders that call issued, exact match, also JSON-escaped as
+`\u003cPHONE_1\u003e`, which Gemini writes in tool arguments; an invented one is removed).
 A new outbound client (embedder, reranker, guard) calls `privacy.redact`. A detector
 failure blocks the send, never sends unmasked. Bank account numbers and order ids are not
 masked: no format tells them apart. `MASK_IDENTIFIERS=false` is the kill switch.

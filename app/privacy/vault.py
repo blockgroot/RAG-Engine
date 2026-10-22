@@ -15,7 +15,12 @@ from ..core.exceptions import PrivacyError
 from .base import IdentifierDetector
 
 KINDS = ("AADHAAR", "VID", "PAN", "CARD", "PHONE", "IFSC", "UPI")
-_PLACEHOLDER = re.compile(r"<(?:" + "|".join(KINDS) + r")_\d{1,4}>")
+# A model writing JSON (tool-call arguments, a JSON reply) may escape the
+# brackets: Gemini sends <PHONE_1> as \u003cPHONE_1\u003e. Both spellings are
+# the same placeholder.
+_PLACEHOLDER = re.compile(
+    r"(?:<|\\u003[cC])((?:" + "|".join(KINDS) + r")_\d{1,4})(?:>|\\u003[eE])"
+)
 
 
 class Vault:
@@ -62,7 +67,7 @@ class Vault:
         """
         if not text or self._detector is None:
             return text
-        text = _PLACEHOLDER.sub(lambda m: self._value_of.get(m.group(0), ""), text)
+        text = _PLACEHOLDER.sub(lambda m: self._value_of.get(f"<{m.group(1)}>", ""), text)
         for token, value in self._value_of.items():
             bare = re.compile(r"(?<![\w<])" + re.escape(token[1:-1]) + r"(?![\w>])")
             text = bare.sub(lambda _m, v=value: v, text)

@@ -1,17 +1,24 @@
 """End to end: no Aadhaar, PAN, card, mobile, IFSC or UPI value leaves the process.
 
-LIVE: the real chat API, the real model (LLM_* in .env), the real remote
-embedder and reranker, and the staging database. Every HTTP request leaving the
-process is recorded and searched for the raw values; the answers must still
-carry the real values back to the person.
+LIVE: the real chat API and Slack answer path, the real model (LLM_* from the
+environment), the real embedder and reranker, the Groq checks when switched on,
+and the staging database. Every HTTP request leaving the process is recorded
+and searched for the raw values; answers must still carry the real values.
 
-Opt-in only (costs model quota and ~5 minutes):
+Opt-in only (costs model quota and several minutes):
 
-    PRIVACY_E2E=1 pytest tests/test_privacy_e2e_live.py -s
+    PRIVACY_E2E=1 GUARD_MODE=shadow GUARD_ANSWER_CHECK=true \\
+    INGEST_CONTEXTUAL_ENABLED=true INGEST_CONTEXTUAL_DEFER=false \\
+    PERSONAL_MEMORY_ENABLED=true WEB_SEARCH_ENABLED=true \\
+    pytest tests/test_privacy_e2e_live.py -s
 
-Covered: uploads of .txt, .csv, .xlsx, .docx, .pdf and .md; an indexed document
-(ingest, contextualization, embedding); a question that itself contains an
-identifier; a look-alike (order id) that must NOT be masked.
+Scenarios: uploads (.txt .csv .xlsx .docx .pdf .md), a follow-up that reads
+chat history, Deep mode, Chart mode, an indexed document (ingest,
+contextualization, guard scoring, embedding, reranking), a question that
+contains an identifier, a look-alike order id that must NOT be masked,
+personal memory, the web-search decision, the Slack answer path and an Agent
+mode draft (tool call). Web search sends the asker's own words by design; what
+it was sent is reported, not asserted.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -38,6 +46,8 @@ pytestmark = [
     requires_db,
     pytest.mark.skipif(os.getenv("PRIVACY_E2E") != "1", reason="live: set PRIVACY_E2E=1"),
 ]
+
+PAUSE = float(os.getenv("E2E_PAUSE", "12"))  # a free model tier allows ~15 requests a minute
 
 
 def _aadhaar(body: str) -> str:
@@ -56,23 +66,26 @@ PRIYA = {"mobile": "9123456780", "pan": "BQRPS7310L", "upi": "priya.s@ybl"}
 MEENA = {"aadhaar": _aadhaar("73829104562"), "vid": _aadhaar("918273645501928"), "pan": "CMNPM5512D"}
 ARJUN = {"card": "4111 1111 1111 1111", "mobile": "+91-99887-76655"}
 INDEXED = {"mobile": "9988012345", "pan": "DXYPA9087K", "ifsc": "ICIC0001122"}
+ASKER = {"mobile": "9876501234"}
 ORDER_ID = "5012345678"  # 10 digits, starts with 5: an order id, never masked
 
-ALL_VALUES = [*RAVI.values(), *PRIYA.values(), *MEENA.values(), *ARJUN.values(), *INDEXED.values()]
+ALL_VALUES = [*RAVI.values(), *PRIYA.values(), *MEENA.values(), *ARJUN.values(),
+              *INDEXED.values(), *ASKER.values()]
 SAFE_HOSTS = {"testserver"}  # our own app, called by the test client
+WEB = "duckduckgo"          # the asker's own words, by design: reported, not asserted
 
 
 def _spellings(value: str) -> set[str]:
-    """The ways a value could appear in a payload."""
     digits = re.sub(r"\D", "", value)
     out = {value, value.lower(), value.upper()}
     if len(digits) >= 10:
         out.add(digits)
-        out.add(digits[-10:])  # a mobile without +91
+        out.add(digits[-10:])
     return {s for s in out if len(s) >= 8}
 
 
 LEAK_PATTERNS = {v: _spellings(v) for v in ALL_VALUES}
+REPORT: list[tuple[str, str, str]] = []
 
 
 # -- fixtures -----------------------------------------------------------------------
@@ -80,7 +93,7 @@ LEAK_PATTERNS = {v: _spellings(v) for v in ALL_VALUES}
 
 @pytest.fixture(scope="module")
 def outbound():
-    """Record every request leaving the process (sync and async httpx, web search)."""
+    """Every request leaving the process: sync and async httpx, and web search."""
     sent: list[tuple[str, str]] = []
     real_send, real_async = httpx.Client.send, httpx.AsyncClient.send
 
@@ -103,7 +116,7 @@ def outbound():
     real_search = duckduckgo.DuckDuckGoSearch.search
 
     def search_spy(self, query, *a, **k):
-        sent.append(("duckduckgo", query))
+        sent.append((WEB, query))
         return real_search(self, query, *a, **k)
 
     mp = pytest.MonkeyPatch()
@@ -115,7 +128,7 @@ def outbound():
 
 
 @pytest.fixture(scope="module")
-def app_client(outbound):
+def ctx(outbound):
     from fastapi.testclient import TestClient
 
     from app.api.main import create_app
@@ -137,7 +150,7 @@ def app_client(outbound):
     try:
         yield SimpleNamespace(
             client=TestClient(create_app()), cookies={"session": create_session_token(user)},
-            org=org, user=user,
+            org=org, user=user, email=email,
         )
     finally:
         with get_connection() as conn:
@@ -145,6 +158,14 @@ def app_client(outbound):
             conn.execute("DELETE FROM users WHERE email = %s", (email,))
             conn.commit()
         mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _no_leaks_after_each(outbound):
+    start = len(outbound)
+    yield
+    leaks = _leaks(outbound[start:])
+    assert not leaks, f"raw identifiers left the process: {leaks}"
 
 
 # -- files --------------------------------------------------------------------------
@@ -169,6 +190,7 @@ def _csv() -> bytes:
         "name,team,mobile,pan,upi\n"
         f"Priya Shah,Design,{PRIYA['mobile']},{PRIYA['pan']},{PRIYA['upi']}\n"
         "Karan Mehta,Sales,,,\n"
+        "Leela Das,Design,,,\n"
     ).encode()
 
 
@@ -177,8 +199,10 @@ def _xlsx() -> bytes:
 
     wb = Workbook()
     ws = wb.active
-    ws.append(["Employee", "Aadhaar", "Virtual ID", "PAN"])
-    ws.append(["Meena Iyer", MEENA["aadhaar"], MEENA["vid"], MEENA["pan"]])
+    ws.append(["Employee", "Team", "Aadhaar", "Virtual ID", "PAN"])
+    ws.append(["Meena Iyer", "Finance", MEENA["aadhaar"], MEENA["vid"], MEENA["pan"]])
+    ws.append(["Rohit Jain", "Finance", "", "", ""])
+    ws.append(["Asha Rao", "Ops", "", "", ""])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -234,29 +258,41 @@ def _upload(ctx, conv: str, files: list[tuple[str, bytes]]) -> dict:
         cookies=ctx.cookies,
     )
     assert r.status_code == 200, r.text
-    return r.json()
+    out = r.json()
+    assert len(out["attachments"]) == len(files) and not out["rejected"], out
+    return out
 
 
-def _ask(ctx, question: str, conv: str | None = None) -> dict:
-    body = {"question": question}
-    if conv:
-        body["conversation_id"] = conv
+def _stream(ctx, body: dict) -> dict:
     r = ctx.client.post("/chat/stream", json=body, cookies=ctx.cookies)
     assert r.status_code == 200, r.text
-    done = {}
+    done: dict = {}
     for block in r.text.strip().split("\n\n"):
         lines = block.split("\n")
         if lines and lines[0] in ("event: done", "event: error"):
             data = json.loads("\n".join(l[6:] for l in lines[1:] if l.startswith("data: ")))
             done = data if lines[0] == "event: done" else {"answer": "", "error": data.get("message")}
-    time.sleep(12)  # the free model tier allows ~15 requests a minute
+    return done
+
+
+def _ask(ctx, question: str, conv: str | None = None, mode: str | None = None) -> dict:
+    body: dict = {"question": question}
+    if conv:
+        body["conversation_id"] = conv
+    if mode:
+        body["mode"] = mode
+    done = _stream(ctx, body)
+    if done.get("error"):  # one retry: a busy model (503) is not what this tests
+        time.sleep(PAUSE * 2)
+        done = _stream(ctx, body)
+    time.sleep(PAUSE)
     return done
 
 
 def _leaks(sent: list[tuple[str, str]]) -> list[tuple[str, str]]:
     found = []
     for host, body in sent:
-        if host in SAFE_HOSTS:
+        if host in SAFE_HOSTS or host == WEB:
             continue
         for value, spellings in LEAK_PATTERNS.items():
             if any(s in body for s in spellings):
@@ -271,57 +307,78 @@ def _has(answer: str, value: str) -> bool:
     return value.lower() in answer.lower()
 
 
-# -- the run ------------------------------------------------------------------------
+def _check(label: str, done_or_text, expected: list[str]) -> None:
+    if isinstance(done_or_text, dict):
+        answer = done_or_text.get("answer") or ""
+        err = done_or_text.get("error")
+    else:
+        answer, err = done_or_text or "", None
+    missing = [e for e in expected if not _has(answer, e)]
+    REPORT.append((label, "OK" if not missing else "MISSING " + ", ".join(missing),
+                   answer[:240] or f"ERROR: {err}"))
 
 
-REPORT: list[tuple[str, str, str]] = []
+# -- scenarios ----------------------------------------------------------------------
 
 
-def test_uploads_and_questions_end_to_end(app_client, outbound):
-    ctx = app_client
+def test_uploads_questions_and_follow_up(ctx, outbound):
     conv = _conversation(ctx)
-    up = _upload(ctx, conv, [
+    _upload(ctx, conv, [
         ("vendor.txt", _txt()), ("team.csv", _csv()), ("kyc.xlsx", _xlsx()),
         ("travel.docx", _docx()), ("kyc.pdf", _pdf()),
     ])
-    assert len(up["attachments"]) == 5 and not up["rejected"], up
     REPORT.append(("upload", "5 files saved (.txt .csv .xlsx .docx .pdf)", ""))
-
     cases = [
         ("What is Ravi Kumar's mobile number?", [RAVI["mobile"]]),
-        ("What are Ravi Kumar's PAN and bank IFSC code?", [RAVI["pan"], RAVI["ifsc"]]),
+        ("And what is his PAN?", [RAVI["pan"]]),  # follow-up: reads chat history
+        ("What is Ravi Kumar's bank IFSC code?", [RAVI["ifsc"]]),
         (f"Whose UPI ID is {RAVI['upi']}?", ["Ravi"]),
         ("What is the laptop order number for Ravi?", [ORDER_ID]),
-        ("What is Priya Shah's mobile number and UPI ID in the team sheet?", [PRIYA["mobile"], PRIYA["upi"]]),
+        ("What is Priya Shah's mobile number and UPI ID in the team sheet?",
+         [PRIYA["mobile"], PRIYA["upi"]]),
         ("What is Meena Iyer's PAN?", [MEENA["pan"]]),
-        ("How can I reach Arjun Rao, and which card did he use for travel?", [ARJUN["mobile"]]),
+        ("How can I reach Arjun Rao?", [ARJUN["mobile"]]),
         ("What is Ravi Kumar's contact email?", ["ravi.kumar@example.com"]),
     ]
     for question, expected in cases:
-        done = _ask(ctx, question, conv)
-        answer = done.get("answer") or ""
-        ok = all(_has(answer, e) for e in expected)
-        REPORT.append((question, "OK" if ok else "MISSING " + ", ".join(e for e in expected if not _has(answer, e)),
-                       answer[:220] or f"ERROR: {done.get('error')}"))
-
-    leaks = _leaks(outbound)
-    assert not leaks, f"raw identifiers left the process: {leaks}"
-    ai_calls = [h for h, _ in outbound if h not in SAFE_HOSTS]
-    assert ai_calls, "no outbound calls recorded: the run never reached the model"
+        _check(question, _ask(ctx, question, conv), expected)
     assert any("<PHONE_" in b for _, b in outbound), "masking never engaged"
 
 
-def test_indexed_document_end_to_end(app_client, outbound):
+def test_deep_mode(ctx):
+    conv = _conversation(ctx)
+    _upload(ctx, conv, [("vendor.txt", _txt())])
+    _check("[deep] Ravi's PAN and IFSC",
+           _ask(ctx, "Give me Ravi Kumar's PAN and IFSC code.", conv, mode="deep"),
+           [RAVI["pan"], RAVI["ifsc"]])
+
+
+def test_chart_mode_on_a_sheet_with_identifiers(ctx):
+    conv = _conversation(ctx)
+    _upload(ctx, conv, [("kyc.xlsx", _xlsx())])
+    done = _ask(ctx, "Draw a bar chart of the number of employees by team.", conv, mode="chart")
+    REPORT.append(("[chart] employees by team", "chart drawn" if done.get("chart") else "no chart",
+                   (done.get("answer") or "")[:200] or f"ERROR: {done.get('error')}"))
+
+
+def test_markdown_upload(ctx):
+    conv = _conversation(ctx)
+    _upload(ctx, conv, [("oncall.md", _md())])
+    _check("[.md] on-call number",
+           _ask(ctx, "What number should I call to reach the on-call lead?", conv),
+           [ARJUN["mobile"]])
+
+
+def test_indexed_document(ctx, outbound):
     from app.ingestion.pipeline import ingest_source
     from app.sources.base import DocAccess, SourceDocument, SourceRef
-    from datetime import datetime, timezone
 
-    ctx = app_client
     when = datetime(2026, 10, 1, tzinfo=timezone.utc)
     text = (
         "Facilities vendor directory.\n"
         f"The office caterer Anil Desai can be reached on {INDEXED['mobile']}. "
-        f"Invoices go to PAN {INDEXED['pan']}, paid to IFSC {INDEXED['ifsc']}."
+        f"Invoices go to PAN {INDEXED['pan']}, paid to IFSC {INDEXED['ifsc']}. "
+        f"Slack him at <@U0456ANIL> for menu changes."
     )
 
     class _Adapter:
@@ -340,43 +397,75 @@ def test_indexed_document_end_to_end(app_client, outbound):
 
     before = len(outbound)
     ingest_source(_Adapter(), ctx.org, provider="notion")
-    ingest_leaks = _leaks(outbound[before:])
-    assert not ingest_leaks, f"ingest sent raw identifiers: {ingest_leaks}"
-    REPORT.append(("ingest", f"{len(outbound) - before} outbound calls", "no leaks"))
-
-    for question, expected in [
-        ("What is the phone number of the office caterer Anil Desai?", [INDEXED["mobile"]]),
-        (f"Who has the PAN {INDEXED['pan']}?", ["Anil"]),
-    ]:
-        done = _ask(ctx, question)
-        answer = done.get("answer") or ""
-        ok = all(_has(answer, e) for e in expected)
-        REPORT.append((question, "OK" if ok else "MISSING " + ", ".join(e for e in expected if not _has(answer, e)),
-                       answer[:220] or f"ERROR: {done.get('error')}"))
-
-    leaks = _leaks(outbound)
-    assert not leaks, f"raw identifiers left the process: {leaks}"
+    hosts = sorted({h for h, _ in outbound[before:]})
+    REPORT.append(("ingest", f"{len(outbound) - before} outbound calls", f"hosts {hosts}"))
+    _check("[indexed] caterer phone",
+           _ask(ctx, "What is the phone number of the office caterer Anil Desai?"),
+           [INDEXED["mobile"]])
+    _check("[indexed] PAN in the question",
+           _ask(ctx, f"Who has the PAN {INDEXED['pan']}?"), ["Anil"])
 
 
-def test_markdown_upload_end_to_end(app_client, outbound):
-    ctx = app_client
-    conv = _conversation(ctx)
-    up = _upload(ctx, conv, [("oncall.md", _md())])
-    assert len(up["attachments"]) == 1, up
-    done = _ask(ctx, "What number should I call to reach the on-call lead?", conv)
-    answer = done.get("answer") or ""
-    REPORT.append(("[.md] on-call number", "OK" if _has(answer, ARJUN["mobile"]) else "MISSING",
-                   answer[:220] or f"ERROR: {done.get('error')}"))
-    assert not _leaks(outbound), _leaks(outbound)
+def test_personal_memory(ctx):
+    _check("[memory] asker's own number in the question",
+           _ask(ctx, f"Remember that my mobile number is {ASKER['mobile']}. "
+                     "What is the office caterer's IFSC code?"),
+           [INDEXED["ifsc"]])
+
+
+def test_web_search_decision(ctx, outbound):
+    before = len(outbound)
+    done = _ask(ctx, f"Search the web: which bank and branch uses the IFSC code {RAVI['ifsc']}?")
+    web = [b for h, b in outbound[before:] if h == WEB]
+    REPORT.append(("[web] IFSC typed by the asker",
+                   f"web queries: {web or 'none'}",
+                   (done.get("answer") or "")[:200] or f"ERROR: {done.get('error')}"))
+    time.sleep(PAUSE)
+
+
+def test_slack_answer_path(ctx):
+    from app.api.slack_events import _answer
+
+    reply = _answer("What is the phone number of the office caterer Anil Desai?", ctx.org, None, None)
+    _check("[slack] caterer phone", getattr(reply, "text", "") or str(reply), [INDEXED["mobile"]])
+    time.sleep(PAUSE)
+
+
+def test_agent_mode_draft_tool_call(ctx):
+    from app.actions import service
+    from app.llm import build_llm_provider
+
+    tool = {"type": "function", "function": {
+        "name": "post_message",
+        "description": "Post a message in a Slack channel.",
+        "parameters": {"type": "object", "properties": {
+            "channel": {"type": "string"},
+            "message": {"type": "string"},
+            "request_words": {"type": "string",
+                              "description": "The asker's words that ask for this, exactly as written."},
+        }, "required": ["channel", "message", "request_words"]},
+    }}
+    action = SimpleNamespace(tool=tool, lookup=False)
+    question = (f"Post in #vendors that Ravi's new mobile is {RAVI['mobile']} "
+                f"and his PAN is {RAVI['pan']}.")
+    out = service._ask(build_llm_provider(), question, None, [tool], [action])
+    args = out[0][1] if isinstance(out, list) and out else {}
+    _check("[agent] draft message carries real values", json.dumps(args),
+           [RAVI["mobile"], RAVI["pan"]])
+    time.sleep(PAUSE)
 
 
 def test_zz_report(outbound):
     hosts: dict[str, int] = {}
     for h, _ in outbound:
         hosts[h] = hosts.get(h, 0) + 1
-    print("\n\n=== Outbound calls by host ===")
+    model = os.getenv("LLM_MODEL")
+    print(f"\n\n=== Model: {model} | embedder: {os.getenv('EMBEDDING_BACKEND')} "
+          f"{os.getenv('EMBEDDING_MODEL')} | rerank: {os.getenv('RETRIEVAL_RERANK_ENABLED')} ===")
+    print("=== Outbound calls by host ===")
     for h, n in sorted(hosts.items()):
         print(f"  {h}: {n}")
-    print("\n=== Questions ===")
+    print(f"=== Raw identifiers found in outbound calls: {len(_leaks(outbound))} ===")
+    print("=== Scenarios ===")
     for q, status, answer in REPORT:
         print(f"- {q}\n    {status}\n    {answer!r}")
