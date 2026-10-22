@@ -238,15 +238,13 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                     ) : (
                       <>
                         <div className="mcp-toolbar">
-                          {all.length > 8 && (
-                            <input
-                              className="input mcp-search"
-                              placeholder="Search tools"
-                              aria-label={`Search ${row.name} tools`}
-                              value={filter}
-                              onChange={(e) => setFilter(e.target.value)}
-                            />
-                          )}
+                          <input
+                            className="input mcp-search"
+                            placeholder="Search tools"
+                            aria-label={`Search ${row.name} tools`}
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                          />
                           <button
                             type="button"
                             className="mcp-link"
@@ -273,9 +271,14 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                                 )
                               : server.tools;
                             return [
-                              grouped && shown.length > 0 && (
+                              grouped && (shown.length > 0 || server.tools.length === 0) && (
                                 <li key={`${server.id}-head`} className="mcp-tool-group">
                                   {server.name.replace(/^Google /, "")}
+                                </li>
+                              ),
+                              grouped && server.tools.length === 0 && (
+                                <li key={`${server.id}-empty`} className="mcp-tool mcp-note">
+                                  No tools listed yet. Sign in again under Account → Agent, or press Refresh tools.
                                 </li>
                               ),
                               ...shown.map((tool) => {
