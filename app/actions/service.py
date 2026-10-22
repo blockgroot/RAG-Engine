@@ -183,8 +183,30 @@ def _parts(llm, question: str) -> list[str]:
         quoted = json.loads(found.group(0)) if found else []
     except json.JSONDecodeError:
         return []
-    parts = [q.strip() for q in quoted if isinstance(q, str) and q.strip() and asked_in(q, question)]
+    parts = []
+    for q in (q.strip() for q in quoted if isinstance(q, str) and q.strip()):
+        own = q if asked_in(q, question) else _closest_span(q, question)
+        if own is None:
+            return []          # a part not in the request: draft it whole rather than lose one
+        parts.append(own)
     return list(dict.fromkeys(parts))
+
+
+def _closest_span(quote: str, question: str, floor: float = 0.9) -> str | None:
+    """The request's own words that a nearly exact quote stands for ("follow-up"
+    for "follow up" dropped a whole part), or None. The part is then the
+    request's text, never the model's."""
+    from difflib import SequenceMatcher
+
+    words, n = question.split(), len(quote.split())
+    best, score = None, floor
+    for size in range(max(1, n - 2), n + 3):
+        for i in range(0, max(1, len(words) - size + 1)):
+            span = " ".join(words[i:i + size])
+            ratio = SequenceMatcher(None, quote.lower(), span.lower()).ratio()
+            if ratio >= score:
+                best, score = span, ratio
+    return best
 
 
 def build_split_prompt(question: str) -> str:

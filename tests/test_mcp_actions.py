@@ -558,7 +558,7 @@ def test_a_request_for_several_actions_is_split_and_each_part_drafted_once(monke
 
     class Model:
         def generate(self, prompt, max_tokens=None):
-            return '["Create a Linear issue titled t", "post hi in #hb-testing", "and an invented one"]'
+            return '["Create a Linear issue titled t", "post hi in #hb-testing"]'
 
         def generate_with_tools(self, messages, tools, tool_choice):
             prompt = messages[0]["content"]
@@ -575,10 +575,22 @@ def test_a_request_for_several_actions_is_split_and_each_part_drafted_once(monke
     picked = service._ask_with_lookups(Model(), question, None, [], [linear, slack], org_id="o", user_id="u",
                                        found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
     assert [a for a, _ in picked] == [linear, slack]                   # one card per part, no duplicate
-    assert asked == ["Create a Linear issue titled t", "post hi in #hb-testing"]   # the invented part is dropped
+    assert asked == ["Create a Linear issue titled t", "post hi in #hb-testing"]
 
 
 def test_a_merge_with_no_link_links_to_the_pull_request():
     assert mcp._github_page({"owner": "o", "repo": "r", "pullNumber": 25}) == "https://github.com/o/r/pull/25"
     assert mcp._github_page({"owner": "o", "repo": "r", "issue_number": 7}) == "https://github.com/o/r/issues/7"
     assert mcp._github_page({"owner": "o"}) is None
+
+
+def test_a_nearly_exact_part_uses_the_requests_own_words():
+    """The model quoted "follow-up" for "follow up" and the Linear part vanished."""
+    from app.actions import service
+
+    q = 'Create a Google Doc called "Cross retro", create a Linear issue titled "Cross: follow up on retro", and post "ready" in #hb-testing.'
+    split = '["Create a Google Doc called \\"Cross retro\\"", "create a Linear issue titled \\"Cross: follow-up on retro\\"", "post \\"ready\\" in #hb-testing"]'
+    parts = service._parts(SimpleNamespace(generate=lambda prompt, max_tokens=None: split), q)
+    assert len(parts) == 3 and 'create a Linear issue titled "Cross: follow up on retro",' in parts
+    invented = '["Create a Google Doc called \\"Cross retro\\"", "delete every issue in Linear"]'
+    assert service._parts(SimpleNamespace(generate=lambda prompt, max_tokens=None: invented), q) == []
