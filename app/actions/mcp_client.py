@@ -65,6 +65,19 @@ def public_https(url: str) -> str:
     return url
 
 
+def _reason(response) -> str:
+    """The server's own short reason for an error ("API not enabled…"), so an
+    admin can act on it. Outside text: one line, bounded, never a link."""
+    try:
+        body = response.json()
+        error = body.get("error") if isinstance(body, dict) else None
+        said = (error.get("message") if isinstance(error, dict) else error) or ""
+    except ValueError:
+        said = response.text or ""
+    said = re.sub(r"https?://\S+", "", " ".join(str(said).split()))[:200].strip()
+    return f": {said}" if said else ""
+
+
 class McpSession:
     """One session with one server, as one person (``token``) or anonymously."""
 
@@ -106,7 +119,7 @@ class McpSession:
         if response.status_code == 403:
             raise ActionError("The tool refused: your account isn't allowed to do that.")
         if response.status_code >= 400:
-            raise ActionError(f"The tool answered {response.status_code}.")
+            raise ActionError(f"The tool answered {response.status_code}{_reason(response)}.")
         if response.headers.get("mcp-session-id"):
             self.session_id = response.headers["mcp-session-id"]
         if notify:

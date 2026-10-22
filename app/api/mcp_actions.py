@@ -140,7 +140,7 @@ def admin_refresh_mcp(server_id: str, session: SessionClaims = Depends(require_a
     try:
         tools = _list_tools(server.url, token)
     except ProviderError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"{server.name}: {exc}") from exc
     mcp_store.set_tools(session.org_id, server.id, tools)
     return _admin_view(mcp_store.get_server(session.org_id, server.id))
 
