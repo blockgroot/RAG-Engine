@@ -141,6 +141,18 @@ def _coded(text: str, prop: dict, question: str) -> bool:
     return bool(m) and asked_in(m.group(1), question)
 
 
+def _guide(tool: dict) -> str:
+    """The tool's whole manual, for a model whose form was refused: its full
+    description (the card's 300 characters cut Notion's "set the title in
+    properties" and every page form was wrong) and its parameters, scrubbed
+    and bounded. Sent only after a refusal, so a call that gets the form right
+    pays nothing for it."""
+    said = scrub_untrusted_text(tool.get("description") or "")[:2000]
+    params = json.dumps(_schema(tool)["properties"], ensure_ascii=False)
+    params = params if len(params) <= 3000 else params[:3000] + "…"
+    return f"How this tool is used: {said}\nIts parameters: {params}"
+
+
 class McpToolAction(Action):
     """One "write" tool of one admin-added MCP server."""
 
@@ -174,6 +186,9 @@ class McpToolAction(Action):
     def token_for(self, org_id: str, user_id: str, surface: str = "web",
                   payload: dict[str, Any] | None = None) -> str:
         return "" if self.server.auth == "none" else super().token_for(org_id, user_id, surface)
+
+    def guide(self) -> str:
+        return _guide(self.mcp_tool)
 
     def form_problem(self, args: dict[str, Any]) -> str | None:
         """``form_problem`` against this tool's own schema, on the fields the

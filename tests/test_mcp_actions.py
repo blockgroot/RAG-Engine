@@ -657,3 +657,18 @@ def test_an_ask_shared_with_another_action_is_the_askers_words_in_order():
     assert not asked_for("Delete a GitHub issue", q)
     assert not asked_for("GitHub issue Create", q)            # out of order
     assert not asked_for("please file", "what is blocking Platform?") and not asked_for("", q)
+
+
+def test_a_refused_form_brings_the_tools_whole_manual_and_each_new_try_is_progress():
+    """Notion's "set the title in properties" sat past the 300 characters a
+    card shows, so the model never learned where the title goes; and two
+    refusals in a row ended the loop while it was still fixing the form."""
+    long = {**NOTION_PAGES, "description": "x" * 400 + " Set the title in properties."}
+    action = mcp.McpToolAction(_server(), long)
+    tries = [(action, {"request_words": "make a page", "pages": [{"title": f"Notes {i}"}]}) for i in range(3)]
+    model = Scripted([tries[0]], [tries[1]], [tries[2]],
+                     [(action, {"request_words": "make a page", "pages": [{"properties": {"title": "Notes"}}]})])
+    run = _loop(model, "make a page", [action])
+    told = _tool_answers(model.seen[1])[0]
+    assert "Set the title in properties" in told and "UNTRUSTED_TOOL_RESULT" in told
+    assert len(run.picked) == 1                    # three different wrong forms, then the right one

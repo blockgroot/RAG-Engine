@@ -278,8 +278,13 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         problem = _precheck(action, args, question, org_id=org_id, user_id=user_id, email=email,
                             found=found)
     if problem:
+        # A different form than any refused before is the model fixing it:
+        # progress, so the loop gives it the turns to (bounded by MAX_STEPS).
+        fresh = key not in refused
         refused[key] = (action.name, out.turn, problem)
-        return f"Refused, not drafted: {problem}. Fix the form (look up what you need) and call again.", False
+        guide = getattr(action, "guide", lambda: "")()
+        return (f"Refused, not drafted: {problem}. Fix the form (look up what you need) and call "
+                f"again." + (f"\n{_fenced(guide)}" if guide else "")), fresh
     if len(drafted) >= MAX_ACTIONS:
         out.left_out.append(action.label)
         return f"Not drafted: at most {MAX_ACTIONS} cards per request.", False
