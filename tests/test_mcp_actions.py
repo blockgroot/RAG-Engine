@@ -463,3 +463,9 @@ def test_recent_cards_reuse_the_servers_read_once(monkeypatch):
                           target={}, original_payload=None, payload_hash="h", status="succeeded", exposure="none",
                           acknowledged=False, sources=[], result=None, expires_at=now, created_at=now)
     assert _card(row, servers={srv.id: srv})["label"] == "Asana: Create task"
+
+
+def test_reversible_code_writes_are_not_labelled_destructive():
+    for name in ("create_branch", "create_or_update_file", "push_files", "rename_file"):
+        assert not mcp_store.destructive({"name": name}), name
+    assert mcp_store.destructive({"name": "merge_pull_request"}) and mcp_store.destructive({"name": "delete_file"})

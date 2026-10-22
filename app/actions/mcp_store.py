@@ -29,16 +29,16 @@ from ..db.connection import get_connection
 
 MODES = ("off", "lookup", "write")
 
-#: Names that delete, merge, close, move or rewrite things: destructive,
-#: whatever the server says. Decided by the NAME only: MCP's ``destructiveHint``
+#: Names that delete, merge, close or revoke things, which cannot be taken
+#: back: destructive, whatever the server says. Creating a branch, committing
+#: or renaming can be undone, so they are ordinary writes. Decided by the NAME only: MCP's ``destructiveHint``
 #: also covers ordinary updates (Linear marks ``save_issue`` and ``save_comment``
 #: destructive because they can edit), which would label creating an issue
 #: as something that cannot be undone.
 _DESTRUCTIVE = re.compile(
     r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|trash|retire|unshare|unpublish|"
     r"close|merge|revoke|transfer|"
-    r"push|commit|reset|revert|force|ban|kick|deactivate|disable|cancel|wipe|truncate|"
-    r"uninstall|rename|move|edit_file|write_file|create_branch|update_file)", re.IGNORECASE)
+    r"reset|force|ban|kick|deactivate|disable|cancel|wipe|truncate|uninstall)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
