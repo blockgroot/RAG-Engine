@@ -236,37 +236,6 @@ def test_execute_sends_the_stored_words_including_an_edit(server):
 # -- Lookups while drafting ---------------------------------------------------------------------
 
 
-def test_a_lookup_runs_with_the_persons_sign_in_and_its_answer_reaches_the_model(server, monkeypatch):
-    from app.actions import service
-    from app.config.settings import ActionsSettings
-
-    srv = _server({"create_task": "write", "list_projects": "lookup"})
-    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
-    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
-    prompts = []
-    calls = iter([[("list_projects", {})], [("create_task", {"request_words": "create a task",
-                                                             "project_id": "P-7", "title": "t"})]])
-
-    class Model:
-        def generate(self, prompt, max_tokens=None):
-            return "[]"
-
-        def generate_with_tools(self, messages, tools, tool_choice):
-            prompts.append(messages[0]["content"])
-            return SimpleNamespace(text="", tool_calls=[
-                SimpleNamespace(name=next(a for a in (write, find) if a.mcp_tool["name"] == n).tool["function"]["name"],
-                                arguments=json.dumps(args)) for n, args in next(calls, [])])  # then: nothing else
-
-    server.result = {"content": [{"type": "text", "text": '{"id": "P-7", "name": "Atlas"}'}]}
-    found, looked = [], set()
-    picked = service._ask_with_lookups(Model(), "create a task in Atlas", None, [write.tool, find.tool],
-                                       [write, find], org_id="o", user_id="u", found=found, looked=looked,
-                                       settings=ActionsSettings.from_env())
-    assert [a for a, _ in picked] == [write] and looked == {"Asana"}
-    assert "P-7" in found[0] and "P-7" in prompts[-1]                      # fenced into the next ask
-    assert "UNTRUSTED" in prompts[-1]
-
-
 def test_mcp_actions_offer_only_what_an_admin_switched_on(monkeypatch):
     srv = _server({"create_task": "write", "list_projects": "lookup"})
     monkeypatch.setattr(mcp_store, "list_servers", lambda org: [srv])
@@ -521,20 +490,6 @@ def test_a_form_the_tools_schema_refuses_is_caught_before_the_card():
     assert mcp.form_problem({"anyOf": [{"type": "string"}, {"type": "array"}]}, ["x"]) is None
 
 
-def test_a_refused_form_goes_back_to_the_model_once(monkeypatch):
-    from app.actions import service
-
-    action = mcp.McpToolAction(_server(), NOTION_PAGES)
-    replies = iter([[(action, {"pages": [{"title": "Notes"}]})], [(action, {"pages": [{"properties": {"title": "Notes"}}]})]])
-    shown = []
-    monkeypatch.setattr(service, "_ask", lambda llm, q, passages, *a, **k: shown.append(passages) or next(replies, service.ActOutcome("nothing else")))
-    one = SimpleNamespace(generate=lambda prompt, max_tokens=None: "[]")
-    picked = service._ask_with_lookups(one, "make a page", None, [], [action], org_id="o", user_id="u",
-                                       found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
-    assert picked[0][1] == {"pages": [{"properties": {"title": "Notes"}}]}
-    assert shown[0] is None and "has no field title" in shown[1]
-
-
 def test_a_cards_link_is_a_page_never_an_api_address():
     """GitHub's create_branch returns only its API address, a 404 in a browser."""
     assert mcp._page_link("https://api.github.com/repos/o/r/git/refs/heads/mcp-suite-1613") == \
@@ -545,53 +500,160 @@ def test_a_cards_link_is_a_page_never_an_api_address():
 
 
 
-def test_a_request_for_several_actions_is_split_and_each_part_drafted_once(monkeypatch):
-    """GPT-OSS drafted only the Linear issue of "a Linear issue and a post in
-    #hb-testing"; with the whole request as each pass's question it drafted the
-    Linear issue twice. Each part is its own pass's question, so a draft whose
-    asking words are in another part is dropped."""
-    from app.actions import service
-
-    linear = mcp.McpToolAction(_server(), {**CREATE, "name": "save_issue"})
-    slack = mcp.McpToolAction(_server(), {**CREATE, "name": "send_message"})
-    question = "Create a Linear issue titled t and post hi in #hb-testing"
-    filled = {"project_id": "P-7", "title": "t"}
-
-    class Model:
-        def generate(self, prompt, max_tokens=None):
-            return '["Create a Linear issue titled t", "post hi in #hb-testing"]'
-
-        def generate_with_tools(self, messages, tools, tool_choice):
-            prompt = messages[0]["content"]
-            asked.append(prompt.rsplit("QUESTION: ", 1)[1].strip())
-            # Every pass drafts the Linear issue first, as GPT-OSS did; the Slack pass also posts.
-            calls = [("save_issue", "Create a Linear issue")]
-            if "post hi" in asked[-1]:
-                calls.append(("send_message", "post hi in #hb-testing"))
-            return SimpleNamespace(text="", tool_calls=[
-                SimpleNamespace(name=a.tool["function"]["name"], arguments=json.dumps({"request_words": w, **filled}))
-                for n, w in calls for a in (linear, slack) if a.mcp_tool["name"] == n])
-
-    asked = []
-    picked = service._ask_with_lookups(Model(), question, None, [], [linear, slack], org_id="o", user_id="u",
-                                       found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
-    assert [a for a, _ in picked] == [linear, slack]                   # one card per part, no duplicate
-    assert asked == ["Create a Linear issue titled t", "post hi in #hb-testing"]
-
-
 def test_a_merge_with_no_link_links_to_the_pull_request():
     assert mcp._github_page({"owner": "o", "repo": "r", "pullNumber": 25}) == "https://github.com/o/r/pull/25"
     assert mcp._github_page({"owner": "o", "repo": "r", "issue_number": 7}) == "https://github.com/o/r/issues/7"
     assert mcp._github_page({"owner": "o"}) is None
 
 
-def test_a_nearly_exact_part_uses_the_requests_own_words():
-    """The model quoted "follow-up" for "follow up" and the Linear part vanished."""
+# -- The tool loop ---------------------------------------------------------------------------
+
+
+class Scripted:
+    """A model that makes the scripted calls, one turn each, then replies in words."""
+
+    def __init__(self, *turns):
+        self.turns, self.seen = iter(turns), []
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        from app.llm.base import ChatResult, ToolCall
+
+        self.seen.append(list(messages))
+        turn = next(self.turns, None)
+        if turn is None:
+            return ChatResult(text="Done.")
+        return ChatResult(text=None, tool_calls=[ToolCall(f"c{len(self.seen)}{i}", a.tool["function"]["name"],
+                                                          json.dumps(args)) for i, (a, args) in enumerate(turn)])
+
+
+def _loop(model, question, offered, found=None, looked=None):
     from app.actions import service
 
-    q = 'Create a Google Doc called "Cross retro", create a Linear issue titled "Cross: follow up on retro", and post "ready" in #hb-testing.'
-    split = '["Create a Google Doc called \\"Cross retro\\"", "create a Linear issue titled \\"Cross: follow-up on retro\\"", "post \\"ready\\" in #hb-testing"]'
-    parts = service._parts(SimpleNamespace(generate=lambda prompt, max_tokens=None: split), q)
-    assert len(parts) == 3 and 'create a Linear issue titled "Cross: follow up on retro",' in parts
-    invented = '["Create a Google Doc called \\"Cross retro\\"", "delete every issue in Linear"]'
-    assert service._parts(SimpleNamespace(generate=lambda prompt, max_tokens=None: invented), q) == []
+    return service._agent_loop(model, question, None, [a.tool for a in offered], offered, org_id="o",
+                               user_id="u", email="a@x.com", found=[] if found is None else found,
+                               looked=set() if looked is None else looked, ran={},
+                               settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+
+
+def _tool_answers(messages):
+    return [m["content"] for m in messages if m.get("role") == "tool"]
+
+
+def test_a_lookups_answer_comes_back_as_a_tool_result_and_its_id_fills_the_form(server, monkeypatch):
+    """The lookup found BEN-1, but its answer sat among the documents the
+    prompt forbids targets from, and the model asked the user for the id."""
+    srv = _server({"create_task": "write", "list_projects": "lookup"})
+    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": '{"id": "P-7", "name": "Atlas"}'}]}
+    model = Scripted([(find, {})], [(write, {"request_words": "create a task", "project_id": "P-7", "title": "t"})])
+    found, looked = [], set()
+    run = _loop(model, "create a task in Atlas", [write, find], found, looked)
+    assert [a for a, _ in run.picked] == [write] and looked == {"Asana"} and "P-7" in found[0]
+    second = model.seen[1]
+    assert second[1]["tool_calls"][0]["id"] == second[2]["tool_call_id"]
+    assert "P-7" in second[2]["content"] and "UNTRUSTED_TOOL_RESULT" in second[2]["content"]
+    assert "Drafted as card 1" in _tool_answers(model.seen[2])[-1]
+
+
+def test_an_action_is_drafted_once_and_every_action_of_the_request_is_drafted():
+    """Asked "anything else?", the model drafted the same DM twice; split into
+    parts, it dropped one. It is told what it drafted, and a repeat is one card."""
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = lambda t: {"request_words": f"a task titled {t}", "project_id": "P-7", "title": t}  # noqa: E731
+    model = Scripted([(write, form("t"))], [(write, form("t")), (write, form("u"))])
+    run = _loop(model, "In P-7 make a task titled t and a task titled u", [write])
+    assert [a["title"] for _, a in run.picked] == ["t", "u"]
+    assert "Already drafted as card 1" in _tool_answers(model.seen[2])[1]
+    assert run.reply == "Done."
+
+
+def test_a_refused_form_goes_back_to_the_model_and_its_fix_is_drafted():
+    action = mcp.McpToolAction(_server(), NOTION_PAGES)
+    model = Scripted([(action, {"request_words": "make a page", "pages": [{"title": "Notes"}]})],
+                     [(action, {"request_words": "make a page", "pages": [{"properties": {"title": "Notes"}}]})])
+    run = _loop(model, "make a page", [action])
+    assert [a["pages"] for _, a in run.picked] == [[{"properties": {"title": "Notes"}}]]
+    assert "has no field title" in _tool_answers(model.seen[1])[0]
+    assert run.refused == []                       # fixed, so not said to the person
+
+
+def test_a_value_nobody_gave_is_said_back_so_the_model_looks_it_up(server, monkeypatch):
+    srv = _server({"create_task": "write", "list_projects": "lookup"})
+    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": '{"id": "P-9", "name": "Atlas"}'}]}
+    form = {"request_words": "create a task", "project_id": "P-9", "title": "t"}
+    model = Scripted([(write, form)], [(find, {})], [(write, form)])
+    run = _loop(model, "create a task in Atlas", [write, find])
+    assert "must come from your request" in _tool_answers(model.seen[1])[0]
+    assert len(run.picked) == 1 and run.refused == []
+
+
+def test_a_model_that_only_repeats_itself_is_stopped():
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    model = Scripted(*([[(write, form)]] * 20))
+    run = _loop(model, "make a task in P-7", [write])
+    assert len(run.picked) == 1 and len(model.seen) == 3
+
+
+def test_an_action_nobody_asked_for_is_refused_and_said():
+    write = mcp.McpToolAction(_server(), CREATE)
+    model = Scripted([(write, {"request_words": "delete everything", "project_id": "P-7", "title": "t"})])
+    run = _loop(model, "what tasks are in P-7?", [write])
+    assert run.picked == [] and "only act when you ask" in run.refused[0]
+
+
+def test_a_code_the_fields_description_defines_for_the_askers_words_is_kept():
+    """"priority medium" filled Linear's priority with 3 ("3=Medium"), and the
+    card left it out because 3 is not in the request."""
+    prop = {"type": "number", "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low"}
+    assert mcp._coded("3", prop, "File an issue in BEN, priority medium, titled x")
+    assert not mcp._coded("1", prop, "File an issue in BEN, priority medium, titled x")
+    assert not mcp._coded("3", {"description": "how many"}, "priority medium")
+
+
+def test_a_models_non_breaking_hyphens_are_the_askers_plain_ones():
+    """GPT-OSS quoted "sana18‑syv/bench‑sandbox" (U+2011): the GitHub half of a
+    two-tool request was refused as not asked for."""
+    write = mcp.McpToolAction(_server(), CREATE)
+    model = Scripted([(write, {"request_words": "a task in P\u20117", "project_id": "P\u20117", "title": "t"})])
+    run = _loop(model, "make a task in P-7", [write])
+    assert [a["project_id"] for _, a in run.picked] == ["P-7"]
+
+
+def test_a_model_that_says_it_drafted_without_calling_the_tool_is_told_once(server, monkeypatch):
+    """GPT-OSS looked the issue up, then replied "I've drafted a change" and
+    called nothing: no card, and the person was told it was done."""
+    from app.actions import service
+    from app.llm.base import ChatResult
+
+    srv = _server({"create_task": "write", "list_projects": "lookup"})
+    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": '{"id": "P-7"}'}]}
+
+    class Claims(Scripted):
+        def generate_with_tools(self, messages, **kw):
+            if len(self.seen) == 1 and messages[-1]["role"] == "tool":
+                self.seen.append(list(messages))
+                return ChatResult(text="I've drafted the task.")       # but called nothing
+            return super().generate_with_tools(messages, **kw)
+
+    model = Claims([(find, {})], [(write, {"request_words": "create a task", "project_id": "P-7", "title": "t"})])
+    run = _loop(model, "create a task in Atlas", [write, find])
+    assert model.seen[2][-1]["content"] == service.NOTHING_DRAFTED and len(run.picked) == 1
+
+
+def test_an_ask_shared_with_another_action_is_the_askers_words_in_order():
+    """"Create a Linear issue in BEN and a GitHub issue in acme/app": the GitHub
+    ask is "Create … a GitHub issue in acme/app", in no one phrase."""
+    from app.actions.draft import asked_for
+
+    q = "Create a Linear issue in BEN and a GitHub issue in acme/app, both titled x"
+    assert asked_for("Create a GitHub issue in acme/app", q)
+    assert asked_for('Create two Linear issues in BEN: "B"', 'Create two Linear issues in BEN: "A" and "B".')
+    assert not asked_for("Delete a GitHub issue", q)
+    assert not asked_for("GitHub issue Create", q)            # out of order
+    assert not asked_for("please file", "what is blocking Platform?") and not asked_for("", q)

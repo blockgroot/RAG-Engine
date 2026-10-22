@@ -25,6 +25,7 @@ BODY_LIMIT = 8000
 TRIMMED = "\n\n(trimmed)"
 
 _SPACE = re.compile(r"\s+")
+_WORD = re.compile(r"\w+")
 _MENTION = re.compile(r"(?<![\w@])@([A-Za-z0-9][\w.-]*)")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -42,6 +43,17 @@ def asked_in(phrase: str | None, question: str) -> bool:
     """True when ``phrase`` appears in the asker's words (case and spacing aside)."""
     folded = _fold(phrase or "")
     return bool(folded) and folded in _fold(question)
+
+
+def asked_for(quote: str | None, question: str) -> bool:
+    """True when the words that ask for an action are the asker's: every word
+    of ``quote`` is in ``question``, in order, words left out between them.
+    "Create a Linear issue in BEN and a GitHub issue in acme/app" asks for the
+    GitHub issue in no one phrase ("Create" is shared), so an exact quote of
+    that ask could not exist. A target is still matched exactly (``asked_in``)."""
+    said = iter(_WORD.findall(_fold(question)))
+    words = _WORD.findall(_fold(quote or ""))
+    return bool(words) and all(w in said for w in words)
 
 
 def require_named(name: str | None, question: str, what: str) -> str:

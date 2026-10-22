@@ -2168,7 +2168,7 @@ class ActionsSettings:
     mcp_redirect_uri: str | None = None
     mcp_timeout_seconds: float = 20.0
     #: Lookup calls (admin-marked read tools) one request may make before drafting.
-    mcp_max_lookups: int = 4
+    mcp_max_lookups: int = 8
     #: Tools one drafting call is offered, each connector's nearest the request
     #: in turn (``service._fit_tools``). Fewer is faster and cheaper; every
     #: connector keeps its best few. Never above 128, which models refuse.
@@ -2187,7 +2187,7 @@ class ActionsSettings:
                 f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/act/mcp/callback"
                 if os.getenv("FRONTEND_URL") else None),
             mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "20")),
-            mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "4"))),
+            mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "8"))),
             mcp_max_tools=min(128, max(1, int(os.getenv("MCP_MAX_TOOLS", "40")))),
             mcp_host_url=(os.getenv("HANDBOOK_MCP_URL") or (
                 f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/mcp" if os.getenv("FRONTEND_URL") else None)),

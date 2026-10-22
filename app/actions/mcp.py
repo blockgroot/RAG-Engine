@@ -16,7 +16,8 @@ What code cannot know about an unknown tool is treated as the worst case:
   only where the asker or a source wrote them.
 
 A tool set to "lookup" is a read the model may run while drafting, with the
-person's sign-in; its answer is fenced as untrusted data, like a passage.
+person's sign-in; its answer comes back to the model as a tool result, fenced
+as untrusted data, and an id in it may fill the next form.
 """
 
 from __future__ import annotations
@@ -130,6 +131,14 @@ def _describe(server: mcp_store.McpServer, tool: dict) -> str:
     admin read it before allowing the tool."""
     said = scrub_untrusted_text(tool.get("description") or "")[:300]
     return f"In {server.name}: {mcp_store.tool_title(tool, server.name)}. {said}".strip()
+
+
+def _coded(text: str, prop: dict, question: str) -> bool:
+    """A code the field's own description defines for words the asker wrote:
+    Linear's priority says "3=Medium", and "priority medium" is 3."""
+    m = re.search(rf"(?<![\w.]){re.escape(text)}\s*[=:]\s*([A-Za-z][\w ]*?)\s*(?=[,;)]|$)",
+                  str(prop.get("description") or ""))
+    return bool(m) and asked_in(m.group(1), question)
 
 
 class McpToolAction(Action):
@@ -252,7 +261,7 @@ class McpToolAction(Action):
             return clean_title(value) if _TITLE.search(key) else clean_body(value, ctx.question, uris)
         text = str(value)
         if (asked_in(text, ctx.question) or (ctx.lookups and text in ctx.lookups)
-                or (len(text) >= 3 and text in defined)):
+                or (len(text) >= 3 and text in defined) or _coded(text, prop, ctx.question)):
             return value
         raise _Ungrounded(f"{self.server.name}'s {key} must come from your request. Name it, then ask again.")
 
@@ -338,7 +347,9 @@ class McpLookup(Action):
                                        {k: v for k, v in args.items() if k in props}, write=False)
         except Exception as exc:  # noqa: BLE001 - a failed read is reported to the model
             return f"[{self.label} failed: {str(exc)[:200]}]"
-        return f"[{self.label}]\n{mcp_client.result_text(result)}"
+        # Larger than a write's answer: a list must still show the item the
+        # model is looking for (a team's issues ran past 4,000 characters).
+        return f"[{self.label}]\n{mcp_client.result_text(result, limit=12000)}"
 
     def prepare(self, args, ctx):  # pragma: no cover - a lookup is never drafted
         raise ActionRejected("That is a lookup, not an action.")

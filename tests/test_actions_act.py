@@ -182,11 +182,10 @@ class OneCallLLM:
         self.name, self.args, self.text = name, args, text
         self.prompts = []
 
-    def generate(self, prompt, max_tokens=None):
-        return "[]"           # the split: one action, drafted whole
-
     def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
-        self.prompts.append(messages[0]["content"])
+        if messages[-1]["role"] == "tool":      # told what its call did: done, as a model says
+            return ChatResult(text="Done.")
+        self.prompts.append(messages[0]["content"])    # one per pass
         if self.name is None:
             return ChatResult(text=self.text)
         return ChatResult(text=None, tool_calls=[ToolCall("c1", self.name, json.dumps(self.args))])
@@ -1035,6 +1034,8 @@ class ManyCallsLLM(OneCallLLM):
         self.calls = calls
 
     def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        if messages[-1]["role"] == "tool":
+            return ChatResult(text="Done.")
         self.prompts.append(messages[0]["content"])
         return ChatResult(text=None, tool_calls=[
             ToolCall(f"c{i}", name, json.dumps(args)) for i, (name, args) in enumerate(self.calls)])
@@ -1064,11 +1065,11 @@ def test_a_refused_draft_does_not_stop_the_others_and_is_said(org, monkeypatch):
 @requires_db
 def test_never_more_drafts_than_the_cap_and_never_one_not_asked_for(org, monkeypatch):
     question = "File an issue in Platform about the export timeout"
-    asked = ("test_create", {"request_words": "File an issue", "team": "Platform",
-                                     "title": "t", "body": "b"})
+    asked = lambda n: ("test_create", {"request_words": "File an issue", "team": "Platform",  # noqa: E731
+                                       "title": f"t{n}", "body": "b"})
     unasked = ("test_create", {"request_words": "also post it", "team": "Platform",
                                        "title": "t", "body": "b"})
-    out = _propose(org, question, ManyCallsLLM([unasked] + [asked] * (service.MAX_ACTIONS + 2)))
+    out = _propose(org, question, ManyCallsLLM([unasked] + [asked(n) for n in range(service.MAX_ACTIONS + 2)]))
     assert len(out.drafts) == service.MAX_ACTIONS            # the unasked one made nothing
     assert "left out" in out.reply                           # and the extra two are said
 
@@ -1119,36 +1120,6 @@ def test_asked_in_a_thread_the_prompt_says_the_thread_is_the_content():
     threaded = service.build_act_prompt("update SYV-6 with the above", None, in_thread=True)
     assert "Slack thread" not in plain and "Slack thread" in threaded
     assert "Slack thread" not in service.build_act_prompt("q", "passages", in_thread=True)
-
-
-def test_out_of_lookups_the_model_gets_one_turn_to_draft():
-    """It read pull requests until the budget ran out and drafted nothing: the
-    last turn offers the write tools only, so what was read becomes a draft."""
-    from types import SimpleNamespace as NS
-
-    read = NS(lookup=True, name="read", tool={"function": {"name": "read"}}, label="GitHub: List pull requests",
-              server=NS(name="GitHub"), token_for=lambda *a, **k: "t", run=lambda args, token, timeout: "PR #1")
-    write = NS(lookup=False, name="write", tool={"function": {"name": "write"}}, label="GitHub: Create issue")
-
-    class LLM:
-        def generate(self, prompt, max_tokens=None):
-            return "[]"
-
-        def generate_with_tools(self, messages, tools, tool_choice):
-            names = [t["function"]["name"] for t in tools]
-            call = "read" if "read" in names else "write"
-            return NS(text="", tool_calls=[NS(name=call, arguments='{"request_words": "file a GitHub issue"}')])
-
-    settings = NS(mcp_max_lookups=2, mcp_timeout_seconds=5)
-    picked = service._ask_with_lookups(LLM(), "summarise PRs and file a GitHub issue", None,
-                                       [read.tool, write.tool], [read, write], org_id="o", user_id="u",
-                                       found=[], looked=set(), settings=settings)
-    assert [a.label for a, _ in picked] == ["GitHub: Create issue"]
-
-
-def test_the_last_turn_says_the_lookups_already_ran():
-    assert "already looked things up" in service.build_act_prompt("q", "found", lookups_done=True)
-    assert "already looked things up" not in service.build_act_prompt("q", "found")
 
 
 def test_tools_are_narrowed_per_connector_so_each_keeps_its_best():

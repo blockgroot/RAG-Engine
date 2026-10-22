@@ -37,7 +37,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 
 from ..actions import policy, service, store
 from ..actions.factory import get_action
-from ..actions.draft import asked_in
+from ..actions.draft import asked_for, asked_in
 from ..actions.exposure import NEEDS_ACK
 from ..actions.store import ActionRow
 from ..auth.credentials import get_live_connection_token
@@ -126,7 +126,7 @@ def asks_to_act(text: str, *, llm=None) -> bool:
         return False
     return (isinstance(data, dict) and data.get("act") is True
             and isinstance(data.get("request_words"), str)
-            and asked_in(data["request_words"], text))
+            and asked_for(data["request_words"], text))
 
 
 def slack_request(text: str, *, org_id: str, is_dm: bool, llm=None) -> str | None:
