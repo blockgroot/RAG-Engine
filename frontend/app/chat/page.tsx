@@ -156,7 +156,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // In a space, Act also needs that space's own switch (its owner's choice,
   // within what the company allows). Company-wide, the company switch alone.
   const [spaceActOn, setSpaceActOn] = useState(true);
-  const [modelError, setModelError] = useState<string | null>(null);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -674,7 +673,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   /** Act mode: one draft for the person to check, edit and approve. */
   async function draftAction(question: string) {
     setInput("");
-    setModelError(null);
     setBusy(true);
     setMessages((prev) => [
       ...prev,
@@ -701,13 +699,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         acts: out.actions?.length ? out.actions : out.action ? [out.action] : null,
       };
     } catch (err) {
+      // Said where the answer would be, like any reply (a pop-up hid it from the chat).
       const message = err instanceof Error ? err.message : "Something went wrong. Nothing was sent.";
-      if ((err as { status?: number }).status === 503) {
-        setModelError(message);
-        setMessages((prev) => prev.slice(0, -1));
-        setBusy(false);
-        return;
-      }
       reply = {
         role: "assistant",
         text: message,
@@ -983,18 +976,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
-        {modelError && (
-          <aside className="act-model-toast" role="alert" aria-live="assertive">
-            <div className="act-model-toast-mark" aria-hidden="true">!</div>
-            <div className="act-model-toast-copy">
-              <strong>The model is busy</strong>
-              <span>{modelError}</span>
-            </div>
-            <button type="button" className="button button-sm" onClick={() => setModelError(null)}>
-              Okay
-            </button>
-          </aside>
-        )}
         {dragging && (
           <div className="chat-drop-overlay" aria-hidden="true">
             <div className="chat-drop-card">

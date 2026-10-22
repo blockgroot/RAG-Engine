@@ -292,11 +292,22 @@ _MODEL_UNPAID = ("The model's API key is out of credit or over its quota. Nothin
                  "An admin can add credit, or choose another model in Admin › Model.")
 
 
+_MODEL_TOO_LARGE = ("This request is too large for the chosen model's plan. Nothing was sent. "
+                    "Pick another model in the model menu, or ask an admin to turn off tools nobody uses.")
+_MODEL_KEY = ("The model's API key was refused. Nothing was sent. "
+              "An admin can check the key, or choose another model in Admin › Model.")
+
+
 def _model_down(exc: LLMProviderError) -> str:
-    """Out of credit or quota is not "try again in a minute": say so, so an
-    admin tops it up instead of everyone retrying (the provider's own words
-    are the only signal; a 429 is the quota by our rules)."""
+    """Say why, so the right person acts instead of everyone retrying: a
+    request too large for the plan (Groq's 413: a model choice, not a wait),
+    a refused key, or no credit. The provider's status code and words are
+    the only signal; a 429 is the quota by our rules."""
     said = str(exc).lower()
+    if "error code: 413" in said or "request too large" in said or "maximum number of items" in said:
+        return _MODEL_TOO_LARGE
+    if "error code: 401" in said or "error code: 403" in said:
+        return _MODEL_KEY
     if isinstance(exc, LLMRateLimitError) or "credit balance" in said or "quota" in said:
         return _MODEL_UNPAID
     return _MODEL_DOWN

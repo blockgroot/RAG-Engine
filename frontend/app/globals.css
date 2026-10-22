@@ -8554,23 +8554,6 @@ a.people-card:hover { color: inherit; }
 .chat-drop-card span { font-size: 0.88rem; color: var(--ink-muted); }
 
 /* A recoverable model outage should inform, not block, the whole workspace. */
-.act-model-toast {
-  position: fixed;
-  z-index: 100;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  width: min(calc(100% - 2rem), 36rem);
-  padding: 0.85rem 0.9rem;
-  border: 1px solid #fedf89;
-  border-radius: 14px;
-  background: var(--surface-elevated);
-  box-shadow: 0 14px 36px -20px rgba(16, 24, 40, 0.32);
-  animation: act-toast-in 0.2s var(--ease) both;
-}
 @keyframes act-toast-in {
   from {
     opacity: 0;
@@ -8581,29 +8564,9 @@ a.people-card:hover { color: inherit; }
     transform: translate(-50%, -50%) scale(1);
   }
 }
-.act-model-toast-mark {
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  flex: none;
-  border-radius: 9px;
-  background: #fff7e8;
-  color: #b54708;
-  font-weight: 750;
-}
-.act-model-toast-copy {
-  display: grid;
-  gap: 0.12rem;
-  min-width: 0;
-  flex: 1;
-}
-.act-model-toast-copy strong { font-size: 0.92rem; }
-.act-model-toast-copy span {
-  color: var(--ink-muted);
-  font-size: 0.82rem;
-  line-height: 1.4;
-}
+
+
+
 
 /* What each bar or point is, in one sentence -- above the caveats, in body
    text, because it is how the chart is read, not a footnote. */

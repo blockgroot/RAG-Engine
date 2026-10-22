@@ -71,6 +71,9 @@ def test_a_slack_post_goes_as_the_person_to_the_channel_they_named(client, monke
     assert r["structuredContent"]["url"].startswith("https://acme.slack.com/")
     post = next(c for c in fake.calls if c[0] == "chat.postMessage")
     assert post[1] == "Bearer xoxp-person" and post[2]["channel"] == "C0GENERAL1"
+    blocks = json.loads(post[2]["blocks"])       # the words as approved, then "Sent with Handbook"
+    assert post[2]["text"] == "Ships Friday" and blocks[0]["text"]["text"] == "Ships Friday"
+    assert blocks[-1] == {"type": "context", "elements": [{"type": "mrkdwn", "text": "Sent with Handbook"}]}
     _rpc(client, "slack", "tools/call", {"name": "send_message", "arguments": {"channel": "#hb-testing", "text": "x"}},
          token="xoxp-person")       # a channel they are in is found first, without the full walk
     assert [c[2]["channel"] for c in fake.calls if c[0] == "chat.postMessage"][-1] == "C0HBTEST01"

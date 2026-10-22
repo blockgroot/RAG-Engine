@@ -9,6 +9,8 @@ bounded and a cut list says so.
 
 from __future__ import annotations
 
+import json
+
 import re
 
 import httpx
@@ -136,17 +138,33 @@ def read_thread(token: str, args: dict) -> ToolResult:
     return ToolResult(bounded(f"Thread in {shown}:\n" + "\n".join(lines)))
 
 
+#: Under every message Agent mode sends: the words stay exactly as approved,
+#: and whoever reads them sees a tool sent them on the person's behalf.
+SENT_WITH = "Sent with Handbook"
+
+
+def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> dict:
+    """The approved words as they are (``text`` is also the notification), then
+    a small grey context line. A section holds 3,000 characters, so a long
+    message is several sections."""
+    text = bounded(text, 12_000)
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text[i:i + 3000]}}
+              for i in range(0, len(text), 3000)]
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": SENT_WITH}]})
+    return _call(token, "chat.postMessage", channel=channel, text=text, blocks=json.dumps(blocks),
+                 thread_ts=thread_ts or None)
+
+
 def send_message(token: str, args: dict) -> ToolResult:
     channel, shown = _channel_id(token, str(args["channel"]))
-    posted = _call(token, "chat.postMessage", channel=channel, text=bounded(str(args["text"]), 12_000),
-                   thread_ts=args.get("thread_ts") or None)
+    posted = _post(token, channel, str(args["text"]), args.get("thread_ts"))
     return ToolResult(f"Posted in {shown}.", posted.get("ts"), _permalink(token, channel, posted.get("ts")))
 
 
 def send_dm(token: str, args: dict) -> ToolResult:
     person = _person(token, str(args["person"]))
     channel = _call(token, "conversations.open", users=person["id"])["channel"]["id"]
-    posted = _call(token, "chat.postMessage", channel=channel, text=bounded(str(args["text"]), 12_000))
+    posted = _post(token, channel, str(args["text"]))
     return ToolResult(f"Sent to {person.get('real_name') or person.get('name')}.", posted.get("ts"),
                       _permalink(token, channel, posted.get("ts")))
 

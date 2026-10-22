@@ -255,6 +255,8 @@ class McpToolAction(Action):
         structured = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
         candidates = [str(structured.get("url") or ""), *_URL.findall(text)]
         link = next((page for page in map(_page_link, candidates) if page), None)
+        if link is None and self.server.preset and self.server.preset.key == "github":
+            link = _github_page(arguments)        # a merge answers with no link at all
         return ActionResult(str(structured.get("id") or structured.get("identifier") or key), link)
 
 
@@ -274,6 +276,16 @@ def _page_link(url: str) -> str | None:
         return (f"https://github.com/{owner}/{repo}/tree/{branch}" if branch else
                 f"https://github.com/{owner}/{repo}/{'pull' if kind == 'pulls' else 'issues'}/{number}")
     return None if url.split("/")[2].startswith("api.") else url
+
+
+def _github_page(args: dict[str, Any]) -> str | None:
+    """The pull request or issue a GitHub write acted on, from what it was sent."""
+    owner, repo = args.get("owner"), args.get("repo")
+    number = next((args[k] for k in ("pullNumber", "pull_number", "issue_number", "issueNumber") if args.get(k)), None)
+    if not (owner and repo and number):
+        return None
+    kind = "issues" if "issue_number" in args or "issueNumber" in args else "pull"
+    return f"https://github.com/{owner}/{repo}/{kind}/{number}"
 
 
 def _short(value: Any) -> str:

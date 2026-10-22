@@ -182,6 +182,9 @@ class OneCallLLM:
         self.name, self.args, self.text = name, args, text
         self.prompts = []
 
+    def generate(self, prompt, max_tokens=None):
+        return "[]"           # the split: one action, drafted whole
+
     def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
         self.prompts.append(messages[0]["content"])
         if self.name is None:
@@ -647,9 +650,8 @@ def test_a_request_in_its_own_words_reads_no_documents(org, monkeypatch):
     llm = OneCallLLM("test_create", {"request_words": "file an issue", "team": "Platform",
                                              "title": "Staging test", "body": "Purpose: verify Act."})
     out = _propose_with(org, "file an issue in Platform: staging test, verify Act", llm, vstore)
-    # The draft, then "anything else?" (the same call again is no new draft).
-    assert vstore.searched == 0 and len(llm.prompts) == 2 and "Already drafted" in llm.prompts[1]
-    assert not any("UX parity" in p for p in llm.prompts)
+    assert vstore.searched == 0 and len(llm.prompts) == 1
+    assert "UX parity" not in llm.prompts[0]
     assert out.action.exposure == "none" and out.action.sources == []
 
 
@@ -1129,6 +1131,9 @@ def test_out_of_lookups_the_model_gets_one_turn_to_draft():
     write = NS(lookup=False, name="write", tool={"function": {"name": "write"}}, label="GitHub: Create issue")
 
     class LLM:
+        def generate(self, prompt, max_tokens=None):
+            return "[]"
+
         def generate_with_tools(self, messages, tools, tool_choice):
             names = [t["function"]["name"] for t in tools]
             call = "read" if "read" in names else "write"
@@ -1170,3 +1175,16 @@ def test_tools_are_narrowed_per_connector_so_each_keeps_its_best():
     assert len(kept) == 4 and "linear99" in labels and "slack99" in labels
     assert sum(lbl.startswith("linear") for lbl in labels) == 2
     assert service._fit_tools(offered[:3], "x", None, 4) == offered[:3]
+
+
+def test_a_model_failure_says_why():
+    """Everything read "temporarily unavailable": Groq's 413 (too large for the
+    plan) and a refused Ollama key sent people to retry instead of acting."""
+    from app.api.actions import _model_down
+    from app.core.exceptions import LLMProviderError
+
+    said = lambda text: _model_down(LLMProviderError(text))  # noqa: E731
+    assert "too large" in said("LLM API error: Error code: 413 - Request too large for model on tokens per minute")
+    assert "refused" in said("LLM API error: Error code: 401 - {'error': {'message': 'Unauthorized'}}")
+    assert "credit" in said("Your credit balance is too low")
+    assert "temporarily" in said("LLM API error: Error code: 503 - overloaded")

@@ -248,6 +248,9 @@ def test_a_lookup_runs_with_the_persons_sign_in_and_its_answer_reaches_the_model
                                                              "project_id": "P-7", "title": "t"})]])
 
     class Model:
+        def generate(self, prompt, max_tokens=None):
+            return "[]"
+
         def generate_with_tools(self, messages, tools, tool_choice):
             prompts.append(messages[0]["content"])
             return SimpleNamespace(text="", tool_calls=[
@@ -524,7 +527,8 @@ def test_a_refused_form_goes_back_to_the_model_once(monkeypatch):
     replies = iter([[(action, {"pages": [{"title": "Notes"}]})], [(action, {"pages": [{"properties": {"title": "Notes"}}]})]])
     shown = []
     monkeypatch.setattr(service, "_ask", lambda llm, q, passages, *a, **k: shown.append(passages) or next(replies, service.ActOutcome("nothing else")))
-    picked = service._ask_with_lookups(None, "make a page", None, [], [action], org_id="o", user_id="u",
+    one = SimpleNamespace(generate=lambda prompt, max_tokens=None: "[]")
+    picked = service._ask_with_lookups(one, "make a page", None, [], [action], org_id="o", user_id="u",
                                        found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
     assert picked[0][1] == {"pages": [{"properties": {"title": "Notes"}}]}
     assert shown[0] is None and "has no field title" in shown[1]
@@ -540,20 +544,36 @@ def test_a_cards_link_is_a_page_never_an_api_address():
 
 
 
-def test_a_model_that_fills_in_one_form_per_turn_is_asked_again(monkeypatch):
+def test_a_request_for_several_actions_is_split_and_each_part_drafted_once(monkeypatch):
     """GPT-OSS drafted only the Linear issue of "a Linear issue and a post in
-    #hb-testing". Agent mode asks again with what is drafted until nothing new."""
+    #hb-testing", and asking "anything else?" drafted the same DM twice. The
+    request is split into its own words first; each part gets one card."""
     from app.actions import service
 
     linear = mcp.McpToolAction(_server(), {**CREATE, "name": "save_issue"})
     slack = mcp.McpToolAction(_server(), {**CREATE, "name": "send_message"})
+    question = "Create a Linear issue titled t and post hi in #hb-testing"
     filled = {"project_id": "P-7", "title": "t"}
-    turns = iter([[(linear, {"request_words": "Create a Linear issue", **filled})],
-                  [(slack, {"request_words": "post in #hb-testing", **filled})],
-                  service.ActOutcome("nothing else")])
-    prompts = []
-    monkeypatch.setattr(service, "_ask", lambda llm, q, shown, *a, drafted=None, **k: prompts.append(drafted) or next(turns))
-    picked = service._ask_with_lookups(None, "q", None, [], [linear, slack], org_id="o", user_id="u",
+
+    class Model:
+        def generate(self, prompt, max_tokens=None):
+            return '["Create a Linear issue titled t", "post hi in #hb-testing", "and an invented one"]'
+
+    focuses = []
+
+    def ask(llm, q, shown, tools, offered, in_thread=False, lookups_done=False, focus=None):
+        focuses.append(focus)
+        action = linear if "Linear" in focus else slack       # each pass also re-drafts Linear
+        return [(action, {"request_words": focus, **filled}), (linear, {"request_words": "Create a Linear issue", **filled})]
+
+    monkeypatch.setattr(service, "_ask", ask)
+    picked = service._ask_with_lookups(Model(), question, None, [], [linear, slack], org_id="o", user_id="u",
                                        found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
-    assert [a for a, _ in picked] == [linear, slack]
-    assert prompts[0] is None and "Create a Linear issue" in prompts[1][0] and len(prompts[2]) == 2
+    assert [a for a, _ in picked] == [linear, slack]                  # one card per part, no duplicate
+    assert focuses == ["Create a Linear issue titled t", "post hi in #hb-testing"]   # the invented part is dropped
+
+
+def test_a_merge_with_no_link_links_to_the_pull_request():
+    assert mcp._github_page({"owner": "o", "repo": "r", "pullNumber": 25}) == "https://github.com/o/r/pull/25"
+    assert mcp._github_page({"owner": "o", "repo": "r", "issue_number": 7}) == "https://github.com/o/r/issues/7"
+    assert mcp._github_page({"owner": "o"}) is None
