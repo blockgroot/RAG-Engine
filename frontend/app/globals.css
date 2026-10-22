@@ -9526,4 +9526,15 @@ a.people-card:hover { color: inherit; }
 .mcp-mode { width: auto; max-width: 15rem; flex: 0 0 auto; }
 .mcp-empty { margin: 0.5rem 0 0; }
 .mcp-servers { display: grid; gap: 0.5rem; }
+.mcp-presets { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); }
+.mcp-preset { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  padding: 0.7rem 0.85rem; border: 1px solid var(--border, #e5e7eb); border-radius: 12px; }
+.mcp-preset > span { display: grid; gap: 0.15rem; min-width: 0; }
+.mcp-preset small { color: var(--muted, #6b7280); font-size: 0.8rem; }
+.mcp-other summary { cursor: pointer; color: var(--muted, #6b7280); }
+.mcp-other .mcp-add { margin-top: 0.6rem; }
+.mcp-view { justify-self: start; margin-top: 0.4rem; }
+.mcp-tools { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+.mcp-tool[data-blocked="true"] { opacity: 0.6; }
 

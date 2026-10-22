@@ -294,8 +294,10 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
-**Act mode for write actions** — plan only (`docs/plans/2026-10-13-write-actions.md`),
-nothing built yet.
+**Agent mode (write actions)** — every write goes through the tool's own MCP server
+(Linear, Notion, GitHub, Slack, Google presets or any server's address), each approved on a card
+with the person's own sign-in (`docs/plans/2026-10-22-mcp-only-actions.md`). Slack and Google
+depend on the vendor (Slack app approval, Google's Developer Preview).
 
 Charts are complete on `main`: PR #45 (open-ended charts) and PR #50–#52 (chart fixes, paragraph
 figures, Slack charts) are merged and were walked through on production data on 13 Oct 2026
@@ -388,4 +390,4 @@ one live test to see whose name Notion records.
 - **Partially supported:** Notion access is per space, not per page; GitHub charts are space-level.
 - **Blocked or waiting on an external party:** Notion per-page access (API), Google Groups (admin),
   Linear private teams (Business plan), answer fact-checker (paid host).
-- **Being worked on:** Act mode for write actions (plan only).
+- **Being worked on:** Agent mode through MCP only (local, not yet shipped).

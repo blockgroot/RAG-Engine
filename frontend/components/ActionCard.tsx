@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, api, type ActCard } from "@/lib/api";
-import { pickFolder } from "@/lib/googlePicker";
 import { DraftText } from "./AnswerText";
 
 /**
@@ -22,20 +21,6 @@ import { DraftText } from "./AnswerText";
  * the instruction survive. Where it goes is never editable: cancel and ask
  * again for that.
  */
-
-const PROVIDER_LABEL: Record<string, string> = {
-  linear: "Linear",
-  github: "GitHub",
-  notion: "Notion",
-  google: "Google Drive",
-  slack: "Slack",
-};
-
-const APP_LABEL: Record<string, string> = {
-  "drive.create_doc": "Google Docs",
-  "drive.create_sheet": "Google Sheets",
-  "drive.append_rows": "Google Sheets",
-};
 
 const STATUS_LINE: Record<ActCard["status"], string> = {
   proposed: "Waiting for your approval",
@@ -83,19 +68,11 @@ export function ActionCard({
   const secondsLeft = remaining(card.expires_at, now);
   const expired = pending && secondsLeft === 0;
   const needsAck = card.exposure === "wider" || card.exposure === "unknown";
-  // An MCP tool's label names its server ("Asana: Create task").
-  const provider = PROVIDER_LABEL[card.provider ?? ""] ?? (card.label.split(":")[0] || "the tool");
-  // A Doc or Sheet is stored in Drive but opens in its own app.
-  const openIn = APP_LABEL[card.action] ?? provider;
+  // Every tool is an MCP server's; its label names the server ("Linear: save_issue").
+  const provider = card.label.split(":")[0] || "the tool";
+  const openIn = provider;
   const draft = card.draft ?? card.payload;
-  const bodyLabel =
-    card.action === "drive.create_sheet" || card.action === "drive.append_rows"
-      ? "Table"
-      : draft.title !== undefined
-        ? "Description"
-        : card.provider === "slack"
-          ? "Message"
-          : "Comment";
+  const bodyLabel = draft.title !== undefined ? "Description" : "Text";
 
   async function approve() {
     setBusy(true);
@@ -145,23 +122,6 @@ export function ActionCard({
       onChange(action);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not rework it. Your draft is unchanged.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function chooseFolder() {
-    setBusy(true);
-    setError(null);
-    try {
-      const folderId = await pickFolder(await api.googlePicker());
-      if (folderId) {
-        const { action } = await api.chooseActionFolder(card.id, card.payload_hash, folderId);
-        setAck(false);
-        onChange(action);
-      }
-    } catch (err) {
-      setError(err instanceof ApiError || err instanceof Error ? err.message : "Could not choose the folder.");
     } finally {
       setBusy(false);
     }
@@ -257,14 +217,6 @@ export function ActionCard({
         )}
       </dl>
       {card.edited && !editing && <p className="muted act-card-edited">Edited by you</p>}
-      {card.provider === "notion" && pending && (
-        // Notion can't be asked in advance what someone may do on a page, so
-        // the card says what the write needs; Notion refuses it otherwise.
-        <p className="muted act-card-note">
-          Notion doesn&rsquo;t let apps check your access first. This works only if you can{" "}
-          {card.action === "notion.comment" ? "comment on" : "edit"} this page in Notion.
-        </p>
-      )}
 
       {needsAck && pending && (
         <div className="act-card-exposure" role="alert">
@@ -362,11 +314,6 @@ export function ActionCard({
                 Ask for changes
               </button>
             </>
-          )}
-          {card.folder_choice && (
-            <button type="button" className="button button-secondary" onClick={chooseFolder} disabled={busy}>
-              Choose folder
-            </button>
           )}
           <button type="button" className="button button-secondary" onClick={cancel} disabled={busy}>
             Cancel

@@ -52,18 +52,35 @@ class McpServer:
         """The ``user_connections.provider`` of a person's sign-in here."""
         return f"mcp:{self.id}"
 
+    @property
+    def preset(self):
+        """The connector preset this server was added from, if any."""
+        from .mcp_presets import preset_for
+
+        return preset_for(self.url)
+
     def tool(self, name: str) -> dict | None:
         return next((t for t in self.tools if t.get("name") == name), None)
 
+    def permitted(self, tool: dict) -> bool:
+        """May an admin turn this tool on at all? A preset's list of allowed
+        tools decides for the connectors; destructive tools never."""
+        preset = self.preset
+        return not blocked(tool) and (preset is None or preset.allows(tool.get("name") or ""))
+
+    def is_read(self, tool: dict) -> bool:
+        preset = self.preset
+        return read_only(tool) or bool(preset and preset.is_read(tool.get("name") or ""))
+
     def mode(self, name: str) -> str:
         """What a tool may do now: its admin-chosen mode, if the tool is still
-        exactly what the admin chose it for and is not blocked; else off."""
+        exactly what the admin chose it for and is permitted; else off."""
         tool = self.tool(name)
         chosen = self.tool_modes.get(name) or {}
-        if tool is None or blocked(tool) or chosen.get("hash") != tool_hash(tool):
+        if tool is None or not self.permitted(tool) or chosen.get("hash") != tool_hash(tool):
             return "off"
         mode = chosen.get("mode")
-        if mode == "lookup" and not read_only(tool):
+        if mode == "lookup" and not self.is_read(tool):
             return "off"
         return mode if mode in MODES else "off"
 
@@ -156,4 +173,5 @@ def tool_view(server: McpServer, tool: dict[str, Any]) -> dict:
     """What the admin page shows for one tool."""
     return {"name": tool.get("name"), "title": tool.get("title") or tool.get("name"),
             "description": (tool.get("description") or "")[:400],
-            "read_only": read_only(tool), "blocked": blocked(tool), "mode": server.mode(tool["name"])}
+            "read_only": server.is_read(tool), "blocked": not server.permitted(tool),
+            "mode": server.mode(tool["name"])}

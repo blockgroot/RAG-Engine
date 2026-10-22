@@ -4,11 +4,8 @@ A separate surface from Ask and Chart: its own page, its own routes, its own
 package. ``org_id`` and the person come from the session here, as everywhere;
 an action id from the URL is only ever looked up together with both.
 
-Connecting for actions is a PERSON's flow, not an admin's: the state row is
-bound to whoever clicked (``user_id``), under its own provider value
-(``linear_act``/``github_act``), so it can never complete a source connect
-and a forwarded callback can only attach an account to the person who
-started it.
+Which tools exist and each person's sign-in to them are MCP's
+(``api/mcp_actions.py``); these routes draft, edit, approve and switch.
 """
 
 from __future__ import annotations
@@ -20,37 +17,15 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from ..actions import ACTIONS, policy
+from ..actions import policy
 from ..actions.factory import get_action
 from ..actions import service, store
 from ..actions.exposure import Exposure
-from ..actions.drive import DRIVE_FILE
-from ..actions.linear import scopes_for as linear_scopes, viewer as linear_viewer
 from ..actions.store import ActionRow
-from ..auth.factory import build_oauth_provider
-from ..auth.github_oauth import GitHubAppProvider
-from ..auth.google_oauth import GoogleOAuthProvider
-from ..auth.linear_oauth import LinearOAuthProvider
-from ..auth.notion_oauth import NotionOAuthProvider
-from ..auth.slack_oauth import SlackOAuthProvider
-from ..auth.oauth_state import consume_link_state, create_state
-from ..auth.user_connections import (
-    UserTokens,
-    delete_user_connection,
-    list_user_connections,
-    save_user_connection,
-)
 from ..auth.users import get_user
-from ..config.settings import (
-    ActionsSettings,
-    ApiSettings,
-    GoogleSettings,
-    NotionSettings,
-    SlackSettings,
-)
+from ..config.settings import ActionsSettings
 from ..core.exceptions import (
     ActionConflict,
     ActionError,
@@ -59,10 +34,8 @@ from ..core.exceptions import (
     ConfigurationError,
     LLMProviderError,
     NotFoundError,
-    OAuthError,
     OAuthReauthRequiredError,
 )
-from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from .deps import (
@@ -77,16 +50,6 @@ from .deps import (
 logger = logging.getLogger("actions")
 
 router = APIRouter(tags=["act"])
-
-#: Providers a person can connect for actions, and the state value of each.
-ACT_PROVIDERS = {
-    "linear": "linear_act", "github": "github_act",
-    "notion": "notion_act", "google": "google_act", "slack": "slack_act",
-}
-ACT_STATES = {v: k for k, v in ACT_PROVIDERS.items()}
-#: Where a person lands after connecting an account for Act: its section on
-#: the Account page.
-_PAGE = "/account"
 
 
 @lru_cache(maxsize=1)
@@ -246,8 +209,6 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
         "action": row.action,
         "label": cls.label if cls else row.action,
         "attribution": cls.attribution_for(row.payload) if cls else None,
-        "folder_choice": bool(cls and cls.name in ("drive.create_doc", "drive.create_sheet")
-                              and ActionsSettings.from_env().folder_picker),
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
@@ -273,29 +234,16 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
 
 @router.get("/act/status")
 def act_status(session: SessionClaims = Depends(get_session)):
-    """What this person can do: switched-on actions and their own connections."""
+    """What this person can do: the MCP tools they may draft with now, and their
+    recent drafts. Signing in to each server is ``GET /act/mcp``."""
     if not policy.act_on(session.org_id):
-        return {"enabled": False, "actions": [], "connections": [], "providers": []}
-    enabled = policy.enabled_actions(session.org_id, None)
-    connections = {c.provider: c for c in list_user_connections(session.org_id, session.user_id)}
-    providers = []
-    for provider in ACT_PROVIDERS:
-        conn = connections.get(provider)
-        providers.append({
-            "provider": provider,
-            "needed": any(a.provider == provider for n, a in ACTIONS.items() if n in enabled),
-            "connected": conn is not None and not conn.needs_reauth,
-            "needs_reauth": bool(conn and conn.needs_reauth),
-            "account": conn.external_user_name or conn.external_user_id if conn else None,
-            "available": _available(provider),
-        })
+        return {"enabled": False, "actions": [], "recent": []}
+    from ..actions.mcp import mcp_actions
+
     return {
         "enabled": True,
-        "actions": [
-            {"name": n, "label": a.label, "provider": a.provider}
-            for n, a in ACTIONS.items() if n in enabled
-        ],
-        "providers": providers,
+        "actions": [{"name": a.name, "label": a.label, "provider": a.provider}
+                    for a in mcp_actions(session.org_id, session.user_id) if not a.lookup],
         "recent": [_card(r) for r in store.list_for_org(
             session.org_id, user_id=session.user_id, limit=20)],
     }
@@ -394,50 +342,6 @@ class EditRequest(BaseModel):
     fields: dict[str, Annotated[str, Field(max_length=20000)]] = Field(max_length=2)
 
 
-class FolderRequest(BaseModel):
-    payload_hash: str = Field(min_length=64, max_length=64)
-    folder_id: str = Field(min_length=10, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-
-
-@router.get("/act/google/picker")
-def google_picker(session: SessionClaims = Depends(get_session)):
-    """What Google's folder picker needs in the browser: the picker key, the
-    project number, and the person's OWN drive.file token (theirs to use, and
-    it reaches only files Handbook made or they picked). 404 when not set up."""
-    settings = _require_on(session.org_id)
-    if not settings.folder_picker:
-        raise HTTPException(status_code=404, detail="Folder choice isn't set up.")
-    from ..auth.user_connections import fresh_user_token
-
-    try:
-        token = fresh_user_token(session.org_id, session.user_id, "google")
-    except (ConfigurationError, OAuthReauthRequiredError) as exc:
-        raise HTTPException(status_code=409, detail="Connect your Google account under Account → Agent first.") from exc
-    return {"api_key": settings.google_picker_api_key, "app_id": settings.google_picker_app_id,
-            "token": token}
-
-
-@router.post("/act/actions/{action_id}/folder")
-def choose_folder(action_id: str, body: FolderRequest, session: SessionClaims = Depends(get_session)):
-    """Put a pending Doc or Sheet into the folder the person picked in Google's window."""
-    _require_on(session.org_id)
-    try:
-        row = service.choose_folder(org_id=session.org_id, user_id=session.user_id,
-                                    action_id=_action_id(action_id), shown_hash=body.payload_hash,
-                                    folder_id=body.folder_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail="No such action.") from exc
-    except ActionExpired as exc:
-        raise HTTPException(status_code=410, detail=str(exc)) from exc
-    except ActionConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except OAuthReauthRequiredError as exc:
-        raise HTTPException(status_code=409, detail="Reconnect your Google account under Account → Agent.") from exc
-    except ActionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"action": _card(row)}
-
-
 @router.patch("/act/actions/{action_id}")
 def edit(action_id: str, body: EditRequest, session: SessionClaims = Depends(get_session)):
     """Save the person's edit of a pending draft; returns the new card and hash."""
@@ -506,207 +410,6 @@ def reject(action_id: str, session: SessionClaims = Depends(get_session)):
 # -- Connecting your own account ----------------------------------------------
 
 
-def _act_oauth(provider: str, settings: ActionsSettings | None = None):
-    """The OAuth client a PERSON connects through for actions.
-
-    Notion: the separate "Handbook Actions" connection, never the read one.
-    Google: the same client, asking for ``drive.file`` alone. Linear,
-    GitHub and Slack: their usual clients (Linear's write scopes and Slack's
-    user scopes go in the URL).
-    """
-    from dataclasses import replace
-
-    settings = settings or ActionsSettings.from_env()
-    if provider == "notion":
-        if not (settings.notion_client_id and settings.notion_client_secret
-                and settings.notion_redirect_uri):
-            raise ConfigurationError("Notion actions are not set up (NOTION_ACT_CLIENT_ID).")
-        return NotionOAuthProvider(replace(
-            NotionSettings.from_env(), client_id=settings.notion_client_id,
-            client_secret=settings.notion_client_secret,
-            redirect_uri=settings.notion_redirect_uri,
-        ))
-    if provider == "google":
-        return GoogleOAuthProvider(replace(GoogleSettings.from_env(), scopes=DRIVE_FILE))
-    return build_oauth_provider(provider)
-
-
-def _available(provider: str) -> bool:
-    try:
-        _act_oauth(provider)
-    except (OAuthError, ConfigurationError):
-        return False
-    return True
-
-
-@router.get("/act/connect/{provider}")
-def connect(provider: str, session: SessionClaims = Depends(get_session)):
-    _require_on(session.org_id)
-    if provider not in ACT_PROVIDERS:
-        raise HTTPException(status_code=404, detail="Unknown provider")
-    try:
-        oauth = _act_oauth(provider)
-    except (OAuthError, ConfigurationError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    state = create_state(session.org_id, ACT_PROVIDERS[provider], user_id=session.user_id)
-    if isinstance(oauth, LinearOAuthProvider):
-        return RedirectResponse(url=oauth.authorize_url(state, scopes=linear_scopes(session.org_id)))
-    if isinstance(oauth, GoogleOAuthProvider):
-        return RedirectResponse(url=oauth.authorize_url(state, include_granted=False))
-    if isinstance(oauth, SlackOAuthProvider):
-        return RedirectResponse(url=oauth.authorize_user_url(state))
-    return RedirectResponse(url=oauth.authorize_url(state))
-
-
-@router.delete("/act/connections/{provider}")
-def disconnect(provider: str, session: SessionClaims = Depends(get_session)):
-    if provider not in ACT_PROVIDERS:
-        raise HTTPException(status_code=404, detail="Unknown provider")
-    return {"deleted": delete_user_connection(session.org_id, session.user_id, provider)}
-
-
-def _company_workspaces(org_id: str, provider: str) -> set[str]:
-    """The tool workspaces the company connected, company-wide or in a space."""
-    from ..auth.credentials import connected_anywhere
-
-    return {ext for ext, _config in connected_anywhere(org_id, provider) if ext}
-
-
-def _notion_owner(token: str) -> tuple[str, str | None]:
-    """The person behind a Notion token: ``/users/me`` is the connection's bot,
-    and the bot's owner is whoever authorized it."""
-    import httpx
-
-    from ..actions.notion import API, VERSION
-
-    try:
-        response = httpx.get(f"{API}/users/me", timeout=15.0, headers={
-            "Authorization": f"Bearer {token}", "Notion-Version": VERSION})
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise OAuthError("Notion did not say who this account is", cause=exc) from exc
-    owner = ((response.json() or {}).get("bot") or {}).get("owner") or {}
-    user = owner.get("user") or {}
-    if not user.get("id"):
-        raise OAuthError("Notion did not say who authorized this connection")
-    email = (user.get("person") or {}).get("email")
-    return user["id"], user.get("name") or email
-
-
-def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> RedirectResponse:
-    """Complete "Connect your account for actions" from the provider's callback.
-
-    The org and the PERSON come from the consumed state. The account must be
-    the COMPANY's: a Linear, Notion or Slack workspace the company connected
-    for reading (company-wide or in any space), and on Google and Slack the
-    person's own work address. Anything else would
-    let company content be written somewhere the company does not control.
-    The code is exchanged with the Act client (``_act_oauth``), never the
-    read connection's.
-    """
-    base = (settings.frontend_url or "").rstrip("/")
-    provider = ACT_STATES.get(_peek_provider(state) or "", "")
-
-    def back(query: str) -> RedirectResponse:
-        return RedirectResponse(url=f"{base}{_PAGE}?{query}#act")
-
-    try:
-        org_id, user_id = consume_link_state(state, provider=ACT_PROVIDERS.get(provider, "?"))
-        if not code:
-            raise OAuthError("no authorization code")
-        oauth = _act_oauth(provider)
-        if provider == "linear" and isinstance(oauth, LinearOAuthProvider):
-            tokens = oauth.exchange_code(code)
-            who = linear_viewer(tokens.access_token)
-            # Only the company's own Linear: company content written into a
-            # personal workspace would be content leaving the company.
-            if tokens.external_workspace_id not in _company_workspaces(org_id, "linear"):
-                return back("connect_error=linear&reason=workspace")
-            user_tokens = UserTokens(
-                access_token=tokens.access_token, refresh_token=tokens.refresh_token,
-                expires_at=tokens.expires_at,
-                external_user_id=str(who["viewer"].get("id") or ""),
-                external_user_name=who["viewer"].get("name") or who["viewer"].get("email"),
-                scopes=tuple(linear_scopes(org_id).split(",")),
-            )
-        elif provider == "notion" and isinstance(oauth, NotionOAuthProvider):
-            tokens = oauth.exchange_code(code)
-            if tokens.external_workspace_id not in _company_workspaces(org_id, "notion"):
-                return back("connect_error=notion&reason=workspace")
-            person_id, person_name = _notion_owner(tokens.access_token)
-            user_tokens = UserTokens(
-                access_token=tokens.access_token, external_user_id=person_id,
-                external_user_name=person_name,
-                scopes=("insert_content", "insert_comments", "read_comments"),
-            )
-        elif provider == "google" and isinstance(oauth, GoogleOAuthProvider):
-            tokens = oauth.exchange_code(code)
-            if not _is_own_address(org_id, user_id, tokens.external_workspace_id):
-                return back("connect_error=google&reason=account")
-            user_tokens = UserTokens(
-                access_token=tokens.access_token, refresh_token=tokens.refresh_token,
-                expires_at=tokens.expires_at, external_user_id=tokens.external_workspace_id,
-                external_user_name=tokens.external_workspace_name, scopes=(DRIVE_FILE,),
-            )
-        elif provider == "slack" and isinstance(oauth, SlackOAuthProvider):
-            token, slack_user, team, granted = oauth.exchange_user_code(code)
-            # Also the person's own work address: a company that connected no
-            # Slack anywhere still knows its people by email.
-            teams = _company_workspaces(org_id, "slack")
-            if teams and team not in teams:
-                return back("connect_error=slack&reason=workspace")
-            from .slack_events import _slack_email
-
-            email = _slack_email(token, slack_user)
-            if not _is_own_address(org_id, user_id, email):
-                return back("connect_error=slack&reason=account")
-            # ponytail: assumes the Slack app has token rotation off (its
-            # tokens never expire); with rotation on, store and refresh them.
-            user_tokens = UserTokens(
-                access_token=token, external_user_id=slack_user, external_user_name=email,
-                scopes=granted or tuple(SlackSettings.from_env().act_user_scopes.split(",")),
-            )
-        elif provider == "github" and isinstance(oauth, GitHubAppProvider):
-            tokens, login, name = oauth.exchange_user_code(code)
-            user_tokens = UserTokens(
-                access_token=tokens.access_token, refresh_token=tokens.refresh_token,
-                expires_at=tokens.expires_at, external_user_id=login,
-                external_user_name=name or login,
-            )
-        else:
-            raise OAuthError("not an Act connect flow")
-        if not user_tokens.external_user_id:
-            raise OAuthError("the tool did not say who this account is")
-        save_user_connection(org_id, user_id, provider, user_tokens)
-    except (OAuthError, ActionError, ConfigurationError) as exc:
-        logger.info("act: connect failed for %s: %s", provider or "?", exc)
-        return back(f"connect_error={provider or 'unknown'}")
-    return back(f"connected={provider}")
-
-
-def _is_own_address(org_id: str, user_id: str, email: str | None) -> bool:
-    """Is this Google or Slack account the person's work address (or a prior
-    one)? Company content must never be written into a personal account."""
-    from ..auth.email_change import aliases_for
-
-    user = get_user(user_id)
-    if user is None or not user.email or not email:
-        return False
-    own = {user.email.lower(), *(a.lower() for a in aliases_for(org_id, user.email))}
-    return email.lower() in own
-
-
-def _peek_provider(state: str) -> str | None:
-    from ..auth.oauth_state import peek_state_provider
-
-    return peek_state_provider(state)
-
-
-def is_act_state(state: str | None) -> bool:
-    """Routing only: does this callback belong to an Act connect flow?"""
-    return bool(state) and (_peek_provider(state) or "") in ACT_STATES
-
-
 # -- Admin --------------------------------------------------------------------
 
 
@@ -719,10 +422,6 @@ def admin_actions(session: SessionClaims = Depends(require_admin)):
     return {
         "enabled": policy.ACT_KEY in enabled,
         "block_wider": settings.block_wider,
-        "catalogue": [
-            {"name": n, "label": a.label, "provider": a.provider, "enabled": n in enabled}
-            for n, a in ACTIONS.items()
-        ],
         # Where Act may be asked from besides the web page: each Slack surface
         # is its own switch, because each is its own permission decision.
         "surfaces": [
@@ -739,9 +438,10 @@ class PolicyRequest(BaseModel):
 
 @router.put("/admin/actions/{name}")
 def admin_set_action(name: str, body: PolicyRequest, session: SessionClaims = Depends(require_admin)):
-    """Switch Act itself (``act``), one action, or one Slack surface."""
+    """Switch Agent mode itself (``act``) or one Slack surface. Which tools it
+    may use is chosen per MCP server (``/admin/mcp``)."""
     surfaces = {policy.surface_key(kind) for kind in policy.SURFACES}
-    if name not in ACTIONS and name not in surfaces and name != policy.ACT_KEY:
+    if name not in surfaces and name != policy.ACT_KEY:
         raise HTTPException(status_code=404, detail="No such action")
     policy.set_policy(session.org_id, name, body.enabled, updated_by=session.user_id)
     return {"name": name, "enabled": body.enabled}

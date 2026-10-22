@@ -28,10 +28,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from ..auth.user_connections import (
-    list_user_connections,
-    mark_user_needs_reauth,
-)
+from ..auth.user_connections import mark_user_needs_reauth
 from ..config.settings import ActionsSettings, GuardSettings, RagSettings
 from ..core.exceptions import (
     ActionConflict,
@@ -50,7 +47,7 @@ from . import policy, store
 from .base import Action, ActionContext, Source
 from .draft import asked_in
 from .exposure import NEEDS_ACK, PUBLIC, Exposure, assess
-from .factory import ACTIONS, get_action, slack_available
+from .factory import get_action
 from .store import ActionRow
 
 logger = logging.getLogger("actions")
@@ -61,8 +58,9 @@ CONTEXT_HITS = 6
 #: The fields that carry drafted words. Every other field is a target, already
 #: required to be in the asker's own words (``draft.require_named``).
 DRAFT_FIELDS = ("title", "body", "text")
-PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
-                  "google": "Google Drive", "slack": "Slack"}
+#: How a passage names the tool it came from (Ask's sources, not Act's tools).
+SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
+                "google": "Google Drive", "slack": "Slack"}
 
 
 #: Drafts one request may make ("an issue in Linear and in GitHub"). Each is
@@ -199,10 +197,6 @@ def build_act_prompt(question: str, passages: str | None) -> str:
     )
 
 
-def _names(providers) -> str:
-    return " or ".join(PROVIDER_NAMES.get(p, p) for p in sorted(providers))
-
-
 def indexed_context(
     hits: list, org_id: str, viewer, workspace_id: str | None = None,
 ) -> tuple[list[Source], str]:
@@ -244,7 +238,7 @@ def indexed_context(
 
 
 def _tool_label(hit) -> str:
-    name = PROVIDER_NAMES.get(hit.source_provider or "")
+    name = SOURCE_NAMES.get(hit.source_provider or "")
     return f"{name} · " if name else ""
 
 
@@ -284,33 +278,24 @@ def offered_actions(
     org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None,
     workspace_id: str | None = None,
 ) -> tuple[list[Action], str | None]:
-    """The actions to offer, or why there are none, in the person's terms.
-    In a space, an action the space switched off is not offered."""
+    """The tools to offer, or why there are none, in the person's terms: the
+    MCP tools an admin turned on, of servers this person signed in to."""
     if not policy.act_on(org_id):
         return [], "Your admin hasn't turned on Agent mode yet."
     if workspace_id is not None and not policy.act_on(org_id, workspace_id):
         return [], "Agent mode isn't turned on in this space. The space's owner can turn it on in the space's settings."
-    enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
-    # Tools of MCP servers an admin added, in the modes the admin chose.
     from .mcp import mcp_actions
+    from .mcp_store import list_servers
 
-    extra = mcp_actions(org_id, user_id)
-    if not enabled and not extra:
-        return [], "Your admin hasn't switched on any actions yet."
-    # From the web every tool is the person's own connection, Slack included.
-    # Asked inside Slack, the bot replies there for the person it saw.
-    # A connection that needs reconnecting is still offered: its draft answers
-    # "Reconnect your X account" (no token, nothing sent). Hiding it left the
-    # model saying it had no X tool at all.
-    providers = {c.provider for c in list_user_connections(org_id, user_id)}
-    if slack_user:
-        providers = (providers - {"slack"}) | slack_available(org_id, user_id, slack_user)
-    offered = [ACTIONS[n]() for n in ACTIONS if n in enabled and ACTIONS[n].provider in providers]
-    offered += extra
-    if not any(not a.lookup for a in offered):
-        needed = {ACTIONS[n].provider for n in enabled}
-        return [], f"Connect your {_names(needed)} account in Handbook (Account → Agent) to let it act for you."
-    return offered, None
+    offered = mcp_actions(org_id, user_id)
+    if any(not a.lookup for a in offered):
+        return offered, None
+    # Why not: no tool switched on at all, or switched on where they have not signed in.
+    waiting = [s.name for s in list_servers(org_id) if s.enabled
+               and any(s.mode(t.get("name", "")) == "write" for t in s.tools)]
+    if not waiting:
+        return [], "Your admin hasn't switched on any tools for Agent mode yet."
+    return [], f"Sign in to {' or '.join(waiting)} in Handbook (Account → Agent) to let it act for you."
 
 
 def propose(
@@ -426,7 +411,7 @@ def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, s
     person's access there, and who would newly see private content."""
     if _only_askers_words(args, question):
         sources = []
-    name = PROVIDER_NAMES.get(action.provider, action.provider)
+    name = action.label.split(":")[0]  # the server's name: "Linear", "GitHub"…
     try:
         token = action.token_for(org_id, user_id, kind)
         ctx = ActionContext(org_id, scope_workspace_id, user_id, email, question, token,
@@ -483,54 +468,6 @@ def edit(
                                 payload=action.edit(row.payload, fields))
 
 
-def choose_folder(
-    *, org_id: str, user_id: str, action_id: str, shown_hash: str, folder_id: str,
-) -> ActionRow:
-    """Put a pending Doc or Sheet into a folder the person picked in Google's
-    own picker. The folder is their click in Google's window, never the
-    model's or a document's, and who can open it is checked again: shared
-    with anyone or the whole domain refuses private sources; any other sharing
-    beyond them asks for the tick (stored sources keep no viewer lists, so
-    narrower cannot be told from wider)."""
-    from ..auth.user_connections import fresh_user_token
-    from .drive import folder_audience
-
-    if not policy.act_on(org_id):
-        raise ActionRejected("Your admin has turned off Agent mode.")
-    row = store.get(org_id, user_id, action_id)
-    if row is None:
-        raise NotFoundError("No such action.")
-    if row.action not in ("drive.create_doc", "drive.create_sheet"):
-        raise ActionRejected("Only a Google Doc or Sheet can go into a folder.")
-    name, audience = folder_audience(fresh_user_token(org_id, user_id, "google"), folder_id)
-    private = any(not s.get("public") for s in row.sources)
-    only_them = audience.members is not None and set(audience.members) <= {_email_of(user_id)}
-    if only_them:
-        exposure = row.exposure
-    elif audience.public and private:
-        raise ActionRejected(f"{name!r} is shared with everyone, and this draft uses private documents. "
-                             "Pick a private folder.")
-    else:
-        exposure = "unknown" if private else "none"
-    shown = [d for d in row.payload.get("details") or [] if d[0] != "Folder"] + [["Folder", name]]
-    where = f"Your Google Drive › {name}" + ("" if only_them else " (shared folder)")
-    return store.move(org_id, user_id, action_id, shown_hash=shown_hash,
-                      target={**row.target, "name": where},
-                      payload={**row.payload, "folder": {"id": folder_id, "name": name}, "details": shown},
-                      exposure=exposure)
-
-
-def _email_of(user_id: str) -> str:
-    from ..auth.users import get_user
-
-    user = get_user(user_id)
-    return (user.email or "").lower() if user else ""
-
-
-#: Longest instruction for a rewrite: a sentence or two about what to change.
-MAX_INSTRUCTION = 1000
-
-
 def build_revise_prompt(draft: dict[str, str], instruction: str) -> str:
     """Rewrite the draft as the person asks. The draft may carry document text,
     so it is fenced as data; the instruction is the person's own request."""
@@ -551,6 +488,10 @@ def build_revise_prompt(draft: dict[str, str], instruction: str) -> str:
         f"{UNTRUSTED_REMINDER}\n\n"
         f"INSTRUCTION: {instruction}\n"
     )
+
+
+#: Longest instruction for a rewrite: a sentence or two about what to change.
+MAX_INSTRUCTION = 1000
 
 
 def revise(

@@ -166,19 +166,15 @@ def fresh_user_token(org_id: str, user_id: str, provider: str) -> str:
 
 
 def _refresher(org_id: str, provider: str):
-    """Who refreshes this sign-in: the tool's own OAuth client, or for an MCP
-    server (``mcp:<id>``) that server's registration."""
-    if provider.startswith("mcp:"):
-        from ..actions.mcp_client import McpOAuth
-        from ..actions.mcp_store import get_server
+    """Who refreshes this sign-in: the MCP server's (``mcp:<id>``) registration.
+    Agent mode signs in to nothing else."""
+    from ..actions.mcp_client import McpOAuth
+    from ..actions.mcp_store import get_server
 
-        server = get_server(org_id, provider.split(":", 1)[1])
-        if server is None or not server.oauth:
-            raise NotImplementedError("no sign-in to refresh")
-        return McpOAuth(server.oauth)
-    from .factory import build_oauth_provider
-
-    return build_oauth_provider(provider)
+    server = get_server(org_id, provider.split(":", 1)[1]) if provider.startswith("mcp:") else None
+    if server is None or not server.oauth:
+        raise NotImplementedError("no sign-in to refresh")
+    return McpOAuth(server.oauth)
 
 
 def mark_user_needs_reauth(org_id: str, user_id: str, provider: str) -> None:

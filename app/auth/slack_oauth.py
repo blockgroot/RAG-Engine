@@ -56,29 +56,6 @@ class SlackOAuthProvider(OAuthProvider):
         }
         return f"{_AUTHORIZE_URL}?{urlencode(params)}"
 
-    def authorize_user_url(self, state: str) -> str:
-        """A PERSON's sign-in (``user_scope`` only, no bot scopes): Act posts
-        with their own token, as them, like every other tool."""
-        params = {
-            "client_id": self._settings.client_id,
-            "redirect_uri": self._settings.redirect_uri,
-            "user_scope": self._settings.act_user_scopes,
-            "state": state,
-        }
-        return f"{_AUTHORIZE_URL}?{urlencode(params)}"
-
-    def exchange_user_code(self, code: str) -> tuple[str, str, str, tuple[str, ...]]:
-        """``(user token, Slack user id, team id, scopes GRANTED)`` from a
-        person's sign-in. Granted, not asked for: Slack grants only what the
-        app's User Token Scopes list, so the two can differ."""
-        data = self._access(code)
-        user = data.get("authed_user") or {}
-        team_id = (data.get("team") or {}).get("id")
-        if not (user.get("access_token") and user.get("id") and team_id):
-            raise OAuthError("Slack OAuth response missing the user's token")
-        granted = tuple(s for s in (user.get("scope") or "").split(",") if s)
-        return user["access_token"], user["id"], team_id, granted
-
     def exchange_code(self, code: str) -> OAuthTokens:
         data = self._access(code)
         access_token = data.get("access_token")

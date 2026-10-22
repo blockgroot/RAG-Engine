@@ -123,6 +123,9 @@ class McpToolAction(Action):
             cleaned[key] = value
         if body_key and not cleaned.get(body_key):
             raise ActionRejected("The draft is empty.")
+        preset = self.server.preset
+        if preset and preset.target_check:
+            preset.target_check(ctx.org_id, cleaned)  # e.g. GitHub: a company repository only
 
         payload: dict[str, Any] = {"args": cleaned, "fields": {"title": title_key, "body": body_key},
                                    "details": details(*((k, _short(v)) for k, v in cleaned.items()

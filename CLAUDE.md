@@ -304,33 +304,42 @@ session pooler (5432).
 **Act (writes).** Users see it as **Agent mode** (chat chip "Agent", Account → Agent,
 Admin › Actions; Slack `agent …`, old `act …` still works); code, routes and tables
 keep `act`. `app/actions/` and its own routes; Ask, Chart, sync and
-the Slack bot import nothing from it. The model only fills in action forms (at
-most `service.MAX_ACTIONS` per request, each its own card, checked and approved
-on its own; a refused one never stops the rest and is said):
-a write runs only from `confirm`, by the person who proposed it, before
-`expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
-the one conditional UPDATE), and every outcome is recorded in `actions`. A write
-uses the asker's own `user_connections` token, never `oauth_connections`; Slack
-too, from the web (their own sign-in, `user_scope` only, a channel they named
-and are in). Only a request asked INSIDE Slack is answered by the bot there. The
-asker may edit a pending draft's words, never its target (`Action.edit`): the
-edit replaces the stored payload under the same guards as `claim`, counts as
-their own words, and keeps the sources and exposure (the tick is asked again). "Ask for
-changes" (`service.revise`) is the same edit written by the model from their
-instruction: the draft is fenced as data, and a link or @-mention survives only
-if the draft they saw or their instruction had it. What the
-person may do there is checked with THEIR token before any card, where the tool
-can say (GitHub: their access level, a locked issue; Linear: only teams their
-token lists); Notion cannot be asked, so its card says the access a write needs
-and its refusal names it (view only, can't edit). A
-target is taken only from the asker's own words (`draft.require_named`), never
-from a passage; written links and @-mentions only if the asker wrote them. So is
-every setting a write carries (assignee, labels, project, due date, a DM's
-person, a thread's link, a database's columns): resolved with the asker's token
-among what exists, never created, shown read-only on the card (`payload.details`,
-inside the fingerprint). A Sheet never sends a formula (`drive.sheet_csv`). A
-Drive folder is only the asker's pick in Google's picker, and choosing one checks
-the audience again (`service.choose_folder`, `store.move`).
+the Slack bot import nothing from it. **Every write goes through an MCP server an
+admin added** (`actions/mcp*.py`; the five connectors are presets in
+`mcp_presets.py`); there are no hand-written per-tool actions. Every tool starts
+off; the admin sets each to off, read ("lookup": runs while drafting, no card) or
+write (a card). A preset's `allow` list decides what may EVER be turned on (a list
+of what to allow, never of words to block; GitHub: issues, labels, comments and
+reads only), a server added by address falls back to blocking destructive names,
+a read must be marked read-only by the server or the preset, and a tool whose
+schema changed is off again (hash). Each person signs in to each server with their
+own account (`user_connections`, provider `mcp:<id>`), never a shared or admin key
+for writes; a server that cannot register Handbook signs in through Handbook's own
+app there (`Preset.client`: GitHub App, Slack app, Google OAuth client), whose
+secret stays in settings. GitHub signs in through the GitHub App, which holds
+Issues: write only, so GitHub itself refuses code, pulls and merges; every
+installation token for READING stays minted read-only (`mint_installation_token`).
+An account must be the company's: checked after sign-in (`account_check`: Linear's
+workspace id is a connected one, Google's email is the person's) or on each write's
+target (`target_check`: a GitHub repo in a company installation), or company content
+leaves the company. Google's servers advertise no sign-in, so the preset carries it,
+with `drive.file` only. The model only fills in tool forms (at most
+`service.MAX_ACTIONS` per request, each its own card, checked and approved on its
+own; a refused one never stops the rest and is said): a write runs only from
+`confirm`, by the person who proposed it, before `expires_at`, with the STORED
+payload (`payload_hash` compared, `store.claim` is the one conditional UPDATE), and
+every outcome is recorded in `actions`. Only a request asked INSIDE Slack is answered
+by the bot there. The asker may edit a pending draft's words, never its target
+(`Action.edit`): the edit replaces the stored payload under the same guards as
+`claim`, counts as their own words, and keeps the sources and exposure (the tick is
+asked again). "Ask for changes" (`service.revise`) is the same edit written by the
+model from their instruction: the draft is fenced as data, and a link or @-mention
+survives only if the draft they saw or their instruction had it. Every value that is
+not drafted text (a target, an id, an assignee) must be in the asker's own words, in
+what a read returned in this request, or one of the schema's own allowed values;
+never from a passage. Drafted text keeps links and @-mentions only if the asker or a
+source wrote them. What a tool returns is untrusted text and a private source. The
+audience of an MCP write is unknown, so private content always needs the tick.
 Passages are shown only when the request asks to draft from company content
 (`document_words`, quoted from the request); otherwise the model sees the
 request alone. They are found by Ask's own reading (`api.actions.ask_search`:
@@ -338,39 +347,17 @@ Ask's routing on the words naming the content, then that agent's
 `retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
 can open), never a search of Act's own. Several tools the words name are each
 read, interleaved so each gets its share; the graph plan, when on, is built
-once and used as the chat uses it. A private repo's readers are unknown,
-so any audience needs the tick. Asked inside a Slack channel thread, that thread is read live
-(`slack.thread_context`), never a search of the channel. Every
+once and used as the chat uses it. Asked inside a Slack channel thread, that thread
+is read live (`slack_thread.thread_context`), never a search of the channel. Every
 passage shown to the model is a source for `exposure.assess`: private content
 never goes somewhere public (refused in code and by a CHECK), and a wider or
 unknown audience needs the stored tick. A timeout after sending is `unknown`,
-never retried. No action touches git refs, contents, pulls or merges; the GitHub
-App gets Issues: write only (no Contents, no Pull requests write), every
-installation token is minted READ-ONLY (`mint_installation_token`), and each
-write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
-Changing what exists only ADDS or sets (Linear `issueUpdate`, GitHub's add-labels/assignees on
-issues, never PRs; a Sheet's rows appended RAW under its unchanged header, only Sheets `drive.file`
-reaches); Linear's `write` scope is asked only while `linear.update_issue` is on (`linear.scopes_for`).
-Notion writes use a SEPARATE connection from the read one: a Notion token always
-carries its connection's every capability. An Act account must be the company's
-(a Linear/Notion/Slack workspace or a repo in a GitHub installation it connected,
-company-wide OR in any space, `credentials.connected_anywhere`; the person's own
-work address on Google and Slack), or company content leaves the company. From Slack only
-a message that ASKS for an action proposes: a model check whose quote of the
-asking words must be in the message, only where that surface is on, or `act …`
-(`slack_act.slack_request`); a failed check is a question; a DM drafts as the
-person, a channel drafts from that channel only as the room (like a channel
-reply), its card is ephemeral, and a Slack post from a channel is a reply in that
-thread. A DM to a person the asker named is sent with THEIR Slack sign-in (ending
-"Sent with Handbook", shown on the card) when they connected one, else by the bot
-naming who asked, with no link to the bot's DM. Each Slack surface has its own admin switch. The bot may come through
-any of the company's Slack connections, company-wide or a space's (`slack._bot_scope`);
-which one posts never decides what a draft reads. Other tools come through MCP servers only an admin adds (`actions/mcp*.py`): every tool
-starts off, a write tool is an action like any other (card, approval, the person's own
-sign-in), a lookup must be marked read-only by the server AND chosen by the admin,
-destructive names are blocked, a tool whose schema changed is off again (hash), every
-non-drafted value must be in the asker's words or a lookup's answer, the audience is
-unknown, and every address must be public https. Nothing runs unattended.
+never retried. Every address must be public https. Nothing runs unattended.
+From Slack only a message that ASKS for an action proposes: a model check whose
+quote of the asking words must be in the message, only where that surface is on,
+or `act …` (`slack_act.slack_request`); a failed check is a question; a DM drafts as
+the person, a channel drafts from that channel only as the room (like a channel
+reply), and its card is ephemeral. Each Slack surface has its own admin switch.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
 owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only

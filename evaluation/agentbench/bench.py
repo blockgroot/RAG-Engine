@@ -16,7 +16,7 @@ removed (GitHub issues closed, it has no delete), seeded issues reset.
   .venv/bin/python -m evaluation.agentbench.bench run --system both [--only A01,B08] [--runs 3]
   .venv/bin/python -m evaluation.agentbench.bench report
 
-Reads .env.bench: BENCH_LINEAR_TOKEN, BENCH_GITHUB_TOKEN, HANDBOOK_URL,
+Reads .env.bench: BENCH_LINEAR_MCP_TOKEN, BENCH_GITHUB_TOKEN, HANDBOOK_URL,
 HANDBOOK_SESSION, HANDBOOK_MODEL, ONYX_URL, ONYX_ADMIN_*, ONYX_PERSONA_ID.
 """
 
@@ -46,14 +46,36 @@ SETTLE_SECONDS = 4  # Linear and GitHub lists are eventually consistent
 # --------------------------------------------------------------------------- tools
 
 
-def linear(query: str, variables: dict | None = None) -> dict:
-    r = httpx.post("https://api.linear.app/graphql", timeout=60,
-                   json={"query": query, "variables": variables or {}},
-                   headers={"Authorization": os.environ["BENCH_LINEAR_TOKEN"]})
-    data = r.json()
-    if data.get("errors"):
-        raise RuntimeError(f"Linear: {data['errors'][0].get('message')}")
-    return data["data"]
+_LINEAR: list = []
+
+
+def linear(tool: str, args: dict | None = None, *, write: bool = False):
+    """One Linear MCP tool call (Linear's MCP sign-in does not open its GraphQL API)."""
+    from app.actions.mcp_client import McpSession
+
+    if not _LINEAR:
+        session = McpSession("https://mcp.linear.app/mcp", os.environ["BENCH_LINEAR_MCP_TOKEN"], timeout=90)
+        session.open()
+        _LINEAR.append(session)
+    result = _LINEAR[0].call_tool(tool, args or {}, write=write)
+    text = "".join(c.get("text", "") for c in result.get("content") or [])
+    if result.get("isError"):
+        raise RuntimeError(f"Linear {tool}: {text[:300]}")
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _linear_all(tool: str, args: dict, key: str, limit: int = 20) -> list[dict]:
+    out, cursor = [], None
+    for _ in range(limit):
+        page = linear(tool, {**args, "limit": 50, **({"cursor": cursor} if cursor else {})})
+        out += page.get(key) or []
+        cursor = page.get("cursor") or page.get("nextCursor")
+        if not page.get("hasNextPage"):
+            return out
+    raise RuntimeError(f"Linear {tool}: more than {limit} pages, state would be partial")
 
 
 def github(method: str, path: str, **kw) -> httpx.Response:
@@ -75,20 +97,35 @@ def _pages(path: str, limit: int = 5) -> list[dict]:
 # --------------------------------------------------------------------------- state
 
 
-ISSUE_FIELDS = ("id identifier title description priority state { name } assignee { id } "
-                "labels { nodes { name } } parent { identifier } project { name } "
-                "comments { nodes { id body } }")
+DONE = "[bench-done] "  # a created issue after reset: cancelled, never deleted (no tool for it)
 
 
 def snapshot() -> dict:
-    team = linear(f"""query($key: String!) {{ teams(filter: {{ key: {{ eq: $key }} }}) {{ nodes {{
-        id name projects {{ nodes {{ id name }} }}
-        issues(first: 200, includeArchived: false) {{ nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage }} }}
-        }} }} }}""", {"key": TEAM_KEY})["teams"]["nodes"][0]
-    if team["issues"]["pageInfo"]["hasNextPage"]:
-        raise RuntimeError("BEN has more than 200 issues: state would be partial")
+    team = linear("get_team", {"query": TEAM_KEY})
+    projects = _linear_all("list_projects", {"team": TEAM_KEY}, "projects")
+    raw = [i for i in _linear_all("list_issues", {"team": TEAM_KEY, "includeArchived": False}, "issues")
+           if not i["title"].startswith(DONE)]
+    by_uuid = {i.get("uuid"): i["id"] for i in raw}
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(8) as pool:  # one call per issue; each is its own HTTP request
+        all_comments = dict(zip([i["id"] for i in raw], pool.map(
+            lambda i: _linear_all("list_comments", {"issueId": i["id"]}, "comments"), raw)))
+    linear_issues = {}
+    for i in raw:
+        comments = all_comments[i["id"]]
+        linear_issues[i["id"]] = {
+            "id": i.get("uuid"), "title": i["title"], "description": i.get("description") or "",
+            "priority": (i.get("priority") or {}).get("value", 0), "state": i.get("status"),
+            "assignee": i.get("assigneeId"), "labels": sorted(i.get("labels") or []),
+            "parent": by_uuid.get(i.get("parentId"), i.get("parentId")),
+            "project": i.get("project") if isinstance(i.get("project"), str) else (i.get("project") or {}).get("name"),
+            "comments": {c["id"]: c.get("body") or "" for c in comments},
+        }
     issues = {}
     for gi in _pages(f"/repos/{REPO}/issues?state=all"):
+        if gi["title"].startswith(DONE):  # made by a system, closed and marked by a reset
+            continue
         issues[gi["number"]] = {"title": gi["title"], "body": gi.get("body") or "", "state": gi["state"],
                                 "labels": sorted(l["name"] for l in gi["labels"]),
                                 "assignees": sorted(a["login"] for a in gi["assignees"]),
@@ -96,17 +133,8 @@ def snapshot() -> dict:
     comments = {c["id"]: {"issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c["body"]}
                 for c in _pages(f"/repos/{REPO}/issues/comments?sort=created")}
     return {
-        "linear_team": {"id": team["id"], "name": team["name"],
-                        "projects": sorted(p["name"] for p in team["projects"]["nodes"])},
-        "linear": {i["identifier"]: {
-            "id": i["id"], "title": i["title"], "description": i.get("description") or "",
-            "priority": i["priority"], "state": (i.get("state") or {}).get("name"),
-            "assignee": (i.get("assignee") or {}).get("id"),
-            "labels": sorted(l["name"] for l in i["labels"]["nodes"]),
-            "parent": (i.get("parent") or {}).get("identifier"),
-            "project": (i.get("project") or {}).get("name"),
-            "comments": {c["id"]: c["body"] for c in i["comments"]["nodes"]},
-        } for i in team["issues"]["nodes"]},
+        "linear_team": {"id": team["id"], "name": team["name"], "projects": sorted(p["name"] for p in projects)},
+        "linear": linear_issues,
         "github": issues, "github_comments": comments,
         "github_labels": sorted(l["name"] for l in _pages(f"/repos/{REPO}/labels")),
     }
@@ -184,20 +212,21 @@ SEED_GITHUB = [
 
 def seed() -> dict:
     if SEED.exists():
-        return json.loads(SEED.read_text())
+        data = json.loads(SEED.read_text())
+        base = data["baseline"]  # JSON keys are text; GitHub's numbers are ints when read live
+        base["github"] = {int(k): v for k, v in base["github"].items()}
+        base["github_comments"] = {int(k): v for k, v in base["github_comments"].items()}
+        return data
     OUT.mkdir(parents=True, exist_ok=True)
-    team = linear("query($k: String!) { teams(filter: { key: { eq: $k } }) { nodes { id labels { nodes { id name } } } } }",
-                  {"k": TEAM_KEY})["teams"]["nodes"][0]
-    if not any(l["name"] == "Bug" for l in team["labels"]["nodes"]):
-        linear("mutation($t: String!) { issueLabelCreate(input: { teamId: $t, name: \"Bug\" }) { success } }",
-               {"t": team["id"]})
+    if "Bug" not in {l["name"] for l in _linear_all("list_issue_labels", {"team": TEAM_KEY}, "labels")}:
+        linear("create_issue_label", {"name": "Bug", "teamId": linear("get_team", {"query": TEAM_KEY})["id"]}, write=True)
     for name, color in (("bug", "d73a4a"), ("docs", "0075ca")):
         github("POST", f"/repos/{REPO}/labels", json={"name": name, "color": color})  # 422 if it exists
     names: dict[str, str] = {}
+    existing = {i["title"]: i["id"] for i in _linear_all("list_issues", {"team": TEAM_KEY}, "issues")}
     for key, title, body in SEED_LINEAR:
-        made = linear("mutation($i: IssueCreateInput!) { issueCreate(input: $i) { issue { identifier } } }",
-                      {"i": {"teamId": team["id"], "title": title, "description": body.format(**names)}})
-        names[key] = made["issueCreate"]["issue"]["identifier"]
+        names[key] = existing.get(title) or linear(
+            "save_issue", {"team": TEAM_KEY, "title": title, "description": body.format(**names)}, write=True)["id"]
     for key, title, body in SEED_GITHUB:
         made = github("POST", f"/repos/{REPO}/issues", json={"title": title, "body": body}).json()
         names[key] = str(made["number"])
@@ -206,41 +235,32 @@ def seed() -> dict:
     return data
 
 
-def reset(base: dict) -> None:
-    """Put the sandboxes back to the seeded baseline."""
-    now = snapshot()
-    team_id = base["linear_team"]["id"]
+def reset(base: dict, now: dict | None = None) -> None:
+    """Put the sandboxes back to the seeded baseline. ``now`` is a fresh
+    snapshot when the caller already has one (saves a full read)."""
+    now = now or snapshot()
     if now["linear_team"]["name"] != base["linear_team"]["name"]:
-        linear("mutation($id: String!, $n: String!) { teamUpdate(id: $id, input: { name: $n }) { success } }",
-               {"id": team_id, "n": base["linear_team"]["name"]})
-    states = {s["name"]: s["id"] for s in linear(
-        "query($id: String!) { team(id: $id) { states { nodes { id name } } } }", {"id": team_id})["team"]["states"]["nodes"]}
-    # Only labels a BEN issue can carry: the team's own and workspace-wide ones.
-    labels = {l["name"]: l["id"] for l in linear(
-        "query($t: ID!) { issueLabels(first: 250, filter: { or: [{ team: { id: { eq: $t } } }, "
-        "{ team: { null: true } }] }) { nodes { id name } } }", {"t": team_id})["issueLabels"]["nodes"]}
+        print(f"  ! BEN was renamed to {now['linear_team']['name']!r}; rename it back in Linear")
     for ident, issue in now["linear"].items():
         old = base["linear"].get(ident)
-        if old is None:
-            linear("mutation($id: String!) { issueDelete(id: $id) { success } }", {"id": issue["id"]})
+        if old is None:  # made by a system: cancelled and hidden from later snapshots
+            linear("save_issue", {"id": ident, "title": DONE + issue["title"], "state": "Canceled"}, write=True)
             continue
         for cid in set(issue["comments"]) - set(old["comments"]):
-            linear("mutation($id: String!) { commentDelete(id: $id) { success } }", {"id": cid})
+            linear("delete_comment", {"id": cid}, write=True)
         if any(issue[k] != old[k] for k in ("title", "description", "priority", "state", "assignee", "labels", "project")):
-            linear("mutation($id: String!, $i: IssueUpdateInput!) { issueUpdate(id: $id, input: $i) { success } }",
-                   {"id": issue["id"], "i": {"title": old["title"], "description": old["description"],
-                                             "priority": old["priority"], "stateId": states[old["state"]],
-                                             "assigneeId": old["assignee"], "projectId": None,
-                                             "labelIds": [labels[n] for n in old["labels"]]}})
+            linear("save_issue", {"id": ident, "title": old["title"], "description": old["description"],
+                                  "priority": old["priority"], "state": old["state"],
+                                  "assignee": old["assignee"], "labels": old["labels"]}, write=True)
     for ident in set(base["linear"]) - set(now["linear"]):
-        print(f"  ! {ident} was deleted; restore it from Linear's trash before the next run")
+        print(f"  ! {ident} is gone; restore it in Linear before the next run")
     for name in set(base["github_labels"]) - set(now["github_labels"]):
         github("POST", f"/repos/{REPO}/labels", json={"name": name})
     for num, issue in now["github"].items():
         old = base["github"].get(str(num)) or base["github"].get(num)
         if old is None:
-            if issue["state"] == "open":
-                github("PATCH", f"/repos/{REPO}/issues/{num}", json={"state": "closed", "state_reason": "not_planned"})
+            github("PATCH", f"/repos/{REPO}/issues/{num}", json={
+                "title": DONE + issue["title"], "state": "closed", "state_reason": "not_planned"})
             continue
         if any(issue[k] != old[k] for k in ("title", "body", "state", "labels", "assignees")):
             github("PATCH", f"/repos/{REPO}/issues/{num}", json={
@@ -369,7 +389,7 @@ def score(task: dict, changes: list[dict], out: dict, me: str) -> dict:
 
 
 def _me() -> str:
-    return linear("query { viewer { id } }")["viewer"]["id"]
+    return linear("get_user", {"query": "me"})["id"]
 
 
 def run(systems: list[str], only: set[str] | None, runs: int) -> None:
@@ -382,6 +402,7 @@ def run(systems: list[str], only: set[str] | None, runs: int) -> None:
         done = {(r["system"], r["task"], r["run"]) for r in map(json.loads, RECORDS.open()) if not r.get("harness_error")}
     me = _me()
     clients = {s: SYSTEMS[s]() for s in systems}
+    reset(base)  # start from the baseline; each task resets after itself
     for n in range(1, runs + 1):
         for task in tasks:
             for name, client in clients.items():
@@ -391,16 +412,19 @@ def run(systems: list[str], only: set[str] | None, runs: int) -> None:
                 row = {"system": name, "task": task["id"], "track": task["track"], "tool": task["tool"],
                        "kind": task.get("kind"), "run": n, "request": request}
                 try:
-                    reset(base)
-                    before = snapshot()
+                    # The sandbox is at the baseline here (reset after every task),
+                    # so the baseline IS the "before"; one read per task, not three.
                     t0 = time.time()
                     out = client.run(request)
                     row["seconds"] = round(time.time() - t0, 1)
                     time.sleep(SETTLE_SECONDS)
-                    changes = diff(before, snapshot())
+                    after = snapshot()
+                    changes = diff(base, after)
                     row.update(out=out, changes=changes, **score(_fill(task, names), changes, out, me))
+                    reset(base, after)
                 except Exception as exc:  # noqa: BLE001 - recorded, retried on resume
                     row["harness_error"] = repr(exc)[:500]
+                    reset(base)
                 with RECORDS.open("a") as f:
                     f.write(json.dumps(row) + "\n")
                 print(f"{name:8} {task['id']} run {n}: "

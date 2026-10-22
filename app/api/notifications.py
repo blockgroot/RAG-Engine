@@ -113,6 +113,12 @@ def _act_items(org_id: str, user_id: str) -> list[dict]:
     one, so everyone sees theirs, admin or not. Never fails the bell."""
     try:
         broken = [c for c in list_user_connections(org_id, user_id) if c.needs_reauth]
+        if not broken:
+            return []
+        from ..actions.mcp_store import list_servers
+
+        # A sign-in is to an MCP server; it is named by the server, not its id.
+        names = {s.provider: s.name for s in list_servers(org_id)}
     except Exception:  # noqa: BLE001 - a missing item, never a broken bell
         return []
     return [
@@ -121,12 +127,12 @@ def _act_items(org_id: str, user_id: str) -> list[dict]:
             "severity": "high",
             "provider": c.provider,
             "scope": "Agent",
-            "title": f"Your {_label(c.provider)} account needs reconnecting",
-            "detail": f"Agent mode can't draft or send anything in {_label(c.provider)} for you until you reconnect it.",
-            "action": "Reconnect",
+            "title": f"Your {names[c.provider]} sign-in needs renewing",
+            "detail": f"Agent mode can't draft or send anything in {names[c.provider]} for you until you sign in again.",
+            "action": "Sign in",
             "href": "/account#act",
         }
-        for c in broken
+        for c in broken if c.provider in names
     ]
 
 

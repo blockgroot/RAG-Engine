@@ -213,38 +213,6 @@ def update_payload(
     raise ActionConflict("This draft changed. Reload it and try again.")
 
 
-def move(
-    org_id: str, user_id: str, action_id: str, *, shown_hash: str,
-    target: dict[str, Any], payload: dict[str, Any], exposure: str,
-) -> ActionRow:
-    """Point a pending draft at a place the person picked in the tool's own
-    window (a Drive folder), with the exposure checked again for it. The same
-    guards as ``update_payload``; a public exposure is refused here and by the
-    table's CHECK."""
-    if exposure == PUBLIC:
-        raise ActionRejected("This would put content from private documents somewhere public.")
-    row = get(org_id, user_id, action_id)
-    if row is None:
-        raise NotFoundError("No such action.")
-    with get_connection() as conn:
-        r = conn.execute(
-            f"""
-            UPDATE actions
-               SET target = %s, payload = %s, payload_hash = %s, exposure = %s,
-                   original_payload = COALESCE(original_payload, payload)
-             WHERE id = %s::uuid AND org_id = %s::uuid AND user_id = %s::uuid
-               AND status = 'proposed' AND expires_at > now() AND payload_hash = %s
-            RETURNING {_COLUMNS}
-            """,
-            (Json(target), Json(payload), payload_hash(row.action, target, payload), exposure,
-             action_id, org_id, user_id, shown_hash),
-        ).fetchone()
-    if r:
-        return _row(r)
-    _why_not(org_id, user_id, action_id, shown_hash)
-    raise ActionConflict("This draft changed. Reload it and try again.")
-
-
 def finish(org_id: str, action_id: str, *, status: str, result: dict[str, Any]) -> None:
     """Record the outcome of a claimed write. Only ``executing`` rows move, so
     an outcome can never be written twice or onto an unapproved proposal."""

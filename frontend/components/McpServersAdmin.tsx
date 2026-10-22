@@ -1,30 +1,35 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
-import { ApiError, api, type McpServerAdmin, type McpTool } from "@/lib/api";
+import { ApiError, api, type McpPreset, type McpServerAdmin, type McpTool } from "@/lib/api";
 
 /**
- * Other tools through MCP servers (Admin › Actions).
+ * The tools Agent mode may use (Admin › Actions), each through that tool's own
+ * MCP server.
  *
- * The admin adds a server and chooses each tool's mode. Everything starts
- * off. "Write" drafts a card the person approves, like every action; "Lookup"
- * lets Handbook read while drafting and is only offered for tools the server
- * marks read-only. Tools that delete, merge or change code are blocked. A tool
- * the server later changes turns off again until it is chosen again.
+ * The admin adds a connector in one click (or any server by address), signs in
+ * to it themselves to list its tools, and chooses what each tool may do.
+ * Everything starts off. "Read" lets Handbook look things up while drafting;
+ * "Write" drafts a card the person approves. Tools outside what Agent mode may
+ * ever do (deleting, merging, code) cannot be turned on. A tool the server
+ * later changes turns off again until it is chosen again.
  */
 
-const MODE_HINT: Record<McpTool["mode"], string> = {
+const MODE_LABEL: Record<McpTool["mode"], string> = {
   off: "Off",
-  lookup: "Lookup (read while drafting)",
+  lookup: "Read (while drafting)",
   write: "Write (approved on a card)",
 };
 
 export function McpServersAdmin({ disabled }: { disabled: boolean }) {
   const [servers, setServers] = useState<McpServerAdmin[] | null>(null);
+  const [presets, setPresets] = useState<McpPreset[]>([]);
   const [signInReady, setSignInReady] = useState(true);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,9 +37,10 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
     try {
       const data = await api.adminMcp();
       setServers(data.servers);
+      setPresets(data.presets);
       setSignInReady(data.sign_in_ready);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not load MCP servers.");
+      setError(err instanceof ApiError ? err.message : "Could not load the tools.");
     }
   }, []);
 
@@ -56,13 +62,13 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
   }
 
   return (
-    <section className="studio-panel stack" aria-labelledby="actions-mcp">
+    <section className="studio-panel stack" aria-labelledby="actions-tools">
       <div className="studio-section-head">
-        <h2 id="actions-mcp">Other tools (MCP)</h2>
+        <h2 id="actions-tools">Tools</h2>
         <p className="muted">
-          Add a tool&rsquo;s MCP server, then choose what each of its tools may do. Everything starts off.
-          Writes still need the person&rsquo;s approval on a card, with their own sign-in. Tools that
-          delete, merge or change code are blocked.
+          Agent mode works through each tool&rsquo;s own MCP server. Add a tool, sign in to it once
+          yourself to see its tools, then choose what each may do. Everything starts off, and every
+          write waits for the person&rsquo;s approval, with their own sign-in.
         </p>
       </div>
 
@@ -71,54 +77,87 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
           {error}
         </div>
       )}
-
-      <form
-        className="mcp-add"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void run("add", async () => {
-            await api.addMcpServer(name.trim(), url.trim());
-            setName("");
-            setUrl("");
-          });
-        }}
-      >
-        <input
-          className="input"
-          aria-label="Tool name"
-          placeholder="Name, e.g. Asana"
-          maxLength={60}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={disabled}
-        />
-        <input
-          className="input"
-          aria-label="MCP server address"
-          placeholder="https://mcp.example.com/mcp"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          disabled={disabled}
-        />
-        <button className="button" type="submit" disabled={disabled || busy === "add" || !name.trim() || !url.trim()}>
-          {busy === "add" ? "Adding…" : "Add server"}
-        </button>
-      </form>
       {!signInReady && (
-        <p className="muted">Servers that need sign-in can&rsquo;t be added until FRONTEND_URL (or MCP_REDIRECT_URI) is set.</p>
+        <p className="muted">Tools that need sign-in can&rsquo;t be added until FRONTEND_URL (or MCP_REDIRECT_URI) is set.</p>
       )}
 
-      {servers?.map((server) => (
-        <article key={server.id} className="actions-provider-group mcp-server">
-          <header>
-            <div>
-              <h3>{server.name}</h3>
-              <p>
-                {server.url}
-                {server.auth === "oauth" ? " · each person signs in" : " · no sign-in"}
-              </p>
-            </div>
-            <div className="mcp-server-actions">
+      <ul className="mcp-presets" aria-label="Connectors">
+        {presets.map((preset) => (
+          <li key={preset.key} className="mcp-preset">
+            <span>
+              <strong>{preset.name}</strong>
+              {preset.note && <small>{preset.note}</small>}
+            </span>
+            {preset.added ? (
+              <span className="studio-chip">Added</span>
+            ) : (
+              <button
+                type="button"
+                className="button button-secondary button-sm"
+                disabled={disabled || busy === preset.key}
+                onClick={() => void run(preset.key, () => api.addMcpServer({ preset: preset.key }))}
+              >
+                {busy === preset.key ? "Adding…" : "Add"}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      <details className="mcp-other">
+        <summary>Add another tool by its MCP address</summary>
+        <form
+          className="mcp-add"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run("add", async () => {
+              await api.addMcpServer({ name: name.trim(), url: url.trim() });
+              setName("");
+              setUrl("");
+            });
+          }}
+        >
+          <input
+            className="input"
+            aria-label="Tool name"
+            placeholder="Name, e.g. Asana"
+            maxLength={60}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={disabled}
+          />
+          <input
+            className="input"
+            aria-label="MCP server address"
+            placeholder="https://mcp.example.com/mcp"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            disabled={disabled}
+          />
+          <button className="button" type="submit" disabled={disabled || busy === "add" || !name.trim() || !url.trim()}>
+            {busy === "add" ? "Adding…" : "Add"}
+          </button>
+        </form>
+      </details>
+
+      {servers?.map((server) => {
+        const on = server.tools.filter((t) => t.mode !== "off").length;
+        const allowed = server.tools.filter((t) => !t.blocked).length;
+        const shown = open[server.id] ?? false;
+        return (
+          <article key={server.id} className="actions-provider-group mcp-server">
+            <header>
+              <div>
+                <h3>{server.name}</h3>
+                <p>
+                  {server.tools.length
+                    ? `${on} of ${allowed} tools on`
+                    : server.auth === "oauth"
+                      ? "Sign in to see its tools"
+                      : "No tools listed"}
+                  {server.auth === "oauth" ? " · each person signs in" : " · no sign-in"}
+                </p>
+              </div>
               <label className="action-toggle">
                 <span>On</span>
                 <input
@@ -129,6 +168,30 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                   aria-label={`${server.enabled ? "Turn off" : "Turn on"} ${server.name}`}
                 />
               </label>
+            </header>
+
+            <div className="mcp-server-actions">
+              {server.tools.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    className="button button-sm"
+                    disabled={disabled || busy === server.id}
+                    onClick={() => void run(server.id, () => api.setMcpModes(server.id, "recommended"))}
+                    title="Reads run while drafting; writes are approved on a card"
+                  >
+                    Turn on recommended
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-secondary button-sm"
+                    disabled={disabled || busy === server.id || on === 0}
+                    onClick={() => void run(server.id, () => api.setMcpModes(server.id, "off"))}
+                  >
+                    Turn all off
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className="button button-secondary button-sm"
@@ -150,46 +213,62 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                 Remove
               </button>
             </div>
-          </header>
-          {server.tools.length === 0 ? (
-            <p className="muted mcp-empty">
-              {server.auth === "oauth"
-                ? "Sign in to it yourself under Account → Agent, then Refresh tools to list them."
-                : "This server lists no tools."}
-            </p>
-          ) : (
-            <ul>
-              {server.tools.map((tool) => (
-                <li key={tool.name} className="mcp-tool">
-                  <span>
-                    <strong>{tool.title}</strong>
-                    {tool.description && <small>{tool.description}</small>}
-                  </span>
-                  {tool.blocked ? (
-                    <span className="studio-chip">Blocked</span>
-                  ) : (
-                    <select
-                      className="input mcp-mode"
-                      aria-label={`What ${tool.title} may do`}
-                      value={tool.mode}
-                      disabled={disabled || busy === `${server.id}:${tool.name}`}
-                      onChange={(e) =>
-                        void run(`${server.id}:${tool.name}`, () =>
-                          api.setMcpToolMode(server.id, tool.name, e.target.value as McpTool["mode"]),
-                        )
-                      }
-                    >
-                      <option value="off">{MODE_HINT.off}</option>
-                      {tool.read_only && <option value="lookup">{MODE_HINT.lookup}</option>}
-                      <option value="write">{MODE_HINT.write}</option>
-                    </select>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </article>
-      ))}
+
+            {server.tools.length === 0 ? (
+              server.auth === "oauth" && (
+                <p className="muted mcp-empty">
+                  Sign in to {server.name} yourself under <Link href="/account#act">Account → Agent</Link>, then
+                  Refresh tools to list them.
+                </p>
+              )
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="act-text-button mcp-view"
+                  aria-expanded={shown}
+                  onClick={() => setOpen((all) => ({ ...all, [server.id]: !shown }))}
+                >
+                  {shown ? "Hide tools" : `View ${server.tools.length} tools`}
+                </button>
+                {shown && (
+                  <ul className="mcp-tools">
+                    {server.tools.map((tool) => (
+                      <li key={tool.name} className="mcp-tool" data-blocked={tool.blocked}>
+                        <span>
+                          <strong>{tool.title}</strong>
+                          {tool.description && <small>{tool.description}</small>}
+                        </span>
+                        {tool.blocked ? (
+                          <span className="studio-chip" title="Deletes, merges or changes code, or is outside what Agent mode may do">
+                            Not allowed
+                          </span>
+                        ) : (
+                          <select
+                            className="input mcp-mode"
+                            aria-label={`What ${tool.title} may do`}
+                            value={tool.mode}
+                            disabled={disabled || busy === `${server.id}:${tool.name}`}
+                            onChange={(e) =>
+                              void run(`${server.id}:${tool.name}`, () =>
+                                api.setMcpToolMode(server.id, tool.name, e.target.value as McpTool["mode"]),
+                              )
+                            }
+                          >
+                            <option value="off">{MODE_LABEL.off}</option>
+                            {tool.read_only && <option value="lookup">{MODE_LABEL.lookup}</option>}
+                            <option value="write">{MODE_LABEL.write}</option>
+                          </select>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </article>
+        );
+      })}
     </section>
   );
 }

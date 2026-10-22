@@ -911,7 +911,6 @@ class GoogleSettings:
 # never lets Handbook message or modify anything in Slack. Existing
 # connections must reconnect once to pick up a newly added scope (Slack
 # re-consents on scope change, it doesn't apply retroactively).
-DEFAULT_SLACK_ACT_USER_SCOPES = "chat:write,channels:read,groups:read,im:write,users:read,users:read.email"
 DEFAULT_SLACK_BOT_SCOPES = (
     "channels:history,channels:read,channels:join,"
     "groups:history,groups:read,"
@@ -961,10 +960,6 @@ class SlackSettings:
     client_secret: str | None
     redirect_uri: str | None
     scopes: str = DEFAULT_SLACK_BOT_SCOPES
-    # A PERSON's own Slack sign-in for Act (``user_scope``): post as them, find
-    # the channels they are in, and read a private channel's members' emails
-    # for the audience check. Never asked of the bot install.
-    act_user_scopes: str = DEFAULT_SLACK_ACT_USER_SCOPES
     backfill_days: int = DEFAULT_SLACK_BACKFILL_DAYS
     min_thread_chars: int = DEFAULT_SLACK_MIN_THREAD_CHARS
     max_thread_messages: int = DEFAULT_SLACK_MAX_THREAD_MESSAGES
@@ -982,7 +977,6 @@ class SlackSettings:
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
             redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
-            act_user_scopes=os.getenv("SLACK_ACT_USER_SCOPES", DEFAULT_SLACK_ACT_USER_SCOPES),
             signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
             backfill_days=int(
                 os.getenv("SLACK_BACKFILL_DAYS") or DEFAULT_SLACK_BACKFILL_DAYS
@@ -2154,7 +2148,7 @@ class LiveToolsSettings:
 
 @dataclass(frozen=True)
 class ActionsSettings:
-    """Act mode: writes into connected tools (docs/plans/2026-10-13-write-actions.md).
+    """Agent mode: writes into tools through MCP (docs/plans/2026-10-22-mcp-only-actions.md).
 
     Whether a company uses Act at all is its admins' decision, stored as the
     ``act`` row in ``action_policies`` (``actions.policy.act_on``), not here.
@@ -2168,18 +2162,7 @@ class ActionsSettings:
     ttl_seconds: int = 900
     rate_per_hour: int = 20
     block_wider: bool = False
-    # The SEPARATE "Handbook Actions" Notion connection. A Notion token always
-    # carries every capability of its connection, so writes cannot share the
-    # read connection without making the indexing token write-capable too.
-    notion_client_id: str | None = None
-    notion_client_secret: str | None = None
-    notion_redirect_uri: str | None = None
-    # Google's folder picker, so a Doc or Sheet can go into a folder the person
-    # picks in Google's own window. Both or neither: a browser API key limited
-    # to the Picker API, and the Cloud project NUMBER of the Google client.
-    google_picker_api_key: str | None = None
-    google_picker_app_id: str | None = None
-    # Other tools through MCP servers an admin adds (docs/plans/2026-10-21-mcp-actions.md).
+    # Agent mode writes only through MCP servers an admin adds (docs/plans/2026-10-22-mcp-only-actions.md).
     # Where a person's MCP sign-in returns: the browser-facing /api proxy, so
     # it is registered once and survives a backend move.
     mcp_redirect_uri: str | None = None
@@ -2193,21 +2176,12 @@ class ActionsSettings:
             ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
             rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
             block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),
-            notion_client_id=os.getenv("NOTION_ACT_CLIENT_ID") or None,
-            notion_client_secret=os.getenv("NOTION_ACT_CLIENT_SECRET") or None,
-            notion_redirect_uri=os.getenv("NOTION_ACT_REDIRECT_URI") or None,
-            google_picker_api_key=os.getenv("GOOGLE_PICKER_API_KEY") or None,
-            google_picker_app_id=os.getenv("GOOGLE_PICKER_APP_ID") or None,
             mcp_redirect_uri=os.getenv("MCP_REDIRECT_URI") or (
                 f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/act/mcp/callback"
                 if os.getenv("FRONTEND_URL") else None),
             mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "20")),
             mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "4"))),
         )
-
-    @property
-    def folder_picker(self) -> bool:
-        return bool(self.google_picker_api_key and self.google_picker_app_id)
 
 
 @dataclass(frozen=True)

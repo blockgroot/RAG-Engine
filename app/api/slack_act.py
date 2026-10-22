@@ -63,8 +63,6 @@ router = APIRouter(prefix="/slack", tags=["slack"])
 API = "https://slack.com/api"
 _TIMEOUT = 15.0
 _SECTION_LIMIT = 2900  # Slack's section text limit is 3000
-_PROVIDER = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
-             "google": "Google Drive", "slack": "Slack"}
 
 _MENTION = re.compile(r"<@[A-Z0-9]+(?:\|[^>]*)?>")
 _ACT = re.compile(r"^\s*(?:agent|act)\b[\s:,\-]*(.*)$", re.IGNORECASE | re.DOTALL)
@@ -238,7 +236,7 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
     cls = get_action(row.action, row.org_id)
     label = cls.label if cls else row.action
     who = cls.attribution_for(row.payload) if cls else "as you"  # a DM as the person says so
-    tool = _PROVIDER.get(cls.provider if cls else "", label.split(":")[0])
+    tool = label.split(":")[0]  # the MCP server's name: "Linear", "GitHub"…
     words = bool(cls and cls.editable(row.payload))  # a status or label change has none to edit
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text":
@@ -255,11 +253,6 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
         for i in range(0, max(len(shown), 1), _SECTION_LIMIT):
             blocks.append({"type": "section", "text": {
                 "type": "mrkdwn", "text": (f"*{title}:*\n" if i == 0 else "") + (shown[i:i + _SECTION_LIMIT] or "_(empty)_")}})
-    if row.action.startswith("notion."):
-        need = "comment on" if row.action == "notion.comment" else "edit"
-        blocks.append({"type": "context", "elements": [{"type": "plain_text", "text":
-            f"Notion doesn't let apps check your access first. This works only if you can "
-            f"{need} this page in Notion."}]})
     private = [_short(s.get("title") or "") for s in row.sources if not s.get("public")]
     if row.exposure in NEEDS_ACK:
         warn = f"This draft may include private content only some people can see, from {'; '.join(private)}. "
@@ -339,7 +332,7 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
                    "thread_ts": thread_ts}
     read_context = None
     if not is_dm and in_thread and thread_ts:
-        from ..actions.slack import thread_context
+        from ..actions.slack_thread import thread_context
 
         read_context = lambda: thread_context(token, channel, thread_ts)  # noqa: E731
     try:
@@ -402,26 +395,15 @@ def _acked(payload: dict) -> bool:
     return bool((values.get("act_ack") or {}).get("selected_options"))
 
 
-#: A Doc or Sheet lives in Drive but opens in its own app; say that app.
-_APP_NAMES = {"drive.create_doc": "Google Docs", "drive.create_sheet": "Google Sheets",
-              "drive.append_rows": "Google Sheets"}
-_TOOL_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
-               "drive": "Google Drive", "slack": "Slack"}
-
-
 def _outcome_text(row: ActionRow) -> str:
     result = row.result or {}
     if row.status == "succeeded":
         link = result.get("url")
-        # Linear's SYV-21 and GitHub's owner/repo#12 are how people name
-        # things; Slack's message ts and Notion's or Google's ids are not.
-        named = row.action.startswith(("linear.", "github."))
-        made = _escape(str((result.get("external_id") if named else None)
-                           or row.payload.get("title") or row.target.get("name") or "it"))
-        tool = _APP_NAMES.get(row.action) or _TOOL_NAMES.get(row.action.split(".")[0])
-        if tool is None:  # an MCP tool: its label names the server ("Asana: create task")
-            found = get_action(row.action, row.org_id)
-            tool = found.label.split(":")[0] if found else "the tool"
+        # The title the person approved names it; the tool's own id is a fallback.
+        made = _escape(str(row.payload.get("title") or result.get("external_id")
+                           or row.target.get("name") or "it"))
+        found = get_action(row.action, row.org_id)
+        tool = found.label.split(":")[0] if found else "the tool"  # the server: "Linear"
         return f"✅ Done: *{made}* · <{link}|Open in {tool}>" if link else f"✅ Done: *{made}*"
     if row.status == "unknown":
         return f"⚠️ This may have gone through. Check before trying again. {_escape(result.get('error') or '')}"

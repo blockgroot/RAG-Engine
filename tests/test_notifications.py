@@ -134,10 +134,18 @@ def test_anyone_is_told_their_own_act_sign_in_needs_reconnecting(monkeypatch):
     """Only they can fix it, so a member sees it too; a working one says nothing."""
     from app.auth.user_connections import UserConnectionInfo
 
-    mine = [UserConnectionInfo("linear", "x", "Sana", (), True, datetime(2026, 1, 1)),
-            UserConnectionInfo("google", "y", "Sana", (), False, datetime(2026, 1, 1))]
+    from types import SimpleNamespace
+
+    # Sign-ins are to admin-added MCP servers; a stale non-MCP row (a retired
+    # built-in) names nothing.
+    mine = [UserConnectionInfo("mcp:s1", "x", "Sana", (), True, datetime(2026, 1, 1)),
+            UserConnectionInfo("mcp:s2", "y", "Sana", (), False, datetime(2026, 1, 1)),
+            UserConnectionInfo("linear", "z", "Sana", (), True, datetime(2026, 1, 1))]
     _patch(monkeypatch, by_scope={}, mine=mine)
+    monkeypatch.setattr("app.actions.mcp_store.list_servers", lambda org: [
+        SimpleNamespace(provider="mcp:s1", name="Asana"), SimpleNamespace(provider="mcp:s2", name="Jira")])
     result = notif.list_notifications(session=_session("member"))
     assert result["count"] == 1
     item = result["items"][0]
-    assert (item["kind"], item["provider"], item["href"]) == ("reauth", "linear", "/account#act")
+    assert (item["kind"], item["provider"], item["href"]) == ("reauth", "mcp:s1", "/account#act")
+    assert item["title"] == "Your Asana sign-in needs renewing" and item["action"] == "Sign in"

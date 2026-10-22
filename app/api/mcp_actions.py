@@ -16,6 +16,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from ..actions import mcp_client, mcp_store, policy
+from ..actions.mcp_presets import PRESETS
 from ..auth.oauth_state import create_state
 from ..auth.session import SessionClaims
 from ..auth.user_connections import (
@@ -68,13 +69,19 @@ def _list_tools(server_url: str, token: str | None) -> list[dict]:
 @router.get("/admin/mcp")
 def admin_mcp(session: SessionClaims = Depends(require_admin)):
     settings = ActionsSettings.from_env()
-    return {"servers": [_admin_view(s) for s in mcp_store.list_servers(session.org_id)],
+    servers = mcp_store.list_servers(session.org_id)
+    added = {s.url.rstrip("/") for s in servers}
+    return {"servers": [_admin_view(s) for s in servers],
+            "presets": [{"key": p.key, "name": p.name, "url": p.url, "note": p.note,
+                         "added": p.url.rstrip("/") in added} for p in PRESETS.values()],
             "sign_in_ready": bool(settings.mcp_redirect_uri)}
 
 
 class AddServer(BaseModel):
-    name: str = Field(min_length=1, max_length=60)
-    url: str = Field(min_length=8, max_length=500)
+    #: One of the connectors' presets, or a name and address for any other server.
+    preset: str | None = Field(default=None, max_length=40)
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    url: str | None = Field(default=None, min_length=8, max_length=500)
 
 
 @router.post("/admin/mcp")
@@ -82,17 +89,23 @@ def admin_add_mcp(body: AddServer, session: SessionClaims = Depends(require_admi
     """Add a server. Its tools all start OFF. One that needs sign-in lists its
     tools once the admin signs in themselves and refreshes."""
     settings = ActionsSettings.from_env()
-    url = body.url.strip()
-    if any(s.url == url for s in mcp_store.list_servers(session.org_id)):
+    preset = PRESETS.get(body.preset or "")
+    if body.preset and preset is None:
+        raise HTTPException(status_code=404, detail="No such connector.")
+    if preset is None and not (body.name and body.url):
+        raise HTTPException(status_code=400, detail="Pick a connector, or give a name and an address.")
+    name, url = (preset.name, preset.url) if preset else (body.name.strip(), body.url.strip())
+    if any(s.url.rstrip("/") == url.rstrip("/") for s in mcp_store.list_servers(session.org_id)):
         raise HTTPException(status_code=409, detail="That server is already added.")
     try:
-        oauth = mcp_client.discover(url, settings.mcp_redirect_uri or "", timeout=settings.mcp_timeout_seconds)
+        oauth = mcp_client.discover(url, settings.mcp_redirect_uri or "",
+                                    timeout=settings.mcp_timeout_seconds, preset=preset)
         if oauth is not None and not settings.mcp_redirect_uri:
             raise HTTPException(status_code=409, detail="Set MCP_REDIRECT_URI or FRONTEND_URL so people can sign in.")
         tools = [] if oauth else _list_tools(url, None)
     except ActionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    server = mcp_store.create_server(session.org_id, name=body.name.strip(), url=url,
+    server = mcp_store.create_server(session.org_id, name=name, url=url,
                                      auth="oauth" if oauth else "none", oauth=oauth, tools=tools,
                                      created_by=session.user_id)
     return _admin_view(server)
@@ -129,13 +142,31 @@ def admin_tool_mode(server_id: str, tool: str, body: ToolMode, session: SessionC
         raise HTTPException(status_code=404, detail="No such tool.")
     if body.mode not in mcp_store.MODES:
         raise HTTPException(status_code=400, detail="Mode is off, lookup or write.")
-    if body.mode != "off" and mcp_store.blocked(found):
-        raise HTTPException(status_code=400, detail="This tool deletes or changes things Handbook never touches.")
-    if body.mode == "lookup" and not mcp_store.read_only(found):
+    if body.mode != "off" and not server.permitted(found):
+        raise HTTPException(status_code=400, detail="Handbook never turns this tool on: it deletes or "
+                            "changes things outside what Agent mode may do.")
+    if body.mode == "lookup" and not server.is_read(found):
         raise HTTPException(status_code=400, detail=(
-            "Only a tool the server marks read-only can run without a card. Use write instead."))
+            "Only a tool that only reads can run without a card. Use write instead."))
     mcp_store.set_mode(session.org_id, server, tool, body.mode)
     return mcp_store.tool_view(mcp_store.get_server(session.org_id, server.id), found)
+
+
+class BulkModes(BaseModel):
+    #: "recommended": every permitted read as a lookup and every permitted write
+    #: as a write (each still approved on a card); "off": everything off.
+    choice: str = Field(pattern="^(recommended|off)$")
+
+
+@router.put("/admin/mcp/{server_id}/tools")
+def admin_bulk_modes(server_id: str, body: BulkModes, session: SessionClaims = Depends(require_admin)):
+    server = _server(session.org_id, server_id)
+    for tool in server.tools:
+        mode = "off" if body.choice == "off" or not server.permitted(tool) else (
+            "lookup" if server.is_read(tool) else "write")
+        mcp_store.set_mode(session.org_id, server, tool["name"], mode)
+        server = mcp_store.get_server(session.org_id, server.id)
+    return _admin_view(server)
 
 
 class ServerSwitch(BaseModel):
@@ -215,6 +246,15 @@ def mcp_callback(state: str = "", code: str | None = None):
             raise OAuthError("no code or no server")
         tokens = mcp_client.exchange(server.oauth, code=code, verifier=verifier,
                                      redirect_uri=ActionsSettings.from_env().mcp_redirect_uri or "")
+        preset = server.preset
+        if preset and preset.account_check:
+            from ..auth.users import get_user
+
+            user = get_user(user_id)
+            # Only the company's own workspace: company content written into a
+            # personal one would be content leaving the company.
+            if not (user and user.email and preset.account_check(org_id, user.email, tokens.access_token)):
+                return RedirectResponse(url=f"{base}/account?connect_error=mcp&reason=workspace#act")
         save_user_connection(org_id, user_id, provider, UserTokens(
             access_token=tokens.access_token, refresh_token=tokens.refresh_token,
             expires_at=tokens.expires_at, external_user_id=provider, external_user_name=server.name))

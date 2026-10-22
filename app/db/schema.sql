@@ -1487,3 +1487,18 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_org_url ON mcp_servers (org_id, url);
 -- An MCP sign-in uses PKCE; its verifier (encrypted) waits on the state row.
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;
+
+-- Agent mode writes only through MCP servers since 2026-10-22: the built-in
+-- Linear/GitHub/Notion/Google/Slack actions are gone. Their per-person write
+-- tokens and their on/off rows are dead weight (a stored token nobody uses is
+-- still a token), so they are removed once. Sign-ins to MCP servers
+-- (``mcp:<id>``) and the Agent-mode/surface switches stay.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'act_mcp_only') THEN
+        DELETE FROM user_connections WHERE provider NOT LIKE 'mcp:%';
+        DELETE FROM action_policies
+         WHERE action <> 'act' AND action NOT LIKE 'surface:%';
+        INSERT INTO schema_marks (name) VALUES ('act_mcp_only');
+    END IF;
+END $$;

@@ -1,29 +1,23 @@
 "use client";
 
 /**
- * Admin-only: whether the company uses Act, and which actions people may ask for.
+ * Admin-only: whether the company uses Agent mode, which tools it may use
+ * (each through its MCP server), and where people may ask from.
  *
- * Everything starts off. Turning an action on lets people ASK for it; each
- * write still needs that person's own approval and their own connected
- * account, so this page never grants anyone more than they already have in
- * the tool. There is no log here on purpose: what a person drafted is theirs,
- * and each tool records what was created, by whom.
+ * Everything starts off. Turning a tool on lets people ASK for it; each write
+ * still needs that person's own approval and their own sign-in, so this page
+ * never grants anyone more than they already have in the tool. There is no log
+ * here on purpose: what a person drafted is theirs, and each tool records what
+ * was created, by whom.
  */
 
 import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
+import { McpServersAdmin } from "@/components/McpServersAdmin";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type AdminActions } from "@/lib/api";
-
-const PROVIDERS = [
-  ["linear", "Linear", "Issues, sub-issues and comments, as the person"],
-  ["github", "GitHub", "Issues and comments, as the person (never code)"],
-  ["notion", "Notion", "Pages, comments and database rows"],
-  ["google", "Google Docs & Sheets", "New Docs and Sheets, private to the person who asked"],
-  ["slack", "Slack", "Channel posts, thread replies and DMs"],
-] as const;
 
 type Mode = "off" | "on";
 
@@ -95,13 +89,6 @@ export default function AdminActionsPage() {
     }
   }
 
-  const providerGroups = PROVIDERS.map(([key, label, description]) => ({
-    key,
-    label,
-    description,
-    actions: data?.catalogue.filter((action) => action.provider === key) ?? [],
-  })).filter((group) => group.actions.length > 0);
-
   return (
     <AppShell me={me} variant="admin">
       <main className="page-wide studio-page stack actions-admin-page">
@@ -154,48 +141,7 @@ export default function AdminActionsPage() {
           </div>
         )}
 
-        {data && (
-          <section className="studio-panel actions-permissions-panel" aria-labelledby="actions-catalogue">
-            <div className="studio-section-head">
-              <h2 id="actions-catalogue">Allowed actions</h2>
-              <p className="muted">
-                Turn on only the changes people should be able to request. Everything starts off.
-              </p>
-            </div>
-            <div className="actions-provider-grid">
-              {providerGroups.map((group) => {
-                const enabled = group.actions.filter((action) => action.enabled).length;
-                return (
-                  <article key={group.key} className="actions-provider-group">
-                    <header>
-                      <div>
-                        <h3>{group.label}</h3>
-                        <p>{group.description}</p>
-                      </div>
-                      <span>{enabled}/{group.actions.length} on</span>
-                    </header>
-                    <ul>
-                      {group.actions.map((action) => (
-                        <li key={action.name}>
-                          <label className="action-toggle">
-                            <span>{action.label.replace(/^.*?:\s*/, "")}</span>
-                            <input
-                              type="checkbox"
-                              checked={action.enabled}
-                              disabled={!data.enabled || busy === action.name}
-                              onChange={(event) => toggle(action.name, event.target.checked)}
-                              aria-label={`${action.enabled ? "Disable" : "Enable"} ${action.label}`}
-                            />
-                          </label>
-                        </li>
-                      ))}
-                    </ul>
-                  </article>
-                );
-              })}
-            </div>
-          </section>
-        )}
+        {data && <McpServersAdmin disabled={!data.enabled} />}
 
         {data && (
           <section className="studio-panel actions-slack-panel" aria-labelledby="actions-surfaces">

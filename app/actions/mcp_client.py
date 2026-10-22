@@ -172,6 +172,16 @@ def result_text(result: dict, limit: int = 4000) -> str:
 # -- Sign-in ---------------------------------------------------------------------------
 
 
+def result_json(result: dict) -> dict:
+    """A tool answer whose text is JSON (Linear's, Google's), as a dict; ``{}`` otherwise."""
+    text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _get_json(url: str, timeout: float = 10.0) -> dict | None:
     public_https(url)
     try:
@@ -196,9 +206,19 @@ def _well_known(base: str, name: str) -> list[str]:
         f"{root}/.well-known/{name}"]
 
 
-def discover(url: str, redirect_uri: str, *, timeout: float = 20.0) -> dict | None:
+def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None) -> dict | None:
     """How people sign in to this server, registered for Handbook; ``None``
-    when it needs no sign-in. Raises ``ActionRejected`` with the reason."""
+    when it needs no sign-in. Raises ``ActionRejected`` with the reason.
+
+    A ``preset`` (``mcp_presets``) supplies what a server does not: Handbook's
+    own app there when it cannot register Handbook (GitHub, Slack), or the
+    whole sign-in when it advertises none (Google)."""
+    if preset is not None and preset.oauth:
+        client_id, _secret = preset.client() if preset.client else (None, None)
+        if not client_id:
+            raise ActionRejected(f"{preset.name} needs Handbook's {preset.name} app configured first.")
+        return {**preset.oauth, "client_id": client_id, "client_secret": None, "preset": preset.key,
+                "resource": None}
     try:
         McpSession(url, None, timeout=timeout).open()
         return None
@@ -227,10 +247,23 @@ def discover(url: str, redirect_uri: str, *, timeout: float = 20.0) -> dict | No
         raise ActionRejected("The server's sign-in details are incomplete.")
     if "S256" not in (meta.get("code_challenge_methods_supported") or ["S256"]):
         raise ActionRejected("The server's sign-in doesn't support PKCE, so Handbook won't use it.")
+    for endpoint in (meta["authorization_endpoint"], meta["token_endpoint"]):
+        public_https(endpoint)
+    scopes = (resource or {}).get("scopes_supported") or []
+    if preset is not None:
+        scopes = preset.pick_scopes(scopes)
+    if preset is not None and preset.client and not meta.get("registration_endpoint"):
+        client_id, _secret = preset.client()
+        if not client_id:
+            raise ActionRejected(f"{preset.name} needs Handbook's {preset.name} app configured first.")
+        # Handbook's own app there; its secret stays in settings, never copied here.
+        return {"authorization_endpoint": meta["authorization_endpoint"],
+                "token_endpoint": meta["token_endpoint"], "client_id": client_id,
+                "client_secret": None, "preset": preset.key, "scope": " ".join(scopes) or None,
+                "resource": url}
     if not meta.get("registration_endpoint"):
         raise ActionRejected("The server doesn't let apps register themselves, so it can't be added yet.")
-    for endpoint in (meta["authorization_endpoint"], meta["token_endpoint"], meta["registration_endpoint"]):
-        public_https(endpoint)
+    public_https(meta["registration_endpoint"])
     try:
         registered = httpx.post(meta["registration_endpoint"], timeout=timeout, json={
             "client_name": "Handbook", "redirect_uris": [redirect_uri],
@@ -243,7 +276,6 @@ def discover(url: str, redirect_uri: str, *, timeout: float = 20.0) -> dict | No
         raise ActionRejected("Registering Handbook with the server failed.")
     from ..security import encrypt
 
-    scopes = (resource or {}).get("scopes_supported") or []
     return {
         "authorization_endpoint": meta["authorization_endpoint"],
         "token_endpoint": meta["token_endpoint"],
@@ -263,18 +295,31 @@ def pkce() -> tuple[str, str]:
 
 def authorize_url(oauth: dict, *, state: str, challenge: str, redirect_uri: str) -> str:
     params = {"response_type": "code", "client_id": oauth["client_id"], "redirect_uri": redirect_uri,
-              "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
-              "resource": oauth["resource"]}
+              "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
+    if oauth.get("resource"):
+        params["resource"] = oauth["resource"]
     if oauth.get("scope"):
         params["scope"] = oauth["scope"]
+    if oauth.get("preset"):
+        from .mcp_presets import PRESETS
+
+        params.update(PRESETS[oauth["preset"]].extra_auth_params)
     return f"{oauth['authorization_endpoint']}?{urlencode(params)}"
 
 
 def _token(oauth: dict, form: dict, *, timeout: float = 20.0) -> OAuthTokens:
     from ..security import decrypt
 
-    form = {**form, "client_id": oauth["client_id"], "resource": oauth["resource"]}
-    if oauth.get("client_secret"):
+    form = {**form, "client_id": oauth["client_id"]}
+    if oauth.get("resource"):
+        form["resource"] = oauth["resource"]
+    if oauth.get("preset"):
+        from .mcp_presets import PRESETS
+
+        _id, secret = PRESETS[oauth["preset"]].client()
+        if secret:
+            form["client_secret"] = secret
+    elif oauth.get("client_secret"):
         form["client_secret"] = decrypt(oauth["client_secret"])
     try:
         response = httpx.post(oauth["token_endpoint"], data=form, timeout=timeout,

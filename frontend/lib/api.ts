@@ -212,8 +212,6 @@ export interface ActCard {
   /** Whose name the tool will show: "as you", or "via Handbook Actions, for you"
    *  where the tool records its own bot (Notion pages). */
   attribution: string | null;
-  /** A Google Doc or Sheet whose folder can be picked in Google's picker. */
-  folder_choice?: boolean;
   target: { kind: string; external_id: string; name: string; url: string | null };
   payload: { title?: string; body?: string; text?: string; details?: [string, string][] };
   /** The drafted words as shown and edited (a Slack post without the line
@@ -237,20 +235,10 @@ export interface ActCard {
   user_email?: string | null;
 }
 
-export interface ActProvider {
-  provider: string;
-  needed: boolean;
-  connected: boolean;
-  needs_reauth: boolean;
-  account: string | null;
-  /** False when this Handbook isn't set up to connect it (e.g. no Notion Act client). */
-  available: boolean;
-}
-
+/** What this person can draft now: the MCP tools turned on for servers they signed in to. */
 export interface ActStatus {
   enabled: boolean;
   actions: { name: string; label: string; provider: string }[];
-  providers: ActProvider[];
   recent?: ActCard[];
 }
 
@@ -263,7 +251,6 @@ export interface SpaceAct {
 export interface AdminActions {
   enabled: boolean;
   block_wider: boolean;
-  catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
   /** Slack DMs / Slack channels, each switched on apart. */
   surfaces: { name: string; label: string; enabled: boolean }[];
 }
@@ -285,6 +272,15 @@ export interface McpServerAdmin {
   auth: "none" | "oauth";
   enabled: boolean;
   tools: McpTool[];
+}
+
+/** A connector's own MCP server, added in one click. */
+export interface McpPreset {
+  key: string;
+  name: string;
+  url: string;
+  note: string;
+  added: boolean;
 }
 
 export interface McpServerMine {
@@ -872,13 +868,6 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
   actStatus: () => request<ActStatus>("/act/status"),
-  googlePicker: () =>
-    request<{ api_key: string; app_id: string; token: string }>("/act/google/picker"),
-  chooseActionFolder: (actionId: string, payloadHash: string, folderId: string) =>
-    request<{ action: ActCard }>(`/act/actions/${actionId}/folder`, {
-      method: "POST",
-      body: JSON.stringify({ payload_hash: payloadHash, folder_id: folderId }),
-    }),
   /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
   act: (question: string, workspaceId?: string | null, model?: string | null) =>
     request<{ reply: string; action: ActCard | null; actions?: ActCard[] }>("/act", {
@@ -922,18 +911,23 @@ export const api = {
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
       method: "POST",
     }),
-  actConnectUrl: (provider: string) => `${API_BASE_URL}/act/connect/${provider}`,
-  disconnectActProvider: (provider: string) =>
-    request<{ deleted: boolean }>(`/act/connections/${provider}`, { method: "DELETE" }),
   adminActions: () => request<AdminActions>("/admin/actions"),
   setAdminAction: (name: string, enabled: boolean) =>
     request<{ name: string; enabled: boolean }>(`/admin/actions/${encodeURIComponent(name)}`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
-  adminMcp: () => request<{ servers: McpServerAdmin[]; sign_in_ready: boolean }>("/admin/mcp"),
-  addMcpServer: (name: string, url: string) =>
-    request<McpServerAdmin>("/admin/mcp", { method: "POST", body: JSON.stringify({ name, url }) }),
+  adminMcp: () =>
+    request<{ servers: McpServerAdmin[]; presets: McpPreset[]; sign_in_ready: boolean }>("/admin/mcp"),
+  /** Add a connector by its preset key, or any server by name and address. */
+  addMcpServer: (server: { preset: string } | { name: string; url: string }) =>
+    request<McpServerAdmin>("/admin/mcp", { method: "POST", body: JSON.stringify(server) }),
+  /** "recommended": reads as lookups, allowed writes as writes (each approved on a card). */
+  setMcpModes: (id: string, choice: "recommended" | "off") =>
+    request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ choice }),
+    }),
   refreshMcpServer: (id: string) =>
     request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
   setMcpToolMode: (id: string, tool: string, mode: McpTool["mode"]) =>

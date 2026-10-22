@@ -1,4 +1,4 @@
-"""Act mode, Phase 3: Slack (docs/plans/2026-10-13-write-actions.md).
+"""Agent mode in Slack (docs/plans/2026-10-13-write-actions.md).
 
 Pinned here:
 - a message that asks, in plain words, for something to be done proposes a
@@ -7,10 +7,8 @@ Pinned here:
   before, and with Act off ``act`` is just a question;
 - a DM drafts from what the PERSON can read; a channel drafts from that
   channel only, as the room, and shows the card only to the asker;
-- the bot posts naming the asker; from a channel only into the same thread;
-  elsewhere only into a channel the asker named, the bot is in and the asker
-  belongs to (a list cut short is "can't check"); a public channel is public;
-- a drafted ping or disguised link arrives as inert text;
+- the card names the tool by its MCP server, and a drafted ping or disguised
+  link arrives as inert text;
 - only the person who asked can approve, the tick travels with the click,
   and each Slack surface has its own admin switch;
 - a person is found by a prior work address too.
@@ -30,17 +28,37 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app.actions import ActionContext, Audience, Source, assess, policy, service
-from app.actions import slack as slack_action
-from app.actions.exposure import PUBLIC
+from app.actions import policy, service
+from app.actions.base import Action
 from app.actions.store import ActionRow
 from app.api import slack_act, slack_events
 from app.config.settings import ActionsSettings
-from app.core.exceptions import ActionConflict, ActionRejected, NotFoundError
+from app.core.exceptions import ActionConflict, NotFoundError
 from app.sources.slack_utils import channel_tag
 from app.vectorstore.base import Viewer
 
 from .conftest import requires_db
+
+
+class FakeTool(Action):
+    """A stand-in MCP write tool: the card and outcome name it by its server."""
+
+    name = "mcp:test:create"
+    provider = "mcp:test"
+    label = "Linear: Create issue"
+    tool: dict = {}
+
+    def prepare(self, args, ctx):  # pragma: no cover - never drafted here
+        raise NotImplementedError
+
+    def execute(self, key, target, payload, token):  # pragma: no cover
+        raise NotImplementedError
+
+
+@pytest.fixture(autouse=True)
+def _tool(monkeypatch):
+    monkeypatch.setattr(slack_act, "get_action",
+                        lambda name, org_id=None: FakeTool() if name == FakeTool.name else None)
 
 
 # --------------------------------------------------------------------------
@@ -197,15 +215,6 @@ def test_a_channel_drafts_from_that_channel_only_as_the_room(act_env, monkeypatc
     assert act_env["said"][0]["is_dm"] is False  # shown to the asker only
 
 
-def test_a_spaces_slack_bot_carries_act_too(monkeypatch):
-    """A space's connection is the same bot in the same Slack: the post goes
-    through it when there is no company-wide one."""
-    monkeypatch.setattr(slack_action, "_bot_scope", lambda org: "space-1")
-    monkeypatch.setattr(slack_action, "get_live_connection_token",
-                        lambda org, provider, workspace_id=None: f"{provider}:{workspace_id}")
-    assert slack_action.SlackPostMessage().token_for("o", "u", "slack_channel") == "slack:space-1"
-
-
 def test_the_card_shown_in_a_channel_is_ephemeral(monkeypatch):
     posted = []
     monkeypatch.setattr(slack_act, "_post", lambda token, method, payload: posted.append(
@@ -216,146 +225,13 @@ def test_the_card_shown_in_a_channel_is_ephemeral(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Posting to Slack (Slack's API faked)
-# --------------------------------------------------------------------------
-
-
-class FakeSlack:
-    def __init__(self, channels, members, users=(), complete=True):
-        self.channels, self.members, self.users, self.complete = channels, members, list(users), complete
-
-    def get(self, token, method, params):
-        if method == "conversations.info":
-            return {"channel": next(c for c in self.channels if c["id"] == params["channel"])}
-        raise AssertionError(method)
-
-    def pages(self, token, method, params, key):
-        if method == "conversations.list":
-            return self.channels, True
-        if method == "conversations.members":
-            return self.members, self.complete
-        if method == "users.list":
-            return self.users, True
-        raise AssertionError(method)
-
-
-ENG = {"id": "C1", "name": "eng", "is_private": True, "is_member": True}
-GENERAL = {"id": "C2", "name": "general", "is_private": False, "is_member": True}
-SECRET = {"id": "C3", "name": "secret", "is_private": True, "is_member": False}
-
-
-@pytest.fixture
-def fake_slack(monkeypatch):
-    def install(fake):
-        monkeypatch.setattr(slack_action, "_get", fake.get)
-        monkeypatch.setattr(slack_action, "_pages", fake.pages)
-        return fake
-    return install
-
-
-def _sctx(question, surface):
-    return ActionContext("org", None, "u1", "a@x.com", question, "xoxb", (), None, surface)
-
-
-def test_from_a_channel_it_only_replies_in_that_thread(fake_slack):
-    fake_slack(FakeSlack([ENG, GENERAL], ["U1"], users=[{"id": "U1", "profile": {"email": "a@x.com"}}]))
-    here = {"kind": "slack_channel", "slack_user": "U1", "channel": "C1", "thread_ts": "7.7"}
-    proposal = slack_action.SlackPostMessage().prepare({"text": "Filed it."}, _sctx("act post it", here))
-    assert proposal.target.external_id == "C1" and proposal.payload["thread_ts"] == "7.7"
-    with pytest.raises(ActionRejected, match="only reply in this thread"):
-        slack_action.SlackPostMessage().prepare({"channel": "#general", "text": "x"},
-                                                _sctx("act post in #general", here))
-
-
-def test_elsewhere_the_channel_must_be_named_joined_and_yours(fake_slack):
-    dm = {"kind": "slack_dm", "slack_user": "U1"}
-    post = slack_action.SlackPostMessage()
-    fake_slack(FakeSlack([ENG, SECRET], ["U1"], users=[{"id": "U1", "profile": {"email": "a@x.com"}}]))
-    proposal = post.prepare({"channel": "#eng", "text": "Hi"}, _sctx("post in #eng: hi", dm))
-    assert proposal.target.external_id == "C1" and proposal.payload["thread_ts"] is None
-    with pytest.raises(ActionRejected, match="Name the Slack channel"):
-        post.prepare({"channel": "#eng", "text": "Hi"}, _sctx("post the summary", dm))
-    with pytest.raises(ActionRejected, match="Invite @Handbook"):
-        post.prepare({"channel": "secret", "text": "Hi"}, _sctx("post in secret", dm))
-    fake_slack(FakeSlack([ENG], ["U2"]))
-    with pytest.raises(ActionRejected, match="member of #eng"):
-        post.prepare({"channel": "eng", "text": "Hi"}, _sctx("post in eng", dm))
-    fake_slack(FakeSlack([ENG], ["U1"], complete=False))
-    with pytest.raises(ActionRejected, match="member of #eng"):
-        post.prepare({"channel": "eng", "text": "Hi"}, _sctx("post in eng", dm))
-
-
-def test_a_public_channel_never_gets_private_content(fake_slack):
-    fake_slack(FakeSlack([GENERAL], ["U1"]))
-    proposal = slack_action.SlackPostMessage().prepare(
-        {"channel": "general", "text": "Reorg is on"}, _sctx("post in general", {"kind": "slack_dm", "slack_user": "U1"}))
-    assert proposal.audience == Audience(public=True)
-    secret = Source("d", "Reorg plan", public=False, viewers=("a@x.com",))
-    assert assess([secret], proposal.audience, asker="a@x.com").verdict == PUBLIC
-
-
-def test_a_private_channels_audience_is_its_people(fake_slack):
-    fake_slack(FakeSlack([ENG], ["U1", "U2", "UBOT"], users=[
-        {"id": "U1", "profile": {"email": "a@x.com"}},
-        {"id": "U2", "profile": {"email": "b@x.com"}},
-        {"id": "UBOT", "is_bot": True, "profile": {}}]))
-    proposal = slack_action.SlackPostMessage().prepare(
-        {"channel": "eng", "text": "x"}, _sctx("post in eng", {"kind": "slack_dm", "slack_user": "U1"}))
-    assert proposal.audience == Audience(members=("a@x.com", "b@x.com"))
-
-
-def test_a_drafted_ping_or_disguised_link_is_inert(fake_slack):
-    fake_slack(FakeSlack([ENG], ["U1"], users=[{"id": "U1", "profile": {"email": "a@x.com"}}]))
-    proposal = slack_action.SlackPostMessage().prepare(
-        {"channel": "eng", "text": "<!channel> click <https://evil.example/?d=x|here>"},
-        _sctx("post in eng", {"kind": "slack_dm", "slack_user": "U1"}))
-    text = proposal.payload["text"]
-    assert text.startswith("<@U1> asked Handbook to post this:\n")
-    body = text.split("\n", 1)[1]
-    assert "<!channel>" not in body and "&lt;!channel&gt;" in body
-    assert "evil.example" not in body  # not in the asker's words, so removed
-
-
-def test_inside_slack_the_bot_writes_and_from_the_web_the_person_does(monkeypatch):
-    monkeypatch.setattr(slack_action, "_bot_scope", lambda org: None)
-    monkeypatch.setattr(slack_action, "get_live_connection_token",
-                        lambda org, provider, workspace_id=None: f"{provider}:{workspace_id}")
-    monkeypatch.setattr("app.auth.user_connections.fresh_user_token",
-                        lambda org, user, provider: f"own:{provider}:{user}")
-    post = slack_action.SlackPostMessage()
-    assert post.token_for("o", "u", "slack_dm") == "slack:None"
-    assert post.token_for("o", "u", "slack_channel") == "slack:None"
-    assert post.token_for("o", "u", "web") == "own:slack:u"
-
-
-def test_from_the_web_it_posts_as_the_person_in_a_channel_they_named_and_are_in(fake_slack):
-    web = {"kind": "web"}
-    post = slack_action.SlackPostMessage()
-    fake_slack(FakeSlack([ENG, GENERAL, SECRET], ["U1", "U2"], users=[
-        {"id": "U1", "profile": {"email": "a@x.com"}}, {"id": "U2", "profile": {"email": "b@x.com"}}]))
-    proposal = post.prepare({"channel": "#eng", "text": "Deploy is done"}, _sctx("post in #eng: deploy is done", web))
-    assert proposal.payload == {"text": "Deploy is done", "thread_ts": None, "as_person": True}
-    assert proposal.audience == Audience(members=("a@x.com", "b@x.com"))
-    assert post.attribution_for(proposal.payload) == "as you"
-    assert post.editable(proposal.payload) == {"body": "Deploy is done"}
-    edited = post.edit(proposal.payload, {"body": "Deploy is done, please test"})
-    assert edited["text"] == "Deploy is done, please test" and edited["as_person"] is True
-    public = post.prepare({"channel": "general", "text": "x"}, _sctx("post in general", web))
-    assert public.audience == Audience(public=True)
-    with pytest.raises(ActionRejected, match="member of #secret"):
-        post.prepare({"channel": "secret", "text": "Hi"}, _sctx("post in secret", web))
-    with pytest.raises(ActionRejected, match="Name the Slack channel"):
-        post.prepare({"channel": "#eng", "text": "Hi"}, _sctx("post the summary", web))
-
-
-# --------------------------------------------------------------------------
 # The click
 # --------------------------------------------------------------------------
 
 
 def _row(**over):
     base = dict(id=str(uuid.uuid4()), org_id="o", workspace_id=None, user_id="u1",
-                conversation_id=None, surface="slack_channel", action="linear.create_issue",
+                conversation_id=None, surface="slack_channel", action=FakeTool.name,
                 target={"name": "Platform (PLA)"}, payload={"title": "T", "body": "x" * 3500},
                 payload_hash="h" * 64, sources=[{"title": "Reorg", "public": False}],
                 exposure="wider", acknowledged=False, status="proposed", expires_at=None,
@@ -416,7 +292,7 @@ def test_approve_sends_the_shown_hash_and_the_tick(click_env):
     slack_act.decide(*_click("U1", "act_approve", f"{aid}:{'h' * 64}", ticked=True))
     [kw] = click_env["confirm"]
     assert kw["action_id"] == aid and kw["shown_hash"] == "h" * 64 and kw["acknowledged"] is True
-    assert click_env["said"][-1][0].startswith("✅ Done: *PLA-9* · <https://linear.app/x|Open in Linear>")
+    assert click_env["said"][-1][0].startswith("✅ Done: *T* · <https://linear.app/x|Open in Linear>")  # the approved title names it
 
 
 def test_someone_else_cannot_approve(click_env):
@@ -471,7 +347,6 @@ def org(store, org_cleanup, monkeypatch):
     org_cleanup.append(org_id)
     admin = create_admin(f"act3-{uuid.uuid4().hex[:8]}@example.com", org_id)
     policy.set_policy(org_id, policy.ACT_KEY, True)
-    policy.set_policy(org_id, "linear.create_issue", True)
     return SimpleNamespace(id=org_id, admin=admin)
 
 
@@ -516,11 +391,10 @@ def test_a_dm_says_it_is_drafting_then_becomes_the_card(act_env, monkeypatch):
 
 
 @pytest.mark.parametrize("action, result, payload, target, shown, tool", [
-    ("linear.create_issue", {"external_id": "SYV-21"}, {"title": "T"}, {}, "SYV-21", "Linear"),
-    ("slack.post_message", {"external_id": "1792146193.424979"}, {"text": "x"},
-     {"name": "#rag-updates (this thread)"}, "#rag-updates (this thread)", "Slack"),
-    ("drive.create_doc", {"external_id": "1AbCdEf"}, {"title": "Retro"}, {"name": "Your Google Drive"},
-     "Retro", "Google Docs"),
+    (FakeTool.name, {"external_id": "SYV-21"}, {"body": "x"}, {}, "SYV-21", "Linear"),
+    (FakeTool.name, {"external_id": "1AbCdEf"}, {"title": "Retro"}, {"name": "Linear"}, "Retro", "Linear"),
+    (FakeTool.name, {}, {}, {"name": "Platform (PLA)"}, "Platform (PLA)", "Linear"),
+    ("linear.create_issue", {"external_id": "SYV-21"}, {}, {}, "SYV-21", "the tool"),  # retired built-in
 ])
 def test_done_names_what_was_made_and_links_to_it(action, result, payload, target, shown, tool):
     row = _row(action=action, status="succeeded", payload=payload, target=target,
@@ -538,10 +412,10 @@ def test_a_second_click_shows_the_outcome_with_its_link(click_env, monkeypatch):
 
     monkeypatch.setattr(slack_act.service, "confirm", conflict)
     monkeypatch.setattr(slack_act.store, "get", lambda org, user, aid: _row(
-        action="drive.create_doc", status="succeeded", payload={"title": "Retro"},
-        result={"external_id": "1Ab", "url": "https://docs.google.com/d/1Ab"}))
+        status="succeeded", payload={"title": "Retro"},
+        result={"external_id": "1Ab", "url": "https://linear.app/x/1Ab"}))
     slack_act.decide(*_click("U1", "act_approve", f"{uuid.uuid4()}:{'h' * 64}"))
-    assert click_env["said"][-1][0] == "✅ Done: *Retro* · <https://docs.google.com/d/1Ab|Open in Google Docs>"
+    assert click_env["said"][-1][0] == "✅ Done: *Retro* · <https://linear.app/x/1Ab|Open in Linear>"
 
 
 def test_a_click_on_a_card_in_a_thread_answers_in_that_thread(click_env, monkeypatch):
@@ -574,94 +448,6 @@ def test_a_typed_email_reads_as_typed_so_the_dm_request_is_found():
     assert slack_act.asks_to_act(slack_act.plain_slack_text(text), llm=Model())
 
 
-def test_asked_in_a_dm_the_bot_messages_the_person_named(fake_slack, monkeypatch):
-    """From Slack the bot posts, and it asked for a channel when the person
-    wanted a DM. It DMs only someone the asker wrote, saying who asked."""
-    from app.actions.base import Action
-    from app.core.exceptions import ConfigurationError
-
-    def no_own_slack(self, *a, **k):
-        raise ConfigurationError("not connected")
-
-    monkeypatch.setattr(Action, "token_for", no_own_slack)
-    raj = {"id": "U7", "name": "raj", "profile": {"email": "Raj@x.com", "real_name": "Raj D"}}
-    fake_slack(FakeSlack([], [], users=[raj, {"id": "U1", "profile": {"email": "a@x.com"}}]))
-    dm = {"kind": "slack_dm", "slack_user": "U1"}
-    post = slack_action.SlackPostMessage()
-    proposal = post.prepare({"person": "raj@x.com", "text": "Demo is live"},
-                            _sctx("DM raj@x.com: Demo is live", dm))
-    assert (proposal.target.kind, proposal.target.external_id) == ("slack_user", "U7")
-    assert proposal.payload["text"].startswith("<@U1> asked Handbook to send you this:\n")
-    assert proposal.audience == Audience(members=("raj@x.com", "a@x.com"))
-    with pytest.raises(ActionRejected):                      # a person they never wrote
-        post.prepare({"person": "raj@x.com", "text": "x"}, _sctx("DM someone: x", dm))
-    here = {"kind": "slack_channel", "slack_user": "U1", "channel": "C1", "thread_ts": "7.7"}
-    with pytest.raises(ActionRejected, match="DM me"):       # never from a channel
-        post.prepare({"person": "raj@x.com", "text": "x"}, _sctx("DM raj@x.com: x", here))
-
-
-@pytest.mark.parametrize("as_person, fix", [(True, "Reconnect Slack"), (False, "im:write bot scope")])
-def test_a_missing_dm_scope_names_the_right_fix(monkeypatch, as_person, fix):
-    """From Slack the bot sends, so "reconnect your Slack" sent people the wrong way."""
-    class Refused:
-        def json(self):
-            return {"ok": False, "error": "missing_scope"}
-
-    monkeypatch.setattr(slack_action.httpx, "post", lambda *a, **k: Refused())
-    payload = {"text": "hi", "thread_ts": None, **({"as_person": True} if as_person else {})}
-    with pytest.raises(slack_action.ActionError, match=fix):
-        slack_action.SlackPostMessage().execute(
-            "k", {"kind": "slack_user", "external_id": "U7"}, payload, "tok")
-
-
-
-def test_with_their_own_slack_a_dm_asked_in_slack_comes_from_them(fake_slack, monkeypatch):
-    """Raj should get it from Sana, noting Handbook, not from the bot."""
-    from app.actions.base import Action
-
-    monkeypatch.setattr(Action, "token_for", lambda self, *a, **k: "xoxp-own")
-    raj = {"id": "U7", "name": "raj", "profile": {"email": "raj@x.com", "real_name": "Raj D"}}
-    fake_slack(FakeSlack([], [], users=[raj]))
-    post = slack_action.SlackPostMessage()
-    proposal = post.prepare({"person": "raj@x.com", "text": "Demo is live"},
-                            _sctx("DM raj@x.com: Demo is live", {"kind": "slack_dm", "slack_user": "U1"}))
-    assert proposal.payload["as_person"] is True and proposal.payload["text"] == "Demo is live"
-    assert proposal.payload["footer"] == "_Sent with Handbook_"
-    assert ["Ends with", "Sent with Handbook"] in proposal.payload["details"]
-    # Sent with their sign-in, though it was asked in Slack.
-    assert post.token_for("org", "u1", "slack_dm", payload=proposal.payload) == "xoxp-own"
-
-    sent = []
-
-    class Ok:
-        def __init__(self, body):
-            self.body = body
-
-        def json(self):
-            return self.body
-
-    def fake_post(url, json, timeout, headers):
-        sent.append((url.rsplit("/", 1)[1], json))
-        return Ok({"ok": True, "channel": {"id": "D9"}, "ts": "1.2"})
-
-    monkeypatch.setattr(slack_action.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_action, "_get", lambda t, m, p: {"permalink": "https://slack/x"})
-    result = post.execute("k", {"kind": "slack_user", "external_id": "U7"}, proposal.payload, "xoxp-own")
-    assert sent[-1][1]["text"] == "Demo is live\n_Sent with Handbook_"
-    assert result.url == "https://slack/x"           # their own DM with Raj: they can open it
-
-
-def test_the_bots_dm_has_no_link_the_asker_could_not_open(monkeypatch):
-    class Ok:
-        def json(self):
-            return {"ok": True, "channel": {"id": "D9"}, "ts": "1.2"}
-
-    monkeypatch.setattr(slack_action.httpx, "post", lambda *a, **k: Ok())
-    result = slack_action.SlackPostMessage().execute(
-        "k", {"kind": "slack_user", "external_id": "U7"}, {"text": "<@U1> asked…\nhi", "thread_ts": None}, "xoxb")
-    assert result.url is None
-
-
 @pytest.fixture
 def change_env(monkeypatch):
     seen = {"replies": [], "posts": [], "edits": [], "revises": []}
@@ -669,19 +455,18 @@ def change_env(monkeypatch):
     monkeypatch.setattr(slack_act, "_clicker", lambda payload, url, container: (
         "o", "xoxb", user, lambda body, replace=True: seen["replies"].append((body, replace))))
     monkeypatch.setattr(slack_act, "_post", lambda token, method, body: seen["posts"].append((method, body)) or {})
-    row = _row(action="slack.post_message", payload={"text": "Hi Raj", "as_person": True},
-               exposure="none")
+    row = _row(payload={"body": "Hi Raj"}, exposure="none")
     seen["row"] = row
     monkeypatch.setattr(slack_act.store, "get", lambda org, uid, aid: seen["row"])
 
     def edit(**kw):
         seen["edits"].append(kw)
-        return _row(**{**seen["row"].__dict__, "payload": {"text": kw["fields"]["body"], "as_person": True},
+        return _row(**{**seen["row"].__dict__, "payload": {"body": kw["fields"]["body"]},
                        "payload_hash": "n" * 64})
 
     def revise(**kw):
         seen["revises"].append(kw)
-        return _row(**{**seen["row"].__dict__, "payload": {"text": "Shorter.", "as_person": True},
+        return _row(**{**seen["row"].__dict__, "payload": {"body": "Shorter."},
                        "payload_hash": "r" * 64})
 
     monkeypatch.setattr(slack_act.service, "edit", edit)
@@ -716,7 +501,7 @@ def test_edit_on_a_slack_card_opens_the_words_and_redraws_the_card(change_env):
     assert kw["fields"] == {"body": "Hi Raj, log in today"} and kw["shown_hash"] == row.payload_hash
     body, replace = change_env["replies"][-1]
     assert replace and "n" * 64 in json.dumps(body["blocks"])       # the new fingerprint is what Approve sends
-    assert "as you" in body["blocks"][0]["text"]["text"]           # a DM as the person says so
+    assert "as you, in Linear" in body["blocks"][0]["text"]["text"]  # named by its server
 
 
 def test_ask_for_changes_reworks_with_the_model_and_an_unchanged_edit_does_nothing(change_env):

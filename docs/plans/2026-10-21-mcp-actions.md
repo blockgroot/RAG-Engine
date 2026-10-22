@@ -1,5 +1,6 @@
 # Other tools through MCP
 
+> **Superseded 2026-10-22:** Agent mode now writes ONLY through MCP; see [2026-10-22-mcp-only-actions.md](2026-10-22-mcp-only-actions.md).
 > **Status (2026-10-21): built, local.** Admin › Actions → "Other tools (MCP)";
 > Account → Agent lists each server to sign in to.
 

@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * Act on the Account page: the accounts Handbook writes with for this person,
- * and what they asked it to do.
+ * Agent on the Account page: the person's own sign-in to each tool an admin
+ * added (an MCP server), and what they asked Handbook to do.
  *
- * A write runs as the person's OWN account, so it has their rights and shows
- * them as its author; this is where they connect and disconnect those
- * accounts. Requests are made in the chat (+ then Act). Drafts still waiting
- * can be approved, edited or cancelled from the history here.
+ * A write runs with the person's OWN sign-in, so it has their rights and shows
+ * them as its author; this is where they sign in and out. Requests are made in
+ * the chat (Agent mode). Drafts still waiting can be approved, edited or
+ * cancelled from the history here.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -16,22 +16,11 @@ import Link from "next/link";
 import { ActionCard } from "@/components/ActionCard";
 import { ApiError, api, type ActCard, type ActStatus, type McpServerMine } from "@/lib/api";
 
-const PROVIDER_LABEL: Record<string, string> = {
-  linear: "Linear",
-  github: "GitHub",
-  notion: "Notion",
-  google: "Google Docs & Sheets",
-  slack: "Slack",
-  mcp: "That tool",
-};
-
-/** Why a connect was refused. Each is about keeping company content inside
- *  the company: Handbook only writes into the company's own workspace. */
+/** Why a sign-in was refused: Handbook only writes into the company's own
+ *  workspace, with the person's work account, so company content stays inside. */
 const CONNECT_ERROR: Record<string, string> = {
   workspace:
-    "That account is in a different workspace from your company's. Connect the account you use for work.",
-  account:
-    "That account isn't your work account. Connect the one that uses the email you sign in to Handbook with.",
+    "That account isn't your company's workspace or your work account. Sign in with the one you use for work.",
 };
 
 const HISTORY_STATUS: Record<ActCard["status"], string> = {
@@ -47,8 +36,7 @@ const HISTORY_STATUS: Record<ActCard["status"], string> = {
 function ActionHistoryRow({ action }: { action: ActCard }) {
   // The label names the app ("Google Sheets: create a new sheet"): a Doc or
   // Sheet is stored in Drive but opens in its own app.
-  const provider =
-    action.label.split(":")[0] || PROVIDER_LABEL[action.provider ?? ""] || action.provider || "tool";
+  const provider = action.label.split(":")[0] || "the tool";
   const actionName = action.label.replace(/^.*?:\s*/, "");
   return (
     <article className="account-action-row">
@@ -113,16 +101,8 @@ export function ActPanel() {
     const params = new URLSearchParams(window.location.search);
     const connected = params.get("connected");
     const failed = params.get("connect_error");
-    if (connected)
-      setNotice(
-        `${PROVIDER_LABEL[connected] ?? connected} is connected. Handbook can now act for you there, after you approve.`,
-      );
-    if (failed) {
-      setError(
-        CONNECT_ERROR[params.get("reason") ?? ""] ??
-          `Couldn’t connect ${PROVIDER_LABEL[failed] ?? failed}. Try again.`,
-      );
-    }
+    if (connected) setNotice("Signed in. Handbook can now act for you there, after you approve each draft.");
+    if (failed) setError(CONNECT_ERROR[params.get("reason") ?? ""] ?? "Couldn’t sign you in. Try again.");
     if (connected || failed)
       window.history.replaceState(null, "", "/account#act");
   }, []);
@@ -137,23 +117,9 @@ export function ActPanel() {
     }
   }
 
-  async function disconnect(provider: string) {
-    setError(null);
-    try {
-      await api.disconnectActProvider(provider);
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not disconnect.");
-    }
-  }
-
   function updated(next: ActCard) {
     setRecent((all) => [next, ...all.filter((a) => a.id !== next.id)]);
   }
-
-  const shownProviders = (status?.providers ?? []).filter(
-    (p) => p.needed || p.connected || p.needs_reauth,
-  );
 
   if (status && !status.enabled) return null;
 
@@ -167,8 +133,8 @@ export function ActPanel() {
         <div className="studio-section-head">
           <h2 id="act-title">Agent</h2>
           <p className="muted">
-            The accounts Handbook writes with for you, after you approve each
-            draft. Ask in the chat.
+            Sign in to each tool Handbook may write to for you. Every draft waits for your
+            approval. Ask in the chat.
           </p>
         </div>
         <Link
@@ -190,57 +156,19 @@ export function ActPanel() {
         </div>
       )}
 
-      {status && status.actions.length === 0 && mcp.length === 0 ? (
+      {status && mcp.length === 0 ? (
         <p className="muted">
-          Your admin hasn&rsquo;t switched on any actions yet.
+          Your admin hasn&rsquo;t added any tools for Agent mode yet.
         </p>
       ) : status ? (
         <>
           <div className="account-act-accounts">
             <div className="account-act-section-head">
-              <h3>Connected accounts</h3>
-              <p>Actions are sent using your identity in each tool.</p>
+              <h3>Your sign-ins</h3>
+              <p>Drafts are sent with your own account in each tool.</p>
             </div>
             <ul className="act-providers">
-              {shownProviders.map((p) => (
-                <li key={p.provider} className="act-provider">
-                  <div className="act-provider-copy">
-                    <span className="act-provider-name">
-                      {PROVIDER_LABEL[p.provider] ?? p.provider}
-                    </span>
-                    {!p.available && !p.connected ? (
-                      <span className="act-status-note">
-                        Admin setup required
-                      </span>
-                    ) : p.connected ? (
-                      <span className="act-status-ready">
-                        Connected as {p.account}
-                      </span>
-                    ) : (
-                      <span className="act-status-note">
-                        {p.needs_reauth ? "Connection expired" : "Not connected"}
-                      </span>
-                    )}
-                  </div>
-                  {p.connected ? (
-                    <button
-                      type="button"
-                      className="act-text-button"
-                      onClick={() => disconnect(p.provider)}
-                    >
-                      Disconnect
-                    </button>
-                  ) : p.available ? (
-                    <a
-                      className="button button-secondary button-sm"
-                      href={api.actConnectUrl(p.provider)}
-                    >
-                      {p.needs_reauth ? "Reconnect" : "Connect"}
-                    </a>
-                  ) : null}
-                </li>
-              ))}
-              {/* Other tools an admin added through MCP: each signed in to apart. */}
+              {/* Each tool an admin added (an MCP server), signed in to apart. */}
               {mcp.map((m) => (
                 <li key={m.id} className="act-provider">
                   <div className="act-provider-copy">
