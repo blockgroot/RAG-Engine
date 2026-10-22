@@ -50,7 +50,14 @@ class McpUnauthorized(OAuthReauthRequiredError):
 
 
 def public_https(url: str) -> str:
-    """``url`` if it is https to a public address, else ``ActionRejected``."""
+    """``url`` if it is https to a public address, else ``ActionRejected``.
+    Handbook's own servers (``mcp_host_url``, set by the operator, never by an
+    admin) are trusted as configured, so they also work on a local address."""
+    from ..config.settings import ActionsSettings
+
+    own = ActionsSettings.from_env().mcp_host_url
+    if own and (url or "").startswith(own.rstrip("/") + "/"):
+        return url
     parsed = urlparse(url or "")
     if parsed.scheme != "https" or not parsed.hostname:
         raise ActionRejected("An MCP server address must start with https://.")

@@ -33,6 +33,7 @@ from ..core.exceptions import (
     AuthError,
     ConfigurationError,
     LLMProviderError,
+    LLMRateLimitError,
     NotFoundError,
     OAuthReauthRequiredError,
 )
@@ -287,6 +288,18 @@ class ActRequest(BaseModel):
 
 _MODEL_DOWN = ("The model is temporarily unavailable or experiencing high demand. "
                "Nothing was sent. Please try again in a few minutes.")
+_MODEL_UNPAID = ("The model's API key is out of credit or over its quota. Nothing was sent. "
+                 "An admin can add credit, or choose another model in Admin › Model.")
+
+
+def _model_down(exc: LLMProviderError) -> str:
+    """Out of credit or quota is not "try again in a minute": say so, so an
+    admin tops it up instead of everyone retrying (the provider's own words
+    are the only signal; a 429 is the quota by our rules)."""
+    said = str(exc).lower()
+    if isinstance(exc, LLMRateLimitError) or "credit balance" in said or "quota" in said:
+        return _MODEL_UNPAID
+    return _MODEL_DOWN
 
 
 def _act_args(body: ActRequest, session: SessionClaims) -> dict:
@@ -329,7 +342,7 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
         outcome = service.propose(args.pop("question"), **args)
     except LLMProviderError as exc:
         logger.warning("Act model unavailable: %s", exc)
-        raise HTTPException(status_code=503, detail=_MODEL_DOWN) from exc
+        raise HTTPException(status_code=503, detail=_model_down(exc)) from exc
     return _act_reply(outcome)
 
 
@@ -349,7 +362,7 @@ def act_stream(body: ActRequest, session: SessionClaims = Depends(get_session)):
             yield _sse_event("done", _act_reply(service.propose(args.pop("question"), **args)))
         except LLMProviderError as exc:
             logger.warning("Act model unavailable: %s", exc)
-            yield _sse_event("error", {"message": _MODEL_DOWN, "status": 503})
+            yield _sse_event("error", {"message": _model_down(exc), "status": 503})
 
     return StreamingResponse(_with_progress(run), media_type="text/event-stream")
 

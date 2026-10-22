@@ -323,9 +323,14 @@ installation token for READING stays minted read-only (`mint_installation_token`
 An account must be the company's: checked after sign-in (`account_check`: Linear's
 workspace id is a connected one, Google's email is the person's) or on each write's
 target (`target_check`: a GitHub repo in a company installation), or company content
-leaves the company. Google's servers advertise no sign-in, so the preset carries it,
-with `drive.file` only. Drive and Sheets are one "Google Workspace" (`Preset.group`):
-added together, one row, and one sign-in saved for each server (signed out together). The model only fills in tool forms (at most
+leaves the company. Slack's and Google's HOSTED MCP servers are gated (internal or
+Marketplace apps; a Developer Preview), so those two are Handbook's own MCP servers
+(`app/mcphost`, `POST /mcp/<name>`, address `ActionsSettings.mcp_host_url`) over the
+vendors' REGULAR APIs, as Onyx does: no credentials of their own, the person's token
+is the bearer and is only forwarded. Slack posts with the person's USER token (never
+the bot's); Google uses `drive.file` + `documents` + `spreadsheets` (no restricted
+scope) and writes cells RAW, never formulas. Names ("#general", a Sheet's title) are
+resolved there, so a target stays the asker's words. The model only fills in tool forms (at most
 `service.MAX_ACTIONS` per request, each its own card, checked and approved on its
 own; a refused one never stops the rest and is said): a write runs only from
 `confirm`, by the person who proposed it, before `expires_at`, with the STORED

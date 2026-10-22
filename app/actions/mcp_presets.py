@@ -1,13 +1,18 @@
-"""The five connectors' own MCP servers, as presets an admin adds in one click.
+"""The five connectors' MCP servers, as presets an admin adds in one click.
+
+Linear, Notion and GitHub are the vendors' own servers. Slack's and Google's
+hosted servers are gated (Slack: internal or Marketplace apps only; Google: a
+Developer Preview), so those two are Handbook's own servers over the vendors'
+regular APIs (``app/mcphost``), signed in to with Handbook's own apps.
 
 Agent mode writes only through MCP (docs/plans/2026-10-22-mcp-only-actions.md).
 A preset knows what a bare URL cannot:
 
 * **How people sign in.** Linear and Notion register Handbook themselves
-  (dynamic client registration). GitHub and Slack do not: the sign-in uses the
-  app Handbook already has there (``client``). Google's servers advertise no
-  sign-in at all, so the preset carries Google's endpoints and the one scope
-  Act uses (``oauth``): ``drive.file``, files Handbook made or the person picked.
+  (dynamic client registration). GitHub does not: the sign-in uses the GitHub
+  App (``client``). Slack and Google sign in through Handbook's own apps, with
+  the endpoints and scopes the preset carries (``oauth``): a Slack USER token,
+  and Google's ``drive.file`` + Docs + Sheets (files Handbook made or opened).
 * **Nothing about which tools may be switched on.** The admin decides; every
   tool starts off and every write is approved on a card. GitHub signs in
   through the GitHub App, so what GitHub itself allows is the App's
@@ -17,8 +22,8 @@ A preset knows what a bare URL cannot:
   (``account_check``) or on each write's target (``target_check``), as the
   built-in actions did; company content never lands in a personal workspace.
 
-* **Which servers are one product** (``group``): Google runs one server per
-  app; "Google Workspace" adds them together and one sign-in serves them all.
+* **Which servers are one product** (``group``): added together, one sign-in
+  for all. Unused today; kept for a vendor that splits a product across servers.
 
 A server added by URL with no preset keeps the generic rules: every tool off,
 lookups only for tools the server marks read-only.
@@ -146,13 +151,41 @@ def _slack_client() -> tuple[str | None, str | None]:
     return s.client_id, s.client_secret
 
 
+def _hosted(name: str) -> str:
+    """Handbook's own server for a vendor whose hosted MCP is gated (``app/mcphost``)."""
+    from ..config.settings import ActionsSettings
+
+    base = ActionsSettings.from_env().mcp_host_url or "https://handbook-mcp.invalid"
+    return f"{base.rstrip('/')}/{name}"
+
+
+def _slack_account(org_id: str, email: str, token: str) -> bool:
+    """The sign-in is to the Slack workspace the company connected."""
+    import httpx
+
+    from ..auth.credentials import connected_anywhere
+
+    company = {ext for ext, _cfg in connected_anywhere(org_id, "slack") if ext}
+    try:
+        team = httpx.post("https://slack.com/api/auth.test", timeout=15,
+                          headers={"Authorization": f"Bearer {token}"}).json().get("team_id")
+    except (httpx.HTTPError, ValueError):
+        return False
+    return bool(team) and team in company
+
+
 SLACK = Preset(
-    key="slack", name="Slack", url="https://mcp.slack.com/mcp", source="slack",
-    note="Slack lets only approved apps use it: your Slack admin must allow Handbook's app.",
+    key="slack", name="Slack", url=_hosted("slack"), source="slack",
+    note="Posts as the person who approves it, through Handbook's Slack app.",
     client=_slack_client,
-    # Reading and posting messages only: never channel management, files or canvases.
-    scopes=re.compile(r"^(channels|groups|im|mpim):(read|history)$|^(users|search)[:.]|^chat:write$"),
-    reads=re.compile(r"(search|read|get|list)", re.IGNORECASE),
+    # Slack's user sign-in (a user token, never the bot's). Slack's hosted MCP
+    # server takes only internal or Marketplace apps; its Web API takes ours.
+    oauth={"authorization_endpoint": "https://slack.com/oauth/v2_user/authorize",
+           "token_endpoint": "https://slack.com/api/oauth.v2.user.access",
+           "scope": "channels:read groups:read channels:history groups:history users:read "
+                    "users:read.email chat:write im:write"},
+    reads=re.compile(r"^(list_|find_|read_)"),
+    account_check=_slack_account,
 )
 
 
@@ -181,37 +214,28 @@ def _google_account(org_id: str, email: str, token: str) -> bool:
 _GOOGLE_OAUTH = {
     "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
     "token_endpoint": "https://oauth2.googleapis.com/token",
-    # drive.file: only files Handbook created or the person picked, never the
-    # rest of their Drive (no restricted scope, no yearly assessment).
-    "scope": "openid email https://www.googleapis.com/auth/drive.file",
+    # drive.file: only files Handbook created or the person opened with it;
+    # documents and spreadsheets edit those. None is restricted, so there is
+    # no yearly security assessment (Onyx's cloud makes the same choice).
+    "scope": "openid email https://www.googleapis.com/auth/drive.file "
+             "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets",
 }
 
-GOOGLE_DRIVE = Preset(
-    key="google_drive", name="Google Drive", url="https://drivemcp.googleapis.com/mcp/v1", source="google",
-    note="Google's MCP servers are in Developer Preview. Handbook reaches only files it made or you picked.",
-    client=_google_client, oauth=_GOOGLE_OAUTH, group="google_workspace",
+GOOGLE_WORKSPACE = Preset(
+    key="google_workspace", name="Google Workspace", url=_hosted("google"), source="google",
+    note="Docs and Sheets. Handbook reaches only files it made or that you opened with it.",
+    client=_google_client, oauth=_GOOGLE_OAUTH,
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
-    reads=re.compile(r"^(get_|read_|search_|list_)"),
+    reads=re.compile(r"^(search_|read_)"),
     account_check=_google_account,
 )
 
-GOOGLE_SHEETS = Preset(
-    key="google_sheets", name="Google Sheets", url="https://sheetsmcp.googleapis.com/mcp/v1", source="google",
-    note="Google's MCP servers are in Developer Preview. Handbook reaches only Sheets it made or you picked.",
-    client=_google_client, oauth=_GOOGLE_OAUTH, group="google_workspace",
-    extra_auth_params={"access_type": "offline", "prompt": "consent"},
-    reads=re.compile(r"^get_"),
-    account_check=_google_account,
-)
-
-PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_DRIVE, GOOGLE_SHEETS)}
+PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_WORKSPACE)}
 
 
-#: How a group is shown and added: one tile, one sign-in.
-GROUPS: dict[str, dict] = {"google_workspace": {
-    "name": "Google Workspace",
-    "note": "Drive and Sheets, with one Google sign-in. Google's MCP servers are in Developer Preview.",
-}}
+#: How a group is shown and added: one tile, one sign-in. None today: Google
+#: Workspace became one server of Handbook's own (``app/mcphost``).
+GROUPS: dict[str, dict] = {}
 
 
 def in_group(group: str) -> list[Preset]:

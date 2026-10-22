@@ -326,28 +326,6 @@ def test_an_admin_adds_a_server_and_chooses_each_tools_mode(client, server, stor
 
 
 @requires_db
-def test_google_workspace_is_one_tile_adding_drive_and_sheets(client, store, org_cleanup, monkeypatch):
-    from app.actions import policy
-    from app.auth import create_admin, create_session_token
-
-    monkeypatch.setenv("MCP_REDIRECT_URI", "https://hb.example/api/act/mcp/callback")
-    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
-    org_cleanup.append(org_id)
-    admin = create_admin(f"mcp-{uuid.uuid4().hex[:8]}@example.com", org_id)
-    cookies = {"session": create_session_token(admin)}
-    policy.set_policy(org_id, policy.ACT_KEY, True)
-
-    tiles = {t["key"]: t for t in client.get("/admin/mcp", cookies=cookies).json()["presets"]}
-    assert "google_workspace" in tiles and "google_drive" not in tiles and "google_sheets" not in tiles
-    assert client.post("/admin/mcp", json={"preset": "google_workspace"}, cookies=cookies).status_code == 200
-    after = client.get("/admin/mcp", cookies=cookies).json()
-    assert sorted(s["name"] for s in after["servers"]) == ["Google Drive", "Google Sheets"]
-    assert {s["group"] for s in after["servers"]} == {"google_workspace"}
-    assert next(t for t in after["presets"] if t["key"] == "google_workspace")["added"]
-    assert [s["name"] for s in client.get("/act/mcp", cookies=cookies).json()["servers"]] == ["Google Workspace"]
-
-
-@requires_db
 def test_a_space_owner_only_switches_tools_off_for_their_space(client, server, store, org_cleanup):
     from app.actions import policy
     from app.actions.factory import get_action

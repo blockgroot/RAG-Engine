@@ -34,8 +34,15 @@ guards are Handbook's and stay.
 | Linear | Linear registers Handbook itself | after sign-in: `get_workspace` id is a connected workspace |
 | Notion | Notion registers Handbook itself | none yet (Notion's MCP has no workspace id we use) |
 | GitHub | Handbook's GitHub App (no self-registration at GitHub) | each write: the repo is in a company installation |
-| Slack | Handbook's Slack app | none yet |
-| Google Workspace (Drive + Sheets) | Handbook's Google OAuth client, `drive.file` only, one sign-in for both | after sign-in: the Google email is the person's |
+| Slack | **Handbook's own server** (`app/mcphost/slack.py`) over Slack's Web API; Handbook's Slack app, a USER sign-in | after sign-in: the Slack workspace is the company's |
+| Google Workspace | **Handbook's own server** (`app/mcphost/google.py`) over Docs, Sheets and Drive; Handbook's Google client, `drive.file` + `documents` + `spreadsheets` | after sign-in: the Google email is the person's |
+
+**Slack and Google (2026-10-22 revision).** Their hosted MCP servers are gated:
+Slack's takes only internal or Marketplace apps, Google's only Developer Preview
+projects. Like Onyx, Handbook calls their regular APIs instead, with each
+person's own token, served as MCP at `/mcp/slack` and `/mcp/google` so Agent
+mode is unchanged. The package can become its own service by setting
+`HANDBOOK_MCP_URL`.
 
 **Nothing is blocked (2026-10-22 revision).** Every tool a server lists can be
 switched on; the admin decides, and "Turn all on" turns on everything. A
@@ -47,11 +54,12 @@ write today), Slack's user scopes, Google's `drive.file`.
 ## Setup outside Handbook
 
 - **GitHub App:** add `<FRONTEND_URL>/api/act/mcp/callback` to its callback URLs.
-- **Slack app:** add the same redirect URL; Slack's MCP accepts only approved
-  apps (internal or Marketplace) and the workspace admin must allow it.
-- **Google:** the Drive/Sheets MCP servers are in Developer Preview: the Cloud
-  project must be accepted, the MCP APIs enabled, and the redirect URL added to
-  the OAuth client.
+- **Slack app:** add the same redirect URL, and these **User Token Scopes**:
+  `channels:read groups:read channels:history groups:history users:read
+  users:read.email chat:write im:write`. No MCP toggle and no Marketplace needed.
+- **Google:** add the redirect URL to the OAuth client; enable the **Google Docs
+  API**, **Google Sheets API** and **Google Drive API**; add the `documents` and
+  `spreadsheets` scopes to the consent screen (sensitive, not restricted).
 - `FRONTEND_URL` (or `MCP_REDIRECT_URI`) set on the backend.
 
 ## What was removed
