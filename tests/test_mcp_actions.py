@@ -176,7 +176,9 @@ def test_every_tool_starts_off_and_a_changed_tool_turns_off_again():
 def test_destructive_tools_are_marked_not_blocked_and_lookups_must_be_read_only():
     assert mcp_store.destructive(DELETE) and mcp_store.destructive({"name": "merge_pull_request"})
     assert not mcp_store.destructive(CREATE) and not mcp_store.destructive({"name": "disclose_report"})
-    assert mcp_store.destructive({"name": "x", "annotations": {"destructiveHint": True}})
+    # Linear marks ordinary saves destructive; only the name decides.
+    assert not mcp_store.destructive({"name": "save_issue", "annotations": {"destructiveHint": True}})
+    assert mcp_store.destructive({"name": "trash_file"}) and mcp_store.destructive({"name": "retire_issue_label"})
     server = _server({"create_task": "lookup", "delete_task": "write"})
     assert server.mode("create_task") == "off"             # a lookup must be read-only
     assert server.mode("delete_task") == "write"           # the admin's choice stands
@@ -305,9 +307,9 @@ def test_an_admin_adds_a_server_and_chooses_each_tools_mode(client, server, stor
     sid = added["id"]
     assert client.put(f"/admin/mcp/{sid}/tools/delete_task", json={"mode": "write"}, cookies=cookies).json()["mode"] == "write"
     client.put(f"/admin/mcp/{sid}/tools", json={"choice": "off"}, cookies=cookies)
-    turned = client.put(f"/admin/mcp/{sid}/tools", json={"choice": "recommended"}, cookies=cookies).json()
+    turned = client.put(f"/admin/mcp/{sid}/tools", json={"choice": "all"}, cookies=cookies).json()
     assert {t["name"]: t["mode"] for t in turned["tools"]} == {
-        "create_task": "write", "list_projects": "lookup", "delete_task": "off"}   # never by "turn all on"
+        "create_task": "write", "list_projects": "lookup", "delete_task": "write"}  # all, labelled
     client.put(f"/admin/mcp/{sid}/tools", json={"choice": "off"}, cookies=cookies)
     assert client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "lookup"}, cookies=cookies).status_code == 400
     assert client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "write"}, cookies=cookies).json()["mode"] == "write"

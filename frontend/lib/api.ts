@@ -954,8 +954,8 @@ export const api = {
   /** Add a connector by its preset key, or any server by name and address. */
   addMcpServer: (server: { preset: string } | { name: string; url: string }) =>
     request<McpServerAdmin>("/admin/mcp", { method: "POST", body: JSON.stringify(server) }),
-  /** "recommended": reads as lookups, allowed writes as writes (each approved on a card). */
-  setMcpModes: (id: string, choice: "recommended" | "off") =>
+  /** "all": reads as lookups, every write as a write (each approved on a card). */
+  setMcpModes: (id: string, choice: "all" | "off") =>
     request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/tools`, {
       method: "PUT",
       body: JSON.stringify({ choice }),

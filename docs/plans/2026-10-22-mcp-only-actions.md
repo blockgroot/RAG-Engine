@@ -21,7 +21,7 @@ guards are Handbook's and stay.
    Google Drive, Google Sheets) or any server by address. Sign in to it yourself
    under Account → Agent, then **Refresh tools**. Set each tool to Off, **Read**
    (runs while drafting, no card) or **Write** (a card), or click **Turn all
-   on** (reads as Read, writes as Write, destructive tools left as they are).
+   on** (reads as Read, writes as Write).
 2. **Each person signs in** to each server under Account → Agent, with their own
    account. Never a shared key for writes.
 3. **Ask in Agent mode.** Reads run while drafting; each write is a card the
@@ -38,9 +38,9 @@ guards are Handbook's and stay.
 | Google Workspace (Drive + Sheets) | Handbook's Google OAuth client, `drive.file` only, one sign-in for both | after sign-in: the Google email is the person's |
 
 **Nothing is blocked (2026-10-22 revision).** Every tool a server lists can be
-switched on; the admin decides. A destructive tool (deletes, merges, closes…) is
-labelled, never switched on by "Turn all on", asks the admin to confirm, and its
-card says it cannot be undone. Every write is still a card the person approves.
+switched on; the admin decides, and "Turn all on" turns on everything. A
+destructive tool (by name: deletes, merges, closes…; not MCP's `destructiveHint`,
+which also marks ordinary saves) is labelled, and its card says it cannot be undone. Every write is still a card the person approves.
 What the vendor allows still applies: the GitHub App's permissions (Issues:
 write today), Slack's user scopes, Google's `drive.file`.
 

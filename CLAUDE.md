@@ -308,9 +308,10 @@ the Slack bot import nothing from it. **Every write goes through an MCP server a
 admin added** (`actions/mcp*.py`; the five connectors are presets in
 `mcp_presets.py`); there are no hand-written per-tool actions. Every tool starts
 off; the admin sets each to off, read ("lookup": runs while drafting, no card) or
-write (a card). Nothing is blocked by Handbook: the admin decides. A destructive
-tool (name or `destructiveHint`, `mcp_store.destructive`) is never turned on by
-"Turn all on", asks the admin to confirm, and its card says it cannot be undone.
+write (a card). Nothing is blocked by Handbook: the admin decides ("Turn all on"
+turns on everything). A destructive tool is decided by its NAME (`mcp_store.destructive`;
+MCP's `destructiveHint` also marks ordinary saves such as Linear's `save_issue`): it is
+labelled, and its card says it cannot be undone.
 A read must be marked read-only by the server or the preset, and a tool whose
 schema changed is off again (hash). Each person signs in to each server with their
 own account (`user_connections`, provider `mcp:<id>`), never a shared or admin key

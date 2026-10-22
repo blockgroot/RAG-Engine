@@ -7,9 +7,9 @@ choice is stored with the hash of the tool's schema and description: a tool
 the server later changes is OFF again until an admin looks at it, so an
 update on the server's side never widens what Handbook may do.
 
-Nothing is blocked: the admin decides. A tool whose name or hints say it
-deletes, merges, closes or rewrites is marked DESTRUCTIVE: "turn all on" skips
-it (the admin turns it on by itself), and its card says it cannot be undone.
+Nothing is blocked: the admin decides. A tool whose name says it deletes,
+merges, closes or rewrites is labelled DESTRUCTIVE, and its card says it
+cannot be undone.
 Like every write it still runs only on the person's approval. A server's own hints are only hints (MCP says so),
 so "read-only" never makes a tool a lookup by itself; the admin must choose
 it, and only a tool the server ALSO marks read-only can be a lookup.
@@ -30,9 +30,13 @@ from ..db.connection import get_connection
 MODES = ("off", "lookup", "write")
 
 #: Names that delete, merge, close, move or rewrite things: destructive,
-#: whatever the server says.
+#: whatever the server says. Decided by the NAME only: MCP's ``destructiveHint``
+#: also covers ordinary updates (Linear marks ``save_issue`` and ``save_comment``
+#: destructive because they can edit), which would label creating an issue
+#: as something that cannot be undone.
 _DESTRUCTIVE = re.compile(
-    r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|close|merge|revoke|transfer|"
+    r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|trash|retire|unshare|unpublish|"
+    r"close|merge|revoke|transfer|"
     r"push|commit|reset|revert|force|ban|kick|deactivate|disable|cancel|wipe|truncate|"
     r"uninstall|rename|move|edit_file|write_file|create_branch|update_file)", re.IGNORECASE)
 
@@ -93,9 +97,7 @@ def read_only(tool: dict) -> bool:
 
 
 def destructive(tool: dict) -> bool:
-    hints = tool.get("annotations") or {}
-    return bool(_DESTRUCTIVE.search(tool.get("name") or "")) or (
-        hints.get("destructiveHint") is True and not hints.get("readOnlyHint"))
+    return bool(_DESTRUCTIVE.search(tool.get("name") or ""))
 
 
 _COLUMNS = "id::text, org_id::text, name, url, auth, oauth, tools, tool_modes, enabled"

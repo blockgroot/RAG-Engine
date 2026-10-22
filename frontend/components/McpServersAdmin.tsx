@@ -14,8 +14,7 @@ import { ApiError, api, type McpPreset, type McpServerAdmin, type McpTool } from
  *
  * A switch turns a tool on in the only mode it can have: a read-only tool runs
  * while drafting, anything else drafts a card the person approves. Nothing is
- * blocked; a destructive tool is marked, never turned on by "Turn all on", and
- * asks the admin to confirm.
+ * blocked; a destructive tool is labelled, and its card says it cannot be undone.
  */
 
 const BRANDS: Record<string, BrandName> = {
@@ -101,14 +100,7 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
   const each = (row: Row, work: (s: McpServerAdmin) => Promise<unknown>) =>
     run(row.key, () => Promise.all(row.servers.map(work)));
 
-  function setTool(server: McpServerAdmin, tool: McpTool, on: boolean, label: string) {
-    if (
-      on &&
-      tool.destructive &&
-      !window.confirm(`${label} can delete or change things in ${server.name} that can't be undone. Each use still waits for the person's approval. Turn it on?`)
-    ) {
-      return;
-    }
+  function setTool(server: McpServerAdmin, tool: McpTool, on: boolean) {
     void run(`${server.id}:${tool.name}`, () =>
       api.setMcpToolMode(server.id, tool.name, on ? (tool.read_only ? "lookup" : "write") : "off"),
     );
@@ -249,8 +241,7 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                             type="button"
                             className="mcp-link"
                             disabled={disabled || busy === row.key}
-                            title="Destructive tools stay as they are: turn each on by itself"
-                            onClick={() => void each(row, (s) => api.setMcpModes(s.id, "recommended"))}
+                            onClick={() => void each(row, (s) => api.setMcpModes(s.id, "all"))}
                           >
                             Turn all on
                           </button>
@@ -299,7 +290,7 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                                         type="checkbox"
                                         checked={tool.mode !== "off"}
                                         disabled={disabled || busy === `${server.id}:${tool.name}`}
-                                        onChange={(e) => setTool(server, tool, e.target.checked, label)}
+                                        onChange={(e) => setTool(server, tool, e.target.checked)}
                                         aria-label={`${label} ${tool.mode !== "off" ? "on" : "off"}`}
                                       />
                                     </label>

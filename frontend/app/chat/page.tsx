@@ -1474,7 +1474,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         </form>
         {actMode ? (
           <p className="muted chat-model-note" role="status">
-            Agent mode drafts up to three actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
+            Agent mode drafts up to five actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
             in this chat; find them under <Link href="/account#act">Account → Agent</Link>.
           </p>
         ) : (chartMode || modelNote) && (

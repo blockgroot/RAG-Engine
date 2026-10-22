@@ -165,18 +165,15 @@ def admin_tool_mode(server_id: str, tool: str, body: ToolMode, session: SessionC
 
 
 class BulkModes(BaseModel):
-    #: "recommended": every read as a lookup and every write as a write (each
-    #: still approved on a card), except destructive ones, which the admin turns
-    #: on one by one; "off": everything off.
-    choice: str = Field(pattern="^(recommended|off)$")
+    #: "all": every read as a lookup and every write as a write, destructive
+    #: ones included (labelled; each still approved on a card); "off": all off.
+    choice: str = Field(pattern="^(all|off)$")
 
 
 @router.put("/admin/mcp/{server_id}/tools")
 def admin_bulk_modes(server_id: str, body: BulkModes, session: SessionClaims = Depends(require_admin)):
     server = _server(session.org_id, server_id)
     for tool in server.tools:
-        if body.choice == "recommended" and mcp_store.destructive(tool):
-            continue  # left as the admin set it, one by one
         mode = "off" if body.choice == "off" else ("lookup" if server.is_read(tool) else "write")
         mcp_store.set_mode(session.org_id, server, tool["name"], mode)
         server = mcp_store.get_server(session.org_id, server.id)
