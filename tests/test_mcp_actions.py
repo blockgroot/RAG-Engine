@@ -444,3 +444,22 @@ def test_two_quick_switches_both_stick_and_turn_all_on_is_one_write(store, org_c
     mcp_store.set_modes(org_id, now, {"create_task": "off", "delete_task": "write"})
     now = mcp_store.get_server(org_id, stale.id)
     assert (now.mode("create_task"), now.mode("list_projects"), now.mode("delete_task")) == ("off", "lookup", "write")
+
+
+def test_recent_cards_reuse_the_servers_read_once(monkeypatch):
+    """The Agent page's twenty cards resolve their tools from one read of the
+    servers, never one server read each (that page took ~9s)."""
+    from datetime import datetime, timezone
+
+    from app.api.actions import _card
+
+    def no_reads(*a, **k):
+        raise AssertionError("read a server per card")
+
+    monkeypatch.setattr(mcp_store, "get_server", no_reads)
+    srv = _server({"create_task": "write"})
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(id="a1", action=f"mcp:{srv.id}:create_task", org_id="org", payload={"title": "t"},
+                          target={}, original_payload=None, payload_hash="h", status="succeeded", exposure="none",
+                          acknowledged=False, sources=[], result=None, expires_at=now, created_at=now)
+    assert _card(row, servers={srv.id: srv})["label"] == "Asana: Create task"

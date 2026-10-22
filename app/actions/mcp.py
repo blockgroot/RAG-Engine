@@ -260,11 +260,17 @@ def mcp_actions(org_id: str, user_id: str, workspace_id: str | None = None) -> l
     return out
 
 
-def get_mcp_action(name: str, org_id: str | None) -> Action | None:
-    """A stored row's MCP action, from the server as it is now."""
+def get_mcp_action(name: str, org_id: str | None,
+                   servers: dict[str, mcp_store.McpServer] | None = None) -> Action | None:
+    """A stored row's MCP action, from the server as it is now. ``servers``
+    (by id, read once) spares a list of cards one server read per card."""
     parts = name.split(":", 2)
     if org_id is None or len(parts) != 3:
         return None
+    if servers is not None:
+        server = servers.get(parts[1])
+        tool = server.tool(parts[2]) if server else None
+        return McpToolAction(server, tool) if tool else None
     try:
         server = mcp_store.get_server(org_id, parts[1])
     except Exception:  # noqa: BLE001 - a malformed id is an unknown action

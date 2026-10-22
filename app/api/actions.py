@@ -209,10 +209,15 @@ def _retired_label(name: str) -> str:
     return f"{service.SOURCE_NAMES.get(app, app.title())}: {op.replace('_', ' ') or 'action'}"
 
 
-def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
+def _card(row: ActionRow, exposure: Exposure | None = None, servers: dict | None = None) -> dict:
     """What the Act page shows. Never a token; source titles only (the person
     could read every one of them when they asked)."""
-    cls = get_action(row.action, row.org_id)
+    if servers is not None and row.action.startswith("mcp:"):
+        from ..actions.mcp import get_mcp_action
+
+        cls = get_mcp_action(row.action, row.org_id, servers)
+    else:
+        cls = get_action(row.action, row.org_id)
     return {
         "id": row.id,
         "action": row.action,
@@ -248,12 +253,16 @@ def act_status(session: SessionClaims = Depends(get_session)):
     if not policy.act_on(session.org_id):
         return {"enabled": False, "actions": [], "recent": []}
     from ..actions.mcp import mcp_actions
+    from ..actions.mcp_store import list_servers
 
+    # Read once for all twenty cards: one server read per card (each with its
+    # whole tool list) took this page to ~9s.
+    servers = {s.id: s for s in list_servers(session.org_id)}
     return {
         "enabled": True,
         "actions": [{"name": a.name, "label": a.label, "provider": a.provider}
                     for a in mcp_actions(session.org_id, session.user_id) if not a.lookup],
-        "recent": [_card(r) for r in store.list_for_org(
+        "recent": [_card(r, servers=servers) for r in store.list_for_org(
             session.org_id, user_id=session.user_id, limit=20)],
     }
 
