@@ -63,6 +63,53 @@ def _schema(tool: dict) -> dict:
             "required": [r for r in schema.get("required") or [] if isinstance(r, str)]}
 
 
+_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
+
+
+def form_problem(schema: Any, value: Any, where: str = "the form") -> str | None:
+    """What the server's own schema would refuse, said for the model to fix:
+    types, allowed values, required and unknown keys, ``anyOf``/``oneOf``. A
+    subset of JSON Schema, enough to catch a form filled in wrong before the
+    person approves it (a write that fails after approval wastes their tick)."""
+    if not isinstance(schema, dict) or value is None:
+        return None
+    for key in ("anyOf", "oneOf"):
+        if isinstance(schema.get(key), list) and schema[key]:
+            problems = [form_problem(sub, value, where) for sub in schema[key]]
+            if all(problems):
+                return problems[0]
+    kinds = schema.get("type")
+    kinds = [k for k in (kinds if isinstance(kinds, list) else [kinds]) if k in _TYPES]
+    if kinds and not any(isinstance(value, _TYPES[k]) and not (isinstance(value, bool) and k != "boolean")
+                         for k in kinds):
+        return f"{where} must be {' or '.join(kinds)}"
+    if isinstance(schema.get("enum"), list) and value not in schema["enum"]:
+        return f"{where} must be one of {', '.join(map(str, schema['enum'][:10]))}"
+    if isinstance(value, dict):
+        props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        missing = [r for r in schema.get("required") or [] if isinstance(r, str) and r not in value]
+        if missing:
+            return f"{where} needs {', '.join(missing)}"
+        if schema.get("additionalProperties") is False:
+            unknown = [k for k in value if k not in props]
+            if unknown:
+                return f"{where} has no field {', '.join(unknown)} (its fields: {', '.join(props)})"
+        for k, v in value.items():
+            problem = form_problem(props.get(k), v, k if where == "the form" else f"{where}.{k}")
+            if problem:
+                return problem
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            problem = form_problem(schema.get("items"), v, f"{where}[{i}]")
+            if problem:
+                return problem
+    return None
+
+
+class _Ungrounded(ActionRejected):
+    """A value that is in neither the request, a lookup, nor the tool's definition."""
+
+
 def _describe(server: mcp_store.McpServer, tool: dict) -> str:
     """The server's own description is outside text: scrubbed and short. The
     admin read it before allowing the tool."""
@@ -104,6 +151,13 @@ class McpToolAction(Action):
                   payload: dict[str, Any] | None = None) -> str:
         return "" if self.server.auth == "none" else super().token_for(org_id, user_id, surface)
 
+    def form_problem(self, args: dict[str, Any]) -> str | None:
+        """``form_problem`` against this tool's own schema, on the fields the
+        server will receive (not Handbook's ``request_words``/``document_words``)."""
+        sent = {k: v for k, v in args.items()
+                if k not in ("request_words", "document_words") and v not in (None, "")}
+        return form_problem(self.mcp_tool.get("inputSchema"), sent)
+
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         schema = _schema(self.mcp_tool)
         props = schema["properties"]
@@ -119,7 +173,19 @@ class McpToolAction(Action):
         # The tool's own definition: a default or example it documents is its
         # own value (a mimeType), never something a passage put there.
         defined = json.dumps(self.mcp_tool, default=str)
-        cleaned = {k: self._clean(k, v, props[k], ctx, uris, defined) for k, v in given.items()}
+        # An optional value the asker never gave (a state, a label the model
+        # added) is left out and said on the card; only a required one refuses.
+        cleaned, left_out = {}, []
+        for k, v in given.items():
+            try:
+                cleaned[k] = self._clean(k, v, props[k], ctx, uris, defined)
+            except _Ungrounded:
+                if k in schema["required"]:
+                    raise
+                left_out.append(k)
+        problem = self.form_problem(cleaned)
+        if problem:
+            raise ActionRejected(f"{self.server.name}'s form wasn't filled in as it expects: {problem}.")
         if body_key and not cleaned.get(body_key):
             raise ActionRejected("The draft is empty.")
         preset = self.server.preset
@@ -131,6 +197,8 @@ class McpToolAction(Action):
                                        ("Can't be undone", f"Once approved, {self.server.name} can't reverse this "
                                         f"({mcp_store.tool_title(self.mcp_tool, self.server.name).lower()})."
                                         if mcp_store.destructive(self.mcp_tool) else None),
+                                       ("Left out", f"{', '.join(left_out)} (not in your request)"
+                                        if left_out else None),
                                        *((k, _short(v)) for k, v in cleaned.items()
                                          if k not in (title_key, body_key)))}
         if title_key:
@@ -165,7 +233,7 @@ class McpToolAction(Action):
         if (asked_in(text, ctx.question) or (ctx.lookups and text in ctx.lookups)
                 or (len(text) >= 3 and text in defined)):
             return value
-        raise ActionRejected(f"{self.server.name}'s {key} must come from your request. Name it, then ask again.")
+        raise _Ungrounded(f"{self.server.name}'s {key} must come from your request. Name it, then ask again.")
 
     def execute(self, key: str, target: dict[str, Any], payload: dict[str, Any], token: str) -> ActionResult:
         arguments = dict(payload.get("args") or {})

@@ -403,8 +403,9 @@ def test_prose_is_found_by_field_name_and_nested_values_are_grounded():
     page = {"request_words": "create a page", "pages": [{"properties": {"title": "Notes"}, "content": "- one"}]}
     made = mcp.McpToolAction(server, pages).prepare(page, _ctx("create a Notion page titled Notes"))
     assert made.payload["args"]["pages"][0]["content"] == "- one"
-    with pytest.raises(ActionRejected, match="page_id must come from your request"):
-        mcp.McpToolAction(server, pages).prepare({**page, "parent": {"page_id": "abc-123"}}, _ctx("create a page"))
+    # An invented id under an optional field is left out and said, never sent.
+    made = mcp.McpToolAction(server, pages).prepare({**page, "parent": {"page_id": "abc-123"}}, _ctx("create a page"))
+    assert "parent" not in made.payload["args"] and ["Left out", "parent (not in your request)"] in made.payload["details"]
 
 
 @requires_db
@@ -472,3 +473,42 @@ def test_servers_on_retired_vendor_addresses_move_onto_handbooks_own(store, org_
     assert slack.preset is mcp_presets.SLACK and not slack.enabled and slack.oauth["client_id"] == "slack-id"
     assert google.id == drive.id and google.preset is mcp_presets.GOOGLE_WORKSPACE
     assert google.tools == [] and google.tool_modes == {}
+
+
+def test_an_optional_value_nobody_asked_for_is_left_out_and_said():
+    """Linear's save_issue drafted a state the request never named; the whole
+    card was refused. An optional value is left out and the card says so."""
+    tool = {**CREATE, "inputSchema": {**CREATE["inputSchema"], "properties": {
+        **CREATE["inputSchema"]["properties"], "state": {"type": "string"}}}}
+    action = mcp.McpToolAction(_server({"create_task": "write"}), tool)
+    made = action.prepare({"request_words": "create a task", "project_id": "P-7", "title": "Fix login",
+                           "state": "Todo"}, _ctx("create a task in P-7: fix login"))
+    assert "state" not in made.payload["args"] and ["Left out", "state (not in your request)"] in made.payload["details"]
+
+
+NOTION_PAGES = {"name": "create_pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
+    "pages": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {
+        "properties": {"type": "object"}, "content": {"type": "string"}}}}}}}
+
+
+def test_a_form_the_tools_schema_refuses_is_caught_before_the_card():
+    """Notion refused a page with "title" where its schema has none, after the
+    person had approved it. The schema is checked before the card instead."""
+    bad = {"pages": [{"title": "Notes", "content": "- one"}]}
+    assert "has no field title" in mcp.form_problem(NOTION_PAGES["inputSchema"], bad)
+    assert mcp.form_problem(NOTION_PAGES["inputSchema"], {"pages": [{"properties": {"title": "Notes"}}]}) is None
+    assert mcp.form_problem({"type": "integer"}, True) == "the form must be integer"
+    assert mcp.form_problem({"anyOf": [{"type": "string"}, {"type": "array"}]}, ["x"]) is None
+
+
+def test_a_refused_form_goes_back_to_the_model_once(monkeypatch):
+    from app.actions import service
+
+    action = mcp.McpToolAction(_server(), NOTION_PAGES)
+    replies = iter([[(action, {"pages": [{"title": "Notes"}]})], [(action, {"pages": [{"properties": {"title": "Notes"}}]})]])
+    shown = []
+    monkeypatch.setattr(service, "_ask", lambda llm, q, passages, *a, **k: shown.append(passages) or next(replies))
+    picked = service._ask_with_lookups(None, "make a page", None, [], [action], org_id="o", user_id="u",
+                                       found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
+    assert picked[0][1] == {"pages": [{"properties": {"title": "Notes"}}]}
+    assert shown[0] is None and "has no field title" in shown[1]
