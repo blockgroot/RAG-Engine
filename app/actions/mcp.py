@@ -66,6 +66,18 @@ def _schema(tool: dict) -> dict:
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
 
 
+def _shape(schema: Any) -> str:
+    """One allowed form of a field, from its schema, for the model to copy
+    (Notion's ``parent`` is "memory" or {"page_id": …}; the model sent a bare id)."""
+    if not isinstance(schema, dict):
+        return "a value"
+    if isinstance(schema.get("enum"), list) and schema["enum"]:
+        return " or ".join(json.dumps(v) for v in schema["enum"][:4])
+    if schema.get("type") == "object" or schema.get("required"):
+        return "{" + ", ".join(f'"{k}": …' for k in (schema.get("required") or list(schema.get("properties") or {})[:2])) + "}"
+    return str(schema.get("type") or "a value")
+
+
 def form_problem(schema: Any, value: Any, where: str = "the form") -> str | None:
     """What the server's own schema would refuse, said for the model to fix:
     types, allowed values, required and unknown keys, ``anyOf``/``oneOf``. A
@@ -77,7 +89,10 @@ def form_problem(schema: Any, value: Any, where: str = "the form") -> str | None
         if isinstance(schema.get(key), list) and schema[key]:
             problems = [form_problem(sub, value, where) for sub in schema[key]]
             if all(problems):
-                return problems[0] if len(problems) == 1 else f"{where} matches none of the forms the tool accepts"
+                if len(problems) == 1:
+                    return problems[0]
+                shapes = ", ".join(_shape(sub) for sub in schema[key][:6])
+                return f"{where} must be one of: {shapes}"
     kinds = schema.get("type")
     kinds = [k for k in (kinds if isinstance(kinds, list) else [kinds]) if k in _TYPES]
     if kinds and not any(isinstance(value, _TYPES[k]) and not (isinstance(value, bool) and k != "boolean")

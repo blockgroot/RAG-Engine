@@ -501,8 +501,9 @@ def test_an_optional_field_in_a_shape_the_tool_does_not_take_is_left_out():
                           _ctx("make a page in memory"))
     assert "parent" not in made.payload["args"]
     assert ["Left out", "parent (not in a form Asana takes)"] in made.payload["details"]
-    assert mcp.form_problem(tool["inputSchema"]["properties"]["parent"], {"type": "memory"}, "parent") == \
-        "parent matches none of the forms the tool accepts"
+    # The model is told the forms it may use (it sent Notion a bare page id).
+    assert mcp.form_problem(tool["inputSchema"]["properties"]["parent"], "abc123", "parent") == \
+        'parent must be one of: {"page_id": …}, {"type": …}'
 
 
 NOTION_PAGES = {"name": "create_pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
