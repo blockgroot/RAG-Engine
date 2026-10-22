@@ -258,6 +258,13 @@ def mcp_callback(state: str = "", code: str | None = None):
         save_user_connection(org_id, user_id, provider, UserTokens(
             access_token=tokens.access_token, refresh_token=tokens.refresh_token,
             expires_at=tokens.expires_at, external_user_id=provider, external_user_name=server.name))
+        if not server.tools:
+            # The first sign-in lists the tools (all off), so the admin need
+            # not come back and press Refresh. Never fails the sign-in.
+            try:
+                mcp_store.set_tools(org_id, server.id, _list_tools(server.url, tokens.access_token))
+            except ProviderError as exc:
+                logger.info("mcp: listing tools after sign-in failed: %s", exc)
     except (OAuthError, ProviderError) as exc:
         logger.info("mcp: sign-in failed: %s", exc)
         return RedirectResponse(url=f"{base}/account?connect_error=mcp#act")

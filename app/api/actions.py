@@ -200,6 +200,15 @@ def _action_id(raw: str) -> str:
         raise HTTPException(status_code=404, detail="No such action.") from exc
 
 
+def _retired_label(name: str) -> str:
+    """A past action whose tool is gone (a built-in from before MCP, or a
+    removed server): "linear.comment" reads "Linear: comment"."""
+    if name.startswith("mcp:"):
+        return f"Removed tool: {name.rsplit(':', 1)[-1].replace('_', ' ')}"
+    app, _, op = name.partition(".")
+    return f"{service.SOURCE_NAMES.get(app, app.title())}: {op.replace('_', ' ') or 'action'}"
+
+
 def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
     """What the Act page shows. Never a token; source titles only (the person
     could read every one of them when they asked)."""
@@ -207,7 +216,7 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
     return {
         "id": row.id,
         "action": row.action,
-        "label": cls.label if cls else row.action,
+        "label": cls.label if cls else _retired_label(row.action),
         "attribution": cls.attribution_for(row.payload) if cls else None,
         "provider": cls.provider if cls else None,
         "target": row.target,
