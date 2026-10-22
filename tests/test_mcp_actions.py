@@ -188,7 +188,7 @@ def test_destructive_tools_are_marked_not_blocked_and_lookups_must_be_read_only(
 def test_a_destructive_card_says_it_cannot_be_undone():
     action = mcp.McpToolAction(_server({"delete_task": "write"}), DELETE)
     proposal = action.prepare({"request_words": "delete it"}, _ctx("delete it"))
-    assert proposal.payload["details"][0] == ["Can't be undone", "This deletes or changes something in Asana."]
+    assert proposal.payload["details"][0] == ["Can't be undone", "Once approved, Asana can't reverse this (delete task)."]
 
 
 # -- A drafted write --------------------------------------------------------------------------

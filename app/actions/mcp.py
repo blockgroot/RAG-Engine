@@ -132,7 +132,8 @@ class McpToolAction(Action):
 
         payload: dict[str, Any] = {"args": cleaned, "fields": {"title": title_key, "body": body_key},
                                    "details": details(
-                                       ("Can't be undone", f"This deletes or changes something in {self.server.name}."
+                                       ("Can't be undone", f"Once approved, {self.server.name} can't reverse this "
+                                        f"({mcp_store.tool_title(self.mcp_tool, self.server.name).lower()})."
                                         if mcp_store.destructive(self.mcp_tool) else None),
                                        *((k, _short(v)) for k, v in cleaned.items()
                                          if k not in (title_key, body_key)))}

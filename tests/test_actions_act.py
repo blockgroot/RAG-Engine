@@ -1107,3 +1107,12 @@ def test_act_stream_shows_the_steps_then_the_same_reply(client, org, monkeypatch
     assert events[-1][0] == "event: done" and '"reply": "noted"' in events[-1][1]
     assert client.post("/act/stream", json={"question": "x", "model": "nope"},
                        cookies=_cookies(org.admin)).status_code == 400
+
+
+def test_asked_in_a_thread_the_prompt_says_the_thread_is_the_content():
+    """"Update SYV-6 with the above description" in a thread: the model must fill
+    the form and name the thread, not ask for text the thread already holds."""
+    plain = service.build_act_prompt("update SYV-6 with the above", None)
+    threaded = service.build_act_prompt("update SYV-6 with the above", None, in_thread=True)
+    assert "Slack thread" not in plain and "Slack thread" in threaded
+    assert "Slack thread" not in service.build_act_prompt("q", "passages", in_thread=True)
