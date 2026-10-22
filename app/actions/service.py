@@ -214,7 +214,11 @@ def _ask_with_lookups(llm, question: str, passages: str | None, tools: list[dict
     picked: list = []
     why = None
     for part in parts[:MAX_ACTIONS]:
-        got = _draft_pass(llm, question, passages, tools, offered, focus=part, **kw)
+        # The part IS the request for its pass (the whole request is shown for
+        # reference only): ``_ask`` keeps a draft only when its asking words
+        # are in the part, so one part's action is never drafted from another
+        # (the whole request as the question drafted the Linear issue twice).
+        got = _draft_pass(llm, part, passages, tools, offered, focus=question, **kw)
         if isinstance(got, ActOutcome):
             why = why or got
             continue
@@ -302,8 +306,8 @@ def build_act_prompt(question: str, passages: str | None, *, in_thread: bool = F
         shown += ("- You already looked things up: what they returned is in the PASSAGES. "
                   "No more lookups are possible. Answer from them, or fill in a form.\n")
     if focus:
-        shown += (f"- The QUESTION asks for several actions. Draft only this one now: \"{focus}\". "
-                  "The others are drafted separately; do not draft them.\n")
+        shown += (f"- The QUESTION is one part of a longer request, shown here for reference only: "
+                  f"\"{focus}\". Its other parts are drafted separately. Draft only what the QUESTION asks.\n")
     if in_thread and passages is None:
         shown += (
             "- The QUESTION was asked inside a Slack thread. If it refers to anything "

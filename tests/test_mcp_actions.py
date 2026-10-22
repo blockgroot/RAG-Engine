@@ -546,8 +546,9 @@ def test_a_cards_link_is_a_page_never_an_api_address():
 
 def test_a_request_for_several_actions_is_split_and_each_part_drafted_once(monkeypatch):
     """GPT-OSS drafted only the Linear issue of "a Linear issue and a post in
-    #hb-testing", and asking "anything else?" drafted the same DM twice. The
-    request is split into its own words first; each part gets one card."""
+    #hb-testing"; with the whole request as each pass's question it drafted the
+    Linear issue twice. Each part is its own pass's question, so a draft whose
+    asking words are in another part is dropped."""
     from app.actions import service
 
     linear = mcp.McpToolAction(_server(), {**CREATE, "name": "save_issue"})
@@ -559,18 +560,22 @@ def test_a_request_for_several_actions_is_split_and_each_part_drafted_once(monke
         def generate(self, prompt, max_tokens=None):
             return '["Create a Linear issue titled t", "post hi in #hb-testing", "and an invented one"]'
 
-    focuses = []
+        def generate_with_tools(self, messages, tools, tool_choice):
+            prompt = messages[0]["content"]
+            asked.append(prompt.rsplit("QUESTION: ", 1)[1].strip())
+            # Every pass drafts the Linear issue first, as GPT-OSS did; the Slack pass also posts.
+            calls = [("save_issue", "Create a Linear issue")]
+            if "post hi" in asked[-1]:
+                calls.append(("send_message", "post hi in #hb-testing"))
+            return SimpleNamespace(text="", tool_calls=[
+                SimpleNamespace(name=a.tool["function"]["name"], arguments=json.dumps({"request_words": w, **filled}))
+                for n, w in calls for a in (linear, slack) if a.mcp_tool["name"] == n])
 
-    def ask(llm, q, shown, tools, offered, in_thread=False, lookups_done=False, focus=None):
-        focuses.append(focus)
-        action = linear if "Linear" in focus else slack       # each pass also re-drafts Linear
-        return [(action, {"request_words": focus, **filled}), (linear, {"request_words": "Create a Linear issue", **filled})]
-
-    monkeypatch.setattr(service, "_ask", ask)
+    asked = []
     picked = service._ask_with_lookups(Model(), question, None, [], [linear, slack], org_id="o", user_id="u",
                                        found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
-    assert [a for a, _ in picked] == [linear, slack]                  # one card per part, no duplicate
-    assert focuses == ["Create a Linear issue titled t", "post hi in #hb-testing"]   # the invented part is dropped
+    assert [a for a, _ in picked] == [linear, slack]                   # one card per part, no duplicate
+    assert asked == ["Create a Linear issue titled t", "post hi in #hb-testing"]   # the invented part is dropped
 
 
 def test_a_merge_with_no_link_links_to_the_pull_request():
