@@ -21,6 +21,7 @@ person's sign-in; its answer is fenced as untrusted data, like a passage.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -30,10 +31,19 @@ from . import mcp_client, mcp_store
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, details
 from .draft import asked_in, clean_body, clean_title
 
-#: Fields that hold drafted words, by the names tools give them. The first
-#: present becomes the card's title or body, editable like every draft.
-TITLE_FIELDS = ("title", "name", "summary", "subject")
-BODY_FIELDS = ("body", "description", "text", "content", "notes", "comment", "message", "markdown")
+#: A field holds drafted words when its NAME says prose (schema field names,
+#: not the asker's words): "title", "textContent", "pages[].content". The
+#: first such top-level field becomes the card's title or body, editable like
+#: every draft. A name ending in an id, an address or a type is never prose,
+#: so "parent_page_id" and "mimeType" stay values to ground.
+_PROSE = re.compile(r"title|^name$|summary|subject|heading|caption|body|description|text|content|"
+                    r"notes?$|comment|message|markdown", re.IGNORECASE)
+_TITLE = re.compile(r"title|^name$|summary|subject|heading", re.IGNORECASE)
+_NOT_PROSE = re.compile(r"(id|ids|email|url|uri|type|format)$|user|assignee|owner", re.IGNORECASE)
+
+
+def _prose(key: str) -> bool:
+    return bool(_PROSE.search(key)) and not _NOT_PROSE.search(key)
 _URL = re.compile(r"https://[^\s\"'<>)\]]+")
 _FN = re.compile(r"[^A-Za-z0-9_]")
 
@@ -102,28 +112,14 @@ class McpToolAction(Action):
         if missing:
             raise ActionRejected(f"{self.server.name} needs {', '.join(missing)} for that. Say it in your request.")
 
-        texty = [k for k in given if isinstance(given[k], str) and k in (*TITLE_FIELDS, *BODY_FIELDS)]
-        title_key = next((k for k in TITLE_FIELDS if k in texty), None)
-        body_key = next((k for k in BODY_FIELDS if k in texty), None)
+        texty = [k for k, v in given.items() if isinstance(v, str) and _prose(k)]
+        title_key = next((k for k in texty if _TITLE.search(k)), None)
+        body_key = next((k for k in texty if k != title_key and not _TITLE.search(k)), None)
         uris = [s.uri for s in ctx.sources if s.uri]
-        cleaned: dict[str, Any] = {}
-        for key, value in given.items():
-            if key in texty:
-                cleaned[key] = clean_title(value) if key == title_key else clean_body(value, ctx.question, uris)
-                continue
-            # Not drafted words: a setting or a target. Taken only from the
-            # asker's words, the tool's own lookup answers, or the schema's
-            # own list of allowed values.
-            if isinstance(value, bool) or value in (props[key].get("enum") or ()):
-                cleaned[key] = value
-                continue
-            for part in value if isinstance(value, list) else [value]:
-                text = str(part)
-                if isinstance(part, (dict, list)) or not (
-                        asked_in(text, ctx.question) or (ctx.lookups and text in ctx.lookups)):
-                    raise ActionRejected(
-                        f"{self.server.name}'s {key} must come from your request. Name it, then ask again.")
-            cleaned[key] = value
+        # The tool's own definition: a default or example it documents is its
+        # own value (a mimeType), never something a passage put there.
+        defined = json.dumps(self.mcp_tool, default=str)
+        cleaned = {k: self._clean(k, v, props[k], ctx, uris, defined) for k, v in given.items()}
         if body_key and not cleaned.get(body_key):
             raise ActionRejected("The draft is empty.")
         preset = self.server.preset
@@ -150,6 +146,27 @@ class McpToolAction(Action):
             audience=Audience(members=None),
         )
 
+    def _clean(self, key: str, value: Any, prop: dict, ctx: ActionContext, uris: list[str], defined: str) -> Any:
+        """One value, nested values included (Notion's ``pages`` is a list of
+        objects). Prose is cleaned like every draft; anything else (a target,
+        an id, a setting) must be in the asker's words, in what a lookup
+        returned in this request, or in the tool's own definition."""
+        prop = prop if isinstance(prop, dict) else {}
+        if isinstance(value, dict):
+            sub = prop.get("properties") or {}
+            return {k: self._clean(k, v, sub.get(k) or {}, ctx, uris, defined) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._clean(key, v, prop.get("items") or {}, ctx, uris, defined) for v in value]
+        if value is None or isinstance(value, bool) or value in (prop.get("enum") or ()):
+            return value
+        if isinstance(value, str) and _prose(key):
+            return clean_title(value) if _TITLE.search(key) else clean_body(value, ctx.question, uris)
+        text = str(value)
+        if (asked_in(text, ctx.question) or (ctx.lookups and text in ctx.lookups)
+                or (len(text) >= 3 and text in defined)):
+            return value
+        raise ActionRejected(f"{self.server.name}'s {key} must come from your request. Name it, then ask again.")
+
     def execute(self, key: str, target: dict[str, Any], payload: dict[str, Any], token: str) -> ActionResult:
         arguments = dict(payload.get("args") or {})
         for slot, field in (payload.get("fields") or {}).items():
@@ -168,7 +185,11 @@ class McpToolAction(Action):
 
 
 def _short(value: Any) -> str:
-    text = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+    if isinstance(value, (dict, list)) and any(isinstance(v, (dict, list)) for v in
+                                               (value.values() if isinstance(value, dict) else value)):
+        text = json.dumps(value, ensure_ascii=False)
+    else:
+        text = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
     return text if len(text) <= 120 else text[:117] + "…"
 
 

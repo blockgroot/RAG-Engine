@@ -145,6 +145,17 @@ def _ask_with_lookups(llm, question: str, passages: str | None, tools: list[dict
         reads = [(a, args) for a, args in picked if a.lookup]
         writes = [(a, args) for a, args in picked if not a.lookup]
         budget = settings.mcp_max_lookups - len(found)
+        if reads and budget <= 0 and not writes:
+            # Out of reads with nothing drafted: one last turn with the write
+            # tools only, so what was read becomes a draft (it read pull
+            # requests until the budget ran out and drafted nothing).
+            write_tools = [t for t, a in zip(tools, offered) if not a.lookup]
+            shown = "\n\n".join(t for t in (passages, *found) if t) or None
+            final = _ask(llm, question, shown, write_tools, [a for a in offered if not a.lookup], in_thread)
+            if isinstance(final, ActOutcome):
+                return final
+            return [(a, args) for a, args in final if not a.lookup] or ActOutcome(
+                "I looked that up but couldn't draft anything from it. Say exactly what to do.")
         if not reads or budget <= 0:
             return writes or ActOutcome("I looked that up but couldn't draft anything from it. "
                                         "Say exactly what to do.")

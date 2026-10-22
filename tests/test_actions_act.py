@@ -1116,3 +1116,25 @@ def test_asked_in_a_thread_the_prompt_says_the_thread_is_the_content():
     threaded = service.build_act_prompt("update SYV-6 with the above", None, in_thread=True)
     assert "Slack thread" not in plain and "Slack thread" in threaded
     assert "Slack thread" not in service.build_act_prompt("q", "passages", in_thread=True)
+
+
+def test_out_of_lookups_the_model_gets_one_turn_to_draft():
+    """It read pull requests until the budget ran out and drafted nothing: the
+    last turn offers the write tools only, so what was read becomes a draft."""
+    from types import SimpleNamespace as NS
+
+    read = NS(lookup=True, tool={"function": {"name": "read"}}, label="GitHub: List pull requests",
+              server=NS(name="GitHub"), token_for=lambda *a, **k: "t", run=lambda args, token, timeout: "PR #1")
+    write = NS(lookup=False, tool={"function": {"name": "write"}}, label="GitHub: Create issue")
+
+    class LLM:
+        def generate_with_tools(self, messages, tools, tool_choice):
+            names = [t["function"]["name"] for t in tools]
+            call = "read" if "read" in names else "write"
+            return NS(text="", tool_calls=[NS(name=call, arguments='{"request_words": "file a GitHub issue"}')])
+
+    settings = NS(mcp_max_lookups=2, mcp_timeout_seconds=5)
+    picked = service._ask_with_lookups(LLM(), "summarise PRs and file a GitHub issue", None,
+                                       [read.tool, write.tool], [read, write], org_id="o", user_id="u",
+                                       found=[], looked=set(), settings=settings)
+    assert [a.label for a, _ in picked] == ["GitHub: Create issue"]

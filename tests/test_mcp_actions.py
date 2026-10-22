@@ -402,3 +402,28 @@ def test_a_connectors_tools_are_offered_in_a_space_only_where_it_is_connected(mo
     assert servers(None) == ["Linear", "Asana"]             # company-wide: every connector
     connected = {"slack", "linear"}
     assert servers("ws") == ["Linear", "Asana"]
+
+
+def test_prose_is_found_by_field_name_and_nested_values_are_grounded():
+    """Google's ``textContent`` and Notion's nested ``pages`` are drafted words;
+    a nested id is still a value to ground, and a value the tool documents
+    (a mimeType) is the tool's own."""
+    doc = {"name": "create_file", "description": "Create a file. mimeType e.g. text/plain.",
+           "inputSchema": {"type": "object", "required": ["title"], "properties": {
+               "title": {"type": "string"}, "textContent": {"type": "string"}, "mimeType": {"type": "string"}}}}
+    pages = {"name": "notion-create-pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
+        "pages": {"type": "array", "items": {"type": "object", "properties": {
+            "properties": {"type": "object"}, "content": {"type": "string"}}}},
+        "parent": {"type": "object", "properties": {"page_id": {"type": "string"}}}}}}
+    tools = [doc, pages]
+    server = mcp_store.McpServer(str(uuid.uuid4()), "org", "Docs", URL, "none", None, tools,
+                                 {t["name"]: {"mode": "write", "hash": mcp_store.tool_hash(t)} for t in tools}, True)
+    made = mcp.McpToolAction(server, doc).prepare(
+        {"request_words": "create a doc", "title": "MCP test doc", "textContent": "How approvals work.",
+         "mimeType": "text/plain"}, _ctx("create a doc called MCP test doc"))
+    assert (made.payload["title"], made.payload["body"]) == ("MCP test doc", "How approvals work.")
+    page = {"request_words": "create a page", "pages": [{"properties": {"title": "Notes"}, "content": "- one"}]}
+    made = mcp.McpToolAction(server, pages).prepare(page, _ctx("create a Notion page titled Notes"))
+    assert made.payload["args"]["pages"][0]["content"] == "- one"
+    with pytest.raises(ActionRejected, match="page_id must come from your request"):
+        mcp.McpToolAction(server, pages).prepare({**page, "parent": {"page_id": "abc-123"}}, _ctx("create a page"))
