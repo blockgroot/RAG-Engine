@@ -173,11 +173,10 @@ class BulkModes(BaseModel):
 @router.put("/admin/mcp/{server_id}/tools")
 def admin_bulk_modes(server_id: str, body: BulkModes, session: SessionClaims = Depends(require_admin)):
     server = _server(session.org_id, server_id)
-    for tool in server.tools:
-        mode = "off" if body.choice == "off" else ("lookup" if server.is_read(tool) else "write")
-        mcp_store.set_mode(session.org_id, server, tool["name"], mode)
-        server = mcp_store.get_server(session.org_id, server.id)
-    return _admin_view(server)
+    mcp_store.set_modes(session.org_id, server, {
+        tool["name"]: "off" if body.choice == "off" else ("lookup" if server.is_read(tool) else "write")
+        for tool in server.tools})
+    return _admin_view(mcp_store.get_server(session.org_id, server.id))
 
 
 class ServerSwitch(BaseModel):

@@ -1138,3 +1138,8 @@ def test_out_of_lookups_the_model_gets_one_turn_to_draft():
                                        [read.tool, write.tool], [read, write], org_id="o", user_id="u",
                                        found=[], looked=set(), settings=settings)
     assert [a.label for a, _ in picked] == ["GitHub: Create issue"]
+
+
+def test_the_last_turn_says_the_lookups_already_ran():
+    assert "already looked things up" in service.build_act_prompt("q", "found", lookups_done=True)
+    assert "already looked things up" not in service.build_act_prompt("q", "found")

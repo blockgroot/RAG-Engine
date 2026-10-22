@@ -427,3 +427,20 @@ def test_prose_is_found_by_field_name_and_nested_values_are_grounded():
     assert made.payload["args"]["pages"][0]["content"] == "- one"
     with pytest.raises(ActionRejected, match="page_id must come from your request"):
         mcp.McpToolAction(server, pages).prepare({**page, "parent": {"page_id": "abc-123"}}, _ctx("create a page"))
+
+
+@requires_db
+def test_two_quick_switches_both_stick_and_turn_all_on_is_one_write(store, org_cleanup):
+    """Each switch merges only its own tool in the database: two clicks from one
+    stale page view both stick (the second used to undo the first)."""
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    stale = mcp_store.create_server(org_id, name="Asana", url=URL, auth="none", oauth=None,
+                                    tools=[CREATE, FIND, DELETE], created_by=None)
+    mcp_store.set_mode(org_id, stale, "create_task", "write")
+    mcp_store.set_mode(org_id, stale, "list_projects", "lookup")      # same stale view
+    now = mcp_store.get_server(org_id, stale.id)
+    assert (now.mode("create_task"), now.mode("list_projects")) == ("write", "lookup")
+    mcp_store.set_modes(org_id, now, {"create_task": "off", "delete_task": "write"})
+    now = mcp_store.get_server(org_id, stale.id)
+    assert (now.mode("create_task"), now.mode("list_projects"), now.mode("delete_task")) == ("off", "lookup", "write")

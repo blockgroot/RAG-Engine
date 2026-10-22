@@ -155,15 +155,21 @@ def set_tools(org_id: str, server_id: str, tools: list[dict]) -> None:
 
 
 def set_mode(org_id: str, server: McpServer, tool_name: str, mode: str) -> None:
-    tool = server.tool(tool_name)
-    modes = dict(server.tool_modes)
-    if mode == "off" or tool is None:
-        modes.pop(tool_name, None)
-    else:
-        modes[tool_name] = {"mode": mode, "hash": tool_hash(tool)}
+    set_modes(org_id, server, {tool_name: mode})
+
+
+def set_modes(org_id: str, server: McpServer, modes: dict[str, str]) -> None:
+    """Set several tools in ONE write that changes only those tools, merged in
+    the database: "Turn all on" was a write and a re-read per tool (68 for
+    Linear), slow enough for the proxy to cut it off half done, and two quick
+    switches each rewrote the whole map, so one undid the other."""
+    on = {name: {"mode": mode, "hash": tool_hash(server.tool(name))}
+          for name, mode in modes.items() if mode != "off" and server.tool(name) is not None}
+    off = [name for name in modes if name not in on]
     with get_connection() as conn:
-        conn.execute("UPDATE mcp_servers SET tool_modes = %s, updated_at = now() "
-                     "WHERE org_id = %s::uuid AND id = %s::uuid", (Json(modes), org_id, server.id))
+        conn.execute("UPDATE mcp_servers SET tool_modes = (COALESCE(tool_modes, '{}'::jsonb) - %s::text[]) "
+                     "|| %s::jsonb, updated_at = now() WHERE org_id = %s::uuid AND id = %s::uuid",
+                     (off, Json(on), org_id, server.id))
 
 
 def set_enabled(org_id: str, server_id: str, enabled: bool) -> None:

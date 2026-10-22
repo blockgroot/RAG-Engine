@@ -95,12 +95,13 @@ DOCUMENT_WORDS = {
 
 
 def _ask(llm, question: str, passages: str | None, tools: list[dict], offered: list[Action],
-         in_thread: bool = False):
+         in_thread: bool = False, lookups_done: bool = False):
     """One model call: every ``(action, args)`` form it filled in that the asker
     asked for, else the reply to show. ``propose`` keeps ``MAX_ACTIONS`` and
     says what it left out."""
     result = llm.generate_with_tools(
-        [{"role": "user", "content": build_act_prompt(question, passages, in_thread=in_thread)}],
+        [{"role": "user", "content": build_act_prompt(question, passages, in_thread=in_thread,
+                                                                  lookups_done=lookups_done)}],
         tools=tools,
         tool_choice="auto",
     )
@@ -151,7 +152,8 @@ def _ask_with_lookups(llm, question: str, passages: str | None, tools: list[dict
             # requests until the budget ran out and drafted nothing).
             write_tools = [t for t, a in zip(tools, offered) if not a.lookup]
             shown = "\n\n".join(t for t in (passages, *found) if t) or None
-            final = _ask(llm, question, shown, write_tools, [a for a in offered if not a.lookup], in_thread)
+            final = _ask(llm, question, shown, write_tools, [a for a in offered if not a.lookup], in_thread,
+                         lookups_done=True)
             if isinstance(final, ActOutcome):
                 return final
             return [(a, args) for a, args in final if not a.lookup] or ActOutcome(
@@ -177,7 +179,8 @@ def _with_document_words(tool: dict) -> dict:
         **params, "properties": {**params["properties"], "document_words": DOCUMENT_WORDS}}}}
 
 
-def build_act_prompt(question: str, passages: str | None, *, in_thread: bool = False) -> str:
+def build_act_prompt(question: str, passages: str | None, *, in_thread: bool = False,
+                     lookups_done: bool = False) -> str:
     """The decision prompt. ``None``: no documents shown yet. Passages are for
     drafting only, fenced as data. ``in_thread``: asked inside a Slack thread,
     whose messages are what "the above" or "this" means; without saying so the
@@ -188,6 +191,11 @@ def build_act_prompt(question: str, passages: str | None, *, in_thread: bool = F
         "refer to it into document_words; you will be shown the documents next.\n"
         if passages is None else ""
     )
+    if lookups_done:
+        # The read tools are gone from this last turn; without this the model
+        # told the asker it "can't list issues" right after listing them.
+        shown += ("- You already looked things up: what they returned is in the PASSAGES. "
+                  "No more lookups are possible. Answer from them, or fill in a form.\n")
     if in_thread and passages is None:
         shown += (
             "- The QUESTION was asked inside a Slack thread. If it refers to anything "
