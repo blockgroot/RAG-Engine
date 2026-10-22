@@ -379,3 +379,24 @@ def test_a_space_owner_only_switches_tools_off_for_their_space(client, server, s
     assert "delete_task" not in names(ws)
     client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": None, "enabled": False}, cookies=cookies)
     assert names(ws) == set()
+
+
+def test_a_connectors_tools_are_offered_in_a_space_only_where_it_is_connected(monkeypatch):
+    from app.actions import mcp_presets, policy
+
+    linear = mcp_store.McpServer(str(uuid.uuid4()), "org", "Linear", mcp_presets.LINEAR.url, "none", None, [CREATE],
+                                 {"create_task": {"mode": "write", "hash": mcp_store.tool_hash(CREATE)}}, True)
+    custom = _server({"create_task": "write"})
+    monkeypatch.setattr(mcp_store, "list_servers", lambda org: [linear, custom])
+    monkeypatch.setattr("app.auth.user_connections.list_user_connections", lambda org, uid: [])
+    monkeypatch.setattr(policy, "space_off", lambda org, ws: set())
+    connected = {"slack"}
+    monkeypatch.setattr(policy, "space_sources", lambda org, ws: None if ws is None else connected)
+
+    def servers(ws):
+        return [a.server.name for a in mcp.mcp_actions("org", "u1", ws)]
+
+    assert servers("ws") == ["Asana"]                       # Linear isn't connected in this space
+    assert servers(None) == ["Linear", "Asana"]             # company-wide: every connector
+    connected = {"slack", "linear"}
+    assert servers("ws") == ["Linear", "Asana"]

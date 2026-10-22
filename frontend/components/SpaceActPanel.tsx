@@ -111,12 +111,15 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
         <div className="mcp-more">
           <h3 className="mcp-subhead">Tools in this space</h3>
           {rows.length === 0 ? (
-            <p className="mcp-note">Your admin hasn&rsquo;t switched on any tools yet (Admin › Actions).</p>
+            <p className="mcp-note">
+              No tools for this space&rsquo;s connectors are switched on yet. Your admin chooses them in Admin ›
+              Actions; a connector&rsquo;s tools show here once it is connected to this space.
+            </p>
           ) : (
             <>
               <p className="mcp-note">
-                These are the tools your admin switched on. Switch any off for this space; the rest of the
-                company keeps them.
+                The tools your admin switched on, for the connectors in this space. Switch any off here; the
+                rest of the company keeps them.
               </p>
               <ul className="mcp-list">
                 {rows.map((row) => {

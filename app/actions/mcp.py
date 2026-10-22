@@ -86,6 +86,7 @@ class McpToolAction(Action):
         current = mcp_store.get_server(org_id, self.server.id)
         return bool(current and current.enabled and current.mode(self.mcp_tool["name"]) == "write"
                     and policy.act_on(org_id, workspace_id)
+                    and policy.server_in_space(current, policy.space_sources(org_id, workspace_id))
                     and not policy.off_in_space(policy.space_off(org_id, workspace_id),
                                                 self.server.id, self.mcp_tool["name"]))
 
@@ -218,6 +219,8 @@ def mcp_actions(org_id: str, user_id: str, workspace_id: str | None = None) -> l
             return []
         signed_in = {c.provider for c in list_user_connections(org_id, user_id)}
         off = policy.space_off(org_id, workspace_id)
+        sources = policy.space_sources(org_id, workspace_id)
+        servers = [s for s in servers if policy.server_in_space(s, sources)]
     except Exception:  # noqa: BLE001 - MCP adds tools; it must never break Act
         return []
     out: list[Action] = []

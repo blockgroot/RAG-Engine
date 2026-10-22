@@ -364,6 +364,8 @@ row), never an env var; reading it fails closed. In a space it also takes the
 owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. The owner
 may also switch off a tool or a whole server for their space (`policy.space_off`, rows
 `mcp:<server>[:<tool>]`); only "off" rows count, checked when offering and at confirm.
+In a space, a connector's tools exist only if that connector is connected IN that space
+(`Preset.source`, `policy.space_sources`); a server added by address has no connector.
 A space only narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
 

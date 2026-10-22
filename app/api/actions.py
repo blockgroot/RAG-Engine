@@ -481,10 +481,11 @@ def space_tools(workspace_id: str, session: SessionClaims = Depends(get_session)
     from ..actions.mcp_store import destructive, list_servers
 
     off = policy.space_off(session.org_id, workspace_id)
+    sources = policy.space_sources(session.org_id, workspace_id)
     out = []
     for server in list_servers(session.org_id):
         tools = [t for t in server.tools if server.mode(t.get("name", "")) != "off"]
-        if not server.enabled or not tools:
+        if not server.enabled or not tools or not policy.server_in_space(server, sources):
             continue
         preset = server.preset
         group = preset.group if preset else None

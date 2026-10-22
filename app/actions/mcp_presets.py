@@ -53,6 +53,9 @@ class Preset:
     scopes: re.Pattern | None = None
     #: Servers of one product, added together and signed in to once.
     group: str | None = None
+    #: The Handbook connector this server belongs to (``oauth_connections.provider``):
+    #: in a space, its tools are offered only when that connector is connected there.
+    source: str | None = None
 
     def pick_scopes(self, offered: list[str]) -> list[str]:
         return [s for s in offered if self.scopes is None or self.scopes.search(s)]
@@ -79,7 +82,7 @@ def _linear_account(org_id: str, email: str, token: str) -> bool:
 
 
 LINEAR = Preset(
-    key="linear", name="Linear", url="https://mcp.linear.app/mcp",
+    key="linear", name="Linear", url="https://mcp.linear.app/mcp", source="linear",
     reads=re.compile(r"^(get_|list_|search_)"),
     account_check=_linear_account,
 )
@@ -88,7 +91,7 @@ LINEAR = Preset(
 # -- Notion ---------------------------------------------------------------------------
 
 NOTION = Preset(
-    key="notion", name="Notion", url="https://mcp.notion.com/mcp",
+    key="notion", name="Notion", url="https://mcp.notion.com/mcp", source="notion",
     note="Each person picks which pages Notion shares when they sign in.",
     reads=re.compile(r"(search|fetch|get-|get_|list)", re.IGNORECASE),
 )
@@ -123,7 +126,7 @@ def _github_target(org_id: str, args: dict) -> None:
 
 
 GITHUB = Preset(
-    key="github", name="GitHub", url="https://api.githubcopilot.com/mcp/",
+    key="github", name="GitHub", url="https://api.githubcopilot.com/mcp/", source="github",
     note="Signs in through Handbook's GitHub App, which can only write issues.",
     client=_github_client,
     # A GitHub App's sign-in ignores OAuth scopes; its permissions (Issues: write) apply.
@@ -144,7 +147,7 @@ def _slack_client() -> tuple[str | None, str | None]:
 
 
 SLACK = Preset(
-    key="slack", name="Slack", url="https://mcp.slack.com/mcp",
+    key="slack", name="Slack", url="https://mcp.slack.com/mcp", source="slack",
     note="Slack lets only approved apps use it: your Slack admin must allow Handbook's app.",
     client=_slack_client,
     # Reading and posting messages only: never channel management, files or canvases.
@@ -184,7 +187,7 @@ _GOOGLE_OAUTH = {
 }
 
 GOOGLE_DRIVE = Preset(
-    key="google_drive", name="Google Drive", url="https://drivemcp.googleapis.com/mcp/v1",
+    key="google_drive", name="Google Drive", url="https://drivemcp.googleapis.com/mcp/v1", source="google",
     note="Google's MCP servers are in Developer Preview. Handbook reaches only files it made or you picked.",
     client=_google_client, oauth=_GOOGLE_OAUTH, group="google_workspace",
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
@@ -193,7 +196,7 @@ GOOGLE_DRIVE = Preset(
 )
 
 GOOGLE_SHEETS = Preset(
-    key="google_sheets", name="Google Sheets", url="https://sheetsmcp.googleapis.com/mcp/v1",
+    key="google_sheets", name="Google Sheets", url="https://sheetsmcp.googleapis.com/mcp/v1", source="google",
     note="Google's MCP servers are in Developer Preview. Handbook reaches only Sheets it made or you picked.",
     client=_google_client, oauth=_GOOGLE_OAUTH, group="google_workspace",
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
