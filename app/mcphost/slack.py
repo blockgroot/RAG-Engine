@@ -36,12 +36,15 @@ def _call(token: str, method: str, **params) -> dict:
     return data
 
 
-def _channels(token: str) -> tuple[list[dict], bool]:
-    """Channels this person can see, and whether the walk was cut short."""
+def _channels(token: str, mine: bool = False) -> tuple[list[dict], bool]:
+    """Channels this person can see (``mine``: is a member of), and whether
+    the walk was cut short. Slack fills pages unevenly (archived channels are
+    dropped after the page is cut), so a large workspace's full list can run
+    out before a channel; the member list is short and is where they post."""
     found, cursor = [], None
     for _ in range(_PAGES):
-        page = _call(token, "conversations.list", types="public_channel,private_channel",
-                     exclude_archived="true", limit=200, cursor=cursor)
+        page = _call(token, "users.conversations" if mine else "conversations.list",
+                     types="public_channel,private_channel", exclude_archived="true", limit=200, cursor=cursor)
         found += page.get("channels") or []
         cursor = (page.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
@@ -55,10 +58,11 @@ def _channel_id(token: str, channel: str) -> tuple[str, str]:
     if _ID.match(ref):
         return ref, ref
     name = ref.lstrip("#").lower()
-    channels, cut = _channels(token)
-    for c in channels:
-        if (c.get("name") or "").lower() == name:
-            return c["id"], f"#{c['name']}"
+    for mine in (True, False):
+        channels, cut = _channels(token, mine)
+        for c in channels:
+            if (c.get("name") or "").lower() == name:
+                return c["id"], f"#{c['name']}"
     more = " (only the first 1,000 channels were checked)" if cut else ""
     raise VendorError(f"There's no channel named #{name} that you can post in{more}.")
 

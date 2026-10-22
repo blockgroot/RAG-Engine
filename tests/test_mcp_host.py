@@ -52,6 +52,7 @@ class SlackFake:
         method = url.rsplit("/", 1)[-1]
         self.calls.append((method, headers["Authorization"], data))
         body = {"ok": False, "error": self.error} if self.error else {
+            "users.conversations": {"ok": True, "channels": [{"id": "C0HBTEST01", "name": "hb-testing"}]},
             "conversations.list": {"ok": True, "channels": [{"id": "C0GENERAL1", "name": "general"}]},
             "chat.postMessage": {"ok": True, "ts": "171.5"},
             "chat.getPermalink": {"ok": True, "permalink": "https://acme.slack.com/archives/C0GENERAL1/p1715"},
@@ -70,6 +71,9 @@ def test_a_slack_post_goes_as_the_person_to_the_channel_they_named(client, monke
     assert r["structuredContent"]["url"].startswith("https://acme.slack.com/")
     post = next(c for c in fake.calls if c[0] == "chat.postMessage")
     assert post[1] == "Bearer xoxp-person" and post[2]["channel"] == "C0GENERAL1"
+    _rpc(client, "slack", "tools/call", {"name": "send_message", "arguments": {"channel": "#hb-testing", "text": "x"}},
+         token="xoxp-person")       # a channel they are in is found first, without the full walk
+    assert [c[2]["channel"] for c in fake.calls if c[0] == "chat.postMessage"][-1] == "C0HBTEST01"
 
     _rpc(client, "slack", "tools/call", {"name": "send_dm", "arguments": {"person": "priya@acme.com", "text": "hi"}},
          token="xoxp-person")

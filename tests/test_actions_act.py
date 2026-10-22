@@ -647,8 +647,9 @@ def test_a_request_in_its_own_words_reads_no_documents(org, monkeypatch):
     llm = OneCallLLM("test_create", {"request_words": "file an issue", "team": "Platform",
                                              "title": "Staging test", "body": "Purpose: verify Act."})
     out = _propose_with(org, "file an issue in Platform: staging test, verify Act", llm, vstore)
-    assert vstore.searched == 0 and len(llm.prompts) == 1
-    assert "UX parity" not in llm.prompts[0]
+    # The draft, then "anything else?" (the same call again is no new draft).
+    assert vstore.searched == 0 and len(llm.prompts) == 2 and "Already drafted" in llm.prompts[1]
+    assert not any("UX parity" in p for p in llm.prompts)
     assert out.action.exposure == "none" and out.action.sources == []
 
 
@@ -1123,9 +1124,9 @@ def test_out_of_lookups_the_model_gets_one_turn_to_draft():
     last turn offers the write tools only, so what was read becomes a draft."""
     from types import SimpleNamespace as NS
 
-    read = NS(lookup=True, tool={"function": {"name": "read"}}, label="GitHub: List pull requests",
+    read = NS(lookup=True, name="read", tool={"function": {"name": "read"}}, label="GitHub: List pull requests",
               server=NS(name="GitHub"), token_for=lambda *a, **k: "t", run=lambda args, token, timeout: "PR #1")
-    write = NS(lookup=False, tool={"function": {"name": "write"}}, label="GitHub: Create issue")
+    write = NS(lookup=False, name="write", tool={"function": {"name": "write"}}, label="GitHub: Create issue")
 
     class LLM:
         def generate_with_tools(self, messages, tools, tool_choice):

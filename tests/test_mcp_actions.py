@@ -252,7 +252,7 @@ def test_a_lookup_runs_with_the_persons_sign_in_and_its_answer_reaches_the_model
             prompts.append(messages[0]["content"])
             return SimpleNamespace(text="", tool_calls=[
                 SimpleNamespace(name=next(a for a in (write, find) if a.mcp_tool["name"] == n).tool["function"]["name"],
-                                arguments=json.dumps(args)) for n, args in next(calls)])
+                                arguments=json.dumps(args)) for n, args in next(calls, [])])  # then: nothing else
 
     server.result = {"content": [{"type": "text", "text": '{"id": "P-7", "name": "Atlas"}'}]}
     found, looked = [], set()
@@ -486,6 +486,22 @@ def test_an_optional_value_nobody_asked_for_is_left_out_and_said():
     assert "state" not in made.payload["args"] and ["Left out", "state (not in your request)"] in made.payload["details"]
 
 
+def test_an_optional_field_in_a_shape_the_tool_does_not_take_is_left_out():
+    """Notion refused a page whose optional ``parent`` the model filled in
+    wrong, so the whole card failed. It is left out and said instead."""
+    tool = {"name": "create_pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
+        "pages": {"type": "array"},
+        "parent": {"anyOf": [{"type": "object", "required": ["page_id"], "properties": {"page_id": {"type": "string"}}},
+                             {"type": "object", "required": ["type"], "properties": {"type": {"enum": ["workspace"]}}}]}}}}
+    action = mcp.McpToolAction(_server(), tool)
+    made = action.prepare({"request_words": "make a page", "pages": [{"content": "- one"}], "parent": {"type": "memory"}},
+                          _ctx("make a page in memory"))
+    assert "parent" not in made.payload["args"]
+    assert ["Left out", "parent (not in a form Asana takes)"] in made.payload["details"]
+    assert mcp.form_problem(tool["inputSchema"]["properties"]["parent"], {"type": "memory"}, "parent") == \
+        "parent matches none of the forms the tool accepts"
+
+
 NOTION_PAGES = {"name": "create_pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
     "pages": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {
         "properties": {"type": "object"}, "content": {"type": "string"}}}}}}}
@@ -507,7 +523,7 @@ def test_a_refused_form_goes_back_to_the_model_once(monkeypatch):
     action = mcp.McpToolAction(_server(), NOTION_PAGES)
     replies = iter([[(action, {"pages": [{"title": "Notes"}]})], [(action, {"pages": [{"properties": {"title": "Notes"}}]})]])
     shown = []
-    monkeypatch.setattr(service, "_ask", lambda llm, q, passages, *a, **k: shown.append(passages) or next(replies))
+    monkeypatch.setattr(service, "_ask", lambda llm, q, passages, *a, **k: shown.append(passages) or next(replies, service.ActOutcome("nothing else")))
     picked = service._ask_with_lookups(None, "make a page", None, [], [action], org_id="o", user_id="u",
                                        found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
     assert picked[0][1] == {"pages": [{"properties": {"title": "Notes"}}]}
@@ -521,3 +537,23 @@ def test_a_cards_link_is_a_page_never_an_api_address():
     assert mcp._page_link("https://api.github.com/repos/o/r/pulls/21") == "https://github.com/o/r/pull/21"
     assert mcp._page_link("https://api.linear.app/graphql") is None
     assert mcp._page_link("https://linear.app/acme/issue/BEN-1.") == "https://linear.app/acme/issue/BEN-1"
+
+
+
+def test_a_model_that_fills_in_one_form_per_turn_is_asked_again(monkeypatch):
+    """GPT-OSS drafted only the Linear issue of "a Linear issue and a post in
+    #hb-testing". Agent mode asks again with what is drafted until nothing new."""
+    from app.actions import service
+
+    linear = mcp.McpToolAction(_server(), {**CREATE, "name": "save_issue"})
+    slack = mcp.McpToolAction(_server(), {**CREATE, "name": "send_message"})
+    filled = {"project_id": "P-7", "title": "t"}
+    turns = iter([[(linear, {"request_words": "Create a Linear issue", **filled})],
+                  [(slack, {"request_words": "post in #hb-testing", **filled})],
+                  service.ActOutcome("nothing else")])
+    prompts = []
+    monkeypatch.setattr(service, "_ask", lambda llm, q, shown, *a, drafted=None, **k: prompts.append(drafted) or next(turns))
+    picked = service._ask_with_lookups(None, "q", None, [], [linear, slack], org_id="o", user_id="u",
+                                       found=[], looked=set(), settings=SimpleNamespace(mcp_max_lookups=4))
+    assert [a for a, _ in picked] == [linear, slack]
+    assert prompts[0] is None and "Create a Linear issue" in prompts[1][0] and len(prompts[2]) == 2

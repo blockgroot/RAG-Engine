@@ -77,7 +77,7 @@ def form_problem(schema: Any, value: Any, where: str = "the form") -> str | None
         if isinstance(schema.get(key), list) and schema[key]:
             problems = [form_problem(sub, value, where) for sub in schema[key]]
             if all(problems):
-                return problems[0]
+                return problems[0] if len(problems) == 1 else f"{where} matches none of the forms the tool accepts"
     kinds = schema.get("type")
     kinds = [k for k in (kinds if isinstance(kinds, list) else [kinds]) if k in _TYPES]
     if kinds and not any(isinstance(value, _TYPES[k]) and not (isinstance(value, bool) and k != "boolean")
@@ -182,7 +182,14 @@ class McpToolAction(Action):
             except _Ungrounded:
                 if k in schema["required"]:
                     raise
-                left_out.append(k)
+                left_out.append(f"{k} (not in your request)")
+        # An optional field filled in wrong (Notion's ``parent`` in a shape it
+        # does not take) is left out the same way; a required one refuses below.
+        for k in [k for k in cleaned if k not in schema["required"]]:
+            if form_problem(props[k], cleaned[k], k):
+                del cleaned[k]
+                left_out.append(f"{k} (not in a form {self.server.name} takes)")
+        title_key, body_key = (k if k in cleaned else None for k in (title_key, body_key))
         problem = self.form_problem(cleaned)
         if problem:
             raise ActionRejected(f"{self.server.name}'s form wasn't filled in as it expects: {problem}.")
@@ -197,8 +204,7 @@ class McpToolAction(Action):
                                        ("Can't be undone", f"Once approved, {self.server.name} can't reverse this "
                                         f"({mcp_store.tool_title(self.mcp_tool, self.server.name).lower()})."
                                         if mcp_store.destructive(self.mcp_tool) else None),
-                                       ("Left out", f"{', '.join(left_out)} (not in your request)"
-                                        if left_out else None),
+                                       ("Left out", ", ".join(left_out) or None),
                                        *((k, _short(v)) for k, v in cleaned.items()
                                          if k not in (title_key, body_key)))}
         if title_key:
