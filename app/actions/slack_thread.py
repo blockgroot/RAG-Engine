@@ -110,3 +110,63 @@ def thread_context(token: str, channel_id: str, thread_ts: str) -> tuple[list[So
     source = Source(f"slack-thread:{channel_id}:{thread_ts}", title, audience.public,
                     tuple(m.lower() for m in (audience.members or ()) if m), link)
     return [source], f"[{title}]\n" + "\n".join(lines)
+
+
+#: Messages read from a channel for "what was discussed in #x today".
+CHANNEL_LIMIT = 200
+#: The longest period a channel is read for, in days.
+MAX_CHANNEL_DAYS = 30
+
+
+def channel_context(token: str, name: str, days: int, email: str) -> tuple[list[Source], str] | None:
+    """A channel's messages over the last ``days``, read live, as
+    ``(sources, passages)``: "summarise what was discussed in #hb-testing
+    today" searched the index by meaning, found one message of five, and
+    missed what was posted after the last sync. At most ``CHANNEL_LIMIT``
+    messages, oldest first, the bot's own left out, and a cut-off said so.
+
+    Read only when the asker may: a public channel, or a private one they
+    are a member of (by email); otherwise ``([], "")``. ``None`` when the
+    channel cannot be read here (no such channel, the bot is not in it): the
+    caller falls back to the indexed search."""
+    import time
+
+    from ..security.untrusted import scrub_untrusted_text
+
+    wanted = name.strip().lstrip("#").casefold()
+    try:
+        channels, _ = _pages(token, "conversations.list",
+                             {"types": "public_channel,private_channel", "exclude_archived": "true"}, "channels")
+    except ActionError:
+        return None
+    channel = next((c for c in channels if (c.get("name") or "").casefold() == wanted), None)
+    if channel is None:
+        return None
+    audience = channel_audience(token, channel)
+    viewers = tuple(m.lower() for m in (audience.members or ()) if m)
+    if not audience.public and email.lower() not in viewers:
+        return [], ""
+    days = max(1, min(int(days or 1), MAX_CHANNEL_DAYS))
+    try:
+        body = _get(token, "conversations.history", {"channel": channel["id"], "limit": CHANNEL_LIMIT,
+                                                      "oldest": f"{time.time() - days * 86400:.0f}"})
+        users, _ = _pages(token, "users.list", {}, "members")
+    except ActionError:
+        return None
+    names = {u.get("id"): ((u.get("profile") or {}).get("real_name") or u.get("name") or "") for u in users}
+
+    def when(m: dict) -> str:
+        # Dated, so "today" is the model's to pick from a week it was given.
+        return time.strftime("%b %d %H:%M UTC", time.gmtime(float(m.get("ts") or 0)))
+
+    lines = [f"{when(m)} {names.get(m.get('user'), 'Someone')}: {scrub_untrusted_text(m.get('text') or '').strip()}"
+             for m in reversed(body.get("messages") or [])
+             if not m.get("bot_id") and m.get("subtype") != "bot_message" and (m.get("text") or "").strip()]
+    if not lines:
+        return [], ""
+    if body.get("has_more"):
+        lines.insert(0, f"(Only the latest {CHANNEL_LIMIT} messages were read.)")
+    now = time.strftime("%b %d %H:%M UTC", time.gmtime())
+    title = f"#{channel.get('name')}, last {days} day{'s' if days > 1 else ''}, read at {now}"
+    source = Source(f"slack-channel:{channel['id']}", f"#{channel.get('name')}", audience.public, viewers)
+    return [source], f"[{title}]\n" + "\n".join(lines)

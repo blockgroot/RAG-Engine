@@ -1250,6 +1250,10 @@ class RagPipeline:
         reranker orders by, so the action words around it ("create an issue
         titled …") do not outrank the content. No answer, memory rewrite or
         decomposition: those serve generating a reply, not finding sources.
+
+        With the deep read on (Act always reads deeply), the best documents
+        come with their neighbouring chunks, as Deep analysis reads them: a
+        Linear summary drafted from six scattered chunks was too short.
         """
         query = self._normalize_for_retrieval(question, org_id)
         vec = self._embedder.embed([query])[0]
@@ -1265,7 +1269,10 @@ class RagPipeline:
         else:
             hits, gate, _ = self._retrieve_once(
                 org_id, query, vec, workspace_id=workspace_id, tags=tags, viewer=viewer)
-        return [] if self._gate_miss(hits, gate) else hits
+        if self._gate_miss(hits, gate):
+            return []
+        return self._with_neighbors(hits, org_id, workspace_id=workspace_id, viewer=viewer) \
+            if deep_read_on() else hits
 
     def _gate_miss(
         self, hits: list[RetrievedChunk], top_score: float | None

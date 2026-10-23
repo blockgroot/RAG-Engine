@@ -159,6 +159,7 @@ def _chosen_by_asker(key: str, value: Any, prop: dict, question: str) -> None:
 
 _WORDS = re.compile(r"[^\W_]+")
 _EMPTY = (None, "", [], {})
+_OWN_URL = re.compile(r'"(?:url|html_url|permalink|link)"\s*:\s*"(https://[^"\s]+)"')
 
 
 def _guide(tool: dict) -> str:
@@ -230,7 +231,10 @@ class McpToolAction(Action):
         texty = [k for k, v in given.items() if isinstance(v, str) and _prose(k)]
         title_key = next((k for k in texty if _TITLE.search(k)), None)
         body_key = next((k for k in texty if k != title_key and not _TITLE.search(k)), None)
-        uris = [s.uri for s in ctx.sources if s.uri]
+        # A record's own address a lookup returned, like a document's own: "DM Raj
+        # the link of the Linear issue" found BEN-161 by a lookup and lost its link.
+        # Only the address field, never a link written inside a description.
+        uris = [s.uri for s in ctx.sources if s.uri] + _OWN_URL.findall(ctx.lookups or "")
         # The tool's own definition: a default or example it documents is its
         # own value (a mimeType), never something a passage put there.
         defined = json.dumps(self.mcp_tool, default=str)
@@ -407,8 +411,11 @@ class McpLookup(Action):
         try:
             session = mcp_client.McpSession(self.server.url, token or None, timeout=timeout)
             session.open()
+            # An empty value is "not given": GPT-OSS filled every optional
+            # filter with "" or null, Linear refused them all, and it gave up.
             result = session.call_tool(self.mcp_tool["name"],
-                                       {k: v for k, v in args.items() if k in props}, write=False)
+                                       {k: v for k, v in args.items() if k in props and v not in _EMPTY},
+                                       write=False)
         except Exception as exc:  # noqa: BLE001 - a failed read is reported to the model
             return f"[{self.label} failed: {str(exc)[:200]}]"
         # Larger than a write's answer: a list must still show the item the

@@ -879,6 +879,17 @@ def test_retrieve_passages_is_asks_search_with_its_gate():
     me._retrieve_once = lambda *a, **kw: ([], 0.2, None)
     assert RagPipeline.retrieve_passages(me, "anything", "o") == []   # under the gate
 
+    # With the deep read on (Act's), the best documents come with their neighbours.
+    from app.rag.deep import reset_deep_read, use_deep_read
+
+    me._retriever = Retriever()
+    me._with_neighbors = lambda hits, org, **kw: [*hits, "neighbour"]
+    token = use_deep_read(True)
+    try:
+        assert RagPipeline.retrieve_passages(me, "q", "o", about="a")[-1] == "neighbour"
+    finally:
+        reset_deep_read(token)
+
 
 @pytest.fixture
 def act_search(monkeypatch):
@@ -913,6 +924,31 @@ def act_search(monkeypatch):
     monkeypatch.setattr(routing, "choose_agent", choose)
     seen.search = act_api.ask_search("u1")
     return seen
+
+
+def test_act_reads_deeply_and_only_while_it_searches(act_search, monkeypatch):
+    """A Linear summary drafted from six scattered chunks was too short."""
+    from app.api import deps
+    from app.rag.deep import deep_read_on
+
+    during = []
+    monkeypatch.setattr(deps, "get_policy_agent", lambda: type("A", (), {"pipeline": type("P", (), {
+        "retrieve_passages": lambda self, q, org, **kw: during.append(deep_read_on()) or []})()})())
+    act_search.key = "insights"
+    act_search.search("q", "x", org_id="o")
+    assert during == [True] and not deep_read_on()
+
+
+@requires_db
+def test_a_read_limited_to_recent_days_keeps_only_documents_changed_in_them(org):
+    old, new = _doc(org.id, "Old notes", public=True), _doc(org.id, "New notes", public=True)
+    with get_connection() as conn:
+        for hit, age in ((old, 40), (new, 2)):
+            conn.execute("UPDATE documents SET source_last_modified = now() - make_interval(days => %s) "
+                         "WHERE id = %s::uuid", (age, hit.document_id))
+    sources, passages = service.indexed_context([old, new], org.id, Viewer(email=org.member.email), days=7)
+    assert [s.title for s in sources] == ["New notes"] and "last 7 days" in passages
+    assert len(service.indexed_context([old, new], org.id, Viewer(email=org.member.email))[0]) == 2
 
 
 @pytest.mark.parametrize("key", ["slack", "linear", "notion", "google"])
@@ -1303,7 +1339,9 @@ def test_a_request_with_nothing_left_after_approval_says_nothing(org):
     llm = ChainLLM([ISSUE])
     out = _propose(org, "File an issue in Platform about the export", llm)
     _approve(org, out.action)
-    assert _continue(org, out.action.id, llm) is None and len(llm.seen) == 2
+    # One look back at the request after the approval (``ALL_DONE``), then done.
+    assert _continue(org, out.action.id, llm) is None and len(llm.seen) == 3
+    assert "Before you finish" in llm.seen[-1][-1]["content"]
 
 
 @requires_db
@@ -1379,3 +1417,41 @@ def test_without_the_runs_table_cards_still_work_and_nothing_continues(org, monk
     assert out.action is not None
     assert _approve(org, out.action).status == "succeeded"
     assert _continue(org, out.action.id, llm) is None
+
+
+def test_a_channel_named_with_a_time_is_read_live_and_only_by_a_member(monkeypatch):
+    """"Summarise what was discussed in #hb-testing today" searched the index by
+    meaning: one message of five, and nothing posted after the last sync."""
+    from app.actions import slack_thread as slack_action
+
+    def fake_get(token, method, params):
+        if method == "conversations.list":
+            return {"channels": [{"id": "C1", "name": "hb-testing", "is_private": True}]}
+        if method == "users.list":
+            return {"members": [{"id": "U1", "profile": {"real_name": "Asha"}}]}
+        assert method == "conversations.history" and float(params["oldest"]) > 0
+        return {"messages": [{"user": "U1", "text": "second"}, {"text": "bot", "bot_id": "B1"},
+                             {"user": "U1", "text": "first"}]}
+
+    monkeypatch.setattr(slack_action, "_get", fake_get)
+    monkeypatch.setattr(slack_action, "channel_audience", lambda token, channel: Audience(members=("a@x.com",)))
+    [source], passages = slack_action.channel_context("t", "#hb-testing", 1, "A@x.com")
+    assert passages.index("Asha: first") < passages.index("Asha: second") and "bot" not in passages
+    assert (source.title, source.public, source.viewers) == ("#hb-testing", False, ("a@x.com",))
+    assert slack_action.channel_context("t", "#hb-testing", 1, "outsider@x.com") == ([], "")
+    assert slack_action.channel_context("t", "#nowhere", 1, "a@x.com") is None   # searched instead
+
+
+@requires_db
+def test_the_next_request_knows_what_the_persons_approved_cards_made(org):
+    """"DM Raj the link of the Linear issue we created": each request started
+    fresh, so the issue made minutes earlier could not be found."""
+    first = _propose(org, "File an issue in Platform about the export", ChainLLM([ISSUE]))
+    _approve(org, first.action)
+    comment = {"request_words": "comment the link of the issue we created", "team": "Engineering",
+               "title": "Link", "body": "See https://example.com/issue/PLA-9"}
+    llm = ScriptLLM(_writes(comment))
+    out = _propose(org, "comment the link of the issue we created in Engineering", llm)
+    assert "https://example.com/issue/PLA-9" in llm.prompts[0] and "UNTRUSTED_EARLIER_RESULTS" in llm.prompts[0]
+    assert "https://example.com/issue/PLA-9" in out.action.payload["body"]      # its link is kept
+    assert [s["document_id"].startswith("act-result:") for s in out.action.sources] == [True]

@@ -99,6 +99,7 @@ def ask_search(user_id: str):
     from ..agent.routing import choose_agent, named_providers
     from ..config.settings import GraphSettings
     from ..graph import plan as graph_plan
+    from ..rag.deep import reset_deep_read, use_deep_read
     from . import chat, deps
 
     per_source = {"slack": deps.get_slack_agent, "linear": deps.get_linear_agent,
@@ -118,12 +119,22 @@ def ask_search(user_id: str):
         return Source(f"github:{repo}", f"GitHub {repo}", public, (), url), (
             f"[GitHub {repo}]\n{evidence}")
 
-    def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
+    def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None, days=None):
+        # Act drafts from what it reads, so it reads as Deep analysis does:
+        # the best documents with their neighbouring chunks, not six pieces.
+        deep = use_deep_read(True)
+        try:
+            return _search(question, about, org_id=org_id, workspace_id=workspace_id, tags=tags,
+                           viewer=viewer, days=days)
+        finally:
+            reset_deep_read(deep)
+
+    def _search(question, about, *, org_id, workspace_id, tags, viewer, days):
         text = about or question
         if tags:  # a Slack channel: that channel only, as the room
             hits = per_source["slack"]().pipeline.retrieve_passages(
                 question, org_id, about=about, workspace_id=workspace_id, tags=tags, viewer=viewer)
-            return indexed_context(hits, org_id, viewer, workspace_id)
+            return indexed_context(hits, org_id, viewer, workspace_id, days=days)
 
         try:
             plan = graph_plan.build_plan(org_id, workspace_id, text, viewer)
@@ -168,7 +179,7 @@ def ask_search(user_id: str):
         finally:
             graph_plan.reset_plan(token)
         indexed_sources, indexed_text = indexed_context(
-            _interleave(per_tool), org_id, viewer, workspace_id)
+            _interleave(per_tool), org_id, viewer, workspace_id, days=days)
         return sources + indexed_sources, "\n\n".join(t for t in [*texts, indexed_text] if t)
 
     return search

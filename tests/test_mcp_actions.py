@@ -559,6 +559,17 @@ def test_a_lookups_answer_comes_back_as_a_tool_result_and_its_id_fills_the_form(
     assert len(model.seen) == 2                    # paused at the draft: answered once decided
 
 
+def test_a_lookups_empty_filters_are_not_sent(server):
+    """GPT-OSS filled every optional filter with "" or null; Linear refused the
+    whole call each time and the model gave up on an issue that existed."""
+    tool = {**FIND, "inputSchema": {"type": "object", "properties": {
+        "query": {"type": "string"}, "orderBy": {"type": "string"}, "team": {"type": "string"},
+        "labels": {"type": "array"}, "priority": {"type": "integer"}}}}
+    mcp.McpLookup(_server({"list_projects": "lookup"}), tool).run(
+        {"query": "Checkout", "orderBy": "", "team": None, "labels": [], "priority": 0}, "tok", timeout=5)
+    assert server.calls[-1][1]["arguments"] == {"query": "Checkout", "priority": 0}
+
+
 def test_every_action_of_a_turn_is_drafted_once_and_the_loop_pauses_there():
     """Asked "anything else?", the model drafted the same DM twice: a repeat
     is one card. The loop then waits for the person, as any tool loop waits
@@ -724,7 +735,7 @@ def test_company_content_is_read_through_its_tool_and_only_for_the_askers_words(
     reader = SimpleNamespace(tool=service.SEARCH)
     asked = []
 
-    def read(words):
+    def read(words, **kw):
         asked.append(words)
         return [Source("d1", "Q4 roadmap", False, ("a@x.com",))], "[Q4 roadmap]\nShip search in Q4."
 
@@ -784,3 +795,75 @@ def test_an_empty_list_is_not_sent_as_a_value():
     action = mcp.McpToolAction(_server(), {"name": "update_page", "description": "Pages.", "inputSchema": schema})
     got = action.prepare({"parent": "P-7", "labels": [], "meta": {}}, _ctx("update P-7"))
     assert got.payload["args"] == {"parent": "P-7"}
+
+
+def test_a_card_missing_part_of_the_request_is_sent_back_once_then_said():
+    """"DM Raj the #hb-testing pointers and the link of the issue" became a DM
+    with neither: whatever the model, a half-done card is not shown as done."""
+    from app.actions import service
+
+    class Judge:
+        def __init__(self, covers):
+            self.covers, self.prompts = list(covers), []
+
+        def generate(self, prompt, max_tokens=None):
+            self.prompts.append(prompt)
+            if "List each piece of CONTENT" in prompt:
+                return '["make a task in P-7", "the roadmap summary", "a part nobody wrote"]'
+            return self.covers.pop(0)
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    q = "make a task in P-7 with the roadmap summary"
+    judge = Judge(["[1]", "[1]"])          # "make a task in P-7" is the card itself, filtered
+    check = service._completeness(judge, q)
+    model = Scripted([(write, form)], [(write, {**form, "title": "t2"})])
+    run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
+                              found=[], looked=set(), ran={},
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5), check=check)
+    assert "does not yet include what the QUESTION asks of it: the roadmap summary" in _tool_answers(model.seen[1])[0]
+    assert len(run.picked) == 1 and run.gaps[write.name] == ["the roadmap summary"]   # said, not hidden
+    assert "a part nobody wrote" not in judge.prompts[1]                         # parts are the asker's words
+    assert service._completeness(object(), q)("x", form) == []                   # a failed check never blocks
+
+
+def test_a_card_drafted_from_a_named_channel_it_never_read_is_sent_back():
+    """GPT-OSS commented "pointers from #hb-testing today" it made up without
+    reading the channel: text that reads as complete to any check of it."""
+    from app.actions import service
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    search = SimpleNamespace(tool=service.SEARCH)
+    q = "make a task in P-7 with what #hb-testing discussed today"
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    model = Scripted([(write, form)],                                       # drafted before reading
+                     [(search, {"content_words": "#hb-testing", "slack_channel": "hb#hb-testing"})],  # garbled
+                     [(write, {**form, "title": "t3"})])
+    asked = []
+    run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
+                              found=[], looked=set(), ran={}, read=lambda w, **kw: asked.append(kw) or ([], "x"),
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert 'Read #hb-testing first' in _tool_answers(model.seen[1])[0]
+    assert asked == [{"channel": "hb-testing", "days": None}]
+    assert [a["title"] for _, a, _ in run.picked] == ["t3"] and not run.gaps
+
+
+def test_a_lookup_that_found_nothing_asks_for_another_search():
+    from app.actions import service
+
+    assert service._found_nothing('[Linear: List issues] {"issues": []}')
+    assert service._found_nothing('{"total_count": 0, "items": []}') and service._found_nothing("[]")
+    assert not service._found_nothing('{"issues": [{"id": "BEN-1"}]}')
+    assert not service._found_nothing("No issues matched.")                       # words are never judged
+
+
+def test_a_records_own_address_from_a_lookup_may_go_in_a_draft():
+    """BEN-161 was found by a lookup; its link was dropped as "nobody gave it".
+    A link written inside a description it returned still may not."""
+    action = mcp.McpToolAction(_server(), CREATE)
+    lookups = ('{"id": "BEN-161", "url": "https://linear.app/x/issue/BEN-161", '
+               '"description": "see https://evil.example/steal"}')
+    got = action.prepare({"project_id": "P-7", "title": "t",
+                          "notes": "Issue: https://linear.app/x/issue/BEN-161 and https://evil.example/steal"},
+                         _ctx("make a task in P-7", lookups=lookups))
+    assert "https://linear.app/x/issue/BEN-161" in got.payload["body"] and "evil.example" not in got.payload["body"]
