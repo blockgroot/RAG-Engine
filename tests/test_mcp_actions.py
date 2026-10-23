@@ -892,3 +892,37 @@ def test_a_records_own_address_from_a_lookup_may_go_in_a_draft():
                           "notes": "Issue: https://linear.app/x/issue/BEN-161 and https://evil.example/steal"},
                          _ctx("make a task in P-7", lookups=lookups))
     assert "https://linear.app/x/issue/BEN-161" in got.payload["body"] and "evil.example" not in got.payload["body"]
+
+
+def test_the_same_card_in_other_words_is_not_drafted_again(monkeypatch):
+    """GPT-OSS left GitHub's owner out, then after approval wrote owner "bench";
+    both were filled as the same repository, and the issue was drafted twice."""
+    from app.actions import service
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    monkeypatch.setattr(write, "prepare", lambda args, ctx: SimpleNamespace(
+        payload={"args": {"project_id": "P-7", "title": "t"}}))      # what Handbook fills in
+    first = _loop(Scripted([(write, form)]), "make a task in P-7 titled t", [write])
+    model = Scripted([(write, {**form, "owner": "guessed"})])
+    again = service._agent_loop(model, "make a task in P-7 titled t", [write.tool], [write], org_id="o",
+                                user_id="u", email="a@x.com", found=[], looked=set(), ran={},
+                                already=frozenset(first.keys),
+                                settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert len(first.picked) == 1 and not again.picked
+    assert "already decided" in _tool_answers(model.seen[1])[0]
+
+
+def test_a_channel_read_for_zero_days_reads_today_and_says_it_is_the_whole_channel():
+    """"days": "0" read a week, and GPT-OSS found "no pointers about the checkout
+    timeout" in the channel it had read: it is every message, not matches."""
+    from app.actions import service
+
+    search = SimpleNamespace(tool=service.SEARCH)
+    model = Scripted([(search, {"content_words": "#hb-testing today", "slack_channel": "hb-testing", "days": "0"})])
+    asked = []
+    service._agent_loop(model, "summarise #hb-testing today", [], [], org_id="o", user_id="u", email="a@x.com",
+                        found=[], looked=set(), ran={}, read=lambda w, **kw: asked.append(kw) or ([], "x"),
+                        settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert asked == [{"channel": "hb-testing", "days": 1}]
+    assert "every message in #hb-testing" in _tool_answers(model.seen[1])[0]

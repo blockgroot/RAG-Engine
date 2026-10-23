@@ -173,15 +173,23 @@ MAX_STALLS = 2
 NOTHING_DRAFTED = ("No card exists yet: nothing is drafted until you call a write tool. If the "
                    "QUESTION asks for an action, call its write tool now; content it should be "
                    "drafted from (a page, doc, thread, channel or issue in any connected tool) is "
-                   "read with handbook_read_company_content first. A value you do not know is no "
-                   "reason to stop: call the tool without it, and its answer says if it is "
-                   "needed. If the QUESTION only asks something, give your answer again.")
+                   "read with handbook_read_company_content first, and drafted in. A form value you "
+                   "do not know (an id, an owner) is no reason to stop: call the tool without it, "
+                   "and its answer says if it is needed. If the QUESTION only asks something, give "
+                   "your answer again.")
 
 
 #: Said once when the model stops after a card was decided.
 ALL_DONE = ("Before you finish: compare the QUESTION with what was done above. If it asks for an "
             "action that is not drafted or done yet, call its tool now. Otherwise reply in one short "
             "sentence.")
+
+
+#: Said when a card already decided is drafted again. GPT-OSS "fixed" a failed
+#: card with a priority nobody asked for, which is left out: the same card.
+DECIDED = ("The user already decided this card (its result is above): a setting the QUESTION did not "
+           "ask for is left out, so this is the same card. Do not draft it again; if it failed, tell "
+           "the user why in one sentence.")
 
 
 @dataclass
@@ -204,6 +212,9 @@ class _Drafting:
     #: parts each still lacks (``_completeness``).
     checked: set = field(default_factory=set)
     gaps: dict = field(default_factory=dict)
+    #: Each drafted card's form as prepared (``_form_key``), so the same card
+    #: asked again in other words is known after the person decides it.
+    keys: list = field(default_factory=list)
 
 
 def _fenced(text: str) -> str:
@@ -404,13 +415,14 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
                 "for it, do not call it."), False
     key = _form_key(action, args)
     if key in already:
-        return ("The user already decided this card (its result is above). Do not draft it again."), False
+        return DECIDED, False
     if key in drafted:
         return "Already drafted in this turn. Do not draft it again.", False
     problem = getattr(action, "form_problem", lambda _: None)(args)
+    prepared: dict = {}
     if problem is None:
         problem = _precheck(action, args, question, org_id=org_id, user_id=user_id, email=email,
-                            found=found, sources=tuple(out.sources))
+                            found=found, sources=tuple(out.sources), prepared=prepared)
     if problem:
         # A different form than any refused before is the model fixing it:
         # progress, so the loop gives it the turns to (bounded by MAX_STEPS).
@@ -435,18 +447,28 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
             # One chance to make the card whole; after it, what is still
             # missing is said to the person rather than the card shown as done.
             return ("Refused, not drafted: this card does not yet include what the QUESTION asks "
-                    f"of it: {'; '.join(missing)}. Read or look up what you need, then call the tool "
-                    "again with it included, keeping everything else this call had (its links too)."
+                    f"of it: {'; '.join(missing)}. A summary, list or pointers are written in your own "
+                    "words from what you read, never the messages pasted as they were. Read or look up "
+                    "what you need, then call the tool again with it included, keeping everything else "
+                    "this call had (its links too)."
                     + "".join(f" Read #{c} first: {SEARCH['function']['name']} with slack_channel "
                               f'"{c}".' for c in unread)), True
     else:
         out.gaps.pop(action.name, None)
-    if len(drafted) >= MAX_ACTIONS:
+    # The same card in other words: GPT-OSS left GitHub's owner out, then after
+    # approval wrote owner "bench"; Handbook filled both as sana18-syv.
+    done = _form_key(action, prepared["args"]) if isinstance(prepared.get("args"), dict) else key
+    if done in already:
+        return DECIDED, False
+    if done in drafted:
+        return "Already drafted in this turn. Do not draft it again.", False
+    if len(out.picked) >= MAX_ACTIONS:
         out.left_out.append(action.label)
         return f"Not drafted: at most {MAX_ACTIONS} cards at a time.", False
     out.picked.append((action, args, call_id))
     out.drafted_in[action.name] = out.turn
-    drafted[key] = len(drafted) + 1
+    drafted[key] = drafted[done] = len(out.picked)
+    out.keys.append(done)
     progress.report(f"Preparing a card: {action.label}")
     return None, True
 
@@ -612,7 +634,9 @@ def _read_content(call, question: str, *, read, ran: dict, settings: ActionsSett
     named = [str(given.get("slack_channel") or "").translate(TYPOGRAPHY).strip(), *_CHANNEL.findall(words)]
     channel = next((c for c in named if c and asked_in(c.lstrip("#"), question)), "")
     try:
-        days = min(max(int(given.get("days") or 0), 0), MAX_READ_DAYS) or None
+        # "days": 0 is today, as 1 is; GPT-OSS sent "0", it read a week, and
+        # decided nothing was said today.
+        days = None if given.get("days") in (None, "") else min(max(int(given["days"]), 1), MAX_READ_DAYS)
     except (TypeError, ValueError):
         days = None
     if not asked_in(words, question):
@@ -632,6 +656,11 @@ def _read_content(call, question: str, *, read, ran: dict, settings: ActionsSett
         return ("Nothing the user can see matches that. Draft nothing from it: say in one sentence "
                 "that you couldn't find it."), True
     progress.report(f"Drafting from {len(shown)} {'source' if len(shown) == 1 else 'sources'}")
+    if channel:
+        # GPT-OSS read today's #hb-testing, then found "no pointers about the
+        # checkout timeout" in it: a channel read is the whole channel, not matches.
+        return (_fenced(passages) + f"\nThat is every message in #{channel.lstrip('#')} for that time, "
+                "not search matches: all of it is what was discussed there. Draft from it."), True
     return _fenced(passages), True
 
 
@@ -658,7 +687,7 @@ _LATER = ("It exists only once the user approves that card, and you are given it
 
 
 def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, email: str,
-              found: list[str], sources: tuple = ()) -> str | None:
+              found: list[str], sources: tuple = (), prepared: dict | None = None) -> str | None:
     """Handbook's own checks on the form (``prepare``), before it is a card,
     so a value the model must look up or a target that does not exist is said
     back to it. Nothing is stored; ``_draft`` checks again, authoritatively.
@@ -686,6 +715,8 @@ def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, e
         # GPT-OSS signed a DM "Best, [Your Name]"; it is sent as the person.
         return (f"the text has a blank for someone to fill in ({slot.group(0)}). Write it without "
                 "blanks or a sign-off: it is sent as the user, under their name")
+    if prepared is not None:
+        prepared["args"] = (proposal.payload or {}).get("args")
     kept = json.dumps(proposal.payload, ensure_ascii=False)
     lost = [u for u in _LINK.findall(sent) if u.rstrip(".,;") not in kept]
     if lost:
@@ -1062,7 +1093,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
         try:
             runs.create(org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
                         question=question, model=model, messages=messages, found=found, sources=sources,
-                        drafted={"keys": sorted({*already, *(_form_key(a, args) for a, args, _ in run.picked)}),
+                        drafted={"keys": sorted({*already, *(_form_key(a, args) for a, args, _ in run.picked), *run.keys}),
                                  "calls": calls},
                         action_ids=list(calls), ttl_seconds=settings.ttl_seconds, step=step)
         except DatabaseError:

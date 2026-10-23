@@ -155,8 +155,10 @@ SCENARIOS = {
         [card_count(1)], decide=["cancel"]),
     "fix_after_refusal": Scenario(
         'Create a Linear issue in BEN titled "Scenario retry".',
-        [lambda t: "" if len(t.cards) >= 2 else "the refused card was not drafted again"],
-        decide=["fail:Argument Validation Error: priority must be between 0 and 4", "approve"]),
+        # Fixed and drafted again, or (nothing to fix it with) the error said.
+        [lambda t: "" if len(t.cards) >= 2 or "description" in (t.replies[-1] or "").lower()
+         else "the refused card was neither drafted again nor its error said"],
+        decide=["fail:Argument Validation Error: description is required", "approve"]),
     "close": Scenario(
         f'Close the GitHub issue "Install fails on Python 3.13" in {REPO}.',
         [card_count(1), cards_with('"state": "closed"')]),
@@ -300,7 +302,7 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": service._fenced(said)})
             if decision == "cancel":
                 break                     # a cancel ends the request (runs.resume)
-            already = already | {service._form_key(a, args) for a, args, _ in loop.picked}
+            already = already | {service._form_key(a, args) for a, args, _ in loop.picked} | set(loop.keys)
             sources = (*loop.sources, *made)
     finally:
         service._read_content = orig
