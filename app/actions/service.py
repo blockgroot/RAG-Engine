@@ -365,6 +365,9 @@ def _plain(value):
 
 
 _LINK = re.compile(r"https?://[^\s\"'<>)\]]+")
+#: A template slot or Handbook's own field name inside drafted text: format,
+#: not wording ("{{result_of_card_1}}", "{{needs_result_of:card 1}}").
+_PLACEHOLDER = re.compile(r"\{\{[^{}]{1,80}\}\}|\bneeds_result_of\b")
 
 
 def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, email: str,
@@ -385,14 +388,20 @@ def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, e
         return None                       # said by ``_draft``, in the person's terms
     except ActionError as exc:
         return str(exc)
+    sent = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS}, ensure_ascii=False)
+    blank = _PLACEHOLDER.search(sent)
+    if blank:
+        # A value the model meant to fill later, written into the text: the
+        # card would say "{{needs_result_of:card 1}}" where the link should be.
+        return (f"the text has a placeholder ({blank.group(0)[:60]}) where a value from an earlier card "
+                "should be. That value exists only after approval: leave the placeholder out and set "
+                "this form's needs_result_of to that card instead")
     kept = json.dumps(proposal.payload, ensure_ascii=False)
-    lost = [u for u in _LINK.findall(json.dumps(
-        {k: v for k, v in args.items() if k not in OWN_FIELDS}, ensure_ascii=False))
-        if u.rstrip(".,;") not in kept]
+    lost = [u for u in _LINK.findall(sent) if u.rstrip(".,;") not in kept]
     if lost:
         return (f"the link {lost[0]} is not one the user, a source or an approved card gave, so it would "
-                "be removed. If it is the link of a card you drafted, it does not exist yet: call "
-                "handbook_continue_after_approval and draft this step after approval")
+                "be removed. If it is the link of a card you drafted, it does not exist yet: set this "
+                "form's needs_result_of to that card instead")
     return None
 
 

@@ -1318,3 +1318,23 @@ def test_a_card_the_tool_refuses_after_approval_can_be_corrected(org):
     assert nxt.action.payload["title"] == "Export (fixed)"
     said = [m["content"] for m in llm.seen[-1] if m.get("role") == "user"][-1]
     assert "invalid field combination" in said
+
+
+@requires_db
+def test_a_placeholder_written_into_the_text_is_said_back_not_drafted(org):
+    """GPT-OSS wrote "GitHub issue created: {{needs_result_of:card 1}}" into
+    the comment instead of setting the field, and the card carried it."""
+    blank = lambda link: {**_link_comment(link), "body": "Filed: {{needs_result_of:card 1}}"}  # noqa: E731
+
+    class Blank(ChainLLM):
+        def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+            if messages[-1]["role"] == "user" and "decided the cards" not in messages[-1]["content"]:
+                self.seen.append(messages)
+                return ChatResult(text=None, tool_calls=[ToolCall("c0", "test_create", json.dumps(ISSUE)),
+                                                         ToolCall("c1", "test_create", json.dumps(blank("")))])
+            return super().generate_with_tools(messages, tools, tool_choice, timeout)
+
+    llm = Blank([ISSUE], [_link_comment], wait=False)
+    out = _propose(org, CHAIN_Q, llm)
+    assert len(out.drafts) == 1 and out.action.target["name"] == "Platform (PLA)"
+    assert all("{{" not in row.payload.get("body", "") for row, _ in out.drafts)
