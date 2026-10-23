@@ -201,7 +201,10 @@ def test_a_value_must_come_from_the_askers_words_or_a_lookup():
     proposal = action.prepare(args, _ctx("create a task in P-7: review risks"))
     assert proposal.payload["args"]["project_id"] == "P-7"
     assert (proposal.payload["title"], proposal.payload["body"]) == ("Review risks", "From the billing page")
-    assert ["project_id", "P-7"] in proposal.payload["details"] and ["priority", "high"] in proposal.payload["details"]
+    assert ["project_id", "P-7"] in proposal.payload["details"]
+    assert "priority" not in proposal.payload["args"]       # a choice nobody made is left out
+    asked = action.prepare(args, _ctx("create a high priority task in P-7: review risks"))
+    assert ["priority", "high"] in asked.payload["details"]
     assert proposal.audience == Audience(members=None)      # unknown: private content needs the tick
 
     with pytest.raises(ActionRejected, match="project_id must come from your request"):
@@ -754,3 +757,30 @@ def test_a_tool_call_the_model_wrote_as_text_is_made():
     assert [c.name for c in bare] == [name]
     assert service._calls_in_text('{"colour": "red"}', tools) == []           # fits no form
     assert service._calls_in_text("Done, nothing to add.", tools) == []
+
+
+def test_an_optional_choice_nobody_asked_for_is_left_out():
+    """GPT-OSS set Notion's creation_mode to "draft", which Notion refuses
+    beside a parent, but only after the person approved the card."""
+    schema = {"type": "object", "required": ["parent"], "properties": {
+        "parent": {"type": "string"}, "title": {"type": "string"},
+        "creation_mode": {"type": "string", "enum": ["draft", "page"]},
+        "state": {"type": "string", "enum": ["open", "closed"]}}}
+    action = mcp.McpToolAction(_server(), {"name": "create_pages", "description": "Pages.", "inputSchema": schema})
+    got = action.prepare({"parent": "P-7", "title": "Notes", "creation_mode": "draft"}, _ctx("make a page in P-7"))
+    assert "creation_mode" not in got.payload["args"]
+    assert "creation_mode (not in your request)" in dict(got.payload["details"])["Left out"]
+    closed = action.prepare({"parent": "P-7", "state": "closed"}, _ctx("close the page in P-7"))
+    reopened = action.prepare({"parent": "P-7", "state": "open"}, _ctx("reopen the page in P-7"))
+    assert closed.payload["args"]["state"] == "closed" and reopened.payload["args"]["state"] == "open"
+
+
+def test_an_empty_list_is_not_sent_as_a_value():
+    """Closing an issue, GPT-OSS sent ``labels: []``: on an update GitHub
+    reads that as "remove every label"."""
+    schema = {"type": "object", "required": ["parent"], "properties": {
+        "parent": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}},
+        "meta": {"type": "object"}}}
+    action = mcp.McpToolAction(_server(), {"name": "update_page", "description": "Pages.", "inputSchema": schema})
+    got = action.prepare({"parent": "P-7", "labels": [], "meta": {}}, _ctx("update P-7"))
+    assert got.payload["args"] == {"parent": "P-7"}

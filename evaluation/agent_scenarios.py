@@ -124,6 +124,9 @@ SCENARIOS = {
         'Create a Linear issue in BEN titled "Scenario retry".',
         [lambda t: "" if len(t.cards) >= 2 else "the refused card was not drafted again"],
         decide=["fail:Argument Validation Error: priority must be between 0 and 4", "approve"]),
+    "close": Scenario(
+        f'Close the GitHub issue "Install fails on Python 3.13" in {REPO}.',
+        [card_count(1), cards_with('"state": "closed"')]),
     "question": Scenario(
         "What open issues do we have in BEN?",
         [card_count(0)]),

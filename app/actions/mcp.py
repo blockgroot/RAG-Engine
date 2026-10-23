@@ -30,7 +30,7 @@ from ..core.exceptions import ActionError, ActionRejected
 from ..security.untrusted import scrub_untrusted_text
 from . import mcp_client, mcp_store
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, details
-from .draft import asked_in, clean_body, clean_title
+from .draft import TYPOGRAPHY, asked_in, clean_body, clean_title
 
 #: A field holds drafted words when its NAME says prose (schema field names,
 #: not the asker's words): "title", "textContent", "pages[].content". The
@@ -141,6 +141,26 @@ def _code_label(text: str, prop: dict) -> str | None:
     return m.group(1) if m else None
 
 
+def _chosen_by_asker(key: str, value: Any, prop: dict, question: str) -> None:
+    """An optional setting the tool offers as a list of choices is the
+    asker's to make: GPT-OSS set Notion's ``creation_mode`` to "draft", which
+    Notion refuses beside a parent, but only AFTER approval (no tool checks
+    a form without acting on it). Left out, the tool's own default applies.
+    Kept when the asker used the choice's words: "close the issue" is
+    ``closed``, "reopen it" is ``open``."""
+    if not isinstance(value, str) or value not in ((prop or {}).get("enum") or ()):
+        return
+    said = _WORDS.findall(question.translate(TYPOGRAPHY).lower())
+    if all(any(w == x or (min(len(w), len(x)) >= 4 and (w in x or x in w)) for x in said)
+           for w in _WORDS.findall(value.lower())):
+        return
+    raise _Ungrounded(f"{key} is a setting the request did not choose")
+
+
+_WORDS = re.compile(r"[^\W_]+")
+_EMPTY = (None, "", [], {})
+
+
 def _guide(tool: dict) -> str:
     """The tool's whole manual, for a model whose form was refused: its full
     description (the card's 300 characters cut Notion's "set the title in
@@ -194,13 +214,15 @@ class McpToolAction(Action):
         """``form_problem`` against this tool's own schema, on the fields the
         server will receive (not Handbook's ``request_words``)."""
         sent = {k: v for k, v in args.items()
-                if k != "request_words" and v not in (None, "")}
+                if k != "request_words" and v not in _EMPTY}
         return form_problem(self.mcp_tool.get("inputSchema"), sent)
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         schema = _schema(self.mcp_tool)
         props = schema["properties"]
-        given = {k: v for k, v in args.items() if k in props and v not in (None, "")}
+        # An empty value is "not given": GPT-OSS closed an issue with
+        # ``labels: []``, which GitHub reads on an update as "remove them all".
+        given = {k: v for k, v in args.items() if k in props and v not in _EMPTY}
         missing = [k for k in schema["required"] if k not in given]
         if missing:
             raise ActionRejected(f"{self.server.name} needs {', '.join(missing)} for that. Say it in your request.")
@@ -217,6 +239,8 @@ class McpToolAction(Action):
         cleaned, left_out = {}, []
         for k, v in given.items():
             try:
+                if k not in schema["required"]:
+                    _chosen_by_asker(k, v, props[k], ctx.question)
                 cleaned[k] = self._clean(k, v, props[k], ctx, uris, defined)
             except _Ungrounded:
                 if k in schema["required"]:
