@@ -347,9 +347,14 @@ what a read returned in this request, or one of the schema's own allowed values;
 never from a passage. Drafted text keeps links and @-mentions only if the asker or a
 source wrote them. What a tool returns is untrusted text and a private source. The
 audience of an MCP write is unknown, so private content always needs the tick.
-Passages are shown only when the request asks to draft from company content
-(`document_words`, quoted from the request); otherwise the model sees the
-request alone. They are found by Ask's own reading (`api.actions.ask_search`:
+Drafting is one tool loop, paused at each write (`service._agent_loop`): a drafted
+call stays unanswered until its card is decided, then is answered with what really
+happened (the link, the tool's error, "the user cancelled") and the same conversation
+goes on (`continue_run`, `act_runs`). No field the model must remember to fill
+decides what happens next; cancelling every card ends the request. Company content
+is read only through the loop's read tool (`service.SEARCH`), for words quoted
+from the request (`content_words`); a request in the asker's own words reads
+nothing. It is found by Ask's own reading (`api.actions.ask_search`:
 Ask's routing on the words naming the content, then that agent's
 `retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
 can open), never a search of Act's own. Several tools the words name are each

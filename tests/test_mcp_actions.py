@@ -529,7 +529,7 @@ class Scripted:
 def _loop(model, question, offered, found=None, looked=None):
     from app.actions import service
 
-    return service._agent_loop(model, question, None, [a.tool for a in offered], offered, org_id="o",
+    return service._agent_loop(model, question, [a.tool for a in offered], offered, org_id="o",
                                user_id="u", email="a@x.com", found=[] if found is None else found,
                                looked=set() if looked is None else looked, ran={},
                                settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
@@ -549,23 +549,25 @@ def test_a_lookups_answer_comes_back_as_a_tool_result_and_its_id_fills_the_form(
     model = Scripted([(find, {})], [(write, {"request_words": "create a task", "project_id": "P-7", "title": "t"})])
     found, looked = [], set()
     run = _loop(model, "create a task in Atlas", [write, find], found, looked)
-    assert [a for a, _ in run.picked] == [write] and looked == {"Asana"} and "P-7" in found[0]
+    assert [a for a, _, _ in run.picked] == [write] and looked == {"Asana"} and "P-7" in found[0]
     second = model.seen[1]
     assert second[1]["tool_calls"][0]["id"] == second[2]["tool_call_id"]
     assert "P-7" in second[2]["content"] and "UNTRUSTED_TOOL_RESULT" in second[2]["content"]
-    assert "Drafted as card 1" in _tool_answers(model.seen[2])[-1]
+    assert len(model.seen) == 2                    # paused at the draft: answered once decided
 
 
-def test_an_action_is_drafted_once_and_every_action_of_the_request_is_drafted():
-    """Asked "anything else?", the model drafted the same DM twice; split into
-    parts, it dropped one. It is told what it drafted, and a repeat is one card."""
+def test_every_action_of_a_turn_is_drafted_once_and_the_loop_pauses_there():
+    """Asked "anything else?", the model drafted the same DM twice: a repeat
+    is one card. The loop then waits for the person, as any tool loop waits
+    for a tool's answer; nothing more is asked of the model until then."""
     write = mcp.McpToolAction(_server(), CREATE)
     form = lambda t: {"request_words": f"a task titled {t}", "project_id": "P-7", "title": t}  # noqa: E731
-    model = Scripted([(write, form("t"))], [(write, form("t")), (write, form("u"))])
+    model = Scripted([(write, form("t")), (write, form("t")), (write, form("u"))])
     run = _loop(model, "In P-7 make a task titled t and a task titled u", [write])
-    assert [a["title"] for _, a in run.picked] == ["t", "u"]
-    assert "Already drafted as card 1" in _tool_answers(model.seen[2])[1]
-    assert run.reply == "Done."
+    assert [a["title"] for _, a, _ in run.picked] == ["t", "u"] and len(model.seen) == 1
+    calls = run.messages[-2]["tool_calls"]
+    assert [cid for _, _, cid in run.picked] == [calls[0]["id"], calls[2]["id"]]
+    assert "Already drafted" in run.messages[-1]["content"]   # only the repeat is answered now
 
 
 def test_a_refused_form_goes_back_to_the_model_and_its_fix_is_drafted():
@@ -573,7 +575,7 @@ def test_a_refused_form_goes_back_to_the_model_and_its_fix_is_drafted():
     model = Scripted([(action, {"request_words": "make a page", "pages": [{"title": "Notes"}]})],
                      [(action, {"request_words": "make a page", "pages": [{"properties": {"title": "Notes"}}]})])
     run = _loop(model, "make a page", [action])
-    assert [a["pages"] for _, a in run.picked] == [[{"properties": {"title": "Notes"}}]]
+    assert [a["pages"] for _, a, _ in run.picked] == [[{"properties": {"title": "Notes"}}]]
     assert "has no field title" in _tool_answers(model.seen[1])[0]
     assert run.refused == []                       # fixed, so not said to the person
 
@@ -595,7 +597,7 @@ def test_a_model_that_only_repeats_itself_is_stopped():
     form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
     model = Scripted(*([[(write, form)]] * 20))
     run = _loop(model, "make a task in P-7", [write])
-    assert len(run.picked) == 1 and len(model.seen) == 3
+    assert len(run.picked) == 1 and len(model.seen) == 1
 
 
 def test_an_action_nobody_asked_for_is_refused_and_said():
@@ -654,7 +656,7 @@ def test_a_models_non_breaking_hyphens_are_the_askers_plain_ones():
     write = mcp.McpToolAction(_server(), CREATE)
     model = Scripted([(write, {"request_words": "a task in P\u20117", "project_id": "P\u20117", "title": "t"})])
     run = _loop(model, "make a task in P-7", [write])
-    assert [a["project_id"] for _, a in run.picked] == ["P-7"]
+    assert [a["project_id"] for _, a, _ in run.picked] == ["P-7"]
 
 
 def test_a_model_that_says_it_drafted_without_calling_the_tool_is_told_once(server, monkeypatch):
@@ -708,22 +710,47 @@ def test_a_refused_form_brings_the_tools_whole_manual_and_each_new_try_is_progre
     assert len(run.picked) == 1                    # three different wrong forms, then the right one
 
 
-def test_a_card_that_only_repeats_the_request_is_replaced_when_it_names_its_content():
-    """"Create a Linear issue … summarising what was discussed in #hb-testing"
-    drafted that sentence as the description: no content was ever read."""
+def test_company_content_is_read_through_its_tool_and_only_for_the_askers_words():
+    """"… summarising the Q4 roadmap page" made a page that said "Summarising
+    the Q4 roadmap page.": a field the model had to fill was left empty, so
+    nothing was read. Reading is a tool now, as Onyx's search is."""
+    from app.actions import service
+    from app.actions.base import Source
+
     write = mcp.McpToolAction(_server(), CREATE)
-    q = "make a task in P-7 titled Digest summarising the roadmap page"
-    bare = {"request_words": "make a task in P-7", "project_id": "P-7", "title": "Digest"}
-    model = Scripted([(write, bare)], [(write, {**bare, "document_words": "the roadmap page"})])
-    run = _loop(model, q, [write])
-    told = _tool_answers(model.seen[1])
-    assert "only the QUESTION's own words" in told[0]
-    assert [a.get("document_words") for _, a in run.picked] == ["the roadmap page"]
+    reader = SimpleNamespace(tool=service.SEARCH)
+    asked = []
+
+    def read(words):
+        asked.append(words)
+        return [Source("d1", "Q4 roadmap", False, ("a@x.com",))], "[Q4 roadmap]\nShip search in Q4."
+
+    q = "make a task in P-7 summarising the Q4 roadmap page"
+    model = Scripted([(reader, {"content_words": "the board minutes"})],
+                     [(reader, {"content_words": "the Q4 roadmap page"})],
+                     [(write, {"request_words": "make a task", "project_id": "P-7", "title": "Q4",
+                               "notes": "Ship search in Q4."})])
+    run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
+                              found=[], looked=set(), ran={},
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5), read=read)
+    assert asked == ["the Q4 roadmap page"]                      # the unasked read never ran
+    assert "QUESTION's own words" in _tool_answers(model.seen[1])[0]
+    assert "Ship search in Q4" in _tool_answers(model.seen[2])[-1]
+    assert [s.document_id for s in run.sources] == ["d1"] and len(run.picked) == 1
 
 
-def test_a_card_with_its_own_words_is_not_nudged():
+def test_a_tool_call_the_model_wrote_as_text_is_made():
+    """GPT-OSS replied with the call instead of making it, by name or as the
+    bare arguments of the one tool they fit; nothing was drafted."""
+    from app.actions import service
+
     write = mcp.McpToolAction(_server(), CREATE)
-    model = Scripted([(write, {"request_words": "make a task in P-7", "project_id": "P-7", "title": "t",
-                               "notes": "Written by the model from what it read"})])
-    _loop(model, "make a task in P-7", [write])
-    assert "only the QUESTION's own words" not in _tool_answers(model.seen[1])[0]
+    tools = [write.tool]
+    name = write.tool["function"]["name"]
+    named = service._calls_in_text(f'Here: {{"tool": "{name}", "toolInput": {{"project_id": "P-7", "title": "t"}}}}',
+                                   tools)
+    assert [(c.name, json.loads(c.arguments)) for c in named] == [(name, {"project_id": "P-7", "title": "t"})]
+    bare = service._calls_in_text('{"project_id": "P-7", "title": "t", "request_words": "make"}', tools)
+    assert [c.name for c in bare] == [name]
+    assert service._calls_in_text('{"colour": "red"}', tools) == []           # fits no form
+    assert service._calls_in_text("Done, nothing to add.", tools) == []

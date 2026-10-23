@@ -57,7 +57,10 @@ def _built_prompts() -> dict[str, str]:
         "live_decision": prompts.build_live_decision_prompt("q?", ATTACK, "idk", web=True),
         "memory_extract": __import__("app.memory.personal", fromlist=["x"]).build_extract_prompt(ATTACK, ()),
         "doctables_text": __import__("app.doctables.text_adapter", fromlist=["x"]).build_prompt("t", ATTACK),
-        "act_decision": __import__("app.actions.service", fromlist=["x"]).build_act_prompt("q?", ATTACK),
+        # Agent mode reads as a tool loop: its prompt carries the policy, and
+        # every tool answer (company content included) comes back fenced.
+        "act_decision": (lambda svc: svc.build_act_prompt("q?") + "\n" + svc._fenced(ATTACK))(
+            __import__("app.actions.service", fromlist=["x"])),
         "act_intent": __import__("app.api.slack_act", fromlist=["x"]).build_intent_prompt(ATTACK),
         "act_revise": __import__("app.actions.service", fromlist=["x"]).build_revise_prompt({"body": ATTACK}, "shorter"),
         "gap_topic": __import__("app.feedback.topics", fromlist=["x"]).build_prompt(ATTACK, [ATTACK]),

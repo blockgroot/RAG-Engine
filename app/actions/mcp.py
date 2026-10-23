@@ -192,9 +192,9 @@ class McpToolAction(Action):
 
     def form_problem(self, args: dict[str, Any]) -> str | None:
         """``form_problem`` against this tool's own schema, on the fields the
-        server will receive (not Handbook's ``request_words``/``document_words``)."""
+        server will receive (not Handbook's ``request_words``)."""
         sent = {k: v for k, v in args.items()
-                if k not in ("request_words", "document_words", "needs_result_of") and v not in (None, "")}
+                if k != "request_words" and v not in (None, "")}
         return form_problem(self.mcp_tool.get("inputSchema"), sent)
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:

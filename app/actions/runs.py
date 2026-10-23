@@ -1,10 +1,11 @@
-"""``act_runs``: a request paused until the person decides the cards it waits on.
+"""``act_runs``: a request paused at the cards it drafted.
 
-A chain ("open a GitHub issue, then comment its link on the Linear issue")
-cannot draft its later step before the earlier write has run: the link does
-not exist yet. The model says so (``service.CONTINUE``), and its conversation
-is kept here with the cards. When every card it waits on is decided, their
-results are given to it and it drafts the next cards.
+Agent mode is a tool loop paused at each write ("open a GitHub issue, then
+comment its link on the Linear issue"): the drafted calls stay unanswered,
+the conversation is kept here with which card answers which call, and when
+every card is decided each call is answered with what happened (the link,
+the tool's error, a cancel) and the same conversation goes on
+(``service.continue_run``).
 
 Every query is pinned to ``org_id`` and ``user_id``: a run is its asker's.
 ``resume`` is one conditional UPDATE, so two approvals arriving together
@@ -22,8 +23,8 @@ from psycopg.types.json import Json
 from ..db.connection import get_connection
 from .base import Source
 
-#: Times one request may pause and continue; a chain longer than this is said.
-MAX_STEPS = 4
+#: Times one request may pause for approval and go on.
+MAX_STEPS = 6
 
 _COLUMNS = ("id::text, org_id::text, workspace_id::text, user_id::text, surface, question, model, "
             "messages, found, sources, status, steps, drafted")
@@ -43,8 +44,8 @@ class Run:
     sources: list[dict[str, Any]]
     status: str
     steps: int
-    #: The forms already drafted in this request (``service._form_key``): never drafted twice.
-    drafted: list[str]
+    #: ``{"keys": forms already drafted (never drafted twice), "calls": {card id: tool call id}}``.
+    drafted: Any
 
     def source_list(self) -> list[Source]:
         return [Source(s["document_id"], s["title"], s["public"], tuple(s.get("viewers") or ()), s.get("uri"))
@@ -59,8 +60,7 @@ def _sources(sources: list[Source]) -> list[dict[str, Any]]:
 
 
 def create(*, org_id: str, workspace_id: str | None, user_id: str, surface: dict, question: str,
-           status: str,
-           model: str | None, messages: list[dict], found: list[str], sources: list[Source], drafted: list[str],
+           model: str | None, messages: list[dict], found: list[str], sources: list[Source], drafted: dict,
            action_ids: list[str], ttl_seconds: int, step: int = 1) -> str:
     """Store a paused run and tie the cards it waits on to it."""
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
@@ -71,18 +71,19 @@ def create(*, org_id: str, workspace_id: str | None, user_id: str, surface: dict
             "VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "RETURNING id::text",
             (org_id, workspace_id, user_id, Json(surface), question, model, Json(messages), Json(found),
-             Json(_sources(sources)), step, Json(drafted), expires_at, status),
+             Json(_sources(sources)), step, Json(drafted), expires_at, "waiting"),
         ).fetchone()[0]
         conn.execute("UPDATE actions SET run_id = %s::uuid WHERE org_id = %s::uuid AND user_id = %s::uuid "
                      "AND id = ANY(%s::uuid[])", (run_id, org_id, user_id, action_ids))
     return run_id
 
 
-def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[str, dict]]] | None:
-    """The run this card belongs to, claimed for continuing, with every card it
-    waited on as ``(label key, result)``; or ``None`` when there is nothing to
-    continue: no run, a card still pending, expired, another approval
-    already continuing it, or a card of a run nothing waits on cancelled."""
+def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[str, str, str, dict]]] | None:
+    """The run this card belongs to, claimed for continuing, with every card
+    of it as ``(id, action, status, result)``; or ``None`` when there is
+    nothing to continue: no run, a card still pending, expired, another
+    approval already continuing it, or every card cancelled (a cancel ends a
+    request; going on drafted the cancelled card again)."""
     with get_connection() as conn:
         row = conn.execute(
             f"""
@@ -93,15 +94,10 @@ def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[s
             UPDATE act_runs r SET status = 'resuming'
             FROM mine
             WHERE r.id = mine.run_id AND r.org_id = %s::uuid AND r.user_id = %s::uuid
-              AND r.expires_at > now()
+              AND r.expires_at > now() AND r.status IN ('waiting', 'standby')
               AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.run_id = r.id
                               AND a.status IN ('proposed', 'executing'))
-              -- standby too: a model that stopped after the first card without
-              -- holding the next ("then post its link") still gets the results;
-              -- but a cancel there ends the request (it was re-drafted instead)
-              AND (r.status = 'waiting'
-                   OR (r.status = 'standby' AND NOT EXISTS (SELECT 1 FROM actions a
-                       WHERE a.run_id = r.id AND a.status = 'rejected')))
+              AND EXISTS (SELECT 1 FROM actions a WHERE a.run_id = r.id AND a.status <> 'rejected')
             RETURNING {", ".join("r." + c for c in _COLUMNS.split(", "))}
             """,
             (action_id, org_id, user_id, org_id, user_id),
@@ -109,10 +105,10 @@ def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[s
         if row is None:
             return None
         cards = conn.execute(
-            "SELECT action, status, result FROM actions WHERE run_id = %s::uuid AND org_id = %s::uuid "
-            "ORDER BY created_at", (row[0], org_id),
+            "SELECT id::text, action, status, result FROM actions WHERE run_id = %s::uuid "
+            "AND org_id = %s::uuid ORDER BY created_at", (row[0], org_id),
         ).fetchall()
-    return Run(*row), [(a, {"status": s, **(r or {})}) for a, s, r in cards]
+    return Run(*row), [(i, a, s, r or {}) for i, a, s, r in cards]
 
 
 def finish(org_id: str, run_id: str) -> None:
