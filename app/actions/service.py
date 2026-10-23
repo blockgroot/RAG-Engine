@@ -39,7 +39,7 @@ from ..core.exceptions import (
     NotFoundError,
     OAuthReauthRequiredError,
 )
-from ..db.connection import get_connection
+from ..db.connection import DatabaseError, get_connection
 from ..rag import progress
 from ..security.links import strip_links
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
@@ -149,6 +149,20 @@ NOTHING_DRAFTED = ("No card exists yet: nothing is drafted until you call a writ
                    "something, give your answer again.")
 
 
+#: The one tool that is Handbook's own: the model says a remaining step needs
+#: a drafted card's result (a link, an id), which exists only once the person
+#: approves it. The run is kept and continued then (``continue_run``).
+CONTINUE = {"type": "function", "function": {
+    "name": "handbook_continue_after_approval",
+    "description": ("Call this when a remaining step of the QUESTION needs the result (a link, id "
+                    "or number) of a card you drafted, which exists only after the user approves "
+                    "it. Draft every step you can now first. After approval you are given the "
+                    "results and continue with the remaining steps."),
+    "parameters": {"type": "object", "properties": {"remaining": {
+        "type": "string", "description": "The steps still to do, in the QUESTION's words."}},
+        "required": ["remaining"]}}}
+
+
 @dataclass
 class _Drafting:
     """What one run of the loop drafted, and what it could not."""
@@ -160,6 +174,10 @@ class _Drafting:
     turn: int = 0
     #: The turn each tool last drafted something new in.
     drafted_in: dict | None = None
+    #: The steps the model will continue with after approval (``CONTINUE``).
+    waits: str | None = None
+    #: The conversation as it ended, kept when the run waits.
+    messages: list | None = None
 
 
 def _fenced(text: str) -> str:
@@ -170,12 +188,14 @@ def _fenced(text: str) -> str:
 def _form_key(action, args: dict) -> str:
     """The same form twice is one card, whatever words asked for it."""
     return action.name + json.dumps({k: v for k, v in args.items()
-                                     if k not in ("request_words", "document_words")}, sort_keys=True)
+                                     if k not in OWN_FIELDS}, sort_keys=True)
 
 
 def _agent_loop(llm, question: str, passages: str | None, tools: list[dict], offered: list[Action], *,
                 org_id: str, user_id: str, email: str, found: list[str], looked: set[str],
-                ran: dict, settings: ActionsSettings, in_thread: bool = False) -> _Drafting:
+                ran: dict, settings: ActionsSettings, in_thread: bool = False,
+                messages: list[dict] | None = None, already: frozenset = frozenset(),
+                sources: tuple = ()) -> _Drafting:
     """A tool loop like any agent's: the model calls tools and is told each
     result in its own conversation, until it replies in words. A read runs and
     its answer comes back fenced (so an id it returned is usable in the next
@@ -186,7 +206,11 @@ def _agent_loop(llm, question: str, passages: str | None, tools: list[dict], off
 
     ``found`` keeps every read's answer (they ground a draft's ids); ``ran``
     caches reads by their form, so asking again costs nothing and is said."""
-    messages: list[dict] = [{"role": "user", "content": build_act_prompt(question, passages, in_thread=in_thread)}]
+    # ``messages``: a paused run's conversation, continued with its cards' results.
+    messages = list(messages or [{"role": "user", "content": build_act_prompt(question, passages,
+                                                                               in_thread=in_thread)}])
+    if any(not a.lookup for a in offered):
+        tools = [*tools, CONTINUE]
     by_name = {a.tool["function"]["name"]: a for a in offered}
     out = _Drafting([], [], [], drafted_in={})
     drafted: dict[str, int] = {}
@@ -216,22 +240,34 @@ def _agent_loop(llm, question: str, passages: str | None, tools: list[dict], off
         for cid, call in zip(ids, calls):
             said, new = _one_call(call, by_name, question, org_id=org_id, user_id=user_id, email=email,
                                   found=found, looked=looked, ran=ran, settings=settings,
-                                  out=out, drafted=drafted, refused=refused, passages=passages)
+                                  out=out, drafted=drafted, refused=refused, passages=passages,
+                                  already=already, sources=sources)
             progress_made |= new
             messages.append({"role": "tool", "tool_call_id": cid, "content": said})
         stalls = 0 if progress_made else stalls + 1
-        if stalls >= MAX_STALLS:
+        if stalls >= MAX_STALLS or out.waits:
             break
     # A refusal the model fixed in a later turn (that tool drafted after it)
     # is not said; one it never fixed is.
     out.refused = [why for name, turn, why in refused.values() if out.drafted_in.get(name, -1) <= turn]
+    out.messages = messages
     return out
 
 
 def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, email: str,
               found: list[str], looked: set[str], ran: dict, settings: ActionsSettings,
-              out: _Drafting, drafted: dict, refused: dict, passages: str | None) -> tuple[str, bool]:
+              out: _Drafting, drafted: dict, refused: dict, passages: str | None,
+              already: frozenset = frozenset(), sources: tuple = ()) -> tuple[str, bool]:
     """One tool call: what to tell the model, and whether it was progress."""
+    if call.name == CONTINUE["function"]["name"]:
+        if not out.picked:
+            return "Nothing is drafted yet: draft the steps you can do now first.", False
+        try:
+            remaining = json.loads(call.arguments or "{}").get("remaining")
+        except (json.JSONDecodeError, AttributeError):
+            remaining = None
+        out.waits = strip_links(str(remaining or "")).strip()[:300] or "the remaining steps"
+        return "Noted: you continue with the results after the user approves the drafted cards.", True
     action = by_name.get(call.name)
     if action is None:
         return "There is no tool by that name. Use only the tools you were given.", False
@@ -268,7 +304,20 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         return ("Refused: request_words is not in the QUESTION. Copy the QUESTION's own words that "
                 "ask for this action, in its order, and call again; if the QUESTION does not ask "
                 "for it, do not call it."), False
+    needs = str(args.get("needs_result_of") or "").strip()
+    if needs and not out.picked:
+        return ("Draft the card this step waits for first, then call this again with "
+                "needs_result_of."), False
+    if needs:
+        # Waits for an earlier card's result: drafted after approval, never
+        # now with a placeholder where the link will be.
+        out.waits = out.waits or strip_links(str(args.get("request_words") or needs))[:300]
+        return (f"Not drafted yet: this step waits for {needs[:100]}. You continue with its result "
+                "after the user approves it. Go on with any other step that does not wait."), True
     key = _form_key(action, args)
+    if key in already:
+        return ("That card was drafted before the user's approval and is already decided. "
+                "Do not draft it again."), False
     if key in drafted:
         return (f"Already drafted as card {drafted[key]}. Do not draft it again; go on with any "
                 "other action the QUESTION asks for, or reply in one sentence."), False
@@ -276,7 +325,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     # Drafted from documents not shown yet: its text comes on the next pass.
     if problem is None and (passages is not None or not asked_in(args.get("document_words"), question)):
         problem = _precheck(action, args, question, org_id=org_id, user_id=user_id, email=email,
-                            found=found)
+                            found=found, sources=sources)
     if problem:
         # A different form than any refused before is the model fixing it:
         # progress, so the loop gives it the turns to (bounded by MAX_STEPS).
@@ -292,7 +341,8 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     out.drafted_in[action.name] = out.turn
     drafted[key] = len(drafted) + 1
     progress.report(f"Preparing a card: {action.label}")
-    return (f"Drafted as card {drafted[key]}. It runs only after the user approves it. Go on with any "
+    return (f"Drafted as card {drafted[key]}. It runs only after the user approves it, so its link "
+            "and id do not exist yet: a step that needs them waits (fill in its needs_result_of). Go on with any "
             "other action the QUESTION asks for; when all are drafted, reply in one sentence."), True
 
 
@@ -314,27 +364,70 @@ def _plain(value):
     return value
 
 
+_LINK = re.compile(r"https?://[^\s\"'<>)\]]+")
+#: A template slot or Handbook's own field name inside drafted text: format,
+#: not wording ("{{result_of_card_1}}", "{{needs_result_of:card 1}}").
+_PLACEHOLDER = re.compile(r"\{\{[^{}]{1,80}\}\}|\bneeds_result_of\b")
+
+
 def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, email: str,
-              found: list[str]) -> str | None:
+              found: list[str], sources: tuple = ()) -> str | None:
     """Handbook's own checks on the form (``prepare``), before it is a card,
     so a value the model must look up or a target that does not exist is said
-    back to it. Nothing is stored; ``_draft`` checks again, authoritatively."""
+    back to it. Nothing is stored; ``_draft`` checks again, authoritatively.
+
+    A link the draft would lose (no one gave it: not the asker, a source, or
+    an approved card) is said too, rather than becoming "[link removed]" on
+    the card: models wrote ".../issues/???" for an issue not yet made."""
     try:
         token = action.token_for(org_id, user_id)
-        ctx = ActionContext(org_id, None, user_id, email, question, token, (), None, None, "\n".join(found))
-        action.prepare(args, ctx)
+        ctx = ActionContext(org_id, None, user_id, email, question, token, tuple(sources), None, None,
+                            "\n".join(found))
+        proposal = action.prepare(args, ctx)
     except (ConfigurationError, OAuthReauthRequiredError):
         return None                       # said by ``_draft``, in the person's terms
     except ActionError as exc:
         return str(exc)
+    sent = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS}, ensure_ascii=False)
+    blank = _PLACEHOLDER.search(sent)
+    if blank:
+        # A value the model meant to fill later, written into the text: the
+        # card would say "{{needs_result_of:card 1}}" where the link should be.
+        return (f"the text has a placeholder ({blank.group(0)[:60]}) where a value from an earlier card "
+                "should be. That value exists only after approval: leave the placeholder out and set "
+                "this form's needs_result_of to that card instead")
+    kept = json.dumps(proposal.payload, ensure_ascii=False)
+    lost = [u for u in _LINK.findall(sent) if u.rstrip(".,;") not in kept]
+    if lost:
+        return (f"the link {lost[0]} is not one the user, a source or an approved card gave, so it would "
+                "be removed. If it is the link of a card you drafted, it does not exist yet: set this "
+                "form's needs_result_of to that card instead")
     return None
+
+
+#: Added to every write's form: the earlier card this step needs the result
+#: of. A field on the form the model is filling is a signal every model gives;
+#: a separate "continue" call was skipped and placeholders written instead
+#: ("GitHub issue: <link>").
+NEEDS_RESULT = {
+    "type": "string",
+    "description": (
+        "Only when this step needs something an earlier card of this request makes (its link, "
+        "id or number), which exists only after the user approves that card: which card, e.g. "
+        "\"the GitHub issue\". This step is then drafted after approval, with the real value. "
+        "Otherwise empty."
+    ),
+}
+#: Handbook's own fields on a write's form; never sent to the tool.
+OWN_FIELDS = ("request_words", "document_words", "needs_result_of")
 
 
 def _with_document_words(tool: dict) -> dict:
     fn = tool["function"]
     params = fn["parameters"]
     return {**tool, "function": {**fn, "parameters": {
-        **params, "properties": {**params["properties"], "document_words": DOCUMENT_WORDS}}}}
+        **params, "properties": {**params["properties"], "document_words": DOCUMENT_WORDS,
+                                 "needs_result_of": NEEDS_RESULT}}}}
 
 
 def build_act_prompt(question: str, passages: str | None, *, in_thread: bool = False) -> str:
@@ -378,6 +471,11 @@ def build_act_prompt(question: str, passages: str | None, *, in_thread: bool = F
         "Ask the user only if no lookup can find it.\n"
         "- A tool answer that says your form was refused tells you why: fix the "
         "form and call again.\n"
+        "- When a later step needs what an earlier card makes (its link, id or "
+        "number), draft the earlier card, then call the later step's tool with "
+        "needs_result_of naming that card: it is drafted after the user approves, "
+        "with the real value. Never write a placeholder for a link or id that does "
+        "not exist yet.\n"
         "- Draft the title and body from the QUESTION and, when the QUESTION "
         "refers to them, the passages. Never add links, @-mentions or people "
         "the QUESTION did not mention.\n"
@@ -553,9 +651,10 @@ def propose(
     found: list[str] = []
     looked: set[str] = set()
     ran: dict = {}
-    ask = lambda passages: _agent_loop(  # noqa: E731
+    ask = lambda passages, shown=(): _agent_loop(  # noqa: E731
         llm, question, passages, tools, offered, org_id=org_id, user_id=user_id, email=email,
-        found=found, looked=looked, ran=ran, settings=settings, in_thread=read_context is not None)
+        found=found, looked=looked, ran=ran, settings=settings, in_thread=read_context is not None,
+        sources=tuple(shown))
     run = ask(None)
     if not run.picked:
         return _nothing_drafted(run)
@@ -579,7 +678,7 @@ def propose(
             return ActOutcome("I couldn't find anything you can see to draft that from. "
                               "Say what it should contain, or name where it's discussed.")
         progress.report(f"Drafting from {len(sources)} {'source' if len(sources) == 1 else 'sources'}")
-        run = ask(passages)       # reads already made are answered from ran
+        run = ask(passages, sources)   # reads already made are answered from ran
         if not run.picked:
             return _nothing_drafted(run)
     # What a lookup returned is that tool's content, private to the person who
@@ -588,22 +687,34 @@ def propose(
     sources = [*sources, *(Source(f"mcp-lookup:{name}", f"what {name} returned", public=False,
                                   viewers=(email.lower(),)) for name in sorted(looked))]
 
+    return _cards(run, question=question, sources=sources, found=found, org_id=org_id, user_id=user_id,
+                  email=email, viewer=viewer, surface=surface, scope_workspace_id=scope_workspace_id,
+                  settings=settings, model=model)
+
+
+def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, viewer, surface,
+           scope_workspace_id, settings, model, step: int = 1, already: frozenset = frozenset()) -> ActOutcome:
+    """The loop's drafts as stored cards, and the reply. When the model waits
+    on a card's result (``CONTINUE``), the run is kept with those cards so the
+    approval continues it."""
+    from . import runs
+
     # Over the limit: the first ones are drafted and the rest is SAID, never
     # dropped silently (a fourth action simply vanished).
-    picked, left_out = run.picked, run.left_out
+    left_out = run.left_out
     drafts, refusals = [], list(run.refused)
-    for action, args in picked:
+    for action, args in run.picked:
         progress.report(f"Preparing a card: {action.label}")
         made = _draft(action, args, question=question, sources=sources, lookups="\n".join(found),
-                      org_id=org_id,
-                      user_id=user_id, email=email, viewer=viewer, surface=surface,
-                      kind=kind, scope_workspace_id=scope_workspace_id, settings=settings)
+                      org_id=org_id, user_id=user_id, email=email, viewer=viewer, surface=surface,
+                      kind=surface.get("kind", "web"), scope_workspace_id=scope_workspace_id,
+                      settings=settings)
         if isinstance(made, str):
             refusals.append(made)
         else:
             drafts.append(made)
     if not drafts:
-        return ActOutcome(" ".join(dict.fromkeys(refusals)))
+        return ActOutcome(" ".join(dict.fromkeys(refusals)) or run.reply or "Nothing more to do.")
     reply = ("Here's what I'll do. Check it, then approve." if len(drafts) == 1 else
              f"Here are {len(drafts)} drafts. Each is sent only when you approve it.")
     if refusals:
@@ -611,7 +722,96 @@ def propose(
     if left_out:
         reply += (f" I draft at most {MAX_ACTIONS} at a time, so I left out: "
                   f"{'; '.join(left_out)}. Ask again for {'it' if len(left_out) == 1 else 'them'}.")
+    if step < runs.MAX_STEPS:
+        # Kept even when nothing waits: a card the tool refuses after approval
+        # (Notion: "creation_mode cannot be combined with parent") wrote
+        # nothing, and the model can correct it from the tool's own error.
+        try:
+            runs.create(status="waiting" if run.waits else "standby",
+                        org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
+                        question=question, model=model, messages=run.messages, found=found, sources=sources,
+                        drafted=sorted({*already, *(_form_key(a, args) for a, args in run.picked)}),
+                        action_ids=[row.id for row, _ in drafts], ttl_seconds=settings.ttl_seconds, step=step)
+        except DatabaseError:
+            # The cards stand on their own; only continuing is lost (e.g. the
+            # table not created yet on this database).
+            logger.warning("Act: could not keep the run; it will not continue", exc_info=True)
+            kept = False
+        else:
+            kept = True
+    else:
+        kept = False
+    if run.waits and kept:
+        reply += f" Once you've decided {'it' if len(drafts) == 1 else 'them'}, I'll continue with: {run.waits}"
+    elif run.waits:
+        reply += f" That's as far as one request goes; ask again for: {run.waits}"
     return ActOutcome(reply, drafts[0][0], drafts[0][1], tuple(drafts))
+
+
+def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id: str, llm, embedder,
+                 settings: ActionsSettings | None = None) -> tuple[ActOutcome, dict] | None:
+    """After a card is decided: when it belongs to a waiting run and no card of
+    that run is still pending, give the model their results and draft what
+    comes next, as ``(outcome, surface)``: where the request was asked, so the
+    caller shows the new cards there. ``None`` when there is nothing to
+    continue. Every new card is approved on its own, like the first.
+
+    ``viewer_for(surface)`` is who the drafts read as there, decided by the
+    caller per surface exactly as for the first request."""
+    from . import runs
+    from ..llm.routed import use_model
+
+    settings = settings or ActionsSettings.from_env()
+    try:
+        claimed = runs.resume(org_id, user_id, action_id)
+    except DatabaseError:
+        logger.warning("Act: could not read the run to continue", exc_info=True)
+        return None
+    if claimed is None:
+        return None
+    run, cards = claimed
+    try:
+        offered, why_not = offered_actions(org_id, user_id, settings, run.surface.get("slack_user"),
+                                           run.workspace_id)
+        if why_not:
+            return ActOutcome(why_not), run.surface
+        use_model(run.model, org_id=org_id)
+        offered = _fit_tools(offered, run.question, embedder, settings.mcp_max_tools)
+        tools = [a.tool if a.lookup else _with_document_words(a.tool) for a in offered]
+        found, sources, lines = list(run.found), run.source_list(), []
+        for name, result in cards:
+            action = get_action(name, org_id)
+            label = action.label if action else name
+            url = result.get("url") if str(result.get("url") or "").startswith("https://") else None
+            lines.append(f"- {label}: {result.get('status')}"
+                         + (f"; id {result['external_id']}" if result.get("external_id") else "")
+                         + (f"; link {url}" if url else "")
+                         + (f"; error {result['error']}" if result.get("error") else ""))
+            if result.get("status") == "succeeded":
+                # What an approved write made is the person's own: its link may
+                # go into the next draft, and its id fills the next form.
+                found.append(lines[-1])
+                sources.append(Source(f"act-result:{name}", f"what {label} made", public=False,
+                                      viewers=(email.lower(),), uri=url))
+        said = ("The user decided the cards you drafted. What they did:\n"
+                + _fenced("\n".join(lines))
+                + "\nContinue with the remaining steps of the QUESTION using these results. Draft only "
+                  "what is not drafted yet. A failed card wrote nothing: if its error says how to fix "
+                  "the form, draft it again fixed; if not, or a card was cancelled, say so in one "
+                  "sentence. If nothing remains, reply in one sentence.")
+        progress.report("Continuing your request")
+        loop = _agent_loop(llm, run.question, None, tools, offered, org_id=org_id, user_id=user_id,
+                           email=email, found=found, looked=set(), ran={}, settings=settings,
+                           messages=[*run.messages, {"role": "user", "content": said}],
+                           already=frozenset(run.drafted), sources=tuple(sources))
+        if not loop.picked:
+            return _nothing_drafted(loop), run.surface
+        return _cards(loop, question=run.question, sources=sources, found=found, org_id=org_id,
+                      user_id=user_id, email=email, viewer=viewer_for(run.surface), surface=run.surface,
+                      scope_workspace_id=run.workspace_id, settings=settings, model=run.model,
+                      step=run.steps + 1, already=frozenset(run.drafted)), run.surface
+    finally:
+        runs.finish(org_id, run.id)
 
 
 def _nothing_drafted(run: _Drafting) -> ActOutcome:

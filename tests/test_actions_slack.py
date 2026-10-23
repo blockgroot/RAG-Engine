@@ -517,3 +517,22 @@ def test_a_decided_draft_cannot_be_reopened(change_env):
     change_env["row"] = _row(status="succeeded")
     slack_act.open_change({"trigger_id": "tr"}, {"action_id": "act_edit", "value": f"{uuid.uuid4()}:h"})
     assert change_env["posts"] == [] and "can't be changed" in change_env["replies"][-1][0]["text"]
+
+
+def test_a_chain_continued_from_slack_posts_its_next_card_where_it_was_asked(monkeypatch):
+    """Approve in Slack, and the chain's next card appears in the same thread."""
+    from app.actions import service as act_service
+
+    row = _row(payload={"body": "Filed: https://example.com/i/1"}, exposure="none")
+    outcome = act_service.ActOutcome("Here's what I'll do.", row, None, ((row, None),))
+    surface = {"kind": "slack_channel", "slack_user": "U1", "channel": "C1", "thread_ts": "1.2"}
+    seen = {}
+    monkeypatch.setattr(act_service, "continue_run",
+                        lambda **kw: seen.update(viewer=kw["viewer_for"](surface)) or (outcome, surface))
+    monkeypatch.setattr("app.api.actions._llm", lambda: None)
+    monkeypatch.setattr("app.api.actions._embedder", lambda: None)
+    said = []
+    monkeypatch.setattr(slack_act, "_say", lambda token, **kw: said.append(kw))
+    slack_act.continue_chain(org_id="o", token="xoxb", user=SimpleNamespace(id="u", email="a@x.com"), action_id="a1")
+    assert said and all(s["channel"] == "C1" and s["thread_ts"] == "1.2" and not s["is_dm"] for s in said)
+    assert seen["viewer"].channels == ("C1",)        # a channel reads as the room, as when asked

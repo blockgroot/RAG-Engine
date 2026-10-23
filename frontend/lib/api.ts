@@ -202,6 +202,14 @@ export interface Me {
   drive_ready: boolean;
 }
 
+/** What a chain drafts next, once the cards it waited on are decided:
+ *  "open a GitHub issue, then comment its link on Linear" drafts the comment
+ *  after the issue exists. Each new card is approved on its own. */
+export interface ActNext {
+  reply: string;
+  actions: ActCard[];
+}
+
 /** One proposed (or finished) write, as the Act page shows it. The payload
  *  is exactly what will be sent; approving sends back its hash. */
 export interface ActCard {
@@ -893,7 +901,7 @@ export const api = {
     ),
   actStatus: () => request<ActStatus>("/act/status"),
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
-    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
       method: "POST",
       body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
     }),
@@ -930,7 +938,7 @@ export const api = {
       body: JSON.stringify({ server_id: serverId, tool, enabled }),
     }),
   rejectAction: (id: string) =>
-    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
       method: "POST",
     }),
   adminActions: () => request<AdminActions>("/admin/actions"),
