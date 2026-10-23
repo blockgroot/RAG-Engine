@@ -81,8 +81,8 @@ def create(*, org_id: str, workspace_id: str | None, user_id: str, surface: dict
 def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[str, dict]]] | None:
     """The run this card belongs to, claimed for continuing, with every card it
     waited on as ``(label key, result)``; or ``None`` when there is nothing to
-    continue: no run, a card still pending, expired, another approval already
-    continuing it, or a standby run whose cards all went through."""
+    continue: no run, a card still pending, expired, or another approval
+    already continuing it."""
     with get_connection() as conn:
         row = conn.execute(
             f"""
@@ -96,10 +96,9 @@ def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[s
               AND r.expires_at > now()
               AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.run_id = r.id
                               AND a.status IN ('proposed', 'executing'))
-              -- standby continues only to correct a card the tool refused
-              AND (r.status = 'waiting'
-                   OR (r.status = 'standby' AND EXISTS (SELECT 1 FROM actions a
-                       WHERE a.run_id = r.id AND a.status = 'failed')))
+              -- standby too: a model that stopped after the first card without
+              -- holding the next ("then post its link") still gets the results
+              AND r.status IN ('waiting', 'standby')
             RETURNING {", ".join("r." + c for c in _COLUMNS.split(", "))}
             """,
             (action_id, org_id, user_id, org_id, user_id),

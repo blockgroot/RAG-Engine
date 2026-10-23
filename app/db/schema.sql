@@ -1480,8 +1480,8 @@ CREATE TABLE IF NOT EXISTS act_runs (
     messages           JSONB NOT NULL,
     found              JSONB NOT NULL DEFAULT '[]',
     sources            JSONB NOT NULL DEFAULT '[]',
-    -- waiting: the model asked to continue after approval; standby: kept so a
-    -- card the tool refuses after approval can be corrected (nothing was written).
+    -- waiting: the model asked to continue after approval; standby: it did not,
+    -- but it is still given the results (a step it forgot, a card to correct).
     status             TEXT NOT NULL DEFAULT 'waiting'
                        CHECK (status IN ('waiting', 'standby', 'resuming', 'done')),
     steps              INT NOT NULL DEFAULT 1,

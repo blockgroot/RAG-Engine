@@ -1251,9 +1251,21 @@ def test_a_continued_chain_never_drafts_a_decided_card_again(org):
 
 
 @requires_db
-def test_a_request_that_needs_no_result_is_never_continued(org):
+def test_a_step_the_model_forgot_to_hold_is_drafted_after_approval(org):
+    """GPT-OSS drafted "Create a Linear issue …, then post its link in
+    #hb-testing" as the issue alone and stopped: no wait, no Slack card."""
     llm = ChainLLM([ISSUE], [_link_comment], wait=False)
     out = _propose(org, CHAIN_Q, llm)
+    assert "continue with" not in out.reply
+    _approve(org, out.action)
+    nxt, _ = _continue(org, out.action.id, llm)
+    assert "https://example.com/issue/PLA-9" in nxt.action.payload["body"]
+
+
+@requires_db
+def test_a_request_with_nothing_left_after_approval_says_nothing(org):
+    llm = ChainLLM([ISSUE], [], wait=False)
+    out = _propose(org, "File an issue in Platform about the export", llm)
     _approve(org, out.action)
     assert _continue(org, out.action.id, llm) is None
 

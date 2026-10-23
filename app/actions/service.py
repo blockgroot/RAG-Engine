@@ -725,7 +725,9 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
     if step < runs.MAX_STEPS:
         # Kept even when nothing waits: a card the tool refuses after approval
         # (Notion: "creation_mode cannot be combined with parent") wrote
-        # nothing, and the model can correct it from the tool's own error.
+        # nothing, and the model can correct it from the tool's own error; and
+        # a model that stopped after the first card of "create X, then post its
+        # link" never said a step waits, so it is asked again with the results.
         try:
             runs.create(status="waiting" if run.waits else "standby",
                         org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
@@ -805,6 +807,8 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
                            messages=[*run.messages, {"role": "user", "content": said}],
                            already=frozenset(run.drafted), sources=tuple(sources))
         if not loop.picked:
+            if not loop.refused and all(r.get("status") == "succeeded" for _, r in cards):
+                return None   # everything went through and nothing remains: nothing to say
             return _nothing_drafted(loop), run.surface
         return _cards(loop, question=run.question, sources=sources, found=found, org_id=org_id,
                       user_id=user_id, email=email, viewer=viewer_for(run.surface), surface=run.surface,
