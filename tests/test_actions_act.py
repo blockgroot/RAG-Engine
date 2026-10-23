@@ -1338,3 +1338,22 @@ def test_a_placeholder_written_into_the_text_is_said_back_not_drafted(org):
     out = _propose(org, CHAIN_Q, llm)
     assert len(out.drafts) == 1 and out.action.target["name"] == "Platform (PLA)"
     assert all("{{" not in row.payload.get("body", "") for row, _ in out.drafts)
+
+
+@requires_db
+def test_without_the_runs_table_cards_still_work_and_nothing_continues(org, monkeypatch):
+    """The API applies no schema at start: on a database without act_runs, a
+    request still drafts its cards and an approval still runs."""
+    from app.actions import runs
+    from app.db.connection import DatabaseError
+
+    def missing(*a, **k):
+        raise DatabaseError('relation "act_runs" does not exist')
+
+    monkeypatch.setattr(runs, "create", missing)
+    monkeypatch.setattr(runs, "resume", missing)
+    llm = ChainLLM([ISSUE], [_link_comment])
+    out = _propose(org, CHAIN_Q, llm)
+    assert out.action is not None and "continue with" not in out.reply
+    assert _approve(org, out.action).status == "succeeded"
+    assert _continue(org, out.action.id, llm) is None

@@ -39,7 +39,7 @@ from ..core.exceptions import (
     NotFoundError,
     OAuthReauthRequiredError,
 )
-from ..db.connection import get_connection
+from ..db.connection import DatabaseError, get_connection
 from ..rag import progress
 from ..security.links import strip_links
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
@@ -726,12 +726,22 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
         # Kept even when nothing waits: a card the tool refuses after approval
         # (Notion: "creation_mode cannot be combined with parent") wrote
         # nothing, and the model can correct it from the tool's own error.
-        runs.create(status="waiting" if run.waits else "standby",
-                    org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
-                    question=question, model=model, messages=run.messages, found=found, sources=sources,
-                    drafted=sorted({*already, *(_form_key(a, args) for a, args in run.picked)}),
-                    action_ids=[row.id for row, _ in drafts], ttl_seconds=settings.ttl_seconds, step=step)
-    if run.waits and step < runs.MAX_STEPS:
+        try:
+            runs.create(status="waiting" if run.waits else "standby",
+                        org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
+                        question=question, model=model, messages=run.messages, found=found, sources=sources,
+                        drafted=sorted({*already, *(_form_key(a, args) for a, args in run.picked)}),
+                        action_ids=[row.id for row, _ in drafts], ttl_seconds=settings.ttl_seconds, step=step)
+        except DatabaseError:
+            # The cards stand on their own; only continuing is lost (e.g. the
+            # table not created yet on this database).
+            logger.warning("Act: could not keep the run; it will not continue", exc_info=True)
+            kept = False
+        else:
+            kept = True
+    else:
+        kept = False
+    if run.waits and kept:
         reply += f" Once you've decided {'it' if len(drafts) == 1 else 'them'}, I'll continue with: {run.waits}"
     elif run.waits:
         reply += f" That's as far as one request goes; ask again for: {run.waits}"
@@ -752,7 +762,11 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
     from ..llm.routed import use_model
 
     settings = settings or ActionsSettings.from_env()
-    claimed = runs.resume(org_id, user_id, action_id)
+    try:
+        claimed = runs.resume(org_id, user_id, action_id)
+    except DatabaseError:
+        logger.warning("Act: could not read the run to continue", exc_info=True)
+        return None
     if claimed is None:
         return None
     run, cards = claimed
