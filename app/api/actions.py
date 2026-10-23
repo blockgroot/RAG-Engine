@@ -381,6 +381,9 @@ def act_stream(body: ActRequest, session: SessionClaims = Depends(get_session)):
 class ConfirmRequest(BaseModel):
     payload_hash: str = Field(min_length=64, max_length=64)
     acknowledged: bool = False
+    #: False: the web chat asks ``/continue/stream`` next instead, because
+    #: drafting the next step (lookups included) outlasts the web proxy.
+    wait_for_next: bool = True
 
 
 @router.post("/act/actions/{action_id}/confirm")
@@ -402,7 +405,21 @@ def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depen
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ActionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return {"action": _card(row), "next": _continue(session, action_id)}
+    return {"action": _card(row), "next": _continue(session, action_id) if body.wait_for_next else None}
+
+
+@router.post("/act/actions/{action_id}/continue/stream")
+def continue_stream(action_id: str, session: SessionClaims = Depends(get_session)):
+    """What the request drafts next after this card was decided, streamed
+    like ``/act/stream`` (its steps, then ``done``: an ``/act`` reply, or
+    null when nothing continues)."""
+    from fastapi.responses import StreamingResponse
+
+    from .chat import _sse_event, _with_progress
+
+    _require_on(session.org_id)
+    return StreamingResponse(_with_progress(lambda: iter([_sse_event("done", _continue(session, action_id))])),
+                             media_type="text/event-stream")
 
 
 def _continue(session: SessionClaims, action_id: str) -> dict | None:
@@ -496,7 +513,7 @@ def revise(action_id: str, body: ReviseRequest, session: SessionClaims = Depends
 
 
 @router.post("/act/actions/{action_id}/reject")
-def reject(action_id: str, session: SessionClaims = Depends(get_session)):
+def reject(action_id: str, wait_for_next: bool = True, session: SessionClaims = Depends(get_session)):
     _require_on(session.org_id)
     store.reject(session.org_id, session.user_id, _action_id(action_id))
     row = store.get(session.org_id, session.user_id, _action_id(action_id))
@@ -504,7 +521,7 @@ def reject(action_id: str, session: SessionClaims = Depends(get_session)):
         raise HTTPException(status_code=404, detail="No such action.")
     # A chain whose last pending card was cancelled continues with what was
     # approved (or says what it cannot do now).
-    return {"action": _card(row), "next": _continue(session, action_id)}
+    return {"action": _card(row), "next": _continue(session, action_id) if wait_for_next else None}
 
 
 # -- Connecting your own account ----------------------------------------------

@@ -205,3 +205,23 @@ export async function streamAct(
   }
   throw Object.assign(new Error("The draft stream ended unexpectedly. Nothing was sent."), { status: 500 });
 }
+
+/** After a card is approved or cancelled: what the request drafts next
+ *  ("then post its link"), streamed like ``streamAct`` because drafting it
+ *  can outlast the web proxy. ``null`` when nothing continues. */
+export async function streamContinue(
+  actionId: string,
+  onStatus: (line: string) => void,
+): Promise<ActReply | null> {
+  const response = await fetch(`${API_BASE_URL}/act/actions/${encodeURIComponent(actionId)}/continue/stream`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok || !response.body) return null;
+  for await (const { event, data } of sseEvents(response.body)) {
+    if (event === "status") onStatus(JSON.parse(data) as string);
+    else if (event === "done") return JSON.parse(data) as ActReply | null;
+    else if (event === "error") return null;
+  }
+  return null;
+}

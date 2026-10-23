@@ -315,10 +315,15 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         return (f"Not drafted yet: this step waits for {needs[:100]}. You continue with its result "
                 "after the user approves it. Go on with any other step that does not wait."), True
     key = _form_key(action, args)
+    # The same tool drafted again, now naming the content to draft from: it
+    # replaces the card that only repeated the request (see ``_only_request``).
+    replaces = next((i for i, (a, old) in enumerate(out.picked) if a is action
+                     and asked_in(args.get("document_words"), question)
+                     and not asked_in(old.get("document_words"), question)), None)
     if key in already:
         return ("That card was drafted before the user's approval and is already decided. "
                 "Do not draft it again."), False
-    if key in drafted:
+    if key in drafted and replaces is None:
         return (f"Already drafted as card {drafted[key]}. Do not draft it again; go on with any "
                 "other action the QUESTION asks for, or reply in one sentence."), False
     problem = getattr(action, "form_problem", lambda _: None)(args)
@@ -334,6 +339,11 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         guide = getattr(action, "guide", lambda: "")()
         return (f"Refused, not drafted: {problem}. Fix the form (look up what you need) and call "
                 f"again." + (f"\n{_fenced(guide)}" if guide else "")), fresh
+    if replaces is not None:
+        drafted[key] = drafted.pop(_form_key(action, out.picked[replaces][1]))
+        out.picked[replaces] = (action, args)
+        return (f"Card {drafted[key]} replaced: it is drafted from that content once it is shown to you. "
+                "Go on with any other action the QUESTION asks for."), True
     if len(drafted) >= MAX_ACTIONS:
         out.left_out.append(action.label)
         return f"Not drafted: at most {MAX_ACTIONS} cards per request.", False
@@ -341,9 +351,25 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     out.drafted_in[action.name] = out.turn
     drafted[key] = len(drafted) + 1
     progress.report(f"Preparing a card: {action.label}")
-    return (f"Drafted as card {drafted[key]}. It runs only after the user approves it, so its link "
+    said = (f"Drafted as card {drafted[key]}. It runs only after the user approves it, so its link "
             "and id do not exist yet: a step that needs them waits (fill in its needs_result_of). Go on with any "
-            "other action the QUESTION asks for; when all are drafted, reply in one sentence."), True
+            "other action the QUESTION asks for; when all are drafted, reply in one sentence.")
+    if passages is None and _only_request(args, question):
+        said += (f" Card {drafted[key]}'s text is only the QUESTION's own words. If the QUESTION asks for "
+                 "it to come from content the QUESTION does not contain (to summarise, list or describe a "
+                 "page, doc, channel, thread or issue), call this tool again with the same form and "
+                 "document_words copied from the QUESTION: that replaces the card.")
+    return said, True
+
+
+def _only_request(args: dict, question: str) -> bool:
+    """Nothing in the form but the asker's own words (or nothing written at
+    all): "summarising what was discussed in #hb-testing" came back as that
+    sentence for a description, and a page "summarising the roadmap" empty."""
+    if asked_in(args.get("document_words"), question):
+        return False
+    said = [v for k, v in args.items() if k not in OWN_FIELDS and isinstance(v, str) and len(v) > 3]
+    return all(asked_in(v, question) for v in said)
 
 
 def _plain(value):

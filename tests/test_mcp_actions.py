@@ -706,3 +706,24 @@ def test_a_refused_form_brings_the_tools_whole_manual_and_each_new_try_is_progre
     told = _tool_answers(model.seen[1])[0]
     assert "Set the title in properties" in told and "UNTRUSTED_TOOL_RESULT" in told
     assert len(run.picked) == 1                    # three different wrong forms, then the right one
+
+
+def test_a_card_that_only_repeats_the_request_is_replaced_when_it_names_its_content():
+    """"Create a Linear issue … summarising what was discussed in #hb-testing"
+    drafted that sentence as the description: no content was ever read."""
+    write = mcp.McpToolAction(_server(), CREATE)
+    q = "make a task in P-7 titled Digest summarising the roadmap page"
+    bare = {"request_words": "make a task in P-7", "project_id": "P-7", "title": "Digest"}
+    model = Scripted([(write, bare)], [(write, {**bare, "document_words": "the roadmap page"})])
+    run = _loop(model, q, [write])
+    told = _tool_answers(model.seen[1])
+    assert "only the QUESTION's own words" in told[0]
+    assert [a.get("document_words") for _, a in run.picked] == ["the roadmap page"]
+
+
+def test_a_card_with_its_own_words_is_not_nudged():
+    write = mcp.McpToolAction(_server(), CREATE)
+    model = Scripted([(write, {"request_words": "make a task in P-7", "project_id": "P-7", "title": "t",
+                               "notes": "Written by the model from what it read"})])
+    _loop(model, "make a task in P-7", [write])
+    assert "only the QUESTION's own words" not in _tool_answers(model.seen[1])[0]

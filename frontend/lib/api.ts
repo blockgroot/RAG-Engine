@@ -903,7 +903,8 @@ export const api = {
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
     request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
       method: "POST",
-      body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
+      // What comes next is streamed (``streamContinue``): it can outlast the proxy.
+      body: JSON.stringify({ payload_hash: payloadHash, acknowledged, wait_for_next: false }),
     }),
   /** Ask the model to rework a pending draft's words; where it goes never changes. */
   reviseAction: (id: string, payloadHash: string, instruction: string, model?: string | null) =>
@@ -938,7 +939,7 @@ export const api = {
       body: JSON.stringify({ server_id: serverId, tool, enabled }),
     }),
   rejectAction: (id: string) =>
-    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/reject?wait_for_next=false`, {
       method: "POST",
     }),
   adminActions: () => request<AdminActions>("/admin/actions"),

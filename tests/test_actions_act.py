@@ -1263,6 +1263,31 @@ def test_a_step_the_model_forgot_to_hold_is_drafted_after_approval(org):
 
 
 @requires_db
+def test_cancelling_a_card_nothing_waits_on_ends_the_request(org):
+    """Cancelling "UI test – from slack" drafted it again instead of stopping."""
+    llm = ChainLLM([ISSUE], [lambda link: {**ISSUE, "title": "Export again"}], wait=False)
+    out = _propose(org, "File an issue in Platform about the export", llm)
+    store.reject(org.id, org.member.id, out.action.id)
+    assert _continue(org, out.action.id, llm) is None
+
+
+@requires_db
+def test_the_next_step_streams_after_an_approval_over_http(client, org, monkeypatch):
+    """Approve no longer waits for the next draft (it outlasted the web proxy):
+    the chat asks /continue/stream for it."""
+    llm = ChainLLM([ISSUE], [_link_comment])
+    out = _propose(org, CHAIN_Q, llm)
+    monkeypatch.setattr("app.api.actions._llm", lambda: llm)
+    monkeypatch.setattr("app.api.actions._embedder", lambda: FakeEmbedder())
+    r = client.post(f"/act/actions/{out.action.id}/confirm", cookies=_cookies(org.member),
+                    json={"payload_hash": out.action.payload_hash, "acknowledged": True, "wait_for_next": False})
+    assert r.status_code == 200 and r.json()["next"] is None
+    r = client.post(f"/act/actions/{out.action.id}/continue/stream", cookies=_cookies(org.member))
+    done = next(b for b in r.text.split("\n\n") if b.startswith("event: done"))
+    assert "https://example.com/issue/PLA-9" in done
+
+
+@requires_db
 def test_a_request_with_nothing_left_after_approval_says_nothing(org):
     llm = ChainLLM([ISSUE], [], wait=False)
     out = _propose(org, "File an issue in Platform about the export", llm)
