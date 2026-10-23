@@ -237,9 +237,14 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
         ids = [getattr(c, "id", None) or f"call_{step}_{i}" for i, c in enumerate(calls)]
         # The OpenAI wire format every adapter speaks: content is null beside
         # tool calls (some providers refuse ""), and every call is answered:
-        # now, or a drafted write once the person decides it.
+        # now, or a drafted write once the person decides it. Whatever else a
+        # provider attached to a call is sent back with it, unread: Gemini
+        # refuses the next turn without its ``extra_content`` thought signature,
+        # and a company's own model may need its own field the same way.
+        extras = _call_extras(result.raw_message)
         messages.append({"role": "assistant", "content": result.text or None, "tool_calls": [
-            {"id": cid, "type": "function", "function": {"name": c.name, "arguments": c.arguments or "{}"}}
+            {**extras.get(cid, {}), "id": cid, "type": "function",
+             "function": {"name": c.name, "arguments": c.arguments or "{}"}}
             for cid, c in zip(ids, calls)]})
         progress_made = False
         for cid, call in zip(ids, calls):
@@ -260,6 +265,16 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
     out.refused = [why for name, turn, why in refused.values() if out.drafted_in.get(name, -1) <= turn]
     out.messages = messages
     return out
+
+
+def _call_extras(raw_message) -> dict[str, dict]:
+    """Per call id, the fields a provider attached to its tool call beyond the
+    standard ``id``/``type``/``function``, so they go back exactly as received."""
+    calls = (raw_message or {}).get("tool_calls") if isinstance(raw_message, dict) else None
+    return {
+        tc["id"]: {k: v for k, v in tc.items() if k not in ("id", "type", "function") and v is not None}
+        for tc in calls or [] if isinstance(tc, dict) and tc.get("id")
+    }
 
 
 _NAME_KEYS = ("name", "tool", "tool_name", "function", "recipient_name")

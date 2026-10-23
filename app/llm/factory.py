@@ -8,8 +8,10 @@ Callers do ``build_llm_provider()`` and get back something satisfying the
 from __future__ import annotations
 
 from ..config.settings import LLMSettings
+from ..privacy import build_detector
 from . import adapters
 from .base import LLMProvider
+from .masking import MaskingLLMProvider
 from .routed import RoutedLLMProvider
 
 
@@ -21,13 +23,17 @@ def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     ``OPENROUTER_API_KEY`` behaves exactly as it did before this feature.
 
     Note this is the MAIN provider only. ``build_aux_llm_provider`` is
-    deliberately left unwrapped — see ``routed`` for why ingestion must not be
+    deliberately left unrouted — see ``routed`` for why ingestion must not be
     routable.
+
+    Outermost is identifier masking (``masking``), so whichever model the
+    request routes to, it never sees an Aadhaar, PAN, card or mobile number.
     """
     settings = settings or LLMSettings.from_env()
-    return RoutedLLMProvider(
+    routed = RoutedLLMProvider(
         adapters.build_provider(main_endpoint(settings), timeout=settings.timeout)
     )
+    return MaskingLLMProvider(routed, build_detector())
 
 
 def main_endpoint(settings: LLMSettings) -> adapters.Endpoint:
@@ -71,6 +77,12 @@ def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     supporting this at all: a foreign base_url with the main key 401s on every
     contextualization and degrades *silently* to un-prefixed chunks, which is
     exactly the class of failure this codebase keeps paying for.
+
+    Identifier masking (``masking``) still applies: background work reads
+    whole documents, so it is where most identifiers would otherwise leave.
     """
     settings = settings or LLMSettings.from_env()
-    return adapters.build_provider(aux_endpoint(settings), timeout=settings.timeout)
+    return MaskingLLMProvider(
+        adapters.build_provider(aux_endpoint(settings), timeout=settings.timeout),
+        build_detector(),
+    )

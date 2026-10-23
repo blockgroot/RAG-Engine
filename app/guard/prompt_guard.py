@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
+from ..core.exceptions import PrivacyError
+from ..privacy import redact
 from ..security.untrusted import normalize_untrusted
 from .base import InjectionGuard
 
@@ -59,7 +61,11 @@ class GroqPromptGuard(InjectionGuard):
 
     def score(self, texts: list[str]) -> list[float | None]:
         # Score what the model would see: hidden characters dropped, lookalikes folded.
-        per_text = [windows(normalize_untrusted(t or "")) for t in texts]
+        try:
+            seen = redact([normalize_untrusted(t or "") for t in texts])
+        except PrivacyError:
+            return [None] * len(texts)  # unchecked text is not sent; None = unscored
+        per_text = [windows(t) for t in seen]
         flat = [w for ws in per_text for w in ws]
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
             results = iter(list(pool.map(self._one, flat)))

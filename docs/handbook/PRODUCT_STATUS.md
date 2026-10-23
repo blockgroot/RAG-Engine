@@ -294,6 +294,13 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
+**Masking personal identifiers** (`feat/mask-personal-identifiers`, open). Aadhaar, Virtual
+ID, PAN, card, mobile, IFSC and UPI values are replaced with placeholders before any text goes
+to the AI models, the remote search (Jina) or the Groq checks, and restored in the answer the
+person sees. Bank account numbers and order ids are out of scope (no format tells them apart).
+Built, covered by `tests/test_privacy_masking.py`; not yet walked through on staging
+(`docs/plans/2026-10-21-masking-personal-identifiers-before-ai.md`).
+
 **Agent mode (write actions)** — every write goes through the tool's own MCP server
 (Linear, Notion, GitHub, Slack, Google presets or any server's address), each approved on a card
 with the person's own sign-in (`docs/plans/2026-10-22-mcp-only-actions.md`). Slack and Google

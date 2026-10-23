@@ -70,6 +70,10 @@ class EncryptionError(ProviderError):
     """Raised when encrypting/decrypting stored credentials fails."""
 
 
+class PrivacyError(ProviderError):
+    """Raised when identifiers could not be masked, so the text must not be sent."""
+
+
 class OAuthError(ProviderError):
     """Raised when an OAuth authorize/exchange/refresh call fails."""
 
