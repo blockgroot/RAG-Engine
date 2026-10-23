@@ -348,12 +348,21 @@ class McpToolAction(Action):
         if result.get("isError"):
             raise ActionError(f"{self.server.name} refused it: {text[:300] or 'no reason given'}")
         structured = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
-        candidates = [str(structured.get("url") or ""), *_URL.findall(text)]
-        link = next((page for page in map(_page_link, candidates) if page), None)
+        data = structured or mcp_client.result_json(result)
+        # A URL the tool only echoed from what it was sent is content, not the
+        # result's address: a Linear comment holding a GitHub link answered
+        # with its body, and "Open in Linear" opened the GitHub issue.
+        sent = json.dumps(arguments, ensure_ascii=False)
+        echoed = [u for u in _URL.findall(text) if u.rstrip(".,;") not in sent]
+        link = next((page for page in map(_page_link, [str(data.get("url") or ""), *echoed]) if page), None)
         if link is None and self.server.preset and self.server.preset.key == "github":
             link = _github_page(arguments)        # a merge answers with no link at all
         link = link or payload.get("target_link")
-        return ActionResult(str(structured.get("id") or structured.get("identifier") or key), link)
+        # The tool's own id, as people name it (Linear's BEN-171 before its
+        # uuid). Never Handbook's card id: told "id <card id>", the next
+        # request commented on an issue that does not exist.
+        found = data.get("identifier") or data.get("id")
+        return ActionResult(str(found) if found else None, link)
 
 
 def _target_link(args: dict[str, Any], lookups: str) -> str | None:

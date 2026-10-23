@@ -251,6 +251,27 @@ SCENARIOS = {
         [card_count(2), card_tool("create_folder"),
          lambda t: "" if any(n == "create_doc" and a.get("folder") == "Scenario Q4" for n, a in t.cards)
          else "the doc was not put in the folder"]),
+    "folder_and_sheet_in_it": Scenario(
+        # Prod: the Sheet ran before its folder existed, and was never drafted again.
+        'Create a Google Sheet titled "Scenario tracker" in the folder "Scenario Final" with columns Item, Tool '
+        'and rows Issue, Linear and Issue, GitHub',
+        # As prod: the Sheet fails (no such folder), a folder is drafted to fix it,
+        # and after that approval the Sheet must be drafted again.
+        # Either is right: the folder was made and the Sheet drafted again, or
+        # (no folder was asked for, so none may be made) the user is told why.
+        [lambda t: "" if [n for n, _ in t.cards].count("create_sheet") >= 2
+         or "folder" in (t.replies[-1] or "").lower()
+         else "the sheet was neither drafted again nor its missing folder said"],
+        decide=["fail:There's no folder called Scenario Final that Handbook can open.", "approve", "approve"]),
+    "append_and_share": Scenario(
+        # Prod: only the text was added; the share card was never drafted.
+        f'Add "Status: verified on prod" to the Google Doc "Final E2E notes" and share it with {EMAIL} as an editor',
+        [card_count(2), card_tool("append_to_doc"), card_tool("share_file"), cards_with('"role": "editor"')]),
+    "comment_earlier_link": Scenario(
+        # Prod: the comment went to Handbook's card id, then the right issue.
+        'Comment the link of the GitHub issue we created on the Linear issue "Checkout page times out on slow '
+        'networks"',
+        [card_count(1), cards_with(EARLIER_LINK)], earlier=EARLIER),
     "question": Scenario(
         "What open issues do we have in BEN?",
         [card_count(0)]),
@@ -360,7 +381,9 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": service._fenced(said)})
             if decision == "cancel":
                 break                     # a cancel ends the request (runs.resume)
-            already = already | {service._form_key(a, args) for a, args, _ in loop.picked} | set(loop.keys)
+            # As continue_run: approved and cancelled cards are decided; a failed one may come again.
+            if not decision.startswith("fail"):
+                already = already | {service._form_key(a, args) for a, args, _ in loop.picked} | set(loop.keys)
             if decision == "approve":
                 already |= set(loop.did.values())
             sources = (*loop.sources, *made)

@@ -1035,3 +1035,56 @@ def test_a_call_written_as_text_is_read_whatever_key_holds_its_arguments():
     assert [(c.name, json.loads(c.arguments)) for c in said] == [(name, {"project_id": "P-7", "title": "t"})]
     two = act_loop._calls_in_text(f'{{"tool": "{name}", "a": {{"x": 1}}, "b": {{"y": 2}}}}', tools)
     assert two == []                                   # two objects: which one is not guessed
+
+
+def test_a_card_needing_what_another_card_of_its_turn_makes_waits_for_it():
+    """GPT-OSS drafted a Sheet "in the folder Final E2E" before the card making
+    that folder, in one turn; the Sheet ran first and found no folder."""
+    from app.actions import service
+
+    folder_tool = {"name": "create_folder", "description": "A folder", "inputSchema": {
+        "type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}}
+    sheet_tool = {"name": "create_sheet", "description": "A sheet", "inputSchema": {
+        "type": "object", "required": ["title"], "properties": {"title": {"type": "string"},
+                                                                "folder": {"type": "string"}}}}
+    server = _server()
+    folder, sheet = mcp.McpToolAction(server, folder_tool), mcp.McpToolAction(server, sheet_tool)
+    q = 'Create a folder "Q4" and a sheet "Plan" in the folder "Q4"'
+    model = Scripted([(sheet, {"request_words": "a sheet", "title": "Plan", "folder": "Q4"}),
+                      (folder, {"request_words": "Create a folder", "name": "Q4"})])
+    run = service._agent_loop(model, q, [folder.tool, sheet.tool], [folder, sheet], org_id="o", user_id="u",
+                              email="a@x.com", found=[], looked=set(), ran={},
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert [a.mcp_tool["name"] for a, _, _ in run.picked] == ["create_folder"]
+    assert any("made by another card" in t for t in _tool_answers(run.messages))
+
+
+def test_a_link_the_tool_only_echoed_is_not_the_cards_link():
+    """A Linear comment holding a GitHub link answered with its body, and
+    "Open in Linear" opened the GitHub issue. Its id was Handbook's card id."""
+    from app.actions import mcp_client
+
+    tool = {"name": "save_comment", "inputSchema": {"type": "object", "properties": {
+        "issueId": {"type": "string"}, "body": {"type": "string"}}}}
+    action = mcp.McpToolAction(_server(), tool)
+
+    class Session:
+        def __init__(self, *a, **k):
+            pass
+
+        def open(self):
+            return {}
+
+        def call_tool(self, name, args, write):
+            return {"content": [{"type": "text", "text": json.dumps(
+                {"id": "c-1", "body": args["body"], "issue": {"identifier": "BEN-171"}})}]}
+
+    original = mcp_client.McpSession
+    mcp_client.McpSession = Session
+    try:
+        made = action.execute("card-uuid", {}, {"args": {"issueId": "BEN-171",
+                                                        "body": "https://github.com/o/r/issues/168"},
+                                               "target_link": "https://linear.app/acme/issue/BEN-171/x"}, "tok")
+    finally:
+        mcp_client.McpSession = original
+    assert made.url == "https://linear.app/acme/issue/BEN-171/x" and made.external_id == "c-1"

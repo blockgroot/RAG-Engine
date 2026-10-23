@@ -354,8 +354,10 @@ def _earlier(org_id: str, user_id: str, workspace_id: str | None, email: str) ->
         label = action.label if action else name
         url = result.get("url") if str(result.get("url") or "").startswith("https://") else None
         title = str((payload or {}).get("title") or "")[:200]
+        # Cards made before ids were the tool's own stored Handbook's card id.
+        ext = result.get("external_id") if str(result.get("external_id") or "") != aid else None
         lines.append(f"- {label}" + (f": \"{title}\"" if title else "")
-                     + (f", id {result['external_id']}" if result.get("external_id") else "")
+                     + (f", id {ext}" if ext else "")
                      + (f", link {url}" if url else ""))
         sources.append(Source(f"act-result:{aid}", f"what {label} made", False, (email.lower(),), url))
     return "\n".join(lines), sources
@@ -394,7 +396,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
     # Over the limit: the first ones are drafted and the rest is SAID, never
     # dropped silently (a fourth action simply vanished).
     left_out = run.left_out
-    drafts, refusals, calls, did = [], list(run.refused), {}, {}
+    drafts, refusals, calls, did, forms = [], list(run.refused), {}, {}, {}
     messages = list(run.messages or [])
     for action, args, call_id in run.picked:
         progress.report(f"Preparing a card: {action.label}")
@@ -410,6 +412,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
             drafts.append(made)
             calls[made[0].id] = call_id
             did[made[0].id] = run.did.get(call_id)
+            forms[made[0].id] = run.forms.get(call_id) or []
     if not drafts:
         return ActOutcome(" ".join(dict.fromkeys(refusals)) or run.reply or "Nothing more to do.")
     reply = ("Here's what I'll do. Check it, then approve." if len(drafts) == 1 else
@@ -427,7 +430,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
             runs.create(org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
                         question=question, model=model, messages=messages, found=found, sources=sources,
                         drafted={"keys": sorted({*already, *(_form_key(a, args) for a, args, _ in run.picked), *run.keys}),
-                                 "calls": calls, "did": did},
+                                 "calls": calls, "did": did, "forms": forms},
                         action_ids=list(calls), ttl_seconds=settings.ttl_seconds, step=step)
         except DatabaseError:
             # The cards stand on their own; only going on after them is lost
@@ -466,6 +469,10 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
         # An approved card's action is done: not drafted again in other words.
         did = kept.get("did") or {}
         keys |= {did[aid] for aid, _name, status, _r in cards if status == "succeeded" and did.get(aid)}
+        # A failed card may be drafted again once what it lacked exists: the
+        # Sheet refused for a missing folder, then blocked as "already decided".
+        forms = kept.get("forms") or {}
+        keys -= {k for aid, _name, status, _r in cards if status == "failed" for k in forms.get(aid, ())}
         if not calls or set(calls) - {aid for aid, *_ in cards}:
             return None                    # a run from before calls were kept, or a card gone
         offered, why_not = offered_actions(org_id, user_id, settings, run.surface.get("slack_user"),

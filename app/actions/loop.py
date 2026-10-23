@@ -16,7 +16,7 @@ from ..security.links import enforce_link_provenance
 from .base import Action
 from .checks import _CHANNEL, OWN_FIELDS, _channels_read, _found_nothing, _precheck
 from .draft import TYPOGRAPHY, asked_for, asked_in
-from .prompts import ALL_DONE, DECIDED, DONE_BEFORE, NOTHING_DRAFTED, NOTHING_FOUND, SEARCH, _fenced, build_act_prompt
+from .prompts import _LATER, ALL_DONE, DECIDED, DONE_BEFORE, NOTHING_DRAFTED, NOTHING_FOUND, SEARCH, _fenced, build_act_prompt
 
 
 #: Drafts one request may make ("an issue in Linear and in GitHub"). Each is
@@ -63,6 +63,9 @@ class _Drafting:
     #: Per drafted call, what it does (``_did``): once its card succeeds, the
     #: same action is not drafted again in this request.
     did: dict = field(default_factory=dict)
+    #: Per drafted call, its form keys: a card that FAILS stays draftable (the
+    #: folder a Sheet goes in exists after it is made), so only decided ones block.
+    forms: dict = field(default_factory=dict)
 
 
 def _did(action, args: dict, request_words=None) -> str:
@@ -149,7 +152,9 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
              "function": {"name": c.name, "arguments": c.arguments or "{}"}}
             for cid, c in zip(ids, calls)]})
         progress_made = False
-        for cid, call in zip(ids, calls):
+        # A card that makes what another card of this turn names (the folder a
+        # Sheet goes in) is handled first, so the one that needs it waits.
+        for cid, call in _makers_first(list(zip(ids, calls))):
             said, new = _one_call(call, by_name, question, org_id=org_id, user_id=user_id, email=email,
                                   found=found, looked=looked, ran=ran, settings=settings, out=out,
                                   drafted=drafted, refused=refused, already=already, read=read,
@@ -169,6 +174,36 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
     return out
 
 
+def _names(args: dict) -> set[str]:
+    """What a card names the thing it makes: its title or name."""
+    from .mcp import _TITLE
+
+    return {v.strip().casefold() for k, v in args.items()
+            if isinstance(v, str) and _TITLE.search(k) and v.strip() and k not in OWN_FIELDS}
+
+
+def _refs(args: dict) -> set[str]:
+    """What a card points at: every value that is not drafted text."""
+    from .mcp import _prose
+
+    return {v.strip().casefold() for k, v in args.items()
+            if isinstance(v, str) and not _prose(k) and v.strip() and k not in OWN_FIELDS}
+
+
+def _makers_first(calls: list) -> list:
+    """The turn's calls, a card whose title another card points at first."""
+    def args(call):
+        try:
+            got = json.loads(call.arguments or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return got if isinstance(got, dict) else {}
+
+    forms = [args(c) for _cid, c in calls]
+    pointed = set().union(*(_refs(f) for f in forms)) if forms else set()
+    return sorted(calls, key=lambda pair: not (_names(forms[calls.index(pair)]) & pointed))
+
+
 def _still_refused(messages: list[dict], by_name: dict) -> str:
     """The tools whose card was refused and never drafted since, named in the
     reminder: a Slack post drafted before the GitHub issue existed was refused
@@ -179,7 +214,10 @@ def _still_refused(messages: list[dict], by_name: dict) -> str:
     for m in messages:
         name = names.get(m.get("tool_call_id")) if m.get("role") == "tool" else None
         if name in by_name and not by_name[name].lookup:
-            state[name] = str(m.get("content") or "").startswith("Refused")
+            # Refused before its card, or failed after approval (the folder a
+            # Sheet goes in did not exist yet): either way not done.
+            said = str(m.get("content") or "")
+            state[name] = said.startswith("Refused") or "Not done: the user approved it, but" in said
     pending = [by_name[n].label for n, refused in state.items() if refused]
     return (f" Refused above and not drafted since: {'; '.join(pending)}. If the QUESTION asks for it, "
             "draft it now with the real values you have." if pending else "")
@@ -351,6 +389,13 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     did = _did(action, prepared.get("args") or args, args.get("request_words"))
     if did in already:
         return DONE_BEFORE, False
+    needs = _refs(args) & {n for _a, other, _c in out.picked for n in _names(other)}
+    if needs:
+        # GPT-OSS drafted a Sheet "in the folder Final E2E" beside the card
+        # making that folder; the Sheet ran first and found no folder.
+        refused[key] = (action.name, out.turn, f"needs {next(iter(needs))} made first")
+        return (f"Refused, not drafted: {next(iter(needs))} is made by another card of this request. "
+                f"{_LATER}"), False
     if len(out.picked) >= MAX_ACTIONS:
         out.left_out.append(action.label)
         return f"Not drafted: at most {MAX_ACTIONS} cards at a time.", False
@@ -359,6 +404,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     drafted[key] = drafted[done] = len(out.picked)
     out.keys.append(done)
     out.did[call_id] = did
+    out.forms[call_id] = sorted({key, done})
     progress.report(f"Preparing a card: {action.label}")
     return None, True
 
