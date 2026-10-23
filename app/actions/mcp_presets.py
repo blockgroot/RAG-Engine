@@ -113,7 +113,13 @@ def _github_client() -> tuple[str | None, str | None]:
 
 
 def _github_target(org_id: str, args: dict) -> None:
-    """A write's repository must be one of the company's own installations."""
+    """A write's repository must be one of the company's own installations.
+
+    The asker names a repository ("in GitHub bench-sandbox"); the model guesses
+    its owner (it wrote "syvora"). When the owner it guessed holds no such
+    company repository but exactly one installation does, that is the one
+    named, and ``args["owner"]`` is set to it, as Slack's "#general" is
+    resolved to its channel. Two candidates are refused, never picked."""
     from ..auth.credentials import connected_anywhere
     from ..core.exceptions import SourceError
     from ..githublive.repos import resolve_repo, scope_from_config
@@ -121,13 +127,23 @@ def _github_target(org_id: str, args: dict) -> None:
     owner, repo = str(args.get("owner") or ""), str(args.get("repo") or "")
     if not (owner and repo):
         return  # not aimed at a repository (e.g. a search); GitHub's own checks apply
-    for _ext, config in connected_anywhere(org_id, "github"):
+    scopes = [scope_from_config(config) for _ext, config in connected_anywhere(org_id, "github")]
+    named = set()
+    for scope in scopes:
         try:
-            resolve_repo(scope_from_config(config), f"{owner}/{repo}")
+            resolve_repo(scope, f"{owner}/{repo}")
             return
         except SourceError:
+            pass
+        try:
+            named.add(resolve_repo(scope, repo))
+        except SourceError:
             continue
-    raise ActionRejected(f"{owner}/{repo} isn't a repository your company connected to Handbook.")
+    if len(named) == 1:
+        args["owner"] = next(iter(named)).split("/")[0]
+        return
+    raise ActionRejected(f"{owner}/{repo} isn't a repository your company connected to Handbook."
+                         + (f" It has several named {repo}: {', '.join(sorted(named))}. Say which." if named else ""))
 
 
 GITHUB = Preset(

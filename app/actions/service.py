@@ -43,7 +43,7 @@ from ..core.exceptions import (
 )
 from ..db.connection import DatabaseError, get_connection
 from ..rag import progress
-from ..security.links import strip_links
+from ..security.links import enforce_link_provenance
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
 from ..security.visibility import viewer_clause
 from . import policy, store
@@ -259,7 +259,11 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
                 messages += [{"role": "assistant", "content": result.text or "(no reply)"},  # never empty
                              {"role": "user", "content": ALL_DONE if already else NOTHING_DRAFTED}]
                 continue
-            out.reply = strip_links(result.text or "").strip() or None
+            # A link survives as in any answer: only one the model was shown
+            # (the request, a lookup, an approved card's result), never one it
+            # wrote; "here is the link: [link removed]" helped nobody.
+            shown = [question, *found, *(s.uri for s in out.sources if s.uri)]
+            out.reply = enforce_link_provenance(result.text or "", shown, ()).strip() or None
             break
         ids = [getattr(c, "id", None) or f"call_{step}_{i}" for i, c in enumerate(calls)]
         # The OpenAI wire format every adapter speaks: content is null beside
@@ -305,7 +309,7 @@ def _call_extras(raw_message) -> dict[str, dict]:
 
 
 _NAME_KEYS = ("name", "tool", "tool_name", "function", "recipient_name")
-_ARG_KEYS = ("arguments", "args", "parameters", "toolInput", "input")
+_ARG_KEYS = ("arguments", "args", "parameters", "params", "toolInput", "tool_input", "tool_args", "input")
 
 
 def _calls_in_text(text: str | None, tools: list[dict]) -> list:
@@ -445,16 +449,20 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
 
 
 def build_parts_prompt(question: str) -> str:
-    """The content a request asks to be written or included, as quotes of its
-    own words: the asker's text only. Not its actions, targets or titles:
-    code checks those, and judging them again called a Linear card "missing"
-    the Linear issue it was."""
+    """Every part of a request, each labelled by what it is, as quotes of its
+    own words. Asked to leave the actions out, GPT-OSS listed them anyway (a
+    Linear card was "missing" the Linear issue it was); labelling every part
+    and keeping the content in code holds whatever the model includes."""
     return (
-        "List each piece of CONTENT this request asks to be written into, or included in, what "
-        "is created or sent: for example a summary of something, a link, a list, specific "
-        "words. Not the actions themselves, not where they go, not titles. Each as the shortest "
-        "exact quote of the request's own words that names it. Reply with ONLY a JSON list of "
-        "strings, [] when it asks for none.\n"
+        "Split this request into its parts. Label each part with its kind:\n"
+        "- \"action\": what to do (create, comment, post, send, close...)\n"
+        "- \"target\": which thing or place it is done to or in (a team, issue, page, channel, "
+        "person, repository)\n"
+        "- \"title\": a name the request gives what is made\n"
+        "- \"content\": what must be written into, or included in, what is created or sent "
+        "(a summary of something, pointers, a list, a link, specific words)\n"
+        "Each part is the shortest exact quote of the request's own words. Reply with ONLY a JSON "
+        "list of objects like {\"quote\": \"...\", \"kind\": \"content\"}.\n"
         f"REQUEST: {question}\n"
     )
 
@@ -466,8 +474,10 @@ def build_cover_prompt(parts: list[str], label: str, form: str) -> str:
     return (
         f"An employee's request asks for this content:\n{listed}\n\n"
         f"A card was drafted for one action of it: {label}. Which of these belong in THIS card "
-        "but are not in its text? Content meant for another action, or that needs a result "
-        "that does not exist yet, is not missing here. Reply with ONLY a JSON list of the "
+        "but are not in its text? A summary, list or pointers asked for must be written as one: "
+        "messages or text pasted as they were do not count. Content "
+        "meant for another action, or "
+        "that needs a result that does not exist yet, is not missing here. Reply with ONLY a JSON list of the "
         "missing numbers, e.g. [2] or [].\n\n"
         f"{UNTRUSTED_POLICY}\n"
         "<<<UNTRUSTED_DRAFTED_FORM>>>\n"
@@ -509,16 +519,10 @@ def _completeness(llm, question: str):
         try:
             if parts is None:
                 said = _json_list(llm.generate(build_parts_prompt(question), max_tokens=CHECK_TOKENS))
-                parts = list(dict.fromkeys(p.strip() for p in said
-                                           if isinstance(p, str) and asked_in(p.strip(), question)))[:MAX_PARTS]
-            # A part that is this card's own ask, or holds its title, is the card
-            # itself, never content it lacks: GPT-OSS called a Linear card
-            # "missing" the Linear issue it was.
-            asked = str(args.get("request_words") or "")
-            names = [v for v in args.values() if isinstance(v, str) and 3 <= len(v) <= 200 and v != asked]
-            mine = [p for p in parts if not (asked_in(p, asked) or asked_in(asked, p)
-                                              or any(asked_in(n, p) for n in names))]
-            if not mine:
+                quotes = (str(p.get("quote") or "").strip() for p in said
+                          if isinstance(p, dict) and p.get("kind") == "content")
+                parts = list(dict.fromkeys(q for q in quotes if q and asked_in(q, question)))[:MAX_PARTS]
+            if not parts:
                 return []               # the request asks for no content of its own
             # Content is judged in the card's body, never its title: Gemma took
             # "Summary of #hb-testing discussion" for the summary, and the card
@@ -527,12 +531,12 @@ def _completeness(llm, question: str):
 
             form = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS and not _TITLE.search(k)},
                               ensure_ascii=False)
-            gone = _json_list(llm.generate(build_cover_prompt(mine, label, form), max_tokens=CHECK_TOKENS))
+            gone = _json_list(llm.generate(build_cover_prompt(parts, label, form), max_tokens=CHECK_TOKENS))
         except Exception:  # noqa: BLE001 - a check that fails never blocks the card
             logger.warning("Act: the completeness check failed", exc_info=True)
             parts = parts or []
             return []
-        return [mine[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(mine)]
+        return [parts[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(parts)]
 
     return check
 
@@ -642,6 +646,9 @@ def _plain(value):
 _LINK = re.compile(r"https?://[^\s\"'<>)\]]+")
 #: A template slot inside drafted text: format, not wording ("{{result_of_card_1}}").
 _PLACEHOLDER = re.compile(r"\{\{[^{}]{1,80}\}\}")
+#: A slot for the person to fill in ("Best, [Your Name]"): format, not wording.
+#: A markdown link's "[text](" is not one.
+_BLANK = re.compile(r"\[[A-Z][A-Za-z ]{1,80}\](?!\()")
 #: Said for a link or id that exists only once an earlier card is approved.
 _LATER = ("It exists only once the user approves that card, and you are given it then: draft "
           "this step after that, with the real value")
@@ -671,6 +678,11 @@ def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, e
         # A value the model meant to fill later, written into the text: the
         # card would say "{{result_of_card_1}}" where the link should be.
         return f"the text has a placeholder ({blank.group(0)[:60]}) where an earlier card's value should be. {_LATER}"
+    slot = _BLANK.search(sent)
+    if slot:
+        # GPT-OSS signed a DM "Best, [Your Name]"; it is sent as the person.
+        return (f"the text has a blank for someone to fill in ({slot.group(0)}). Write it without "
+                "blanks or a sign-off: it is sent as the user, under their name")
     kept = json.dumps(proposal.payload, ensure_ascii=False)
     lost = [u for u in _LINK.findall(sent) if u.rstrip(".,;") not in kept]
     if lost:

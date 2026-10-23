@@ -1401,6 +1401,17 @@ def test_a_placeholder_written_into_the_text_is_said_back_not_drafted(org):
 
 
 @requires_db
+def test_a_blank_for_the_person_to_fill_in_is_said_back_not_drafted(org):
+    """GPT-OSS signed a DM "Best, [Your Name]"; it is sent as the person."""
+    signed = {**ISSUE, "body": "The export fails.\n\nBest, [Your Name]"}
+    llm = ChainLLM([signed])
+    out = _propose(org, "File an issue in Platform about the export", llm)
+    assert out.action is None
+    assert any("blank for someone to fill in ([Your Name])" in m["content"]
+               for m in llm.seen[1] if m.get("role") == "tool")
+
+
+@requires_db
 def test_without_the_runs_table_cards_still_work_and_nothing_continues(org, monkeypatch):
     """The API applies no schema at start: on a database without act_runs, a
     request still drafts its cards and an approval still runs."""

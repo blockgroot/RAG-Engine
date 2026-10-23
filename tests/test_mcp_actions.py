@@ -808,14 +808,16 @@ def test_a_card_missing_part_of_the_request_is_sent_back_once_then_said():
 
         def generate(self, prompt, max_tokens=None):
             self.prompts.append(prompt)
-            if "List each piece of CONTENT" in prompt:
-                return '["make a task in P-7", "the roadmap summary", "a part nobody wrote"]'
+            if "Split this request into its parts" in prompt:
+                return json.dumps([{"quote": "make a task", "kind": "action"}, {"quote": "P-7", "kind": "target"},
+                                   {"quote": "the roadmap summary", "kind": "content"},
+                                   {"quote": "a part nobody wrote", "kind": "content"}])
             return self.covers.pop(0)
 
     write = mcp.McpToolAction(_server(), CREATE)
     form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
     q = "make a task in P-7 with the roadmap summary"
-    judge = Judge(["[1]", "[1]"])          # "make a task in P-7" is the card itself, filtered
+    judge = Judge(["[1]", "[1]"])          # only the content parts are judged
     check = service._completeness(judge, q)
     model = Scripted([(write, form)], [(write, {**form, "title": "t2"})])
     run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
@@ -825,6 +827,10 @@ def test_a_card_missing_part_of_the_request_is_sent_back_once_then_said():
     assert len(run.picked) == 1 and run.gaps[write.name] == ["the roadmap summary"]   # said, not hidden
     assert "a part nobody wrote" not in judge.prompts[1]                         # parts are the asker's words
     assert service._completeness(object(), q)("x", form) == []                   # a failed check never blocks
+    # request_words quoting the whole request ("make a task in P-7 with the
+    # roadmap summary") does not make the summary part of the card itself.
+    whole = Judge(["[1]"])
+    assert service._completeness(whole, q)("x", {**form, "request_words": q}) == ["the roadmap summary"]
     # Judged on the body only: a title naming the summary is not the summary.
     titled = Judge(["[1]"])
     service._completeness(titled, q)("x", {**form, "title": "Summary of the plan", "body": "b"})
@@ -850,6 +856,21 @@ def test_a_card_drafted_from_a_named_channel_it_never_read_is_sent_back():
     assert 'Read #hb-testing first' in _tool_answers(model.seen[1])[0]
     assert asked == [{"channel": "hb-testing", "days": None}]
     assert [a["title"] for _, a, _ in run.picked] == ["t3"] and not run.gaps
+
+
+def test_a_reply_in_words_keeps_only_the_links_the_model_was_shown():
+    """Asked to post an issue's link, the model answered in words and the
+    link it was given became "[link removed]"; one it made up still goes."""
+    from app.llm.base import ChatResult
+
+    class Says:
+        def generate_with_tools(self, messages, **kw):
+            return ChatResult(text="Here: https://linear.app/x/issue/BEN-5 and https://evil.example/a")
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    run = _loop(Says(), "post the link of the issue we created", [write],
+                found=["- Linear: issue, id BEN-5, link https://linear.app/x/issue/BEN-5"])
+    assert run.reply == "Here: https://linear.app/x/issue/BEN-5 and [link removed]"
 
 
 def test_a_lookup_that_found_nothing_asks_for_another_search():

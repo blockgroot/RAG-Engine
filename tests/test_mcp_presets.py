@@ -134,3 +134,30 @@ def test_presets_are_found_by_address_with_or_without_a_slash():
 
 def test_github_asks_for_no_oauth_scopes():
     assert mcp_presets.GITHUB.pick_scopes(["repo", "read:org"]) == []
+
+
+def test_a_github_repo_named_by_the_asker_gets_the_company_owner(monkeypatch):
+    """Asked "in GitHub bench-sandbox", the model guessed owner "syvora"; the
+    company's only bench-sandbox is sana18-syv's. Two candidates are refused."""
+    import app.auth.credentials as creds
+    import app.githublive.repos as repos
+    from app.actions.mcp_presets import _github_target
+    from app.core.exceptions import ActionRejected, SourceError
+
+    owned = {"sana18-syv": {"bench-sandbox"}, "other": set()}
+
+    def resolve(scope, name):
+        owner, repo = name.split("/") if "/" in name else (scope, name)
+        if owner == scope and repo in owned[scope]:
+            return f"{owner}/{repo}"
+        raise SourceError("no")
+
+    monkeypatch.setattr(creds, "connected_anywhere", lambda org, p: [(1, "sana18-syv"), (2, "other")])
+    monkeypatch.setattr(repos, "scope_from_config", lambda config: config)
+    monkeypatch.setattr(repos, "resolve_repo", resolve)
+    args = {"owner": "syvora", "repo": "bench-sandbox"}
+    _github_target("o", args)
+    assert args["owner"] == "sana18-syv"
+    owned["other"].add("bench-sandbox")
+    with pytest.raises(ActionRejected, match="several named bench-sandbox"):
+        _github_target("o", {"owner": "syvora", "repo": "bench-sandbox"})
