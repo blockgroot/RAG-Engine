@@ -31,6 +31,7 @@ from types import SimpleNamespace
 from dotenv import dotenv_values
 
 from app.actions import mcp, mcp_client, mcp_presets, mcp_store, service
+from app.actions import loop as act_loop
 from app.actions.base import ActionContext, Source
 from app.llm.catalog import get as catalog_get
 from app.llm.openai_provider import OpenAICompatProvider
@@ -253,7 +254,7 @@ def offered_tools():
 def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[str]]:
     trace, found, looked = Trace(), [sc.earlier] if sc.earlier else [], set()
     TRACE_CHANNEL.clear()
-    orig = service._read_content
+    orig = act_loop._read_content
 
     def traced(call, *a, **k):
         said, new = orig(call, *a, **k)
@@ -261,7 +262,7 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
             trace.reads.append(json.loads(call.arguments or "{}").get("content_words"))
         return said, new
 
-    service._read_content = traced
+    act_loop._read_content = traced
     calls_before = getattr(llm, "calls", 0)
     try:
         messages, already = None, frozenset()
@@ -305,7 +306,7 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
             already = already | {service._form_key(a, args) for a, args, _ in loop.picked} | set(loop.keys)
             sources = (*loop.sources, *made)
     finally:
-        service._read_content = orig
+        act_loop._read_content = orig
     trace.model_calls = getattr(llm, "calls", 0) - calls_before
     return trace, [why for check in sc.checks if (why := check(trace))]
 

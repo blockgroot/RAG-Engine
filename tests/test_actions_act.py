@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from app.security.untrusted import UNTRUSTED_POLICY
 from app.actions import Source, policy, service, store
+from app.actions import prompts as act_prompts
 from app.actions import draft
 from app.actions.base import Action, ActionResult, ActionTarget, Audience, Proposal
 from app.auth import create_admin, create_session_token
@@ -209,7 +210,7 @@ class ScriptLLM(OneCallLLM):
 
 
 def _reads(words):
-    return [(service.SEARCH["function"]["name"], {"content_words": words})]
+    return [(act_prompts.SEARCH["function"]["name"], {"content_words": words})]
 
 
 def _writes(*forms):
@@ -1177,8 +1178,8 @@ def test_act_stream_shows_the_steps_then_the_same_reply(client, org, monkeypatch
 def test_asked_in_a_thread_the_prompt_says_the_thread_is_the_content():
     """"Update SYV-6 with the above description" in a thread: the model must fill
     the form and name the thread, not ask for text the thread already holds."""
-    plain = service.build_act_prompt("update SYV-6 with the above")
-    threaded = service.build_act_prompt("update SYV-6 with the above", in_thread=True)
+    plain = act_prompts.build_act_prompt("update SYV-6 with the above")
+    threaded = act_prompts.build_act_prompt("update SYV-6 with the above", in_thread=True)
     assert "Slack thread" not in plain and "Slack thread" in threaded
 
 

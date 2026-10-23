@@ -331,7 +331,7 @@ is the bearer and is only forwarded. Slack posts with the person's USER token (n
 the bot's); Google uses `drive.file` + `documents` + `spreadsheets` (no restricted
 scope) and writes cells RAW, never formulas. Names ("#general", a Sheet's title) are
 resolved there, so a target stays the asker's words. The model only fills in tool forms (at most
-`service.MAX_ACTIONS` per request, each its own card, checked and approved on its
+`loop.MAX_ACTIONS` per request, each its own card, checked and approved on its
 own; a refused one never stops the rest and is said): a write runs only from
 `confirm`, by the person who proposed it, before `expires_at`, with the STORED
 payload (`payload_hash` compared, `store.claim` is the one conditional UPDATE), and
@@ -347,12 +347,12 @@ what a read returned in this request, or one of the schema's own allowed values;
 never from a passage. Drafted text keeps links and @-mentions only if the asker or a
 source wrote them. What a tool returns is untrusted text and a private source. The
 audience of an MCP write is unknown, so private content always needs the tick.
-Drafting is one tool loop, paused at each write (`service._agent_loop`): a drafted
+Drafting is one tool loop, paused at each write (`loop._agent_loop`): a drafted
 call stays unanswered until its card is decided, then is answered with what really
 happened (the link, the tool's error, "the user cancelled") and the same conversation
 goes on (`continue_run`, `act_runs`). No field the model must remember to fill
 decides what happens next; cancelling every card ends the request. Company content
-is read only through the loop's read tool (`service.SEARCH`), for words quoted
+is read only through the loop's read tool (`prompts.SEARCH`), for words quoted
 from the request (`content_words`); a request in the asker's own words reads
 nothing. It is found by Ask's own reading (`api.actions.ask_search`:
 Ask's routing on the words naming the content, then that agent's

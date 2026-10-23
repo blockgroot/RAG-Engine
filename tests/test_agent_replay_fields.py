@@ -9,6 +9,7 @@ may attach such a field, so the loop keeps every one, by name of none.
 from __future__ import annotations
 
 from app.actions import service
+from app.actions import loop as act_loop
 from app.config.settings import ActionsSettings
 from app.llm.base import ChatResult, LLMProvider, ToolCall
 
@@ -48,5 +49,5 @@ def test_provider_fields_on_a_tool_call_are_sent_back():
 
 
 def test_no_raw_message_still_replays_the_call():
-    assert service._call_extras(None) == {}
-    assert service._call_extras({"tool_calls": [{"id": "a", "type": "function"}]}) == {"a": {}}
+    assert act_loop._call_extras(None) == {}
+    assert act_loop._call_extras({"tool_calls": [{"id": "a", "type": "function"}]}) == {"a": {}}

@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from app.actions import mcp, mcp_client, mcp_store
+from app.actions import checks as act_checks, loop as act_loop, prompts as act_prompts
 from app.actions.base import ActionContext, Audience, Source
 from app.core.exceptions import ActionError, ActionOutcomeUnknown, ActionRejected
 
@@ -676,7 +677,6 @@ def test_a_models_non_breaking_hyphens_are_the_askers_plain_ones():
 def test_a_model_that_says_it_drafted_without_calling_the_tool_is_told_once(server, monkeypatch):
     """GPT-OSS looked the issue up, then replied "I've drafted a change" and
     called nothing: no card, and the person was told it was done."""
-    from app.actions import service
     from app.llm.base import ChatResult
 
     srv = _server({"create_task": "write", "list_projects": "lookup"})
@@ -693,7 +693,7 @@ def test_a_model_that_says_it_drafted_without_calling_the_tool_is_told_once(serv
 
     model = Claims([(find, {})], [(write, {"request_words": "create a task", "project_id": "P-7", "title": "t"})])
     run = _loop(model, "create a task in Atlas", [write, find])
-    assert model.seen[2][-1]["content"] == service.NOTHING_DRAFTED and len(run.picked) == 1
+    assert model.seen[2][-1]["content"] == act_prompts.NOTHING_DRAFTED and len(run.picked) == 1
 
 
 def test_an_ask_shared_with_another_action_is_the_askers_words_in_order():
@@ -732,7 +732,7 @@ def test_company_content_is_read_through_its_tool_and_only_for_the_askers_words(
     from app.actions.base import Source
 
     write = mcp.McpToolAction(_server(), CREATE)
-    reader = SimpleNamespace(tool=service.SEARCH)
+    reader = SimpleNamespace(tool=act_prompts.SEARCH)
     asked = []
 
     def read(words, **kw):
@@ -756,18 +756,17 @@ def test_company_content_is_read_through_its_tool_and_only_for_the_askers_words(
 def test_a_tool_call_the_model_wrote_as_text_is_made():
     """GPT-OSS replied with the call instead of making it, by name or as the
     bare arguments of the one tool they fit; nothing was drafted."""
-    from app.actions import service
 
     write = mcp.McpToolAction(_server(), CREATE)
     tools = [write.tool]
     name = write.tool["function"]["name"]
-    named = service._calls_in_text(f'Here: {{"tool": "{name}", "toolInput": {{"project_id": "P-7", "title": "t"}}}}',
+    named = act_loop._calls_in_text(f'Here: {{"tool": "{name}", "toolInput": {{"project_id": "P-7", "title": "t"}}}}',
                                    tools)
     assert [(c.name, json.loads(c.arguments)) for c in named] == [(name, {"project_id": "P-7", "title": "t"})]
-    bare = service._calls_in_text('{"project_id": "P-7", "title": "t", "request_words": "make"}', tools)
+    bare = act_loop._calls_in_text('{"project_id": "P-7", "title": "t", "request_words": "make"}', tools)
     assert [c.name for c in bare] == [name]
-    assert service._calls_in_text('{"colour": "red"}', tools) == []           # fits no form
-    assert service._calls_in_text("Done, nothing to add.", tools) == []
+    assert act_loop._calls_in_text('{"colour": "red"}', tools) == []           # fits no form
+    assert act_loop._calls_in_text("Done, nothing to add.", tools) == []
 
 
 def test_an_optional_choice_nobody_asked_for_is_left_out():
@@ -843,7 +842,7 @@ def test_a_card_drafted_from_a_named_channel_it_never_read_is_sent_back():
     from app.actions import service
 
     write = mcp.McpToolAction(_server(), CREATE)
-    search = SimpleNamespace(tool=service.SEARCH)
+    search = SimpleNamespace(tool=act_prompts.SEARCH)
     q = "make a task in P-7 with what #hb-testing discussed today"
     form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
     model = Scripted([(write, form)],                                       # drafted before reading
@@ -874,12 +873,11 @@ def test_a_reply_in_words_keeps_only_the_links_the_model_was_shown():
 
 
 def test_a_lookup_that_found_nothing_asks_for_another_search():
-    from app.actions import service
 
-    assert service._found_nothing('[Linear: List issues] {"issues": []}')
-    assert service._found_nothing('{"total_count": 0, "items": []}') and service._found_nothing("[]")
-    assert not service._found_nothing('{"issues": [{"id": "BEN-1"}]}')
-    assert not service._found_nothing("No issues matched.")                       # words are never judged
+    assert act_checks._found_nothing('[Linear: List issues] {"issues": []}')
+    assert act_checks._found_nothing('{"total_count": 0, "items": []}') and act_checks._found_nothing("[]")
+    assert not act_checks._found_nothing('{"issues": [{"id": "BEN-1"}]}')
+    assert not act_checks._found_nothing("No issues matched.")                       # words are never judged
 
 
 def test_a_records_own_address_from_a_lookup_may_go_in_a_draft():
@@ -918,7 +916,7 @@ def test_a_channel_read_for_zero_days_reads_today_and_says_it_is_the_whole_chann
     timeout" in the channel it had read: it is every message, not matches."""
     from app.actions import service
 
-    search = SimpleNamespace(tool=service.SEARCH)
+    search = SimpleNamespace(tool=act_prompts.SEARCH)
     model = Scripted([(search, {"content_words": "#hb-testing today", "slack_channel": "hb-testing", "days": "0"})])
     asked = []
     service._agent_loop(model, "summarise #hb-testing today", [], [], org_id="o", user_id="u", email="a@x.com",
