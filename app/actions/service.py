@@ -368,7 +368,7 @@ def _earlier(org_id: str, user_id: str, workspace_id: str | None, email: str) ->
         action = get_action(name, org_id)
         label = action.label if action else name
         url = result.get("url") if str(result.get("url") or "").startswith("https://") else None
-        title = str((payload or {}).get("title") or "")[:200]
+        title = str((payload or {}).get("title") or result.get("name") or "")[:200]
         # Cards made before ids were the tool's own stored Handbook's card id.
         ext = result.get("external_id") if str(result.get("external_id") or "") != aid else None
         lines.append(f"- {label}" + (f": \"{title}\"" if title else "")
@@ -709,6 +709,7 @@ def confirm(
     else:
         url = made.url if (made.url or "").startswith("https://") else None
         store.finish(org_id, claimed.id, status="succeeded",
-                     result={"external_id": made.external_id, "url": url})
+                     result={"external_id": made.external_id, "url": url,
+                             **({"name": made.name} if made.name else {})})
     logger.info("actions.executed action=%s org=%s", claimed.action, org_id)
     return store.get(org_id, user_id, action_id)

@@ -35,6 +35,8 @@ class ToolResult:
     text: str
     id: str | None = None
     url: str | None = None
+    #: What the record is called, so the next card shows its name, not its id.
+    name: str | None = None
 
 
 @dataclass(frozen=True)

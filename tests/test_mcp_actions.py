@@ -1102,3 +1102,12 @@ def test_the_reminder_names_an_action_of_the_request_no_card_did():
     assert "“share”" in said and "“Add”" not in said
     assert act_loop._not_asked_yet(messages, by_name, SimpleNamespace(actions=lambda: ["Add"])) == ""
     assert act_loop._not_asked_yet(messages, by_name, None) == ""
+
+
+def test_an_id_an_earlier_card_made_is_shown_by_its_name():
+    """The share card showed FILE 1Eh7ylq3…: the add-text result named no file."""
+    said = act_prompts._decided("Google Workspace: Add text to a Doc", "succeeded",
+                                {"external_id": "1Eh7ylq3FaV7b08y6cM2SOErk9tz", "name": "Final E2E notes"}, None)
+    assert '"Final E2E notes", id 1Eh7ylq3FaV7b08y6cM2SOErk9tz' in said
+    assert mcp._named("1Eh7ylq3FaV7b08y6cM2SOErk9tz", said) == "Final E2E notes"
+    assert mcp._named("1Eh7ylq3FaV7b08y6cM2SOErk9tzX", said) != "Final E2E notes"   # whole ids only

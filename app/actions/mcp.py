@@ -362,7 +362,8 @@ class McpToolAction(Action):
         # uuid). Never Handbook's card id: told "id <card id>", the next
         # request commented on an issue that does not exist.
         found = data.get("identifier") or data.get("id")
-        return ActionResult(str(found) if found else None, link)
+        name = data.get("name") or data.get("title")
+        return ActionResult(str(found) if found else None, link, str(name)[:200] if isinstance(name, str) else None)
 
 
 def _target_link(args: dict[str, Any], lookups: str) -> str | None:
@@ -437,6 +438,11 @@ def _named(value: Any, lookups: str) -> str:
     name that lookup gave it ("Bench (BEN)", not "db73111d-…"); what is sent
     stays the id. Only from the same JSON object as the id, else the id."""
     if isinstance(value, str) and len(value) >= 8 and lookups and value in lookups:
+        # An earlier card's result, in Handbook's own words: 'made "Final E2E
+        # notes", id 1Eh7…'. The share card showed the bare id.
+        made = re.search(r'"([^"\n]{1,200})", id ' + re.escape(value) + r'(?![\w-])', lookups)
+        if made:
+            return made.group(1)
         m = re.search(r'\{[^{}]*"' + re.escape(value) + r'"[^{}]*\}', lookups)
         said = dict(n.groups() for n in _NAME.finditer(m.group(0))) if m else {}
         name = said.get("name") or said.get("title") or said.get("displayName")

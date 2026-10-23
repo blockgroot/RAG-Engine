@@ -93,6 +93,8 @@ class ActionResult:
 
     external_id: str
     url: str | None = None
+    #: What the tool calls the record ("Final E2E notes"), when it says.
+    name: str | None = None
 
 
 @dataclass(frozen=True)

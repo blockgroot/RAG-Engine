@@ -209,6 +209,7 @@ def _decided(label: str, status: str, result: dict, url: str | None) -> str:
     """What happened to a card, as the answer to the call that drafted it."""
     if status == "succeeded":
         return (f"Done: the user approved it and {label} made it"
+                + (f': "{result["name"]}"' if result.get("name") else "")
                 + (f", id {result['external_id']}" if result.get("external_id") else "")
                 + (f", link {url}" if url else "") + ".")
     if status == "failed":

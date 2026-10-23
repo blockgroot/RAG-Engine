@@ -227,3 +227,10 @@ def test_a_doc_is_created_inside_the_folder_named(client, monkeypatch):
     fake.calls.clear()
     _call(client, "create_doc", {"title": "Loose", "content": "x"})
     assert not [c for c in fake.calls if c[0] == "PATCH"]
+
+
+def test_a_write_says_the_name_of_the_file_it_acted_on(client, monkeypatch):
+    fake = GoogleEdits()
+    monkeypatch.setattr(google.httpx, "request", fake.request)
+    r = _call(client, "append_to_doc", {"doc": "MCP test sheet", "text": "x"})
+    assert r["structuredContent"]["name"] == "MCP test sheet" and r["structuredContent"]["id"] == "S" * 30

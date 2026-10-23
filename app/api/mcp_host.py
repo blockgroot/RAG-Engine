@@ -66,6 +66,6 @@ async def serve(name: str, request: Request):
     except (VendorError, KeyError, TypeError, ValueError) as exc:
         said = str(exc) if isinstance(exc, VendorError) else f"Missing or invalid input: {exc}"
         return _reply(rid, {"content": [{"type": "text", "text": said}], "isError": True})
-    structured = {k: v for k, v in (("id", result.id), ("url", result.url)) if v}
+    structured = {k: v for k, v in (("id", result.id), ("url", result.url), ("name", result.name)) if v}
     return _reply(rid, {"content": [{"type": "text", "text": result.text}],
                         **({"structuredContent": structured} if structured else {})})

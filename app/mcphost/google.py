@@ -129,7 +129,7 @@ def create_doc(token: str, args: dict) -> ToolResult:
              json={"requests": [{"insertText": {"location": {"index": 1}, "text": bounded(text, 100_000)}}]})
     url = f"https://docs.google.com/document/d/{doc['documentId']}/edit"
     where = _into(token, doc["documentId"], args.get("folder"))
-    return ToolResult(f"Created the Google Doc {doc.get('title')}{where}.", doc["documentId"], url)
+    return ToolResult(f"Created the Google Doc {doc.get('title')}{where}.", doc["documentId"], url, doc.get("title"))
 
 
 def create_sheet(token: str, args: dict) -> ToolResult:
@@ -140,7 +140,7 @@ def create_sheet(token: str, args: dict) -> ToolResult:
              json={"values": _rows(args["rows"])})
     where = _into(token, sheet["spreadsheetId"], args.get("folder"))
     return ToolResult(f"Created the Google Sheet {args['title']}{where}.", sheet["spreadsheetId"],
-                      sheet.get("spreadsheetUrl"))
+                      sheet.get("spreadsheetUrl"), str(args["title"]))
 
 
 def add_rows(token: str, args: dict) -> ToolResult:
@@ -151,7 +151,7 @@ def add_rows(token: str, args: dict) -> ToolResult:
     _req(token, "POST", f"{SHEETS}/{f['id']}/values/{quote(rng, safe='!:')}:append",
          params={"valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS"}, json={"values": rows})
     return ToolResult(f"Added {len(rows)} row{'s' if len(rows) != 1 else ''} to {f['name']}.", f["id"],
-                      f.get("webViewLink"))
+                      f.get("webViewLink"), f["name"])
 
 
 def update_cells(token: str, args: dict) -> ToolResult:
@@ -159,14 +159,14 @@ def update_cells(token: str, args: dict) -> ToolResult:
     rng = str(args["range"])
     _req(token, "PUT", f"{SHEETS}/{f['id']}/values/{quote(rng, safe='!:')}",
          params={"valueInputOption": "RAW"}, json={"values": _rows(args["values"])})
-    return ToolResult(f"Updated {rng} in {f['name']}.", f["id"], f.get("webViewLink"))
+    return ToolResult(f"Updated {rng} in {f['name']}.", f["id"], f.get("webViewLink"), f["name"])
 
 
 def append_to_doc(token: str, args: dict) -> ToolResult:
     f = _file(token, str(args["doc"]), DOC_TYPE)
     _req(token, "POST", f"{DOCS}/{f['id']}:batchUpdate", json={"requests": [
         {"insertText": {"endOfSegmentLocation": {}, "text": "\n" + bounded(str(args["text"]), 100_000)}}]})
-    return ToolResult(f"Added the text to {f['name']}.", f["id"], f.get("webViewLink"))
+    return ToolResult(f"Added the text to {f['name']}.", f["id"], f.get("webViewLink"), f["name"])
 
 
 def replace_in_doc(token: str, args: dict) -> ToolResult:
@@ -177,21 +177,21 @@ def replace_in_doc(token: str, args: dict) -> ToolResult:
     if not changed:
         raise VendorError(f"{f['name']} has no text \"{args['find']}\" to replace.")
     return ToolResult(f"Replaced {changed} place{'s' if changed != 1 else ''} in {f['name']}.", f["id"],
-                      f.get("webViewLink"))
+                      f.get("webViewLink"), f["name"])
 
 
 def add_sheet_tab(token: str, args: dict) -> ToolResult:
     f = _file(token, str(args["spreadsheet"]), SHEET_TYPE)
     _req(token, "POST", f"{SHEETS}/{f['id']}:batchUpdate",
          json={"requests": [{"addSheet": {"properties": {"title": str(args["tab"])[:100]}}}]})
-    return ToolResult(f"Added the tab {args['tab']} to {f['name']}.", f["id"], f.get("webViewLink"))
+    return ToolResult(f"Added the tab {args['tab']} to {f['name']}.", f["id"], f.get("webViewLink"), f["name"])
 
 
 def rename_file(token: str, args: dict) -> ToolResult:
     f = _file(token, str(args["file"]))
     done = _req(token, "PATCH", f"{DRIVE}/{f['id']}", params={"fields": _FIELDS},
                 json={"name": str(args["new_name"])[:200]})
-    return ToolResult(f"Renamed {f['name']} to {done.get('name')}.", f["id"], done.get("webViewLink"))
+    return ToolResult(f"Renamed {f['name']} to {done.get('name')}.", f["id"], done.get("webViewLink"), done.get("name"))
 
 
 def copy_file(token: str, args: dict) -> ToolResult:
@@ -199,27 +199,27 @@ def copy_file(token: str, args: dict) -> ToolResult:
     copy = _req(token, "POST", f"{DRIVE}/{f['id']}/copy", params={"fields": _FIELDS},
                 json={"name": str(args.get("new_name") or f"Copy of {f['name']}")[:200]})
     where = _into(token, copy["id"], args.get("folder"))
-    return ToolResult(f"Copied {f['name']} as {copy.get('name')}{where}.", copy.get("id"), copy.get("webViewLink"))
+    return ToolResult(f"Copied {f['name']} as {copy.get('name')}{where}.", copy.get("id"), copy.get("webViewLink"), copy.get("name"))
 
 
 def create_folder(token: str, args: dict) -> ToolResult:
     folder = _req(token, "POST", DRIVE, params={"fields": _FIELDS},
                   json={"name": str(args["name"])[:200], "mimeType": FOLDER_TYPE})
     where = _into(token, folder["id"], args.get("folder"))
-    return ToolResult(f"Created the folder {folder.get('name')}{where}.", folder.get("id"), folder.get("webViewLink"))
+    return ToolResult(f"Created the folder {folder.get('name')}{where}.", folder.get("id"), folder.get("webViewLink"), folder.get("name"))
 
 
 def move_file(token: str, args: dict) -> ToolResult:
     f = _file(token, str(args["file"]))
     where = _into(token, f["id"], str(args["folder"]))
-    return ToolResult(f"Moved {f['name']}{where.replace(' in the', ' into the')}.", f["id"], f.get("webViewLink"))
+    return ToolResult(f"Moved {f['name']}{where.replace(' in the', ' into the')}.", f["id"], f.get("webViewLink"), f["name"])
 
 
 def comment_on_file(token: str, args: dict) -> ToolResult:
     f = _file(token, str(args["file"]))
     _req(token, "POST", f"{DRIVE}/{f['id']}/comments", params={"fields": "id"},
          json={"content": bounded(str(args["comment"]), 4000)})
-    return ToolResult(f"Commented on {f['name']}.", f["id"], f.get("webViewLink"))
+    return ToolResult(f"Commented on {f['name']}.", f["id"], f.get("webViewLink"), f["name"])
 
 
 #: Who a file may be shared as, in people's words, and Drive's name for each.
@@ -238,7 +238,7 @@ def share_file(token: str, args: dict) -> ToolResult:
         raise VendorError(f"A file is shared as one of {', '.join(_ROLES)}.")
     _req(token, "POST", f"{DRIVE}/{f['id']}/permissions", params={"sendNotificationEmail": "true"},
          json={"type": "user", "role": _ROLES[role], "emailAddress": str(args["person"]).strip()})
-    return ToolResult(f"Shared {f['name']} with {args['person']} as {role}.", f["id"], f.get("webViewLink"))
+    return ToolResult(f"Shared {f['name']} with {args['person']} as {role}.", f["id"], f.get("webViewLink"), f["name"])
 
 
 _ROWS = {"type": "array", "items": {"type": "array", "items": {"type": "string"}},
