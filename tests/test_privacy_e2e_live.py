@@ -431,10 +431,13 @@ def test_slack_answer_path(ctx):
     time.sleep(PAUSE)
 
 
-def test_agent_mode_draft_tool_call(ctx):
-    from app.actions import service
-    from app.llm import build_llm_provider
+class _PostMessage:
+    """A write tool as Agent mode offers one, without a real server: the loop
+    drafts it and stops at the card, so nothing is ever sent."""
 
+    name = "post_message"
+    label = "Post a Slack message"
+    lookup = False
     tool = {"type": "function", "function": {
         "name": "post_message",
         "description": "Post a message in a Slack channel.",
@@ -442,17 +445,52 @@ def test_agent_mode_draft_tool_call(ctx):
             "channel": {"type": "string"},
             "message": {"type": "string"},
             "request_words": {"type": "string",
-                              "description": "The asker's words that ask for this, exactly as written."},
+                              "description": "The QUESTION's words that ask for this, copied exactly."},
         }, "required": ["channel", "message", "request_words"]},
     }}
-    action = SimpleNamespace(tool=tool, lookup=False)
-    question = (f"Post in #vendors that Ravi's new mobile is {RAVI['mobile']} "
-                f"and his PAN is {RAVI['pan']}.")
-    out = service._ask(build_llm_provider(), question, None, [tool], [action])
-    args = out[0][1] if isinstance(out, list) and out else {}
-    _check("[agent] draft message carries real values", json.dumps(args),
-           [RAVI["mobile"], RAVI["pan"]])
+
+    def token_for(self, *a, **k):
+        return "token"
+
+    def prepare(self, args, ctx):
+        return SimpleNamespace(payload=args)
+
+
+def _agent_draft(ctx, question: str, read=None) -> dict:
+    from app.actions import service
+    from app.config.settings import ActionsSettings
+    from app.llm import build_llm_provider
+
+    action = _PostMessage()
+    out = service._agent_loop(
+        build_llm_provider(), question, [action.tool], [action],
+        org_id=ctx.org, user_id=str(ctx.user.id), email=ctx.email, found=[], looked=set(),
+        ran={}, settings=ActionsSettings.from_env(), read=read,
+    )
     time.sleep(PAUSE)
+    return out.picked[0][1] if out.picked else {"reply": out.reply, "refused": out.refused}
+
+
+def test_agent_mode_values_in_the_request(ctx):
+    args = _agent_draft(ctx, f"Post in #vendors that Ravi's new mobile is {RAVI['mobile']} "
+                             f"and his PAN is {RAVI['pan']}.")
+    _check("[agent] values typed in the request", json.dumps(args), [RAVI["mobile"], RAVI["pan"]])
+
+
+def test_agent_mode_values_from_a_content_read(ctx, outbound):
+    passages = (f"Facilities vendor directory: the office caterer Anil Desai can be reached on "
+                f"{INDEXED['mobile']}. Invoices go to PAN {INDEXED['pan']}, paid to IFSC {INDEXED['ifsc']}.")
+    reads: list[str] = []
+
+    def read(words):
+        reads.append(words)
+        return [], passages
+
+    args = _agent_draft(ctx, "Post the caterer's phone number, PAN and IFSC from the facilities "
+                             "vendor directory in #vendors.", read=read)
+    REPORT.append(("[agent] content read requested", f"reads: {reads}", ""))
+    _check("[agent] values from a read tool result", json.dumps(args),
+           [INDEXED["mobile"], INDEXED["pan"], INDEXED["ifsc"]])
 
 
 def test_zz_report(outbound):
