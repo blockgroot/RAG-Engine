@@ -609,9 +609,43 @@ def test_a_code_the_fields_description_defines_for_the_askers_words_is_kept():
     """"priority medium" filled Linear's priority with 3 ("3=Medium"), and the
     card left it out because 3 is not in the request."""
     prop = {"type": "number", "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low"}
-    assert mcp._coded("3", prop, "File an issue in BEN, priority medium, titled x")
-    assert not mcp._coded("1", prop, "File an issue in BEN, priority medium, titled x")
-    assert not mcp._coded("3", {"description": "how many"}, "priority medium")
+    assert mcp._code_label("3", prop) == "Medium"
+    assert mcp._code_label("3", {"description": "how many"}) is None
+    tool = {**CREATE, "inputSchema": {**CREATE["inputSchema"], "properties": {
+        **CREATE["inputSchema"]["properties"], "priority": prop}}}
+    action = mcp.McpToolAction(_server(), tool)
+    asked = action.prepare({"project_id": "P-7", "title": "t", "priority": 3},
+                           _ctx("make a task in P-7, priority medium"))
+    assert asked.payload["args"]["priority"] == 3
+
+
+def test_a_code_nobody_asked_for_is_left_out_even_when_a_lookup_holds_it():
+    """GPT-OSS added priority 0 to "Create a Linear issue in BEN titled …":
+    the team lookup's text held a "0", so it passed as grounded."""
+    prop = {"type": "number", "description": "0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low"}
+    tool = {**CREATE, "inputSchema": {**CREATE["inputSchema"], "properties": {
+        **CREATE["inputSchema"]["properties"], "priority": prop}}}
+    action = mcp.McpToolAction(_server(), tool)
+    got = action.prepare({"project_id": "P-7", "title": "t", "priority": 0},
+                         _ctx("make a task in P-7", lookups='{"id": "P-7", "count": 0}'))
+    assert "priority" not in got.payload["args"]
+
+
+def test_an_id_a_lookup_returned_is_shown_by_its_name():
+    action = mcp.McpToolAction(_server(), CREATE)
+    team = "db73111d-8073-4456-8cdb-b184d67b5318"
+    got = action.prepare({"project_id": team, "title": "t"},
+                         _ctx("make a task in BEN", lookups=f'[{{"id": "{team}", "name": "Bench", "key": "BEN"}}]'))
+    assert got.payload["args"]["project_id"] == team
+    assert dict(got.payload["details"])["project_id"] == "Bench (BEN)"
+
+
+def test_the_askers_dashes_match_the_models():
+    """The asker typed "UI test – slack bug" (en dash); the draft's plain hyphen
+    was not their words, so the card asked for the private-content tick."""
+    from app.actions.service import _only_askers_words
+
+    assert _only_askers_words({"title": "UI test - slack bug"}, 'Create an issue titled "UI test \u2013 slack bug"')
 
 
 def test_a_models_non_breaking_hyphens_are_the_askers_plain_ones():

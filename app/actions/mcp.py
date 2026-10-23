@@ -133,12 +133,12 @@ def _describe(server: mcp_store.McpServer, tool: dict) -> str:
     return f"In {server.name}: {mcp_store.tool_title(tool, server.name)}. {said}".strip()
 
 
-def _coded(text: str, prop: dict, question: str) -> bool:
-    """A code the field's own description defines for words the asker wrote:
-    Linear's priority says "3=Medium", and "priority medium" is 3."""
+def _code_label(text: str, prop: dict) -> str | None:
+    """What the field's own description says a code means: Linear's priority
+    says "3=Medium", so 3 is "Medium"; ``None`` when it defines no such code."""
     m = re.search(rf"(?<![\w.]){re.escape(text)}\s*[=:]\s*([A-Za-z][\w ]*?)\s*(?=[,;)]|$)",
                   str(prop.get("description") or ""))
-    return bool(m) and asked_in(m.group(1), question)
+    return m.group(1) if m else None
 
 
 def _guide(tool: dict) -> str:
@@ -244,7 +244,7 @@ class McpToolAction(Action):
                                         f"({mcp_store.tool_title(self.mcp_tool, self.server.name).lower()})."
                                         if mcp_store.destructive(self.mcp_tool) else None),
                                        ("Left out", ", ".join(left_out) or None),
-                                       *((k, _short(v)) for k, v in cleaned.items()
+                                       *((k, _named(v, ctx.lookups)) for k, v in cleaned.items()
                                          if k not in (title_key, body_key)))}
         if title_key:
             payload["title"] = cleaned[title_key]
@@ -275,8 +275,16 @@ class McpToolAction(Action):
         if isinstance(value, str) and _prose(key):
             return clean_title(value) if _TITLE.search(key) else clean_body(value, ctx.question, uris)
         text = str(value)
-        if (asked_in(text, ctx.question) or (ctx.lookups and text in ctx.lookups)
-                or (len(text) >= 3 and text in defined) or _coded(text, prop, ctx.question)):
+        if asked_in(text, ctx.question):
+            return value
+        label = _code_label(text, prop)
+        if label is not None:
+            # A choice the field defines ("0=No priority") is the asker's to
+            # make: "priority medium" is 3. A lookup never grounds one; any
+            # lookup's text holds a "0" somewhere, and 0 rode onto the card.
+            if asked_in(label, ctx.question):
+                return value
+        elif (ctx.lookups and text in ctx.lookups) or (len(text) >= 3 and text in defined):
             return value
         raise _Ungrounded(f"{self.server.name}'s {key} must come from your request. Name it, then ask again.")
 
@@ -325,6 +333,23 @@ def _github_page(args: dict[str, Any]) -> str | None:
         return None
     kind = "issues" if "issue_number" in args or "issueNumber" in args else "pull"
     return f"https://github.com/{owner}/{repo}/{kind}/{number}"
+
+
+_NAME = re.compile(r'"(name|title|displayName|key)"\s*:\s*"([^"\\]{1,80})"')
+
+
+def _named(value: Any, lookups: str) -> str:
+    """How the card shows a value: an id a lookup returned is shown by the
+    name that lookup gave it ("Bench (BEN)", not "db73111d-…"); what is sent
+    stays the id. Only from the same JSON object as the id, else the id."""
+    if isinstance(value, str) and len(value) >= 8 and lookups and value in lookups:
+        m = re.search(r'\{[^{}]*"' + re.escape(value) + r'"[^{}]*\}', lookups)
+        said = dict(n.groups() for n in _NAME.finditer(m.group(0))) if m else {}
+        name = said.get("name") or said.get("title") or said.get("displayName")
+        key = said.get("key")
+        if name or key:
+            return f"{name} ({key})" if name and key and key != name else (name or key)
+    return _short(value)
 
 
 def _short(value: Any) -> str:

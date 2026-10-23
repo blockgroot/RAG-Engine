@@ -35,8 +35,16 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+#: Typography some models write for the asker's plain characters, and askers
+#: for the model's: GPT-OSS quoted "sana18‑syv/bench‑sandbox" with non-breaking
+#: hyphens, and an asker's "UI test – slack bug" came back with a plain one.
+TYPOGRAPHY = str.maketrans({**dict.fromkeys(map(chr, (0x2010, 0x2011, 0x2012, 0x2013, 0x2212)), "-"),
+                            **dict.fromkeys(map(chr, (0x00A0, 0x202F, 0x2007)), " ")})
+
+
 def _fold(text: object) -> str:
-    return _SPACE.sub(" ", _text(text).casefold()).strip()
+    # Both sides, so either one's dashes match the other's.
+    return _SPACE.sub(" ", _text(text).translate(TYPOGRAPHY).casefold()).strip()
 
 
 def asked_in(phrase: str | None, question: str) -> bool:

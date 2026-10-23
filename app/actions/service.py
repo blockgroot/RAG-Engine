@@ -46,7 +46,7 @@ from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_unt
 from ..security.visibility import viewer_clause
 from . import policy, store
 from .base import Action, ActionContext, Source
-from .draft import asked_for, asked_in
+from .draft import TYPOGRAPHY, asked_for, asked_in
 from .exposure import NEEDS_ACK, PUBLIC, Exposure, assess
 from .factory import get_action
 from .store import ActionRow
@@ -346,17 +346,10 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
             "other action the QUESTION asks for; when all are drafted, reply in one sentence."), True
 
 
-#: Typography some models write for the asker's plain characters: GPT-OSS
-#: quoted "sana18‑syv/bench‑sandbox" with non-breaking hyphens, so its quote
-#: was not the asker's words and the repo it named did not exist.
-_TYPOGRAPHY = str.maketrans({**dict.fromkeys(map(chr, (0x2010, 0x2011, 0x2012, 0x2013, 0x2212)), "-"),
-                             **dict.fromkeys(map(chr, (0x00A0, 0x202F, 0x2007)), " ")})
-
-
 def _plain(value):
-    """The model's arguments with ``_TYPOGRAPHY`` undone, nested values included."""
+    """The model's arguments with ``TYPOGRAPHY`` undone, nested values included."""
     if isinstance(value, str):
-        return value.translate(_TYPOGRAPHY)
+        return value.translate(TYPOGRAPHY)
     if isinstance(value, list):
         return [_plain(v) for v in value]
     if isinstance(value, dict):
