@@ -25,6 +25,7 @@ BODY_LIMIT = 8000
 TRIMMED = "\n\n(trimmed)"
 
 _SPACE = re.compile(r"\s+")
+_WORD = re.compile(r"\w+")
 _MENTION = re.compile(r"(?<![\w@])@([A-Za-z0-9][\w.-]*)")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -34,14 +35,33 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+#: Typography some models write for the asker's plain characters, and askers
+#: for the model's: GPT-OSS quoted "sana18‑syv/bench‑sandbox" with non-breaking
+#: hyphens, and an asker's "UI test – slack bug" came back with a plain one.
+TYPOGRAPHY = str.maketrans({**dict.fromkeys(map(chr, (0x2010, 0x2011, 0x2012, 0x2013, 0x2212)), "-"),
+                            **dict.fromkeys(map(chr, (0x00A0, 0x202F, 0x2007)), " ")})
+
+
 def _fold(text: object) -> str:
-    return _SPACE.sub(" ", _text(text).casefold()).strip()
+    # Both sides, so either one's dashes match the other's.
+    return _SPACE.sub(" ", _text(text).translate(TYPOGRAPHY).casefold()).strip()
 
 
 def asked_in(phrase: str | None, question: str) -> bool:
     """True when ``phrase`` appears in the asker's words (case and spacing aside)."""
     folded = _fold(phrase or "")
     return bool(folded) and folded in _fold(question)
+
+
+def asked_for(quote: str | None, question: str) -> bool:
+    """True when the words that ask for an action are the asker's: every word
+    of ``quote`` is in ``question``, in order, words left out between them.
+    "Create a Linear issue in BEN and a GitHub issue in acme/app" asks for the
+    GitHub issue in no one phrase ("Create" is shared), so an exact quote of
+    that ask could not exist. A target is still matched exactly (``asked_in``)."""
+    said = iter(_WORD.findall(_fold(question)))
+    words = _WORD.findall(_fold(quote or ""))
+    return bool(words) and all(w in said for w in words)
 
 
 def require_named(name: str | None, question: str, what: str) -> str:

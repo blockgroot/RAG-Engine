@@ -33,6 +33,7 @@ from ..core.exceptions import (
     AuthError,
     ConfigurationError,
     LLMProviderError,
+    LLMRateLimitError,
     NotFoundError,
     OAuthReauthRequiredError,
 )
@@ -209,10 +210,15 @@ def _retired_label(name: str) -> str:
     return f"{service.SOURCE_NAMES.get(app, app.title())}: {op.replace('_', ' ') or 'action'}"
 
 
-def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
+def _card(row: ActionRow, exposure: Exposure | None = None, servers: dict | None = None) -> dict:
     """What the Act page shows. Never a token; source titles only (the person
     could read every one of them when they asked)."""
-    cls = get_action(row.action, row.org_id)
+    if servers is not None and row.action.startswith("mcp:"):
+        from ..actions.mcp import get_mcp_action
+
+        cls = get_mcp_action(row.action, row.org_id, servers)
+    else:
+        cls = get_action(row.action, row.org_id)
     return {
         "id": row.id,
         "action": row.action,
@@ -248,12 +254,16 @@ def act_status(session: SessionClaims = Depends(get_session)):
     if not policy.act_on(session.org_id):
         return {"enabled": False, "actions": [], "recent": []}
     from ..actions.mcp import mcp_actions
+    from ..actions.mcp_store import list_servers
 
+    # Read once for all twenty cards: one server read per card (each with its
+    # whole tool list) took this page to ~9s.
+    servers = {s.id: s for s in list_servers(session.org_id)}
     return {
         "enabled": True,
         "actions": [{"name": a.name, "label": a.label, "provider": a.provider}
                     for a in mcp_actions(session.org_id, session.user_id) if not a.lookup],
-        "recent": [_card(r) for r in store.list_for_org(
+        "recent": [_card(r, servers=servers) for r in store.list_for_org(
             session.org_id, user_id=session.user_id, limit=20)],
     }
 
@@ -276,8 +286,36 @@ class ActRequest(BaseModel):
     model: str | None = Field(default=None, max_length=200)
 
 
-@router.post("/act")
-def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
+_MODEL_DOWN = ("The model is temporarily unavailable or experiencing high demand. "
+               "Nothing was sent. Please try again in a few minutes.")
+_MODEL_UNPAID = ("The model's API key is out of credit or over its quota. Nothing was sent. "
+                 "An admin can add credit, or choose another model in Admin › Model.")
+
+
+_MODEL_TOO_LARGE = ("This request is too large for the chosen model's plan. Nothing was sent. "
+                    "Pick another model in the model menu, or ask an admin to turn off tools nobody uses.")
+_MODEL_KEY = ("The model's API key was refused. Nothing was sent. "
+              "An admin can check the key, or choose another model in Admin › Model.")
+
+
+def _model_down(exc: LLMProviderError) -> str:
+    """Say why, so the right person acts instead of everyone retrying: a
+    request too large for the plan (Groq's 413: a model choice, not a wait),
+    a refused key, or no credit. The provider's status code and words are
+    the only signal; a 429 is the quota by our rules."""
+    said = str(exc).lower()
+    if "error code: 413" in said or "request too large" in said or "maximum number of items" in said:
+        return _MODEL_TOO_LARGE
+    if "error code: 401" in said or "error code: 403" in said:
+        return _MODEL_KEY
+    if isinstance(exc, LLMRateLimitError) or "credit balance" in said or "quota" in said:
+        return _MODEL_UNPAID
+    return _MODEL_DOWN
+
+
+def _act_args(body: ActRequest, session: SessionClaims) -> dict:
+    """Every check before drafting, raised as HTTP errors BEFORE any stream
+    starts; then what ``service.propose`` takes."""
     settings = _require_on(session.org_id)
     check_rate_limit(f"act:{session.user_id}")
     user = get_user(session.user_id)
@@ -293,23 +331,13 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
             assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    try:
-        outcome = service.propose(
-            body.question.strip(),
-            org_id=session.org_id, user_id=session.user_id, email=user.email,
-            viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
-            settings=settings, scope_workspace_id=workspace_id, model=body.model,
-            search=ask_search(session.user_id),
-        )
-    except LLMProviderError as exc:
-        logger.warning("Act model unavailable: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The model is temporarily unavailable or experiencing high demand. "
-                "Nothing was sent. Please try again in a few minutes."
-            ),
-        ) from exc
+    return dict(question=body.question.strip(), org_id=session.org_id, user_id=session.user_id,
+                email=user.email, viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
+                settings=settings, scope_workspace_id=workspace_id, model=body.model,
+                search=ask_search(session.user_id))
+
+
+def _act_reply(outcome) -> dict:
     return {
         "reply": outcome.reply,
         "action": _card(outcome.action, outcome.exposure) if outcome.action else None,
@@ -318,9 +346,44 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
     }
 
 
+@router.post("/act")
+def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
+    args = _act_args(body, session)
+    try:
+        outcome = service.propose(args.pop("question"), **args)
+    except LLMProviderError as exc:
+        logger.warning("Act model unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=_model_down(exc)) from exc
+    return _act_reply(outcome)
+
+
+@router.post("/act/stream")
+def act_stream(body: ActRequest, session: SessionClaims = Depends(get_session)):
+    """``/act`` as a stream: the steps it takes while drafting ("Looking up in
+    Linear: List teams", "Preparing a card: …"), as Ask shows its own, then the
+    same reply as ``done``. The lines come from steps that ran, never the model."""
+    from fastapi.responses import StreamingResponse
+
+    from .chat import _sse_event, _with_progress
+
+    args = _act_args(body, session)
+
+    def run():
+        try:
+            yield _sse_event("done", _act_reply(service.propose(args.pop("question"), **args)))
+        except LLMProviderError as exc:
+            logger.warning("Act model unavailable: %s", exc)
+            yield _sse_event("error", {"message": _model_down(exc), "status": 503})
+
+    return StreamingResponse(_with_progress(run), media_type="text/event-stream")
+
+
 class ConfirmRequest(BaseModel):
     payload_hash: str = Field(min_length=64, max_length=64)
     acknowledged: bool = False
+    #: False: the web chat asks ``/continue/stream`` next instead, because
+    #: drafting the next step (lookups included) outlasts the web proxy.
+    wait_for_next: bool = True
 
 
 @router.post("/act/actions/{action_id}/confirm")
@@ -342,7 +405,50 @@ def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depen
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ActionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return {"action": _card(row)}
+    return {"action": _card(row), "next": _continue(session, action_id) if body.wait_for_next else None}
+
+
+@router.post("/act/actions/{action_id}/continue/stream")
+def continue_stream(action_id: str, session: SessionClaims = Depends(get_session)):
+    """What the request drafts next after this card was decided, streamed
+    like ``/act/stream`` (its steps, then ``done``: an ``/act`` reply, or
+    null when nothing continues)."""
+    from fastapi.responses import StreamingResponse
+
+    from .chat import _sse_event, _with_progress
+
+    _require_on(session.org_id)
+    return StreamingResponse(_with_progress(lambda: iter([_sse_event("done", _continue(session, action_id))])),
+                             media_type="text/event-stream")
+
+
+def _continue(session: SessionClaims, action_id: str) -> dict | None:
+    """What a chain drafts next once the cards it waited on are decided, as
+    ``/act`` replies; ``None`` when nothing continues. The approval itself has
+    already run and is reported either way, so a model failure here is said,
+    never an error for the approve click."""
+    user, viewer = get_user(session.user_id), viewer_for(session)
+    if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
+        return None
+    try:
+        got = service.continue_run(org_id=session.org_id, user_id=session.user_id, email=user.email,
+                                   viewer_for=lambda surface: _surface_viewer(session, user.email, viewer, surface),
+                                   action_id=_action_id(action_id),
+                                   llm=_llm(), embedder=_embedder())
+    except LLMProviderError as exc:
+        logger.warning("Act continue: model unavailable: %s", exc)
+        return {"reply": _model_down(exc), "action": None, "actions": []}
+    return _act_reply(got[0]) if got else None
+
+
+def _surface_viewer(session: SessionClaims, email: str, viewer, surface: dict):
+    """Asked in the web chat: the person. Asked in Slack and approved here: as
+    Slack decided it (a channel reads as the room), never wider."""
+    if str(surface.get("kind", "web")).startswith("slack_"):
+        from .slack_act import surface_viewer
+
+        return surface_viewer(session.org_id, email, surface)
+    return viewer
 
 
 class EditRequest(BaseModel):
@@ -407,13 +513,15 @@ def revise(action_id: str, body: ReviseRequest, session: SessionClaims = Depends
 
 
 @router.post("/act/actions/{action_id}/reject")
-def reject(action_id: str, session: SessionClaims = Depends(get_session)):
+def reject(action_id: str, wait_for_next: bool = True, session: SessionClaims = Depends(get_session)):
     _require_on(session.org_id)
     store.reject(session.org_id, session.user_id, _action_id(action_id))
     row = store.get(session.org_id, session.user_id, _action_id(action_id))
     if row is None:
         raise HTTPException(status_code=404, detail="No such action.")
-    return {"action": _card(row)}
+    # A chain whose last pending card was cancelled continues with what was
+    # approved (or says what it cannot do now).
+    return {"action": _card(row), "next": _continue(session, action_id) if wait_for_next else None}
 
 
 # -- Connecting your own account ----------------------------------------------
@@ -470,6 +578,59 @@ def space_act(workspace_id: str, session: SessionClaims = Depends(get_session),
         "enabled": policy.act_on(session.org_id, workspace_id),
         "can_change": role == "owner" and company,
     }
+
+
+@router.get("/act/spaces/{workspace_id}/tools")
+def space_tools(workspace_id: str, session: SessionClaims = Depends(get_session),
+                _owner: str = Depends(require_workspace_owner)):
+    """What the admin switched on, and what the owner switched off here. Only
+    tools the admin turned on are listed: an owner only narrows."""
+    from ..actions.mcp_presets import GROUPS
+    from ..actions.mcp_store import destructive, list_servers, tool_title
+
+    off = policy.space_off(session.org_id, workspace_id)
+    sources = policy.space_sources(session.org_id, workspace_id)
+    out = []
+    for server in list_servers(session.org_id):
+        tools = [t for t in server.tools if server.mode(t.get("name", "")) != "off"]
+        if not server.enabled or not tools or not policy.server_in_space(server, sources):
+            continue
+        preset = server.preset
+        group = preset.group if preset else None
+        out.append({
+            "id": server.id, "name": server.name, "group": group,
+            "group_name": GROUPS[group]["name"] if group else None,
+            "brand": group or (preset.key if preset else None),
+            "on": f"mcp:{server.id}" not in off,
+            "tools": [{"name": t["name"], "title": tool_title(t, server.name),
+                       "description": (t.get("description") or "")[:400],
+                       "read_only": server.is_read(t), "destructive": destructive(t),
+                       "on": not policy.off_in_space(off, server.id, t["name"])} for t in tools]})
+    return {"servers": out}
+
+
+class SpaceToolSwitch(BaseModel):
+    server_id: uuid.UUID
+    #: None switches the whole server.
+    tool: str | None = Field(default=None, max_length=200)
+    enabled: bool
+
+
+@router.put("/act/spaces/{workspace_id}/tools")
+def set_space_tool(workspace_id: str, body: SpaceToolSwitch,
+                   session: SessionClaims = Depends(get_session),
+                   _owner: str = Depends(require_workspace_owner)):
+    """The owner switches a tool (or a whole server) off or back on for their
+    space. "On" only undoes their own "off": the admin's choice is the ceiling."""
+    from ..actions.mcp_store import get_server
+
+    server = get_server(session.org_id, str(body.server_id))
+    if server is None or (body.tool is not None and server.tool(body.tool) is None):
+        raise HTTPException(status_code=404, detail="No such tool.")
+    name = f"mcp:{server.id}" + (f":{body.tool}" if body.tool else "")
+    policy.set_policy(session.org_id, name, body.enabled, workspace_id=workspace_id,
+                      updated_by=session.user_id)
+    return space_tools(workspace_id, session, "owner")
 
 
 @router.put("/act/spaces/{workspace_id}")

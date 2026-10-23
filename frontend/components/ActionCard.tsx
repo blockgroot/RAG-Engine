@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { ApiError, api, type ActCard } from "@/lib/api";
+import { ApiError, api, type ActCard, type ActNext } from "@/lib/api";
+import { streamContinue } from "@/lib/sse";
 import { DraftText } from "./AnswerText";
 
 /**
@@ -44,10 +45,13 @@ function shortLabel(title: string): string {
 export function ActionCard({
   card,
   onChange,
+  onNext,
   model,
 }: {
   card: ActCard;
   onChange: (next: ActCard) => void;
+  /** A chain's next drafts, once this card (and any it waited with) is decided. */
+  onNext?: (next: ActNext) => void;
   /** The chat's model pick, used for "Ask for changes". */
   model?: string | null;
 }) {
@@ -55,6 +59,8 @@ export function ActionCard({
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What the request is doing next, after this card was decided. */
+  const [step, setStep] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ title?: string; body?: string } | null>(null);
   const [asking, setAsking] = useState<string | null>(null);
 
@@ -80,11 +86,19 @@ export function ActionCard({
     try {
       const { action } = await api.confirmAction(card.id, card.payload_hash, ack);
       onChange(action);
+      await continueAfter();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send it. Nothing was sent.");
     } finally {
       setBusy(false);
     }
+  }
+
+  /** The request's next step, if it has one, once this card is decided. */
+  async function continueAfter() {
+    if (!onNext) return;
+    const next = await streamContinue(card.id, setStep).finally(() => setStep(null));
+    if (next) onNext({ reply: next.reply, actions: next.actions ?? [] });
   }
 
   async function saveEdit() {
@@ -133,6 +147,7 @@ export function ActionCard({
     try {
       const { action } = await api.rejectAction(card.id);
       onChange(action);
+      await continueAfter();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not cancel it.");
     } finally {
@@ -333,6 +348,12 @@ export function ActionCard({
           {(card.status === "failed" || card.status === "unknown") && card.result?.error && (
             <span className="muted"> {card.result.error}</span>
           )}
+        </p>
+      )}
+
+      {step && (
+        <p className="muted" role="status">
+          {step}…
         </p>
       )}
 

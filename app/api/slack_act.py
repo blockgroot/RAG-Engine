@@ -37,7 +37,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 
 from ..actions import policy, service, store
 from ..actions.factory import get_action
-from ..actions.draft import asked_in
+from ..actions.draft import asked_for
 from ..actions.exposure import NEEDS_ACK
 from ..actions.store import ActionRow
 from ..auth.credentials import get_live_connection_token
@@ -126,7 +126,7 @@ def asks_to_act(text: str, *, llm=None) -> bool:
         return False
     return (isinstance(data, dict) and data.get("act") is True
             and isinstance(data.get("request_words"), str)
-            and asked_in(data["request_words"], text))
+            and asked_for(data["request_words"], text))
 
 
 def slack_request(text: str, *, org_id: str, is_dm: bool, llm=None) -> str | None:
@@ -316,20 +316,18 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
     # never decides what a draft may read (a DM reads as the person, a channel
     # only that channel, as the room).
     if is_dm:
-        from ..sources.google_groups import viewer_for_person
-
-        viewer, workspace_id, tags = viewer_for_person(org_id, user.email), None, None
+        workspace_id, tags = None, None
         surface = {"kind": "slack_dm", "slack_user": slack_user, "channel": channel}
     else:
         from .slack_events import _NO_SCOPE, _scope_for_channel
 
         tag = channel_tag(channel)
         resolved = _scope_for_channel(org_id, tag)
-        viewer = Viewer(public_only=True, channels=(channel,))
         workspace_id = None if resolved is _NO_SCOPE else resolved
         tags = [tag]
         surface = {"kind": "slack_channel", "slack_user": slack_user, "channel": channel,
                    "thread_ts": thread_ts}
+    viewer = surface_viewer(org_id, user.email, surface)
     read_context = None
     if not is_dm and in_thread and thread_ts:
         from ..actions.slack_thread import thread_context
@@ -348,6 +346,21 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
         logger.exception("slack.act propose failed")
         say("Something went wrong drafting that. Nothing was sent.")
         return
+    _show(outcome, say)
+
+
+def surface_viewer(org_id: str, email: str, surface: dict) -> Viewer:
+    """Who a draft reads as where it was asked: a DM as the person, a channel
+    only that channel, as the room (like a channel reply)."""
+    if surface.get("kind") == "slack_channel":
+        return Viewer(public_only=True, channels=(surface["channel"],))
+    from ..sources.google_groups import viewer_for_person
+
+    return viewer_for_person(org_id, email)
+
+
+def _show(outcome, say) -> None:
+    """A reply and its cards, each card its own message with Approve / Cancel."""
     if outcome.action is None:
         say(outcome.reply)
         return
@@ -360,6 +373,28 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
                         audience_size=exposure.audience_size if exposure else None,
                         outsiders=exposure.outsiders if exposure else None),
         )
+
+
+def continue_chain(*, org_id: str, token: str, user, action_id: str) -> None:
+    """After an Approve or Cancel: a chain whose cards are all decided drafts
+    its next step, shown where it was asked. Never raises."""
+    try:
+        from .actions import _embedder, _llm
+
+        got = service.continue_run(org_id=org_id, user_id=user.id, email=user.email,
+                                   viewer_for=lambda surface: surface_viewer(org_id, user.email, surface),
+                                   action_id=action_id, llm=_llm(), embedder=_embedder())
+    except Exception:  # noqa: BLE001 - the approval itself is already reported
+        logger.exception("slack.act continue failed")
+        return
+    if got is None:
+        return
+    outcome, surface = got
+    if not str(surface.get("kind", "")).startswith("slack_"):
+        return                              # asked in the web chat: shown there
+    _show(outcome, lambda text, blocks=None: _say(
+        token, channel=surface["channel"], user=surface["slack_user"], thread_ts=surface.get("thread_ts"),
+        is_dm=surface["kind"] == "slack_dm", text=text, blocks=blocks))
 
 
 def _remember_slack_account(org_id: str, slack_user: str, email: str) -> None:
@@ -583,6 +618,7 @@ def decide(payload: dict, act: dict) -> None:
     if act.get("action_id") == "act_cancel":
         if store.reject(org_id, user.id, action_id):
             respond("Cancelled. Nothing was sent.")
+            continue_chain(org_id=org_id, token=token, user=user, action_id=action_id)
         elif store.get(org_id, user.id, action_id) is None:
             respond("Only the person who asked can cancel this.", replace=False)
         return
@@ -608,6 +644,7 @@ def decide(payload: dict, act: dict) -> None:
         respond(str(exc))
         return
     respond(_outcome_text(row))
+    continue_chain(org_id=org_id, token=token, user=user, action_id=action_id)
 
 
 @router.post("/interactivity")

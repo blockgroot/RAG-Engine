@@ -58,4 +58,4 @@ called, once, with the person's own sign-in, from the stored copy.
 ## Config
 
 `MCP_REDIRECT_URI` (default `FRONTEND_URL` + `/api/act/mcp/callback`),
-`MCP_TIMEOUT_SECONDS` (20), `MCP_MAX_LOOKUPS` (4).
+`MCP_TIMEOUT_SECONDS` (20), `MCP_MAX_LOOKUPS` (8).

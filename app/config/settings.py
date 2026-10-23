@@ -2177,7 +2177,7 @@ class ActionsSettings:
     """
 
     ttl_seconds: int = 900
-    rate_per_hour: int = 20
+    rate_per_hour: int = 100
     block_wider: bool = False
     # Agent mode writes only through MCP servers an admin adds (docs/plans/2026-10-22-mcp-only-actions.md).
     # Where a person's MCP sign-in returns: the browser-facing /api proxy, so
@@ -2185,19 +2185,29 @@ class ActionsSettings:
     mcp_redirect_uri: str | None = None
     mcp_timeout_seconds: float = 20.0
     #: Lookup calls (admin-marked read tools) one request may make before drafting.
-    mcp_max_lookups: int = 4
+    mcp_max_lookups: int = 8
+    #: Tools one drafting call is offered, each connector's nearest the request
+    #: in turn (``service._fit_tools``). Fewer is faster and cheaper; every
+    #: connector keeps its best few. Never above 128, which models refuse.
+    mcp_max_tools: int = 40
+    #: Where Handbook's own MCP servers answer (``app/mcphost``: Slack, Google),
+    #: through the same /api proxy; ``HANDBOOK_MCP_URL`` when they move out.
+    mcp_host_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "ActionsSettings":
         return cls(
             ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
-            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
+            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "100"))),
             block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),
             mcp_redirect_uri=os.getenv("MCP_REDIRECT_URI") or (
                 f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/act/mcp/callback"
                 if os.getenv("FRONTEND_URL") else None),
             mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "20")),
-            mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "4"))),
+            mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "8"))),
+            mcp_max_tools=min(128, max(1, int(os.getenv("MCP_MAX_TOOLS", "40")))),
+            mcp_host_url=(os.getenv("HANDBOOK_MCP_URL") or (
+                f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/mcp" if os.getenv("FRONTEND_URL") else None)),
         )
 
 

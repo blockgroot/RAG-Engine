@@ -1,25 +1,32 @@
-"""The five connectors' own MCP servers, as presets an admin adds in one click.
+"""The five connectors' MCP servers, as presets an admin adds in one click.
+
+Linear, Notion and GitHub are the vendors' own servers. Slack's and Google's
+hosted servers are gated (Slack: internal or Marketplace apps only; Google: a
+Developer Preview), so those two are Handbook's own servers over the vendors'
+regular APIs (``app/mcphost``), signed in to with Handbook's own apps.
 
 Agent mode writes only through MCP (docs/plans/2026-10-22-mcp-only-actions.md).
 A preset knows what a bare URL cannot:
 
 * **How people sign in.** Linear and Notion register Handbook themselves
-  (dynamic client registration). GitHub and Slack do not: the sign-in uses the
-  app Handbook already has there (``client``). Google's servers advertise no
-  sign-in at all, so the preset carries Google's endpoints and the one scope
-  Act uses (``oauth``): ``drive.file``, files Handbook made or the person picked.
-* **Which tools may ever be switched on** (``allow``). A list of what to allow,
-  not of words to block: a vendor adding ``pull_request_review_write`` must not
-  become something an admin can turn on by accident. GitHub is held to issues,
-  labels and comments, and its sign-in goes through the GitHub App, which holds
-  Issues: write only, so GitHub itself refuses code, pull requests and merges.
+  (dynamic client registration). GitHub does not: the sign-in uses the GitHub
+  App (``client``). Slack and Google sign in through Handbook's own apps, with
+  the endpoints and scopes the preset carries (``oauth``): a Slack USER token,
+  and Google's ``drive.file`` + Docs + Sheets (files Handbook made or opened).
+* **Nothing about which tools may be switched on.** The admin decides; every
+  tool starts off and every write is approved on a card. GitHub signs in
+  through the GitHub App, so what GitHub itself allows is the App's
+  permissions (set on GitHub, not here).
 * **Which tools are reads** (``reads``), for servers that do not mark them.
 * **That the account is the company's.** Checked after each person signs in
   (``account_check``) or on each write's target (``target_check``), as the
   built-in actions did; company content never lands in a personal workspace.
 
+* **Which servers are one product** (``group``): added together, one sign-in
+  for all. Unused today; kept for a vendor that splits a product across servers.
+
 A server added by URL with no preset keeps the generic rules: every tool off,
-destructive names blocked, lookups only for tools the server marks read-only.
+lookups only for tools the server marks read-only.
 """
 
 from __future__ import annotations
@@ -42,7 +49,6 @@ class Preset:
     client: Callable[[], tuple[str | None, str | None]] | None = None
     #: Sign-in endpoints and scope, when the server advertises none.
     oauth: dict | None = None
-    allow: re.Pattern | None = None
     reads: re.Pattern | None = None
     account_check: Callable[[str, str, str], bool] | None = None  # (org_id, email, token)
     target_check: Callable[[str, dict], None] | None = None       # (org_id, args)
@@ -50,12 +56,14 @@ class Preset:
     #: Which of the scopes a server advertises to ask for (least privilege);
     #: ``None`` asks for all of them.
     scopes: re.Pattern | None = None
+    #: Servers of one product, added together and signed in to once.
+    group: str | None = None
+    #: The Handbook connector this server belongs to (``oauth_connections.provider``):
+    #: in a space, its tools are offered only when that connector is connected there.
+    source: str | None = None
 
     def pick_scopes(self, offered: list[str]) -> list[str]:
         return [s for s in offered if self.scopes is None or self.scopes.search(s)]
-
-    def allows(self, tool: str) -> bool:
-        return self.allow is None or bool(self.allow.search(tool))
 
     def is_read(self, tool: str) -> bool:
         return bool(self.reads and self.reads.search(tool))
@@ -79,10 +87,7 @@ def _linear_account(org_id: str, email: str, token: str) -> bool:
 
 
 LINEAR = Preset(
-    key="linear", name="Linear", url="https://mcp.linear.app/mcp",
-    # Issues, comments, labels, projects and documents; never deletes (none exist
-    # for issues) or label retirement.
-    allow=re.compile(r"^(get_|list_|search_|save_issue$|save_comment$|create_issue_label$)"),
+    key="linear", name="Linear", url="https://mcp.linear.app/mcp", source="linear",
     reads=re.compile(r"^(get_|list_|search_)"),
     account_check=_linear_account,
 )
@@ -91,9 +96,8 @@ LINEAR = Preset(
 # -- Notion ---------------------------------------------------------------------------
 
 NOTION = Preset(
-    key="notion", name="Notion", url="https://mcp.notion.com/mcp",
+    key="notion", name="Notion", url="https://mcp.notion.com/mcp", source="notion",
     note="Each person picks which pages Notion shares when they sign in.",
-    allow=re.compile(r"(search|fetch|get|create|update|comment)", re.IGNORECASE),
     reads=re.compile(r"(search|fetch|get-|get_|list)", re.IGNORECASE),
 )
 
@@ -127,16 +131,11 @@ def _github_target(org_id: str, args: dict) -> None:
 
 
 GITHUB = Preset(
-    key="github", name="GitHub", url="https://api.githubcopilot.com/mcp/",
+    key="github", name="GitHub", url="https://api.githubcopilot.com/mcp/", source="github",
     note="Signs in through Handbook's GitHub App, which can only write issues.",
     client=_github_client,
     # A GitHub App's sign-in ignores OAuth scopes; its permissions (Issues: write) apply.
     scopes=re.compile(r"^$"),
-    # Issues, their labels and comments, and reads. Never code, branches,
-    # pull requests, releases or repositories.
-    allow=re.compile(r"^(issue_read|issue_write|add_issue_comment|update_issue_comment|"
-                     r"sub_issue_write|get_label|list_label|list_issue|search_issues|"
-                     r"get_me|get_file_contents|search_code|list_commits|get_commit)"),
     reads=re.compile(r"^(issue_read|get_|list_|search_)"),
     target_check=_github_target,
 )
@@ -152,14 +151,41 @@ def _slack_client() -> tuple[str | None, str | None]:
     return s.client_id, s.client_secret
 
 
+def _hosted(name: str) -> str:
+    """Handbook's own server for a vendor whose hosted MCP is gated (``app/mcphost``)."""
+    from ..config.settings import ActionsSettings
+
+    base = ActionsSettings.from_env().mcp_host_url or "https://handbook-mcp.invalid"
+    return f"{base.rstrip('/')}/{name}"
+
+
+def _slack_account(org_id: str, email: str, token: str) -> bool:
+    """The sign-in is to the Slack workspace the company connected."""
+    import httpx
+
+    from ..auth.credentials import connected_anywhere
+
+    company = {ext for ext, _cfg in connected_anywhere(org_id, "slack") if ext}
+    try:
+        team = httpx.post("https://slack.com/api/auth.test", timeout=15,
+                          headers={"Authorization": f"Bearer {token}"}).json().get("team_id")
+    except (httpx.HTTPError, ValueError):
+        return False
+    return bool(team) and team in company
+
+
 SLACK = Preset(
-    key="slack", name="Slack", url="https://mcp.slack.com/mcp",
-    note="Slack lets only approved apps use it: your Slack admin must allow Handbook's app.",
+    key="slack", name="Slack", url=_hosted("slack"), source="slack",
+    note="Posts as the person who approves it, through Handbook's Slack app.",
     client=_slack_client,
-    # Reading and posting messages only: never channel management, files or canvases.
-    scopes=re.compile(r"^(channels|groups|im|mpim):(read|history)$|^(users|search)[:.]|^chat:write$"),
-    allow=re.compile(r"(search|read|get|list|send_message|schedule_message|draft)", re.IGNORECASE),
-    reads=re.compile(r"(search|read|get|list)", re.IGNORECASE),
+    # Slack's user sign-in (a user token, never the bot's). Slack's hosted MCP
+    # server takes only internal or Marketplace apps; its Web API takes ours.
+    oauth={"authorization_endpoint": "https://slack.com/oauth/v2_user/authorize",
+           "token_endpoint": "https://slack.com/api/oauth.v2.user.access",
+           "scope": "channels:read groups:read channels:history groups:history users:read "
+                    "users:read.email chat:write im:write"},
+    reads=re.compile(r"^(list_|find_|read_)"),
+    account_check=_slack_account,
 )
 
 
@@ -188,33 +214,42 @@ def _google_account(org_id: str, email: str, token: str) -> bool:
 _GOOGLE_OAUTH = {
     "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
     "token_endpoint": "https://oauth2.googleapis.com/token",
-    # drive.file: only files Handbook created or the person picked, never the
-    # rest of their Drive (no restricted scope, no yearly assessment).
-    "scope": "openid email https://www.googleapis.com/auth/drive.file",
+    # drive.file: only files Handbook created or the person opened with it;
+    # documents and spreadsheets edit those. None is restricted, so there is
+    # no yearly security assessment (Onyx's cloud makes the same choice).
+    "scope": "openid email https://www.googleapis.com/auth/drive.file "
+             "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets",
 }
 
-GOOGLE_DRIVE = Preset(
-    key="google_drive", name="Google Drive", url="https://drivemcp.googleapis.com/mcp/v1",
-    note="Google's MCP servers are in Developer Preview. Handbook reaches only files it made or you picked.",
+GOOGLE_WORKSPACE = Preset(
+    key="google_workspace", name="Google Workspace", url=_hosted("google"), source="google",
+    note="Docs and Sheets. Handbook reaches only files it made or that you opened with it.",
     client=_google_client, oauth=_GOOGLE_OAUTH,
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
-    allow=re.compile(r"^(create_file|get_file_metadata|read_file_content|search_files|list_recent_files)$"),
-    reads=re.compile(r"^(get_|read_|search_|list_)"),
+    reads=re.compile(r"^(search_|read_)"),
     account_check=_google_account,
 )
 
-GOOGLE_SHEETS = Preset(
-    key="google_sheets", name="Google Sheets", url="https://sheetsmcp.googleapis.com/mcp/v1",
-    note="Google's MCP servers are in Developer Preview. Handbook reaches only Sheets it made or you picked.",
-    client=_google_client, oauth=_GOOGLE_OAUTH,
-    extra_auth_params={"access_type": "offline", "prompt": "consent"},
-    # Values only: ``update_formulas`` would let a draft fetch outside data.
-    allow=re.compile(r"^(get_values|get_spreadsheet|update_values|insert_dimension)$"),
-    reads=re.compile(r"^get_"),
-    account_check=_google_account,
-)
+PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_WORKSPACE)}
 
-PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_DRIVE, GOOGLE_SHEETS)}
+
+#: How a group is shown and added: one tile, one sign-in. None today: Google
+#: Workspace became one server of Handbook's own (``app/mcphost``).
+GROUPS: dict[str, dict] = {}
+
+
+def in_group(group: str) -> list[Preset]:
+    return [p for p in PRESETS.values() if p.group == group]
+
+
+#: Vendor-hosted addresses earlier presets used, and the preset that replaces
+#: each (their gated servers never worked for Handbook). ``mcp_store`` moves
+#: such a row onto the replacement, so the admin's list carries on in place.
+RETIRED: dict[str, str] = {
+    "https://mcp.slack.com/mcp": "slack",
+    "https://drivemcp.googleapis.com/mcp/v1": "google_workspace",
+    "https://sheetsmcp.googleapis.com/mcp/v1": "google_workspace",
+}
 
 
 def preset_for(url: str) -> Preset | None:

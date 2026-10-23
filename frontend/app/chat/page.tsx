@@ -9,7 +9,7 @@ import { ActionCard } from "@/components/ActionCard";
 import { ActIcon, ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
-import { streamChat } from "@/lib/sse";
+import { streamAct, streamChat } from "@/lib/sse";
 import { api, ApiError, Attachment, ModelChoice } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 import { fileKind } from "@/lib/fileKind";
@@ -156,7 +156,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // In a space, Act also needs that space's own switch (its owner's choice,
   // within what the company allows). Company-wide, the company switch alone.
   const [spaceActOn, setSpaceActOn] = useState(true);
-  const [modelError, setModelError] = useState<string | null>(null);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -674,7 +673,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   /** Act mode: one draft for the person to check, edit and approve. */
   async function draftAction(question: string) {
     setInput("");
-    setModelError(null);
     setBusy(true);
     setMessages((prev) => [
       ...prev,
@@ -683,7 +681,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     ]);
     let reply: Message;
     try {
-      const out = await api.act(question, workspaceId, model);
+      // Each step the server takes replaces the placeholder, then trails, as in Ask.
+      const out = await streamAct(question, workspaceId, model, (line) =>
+        setMessages((prev) => {
+          if (prev.length === 0) return prev;
+          const next = [...prev];
+          const last = next[next.length - 1];
+          const steps = last.steps?.length === 1 && last.steps[0] === "Drafting…" ? [] : (last.steps ?? []);
+          next[next.length - 1] = { ...last, steps: [...steps, line] };
+          return next;
+        }),
+      );
       // `actions` is every draft; an older server sends only `action`.
       reply = {
         role: "assistant",
@@ -691,15 +699,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         acts: out.actions?.length ? out.actions : out.action ? [out.action] : null,
       };
     } catch (err) {
-      if (err instanceof ApiError && err.status === 503) {
-        setModelError(err.message);
-        setMessages((prev) => prev.slice(0, -1));
-        setBusy(false);
-        return;
-      }
+      // Said where the answer would be, like any reply (a pop-up hid it from the chat).
+      const message = err instanceof Error ? err.message : "Something went wrong. Nothing was sent.";
       reply = {
         role: "assistant",
-        text: err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.",
+        text: message,
       };
     }
     setMessages((prev) => (prev.length ? [...prev.slice(0, -1), reply] : [reply]));
@@ -972,18 +976,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
-        {modelError && (
-          <aside className="act-model-toast" role="alert" aria-live="assertive">
-            <div className="act-model-toast-mark" aria-hidden="true">!</div>
-            <div className="act-model-toast-copy">
-              <strong>The model is busy</strong>
-              <span>{modelError}</span>
-            </div>
-            <button type="button" className="button button-sm" onClick={() => setModelError(null)}>
-              Okay
-            </button>
-          </aside>
-        )}
         {dragging && (
           <div className="chat-drop-overlay" aria-hidden="true">
             <div className="chat-drop-card">
@@ -1132,6 +1124,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                               : x,
                           ),
                         )
+                      }
+                      // A chain's next step arrives as the next reply, under this one.
+                      onNext={(next) =>
+                        setMessages((prev) => [
+                          ...prev,
+                          { role: "assistant", text: next.reply, acts: next.actions.length ? next.actions : null },
+                        ])
                       }
                     />
                   </div>
@@ -1474,7 +1473,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         </form>
         {actMode ? (
           <p className="muted chat-model-note" role="status">
-            Agent mode drafts up to three actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
+            Agent mode drafts up to five actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
             in this chat; find them under <Link href="/account#act">Account → Agent</Link>.
           </p>
         ) : (chartMode || modelNote) && (

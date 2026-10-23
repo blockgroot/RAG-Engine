@@ -29,22 +29,13 @@ def _server(preset: mcp_presets.Preset, names: list[str]) -> McpServer:
     return McpServer("s1", "org", preset.name, preset.url, "oauth", {}, [{"name": n} for n in names], {}, True)
 
 
-def test_github_can_only_ever_touch_issues():
-    server = _server(mcp_presets.GITHUB, GITHUB_TOOLS)
-    allowed = {t["name"] for t in server.tools if server.permitted(t)}
-    assert allowed == {"add_issue_comment", "get_file_contents", "get_me", "issue_read", "issue_write",
-                       "list_issues", "search_issues", "sub_issue_write", "update_issue_comment"}
-    for never in ("merge_pull_request", "push_files", "pull_request_review_write", "create_repository",
-                  "update_pull_request_branch", "create_pull_request", "fork_repository"):
-        assert not server.permitted({"name": never})
+def test_nothing_is_blocked_the_admin_decides():
+    from app.actions.mcp_store import tool_hash
 
-
-def test_linear_allows_issues_and_comments_never_deletes_or_merges():
-    server = _server(mcp_presets.LINEAR, LINEAR_TOOLS)
-    allowed = {t["name"] for t in server.tools if server.permitted(t)}
-    assert {"save_issue", "save_comment", "get_issue", "list_issues"} <= allowed
-    assert not allowed & {"delete_comment", "delete_attachment", "merge_diff", "retire_issue_label",
-                          "share_issue", "update_diff", "save_project"}
+    tool = {"name": "merge_pull_request"}
+    server = McpServer("s1", "org", "GitHub", mcp_presets.GITHUB.url, "oauth", {}, [tool],
+                       {"merge_pull_request": {"mode": "write", "hash": tool_hash(tool)}}, True)
+    assert server.mode("merge_pull_request") == "write"
 
 
 def test_a_preset_knows_its_reads_where_the_server_does_not_say():
@@ -52,27 +43,31 @@ def test_a_preset_knows_its_reads_where_the_server_does_not_say():
     assert server.is_read({"name": "get_issue"}) and not server.is_read({"name": "save_issue"})
 
 
-def test_sheets_never_writes_formulas():
-    assert not mcp_presets.GOOGLE_SHEETS.allows("update_formulas")
-    assert mcp_presets.GOOGLE_SHEETS.allows("update_values")
+def test_slack_and_google_are_handbooks_own_servers():
+    """Their hosted MCP servers are gated; Handbook serves them over the regular APIs."""
+    for preset, name in ((mcp_presets.SLACK, "slack"), (mcp_presets.GOOGLE_WORKSPACE, "google")):
+        assert preset.url.endswith(f"/mcp/{name}") and "googleapis" not in preset.url
+        assert "mcp.slack.com" not in preset.url
 
 
-def test_a_chosen_mode_on_a_tool_no_longer_allowed_is_off():
-    from app.actions.mcp_store import tool_hash
-
-    tool = {"name": "merge_pull_request"}
-    server = McpServer("s1", "org", "GitHub", mcp_presets.GITHUB.url, "oauth", {}, [tool],
-                       {"merge_pull_request": {"mode": "write", "hash": tool_hash(tool)}}, True)
-    assert server.mode("merge_pull_request") == "off"
-
-
-def test_google_signs_in_with_handbooks_client_and_drive_file_only():
+def test_google_signs_in_with_handbooks_client_and_no_restricted_scope():
     from dataclasses import replace
 
-    preset = replace(mcp_presets.GOOGLE_DRIVE, client=lambda: ("gid", "gsecret"))
+    preset = replace(mcp_presets.GOOGLE_WORKSPACE, client=lambda: ("gid", "gsecret"))
     oauth = mcp_client.discover(preset.url, "https://hb.example/api/act/mcp/callback", preset=preset)
     assert oauth["client_id"] == "gid" and oauth["client_secret"] is None and oauth["resource"] is None
-    assert oauth["scope"].split() == ["openid", "email", "https://www.googleapis.com/auth/drive.file"]
+    assert oauth["scope"].split() == ["openid", "email", "https://www.googleapis.com/auth/drive.file",
+                                      "https://www.googleapis.com/auth/documents",
+                                      "https://www.googleapis.com/auth/spreadsheets"]
+
+
+def test_slack_signs_in_as_the_person_never_the_bot():
+    from dataclasses import replace
+
+    preset = replace(mcp_presets.SLACK, client=lambda: ("sid", "ssecret"))
+    oauth = mcp_client.discover(preset.url, "https://hb.example/cb", preset=preset)
+    assert oauth["authorization_endpoint"].endswith("/oauth/v2_user/authorize")
+    assert "chat:write" in oauth["scope"].split() and "im:write" in oauth["scope"].split()
 
 
 def test_a_preset_client_secret_comes_from_settings_never_stored(monkeypatch):
@@ -97,7 +92,7 @@ def test_a_preset_client_secret_comes_from_settings_never_stored(monkeypatch):
 
 def test_googles_authorize_link_asks_for_offline_access_and_no_resource():
     oauth = {**mcp_presets._GOOGLE_OAUTH, "client_id": "gid", "client_secret": None,
-             "preset": "google_drive", "resource": None}
+             "preset": "google_workspace", "resource": None}
     q = parse_qs(urlparse(mcp_client.authorize_url(oauth, state="s", challenge="c",
                                                    redirect_uri="https://hb.example/cb")).query)
     assert q["access_type"] == ["offline"] and q["prompt"] == ["consent"] and "resource" not in q
@@ -137,9 +132,5 @@ def test_presets_are_found_by_address_with_or_without_a_slash():
     assert mcp_presets.preset_for("https://mcp.example.com/mcp") is None
 
 
-def test_slack_asks_only_to_read_and_post_and_github_for_no_oauth_scopes():
-    offered = ["channels:write", "chat:write", "files:write", "canvases:write", "channels:read",
-               "im:history", "users:read.email", "search:read.public", "reactions:write"]
-    assert mcp_presets.SLACK.pick_scopes(offered) == [
-        "chat:write", "channels:read", "im:history", "users:read.email", "search:read.public"]
+def test_github_asks_for_no_oauth_scopes():
     assert mcp_presets.GITHUB.pick_scopes(["repo", "read:org"]) == []

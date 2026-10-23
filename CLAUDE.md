@@ -308,10 +308,11 @@ the Slack bot import nothing from it. **Every write goes through an MCP server a
 admin added** (`actions/mcp*.py`; the five connectors are presets in
 `mcp_presets.py`); there are no hand-written per-tool actions. Every tool starts
 off; the admin sets each to off, read ("lookup": runs while drafting, no card) or
-write (a card). A preset's `allow` list decides what may EVER be turned on (a list
-of what to allow, never of words to block; GitHub: issues, labels, comments and
-reads only), a server added by address falls back to blocking destructive names,
-a read must be marked read-only by the server or the preset, and a tool whose
+write (a card). Nothing is blocked by Handbook: the admin decides ("Turn all on"
+turns on everything). A destructive tool is decided by its NAME (`mcp_store.destructive`;
+MCP's `destructiveHint` also marks ordinary saves such as Linear's `save_issue`): it is
+labelled, and its card says it cannot be undone.
+A read must be marked read-only by the server or the preset, and a tool whose
 schema changed is off again (hash). Each person signs in to each server with their
 own account (`user_connections`, provider `mcp:<id>`), never a shared or admin key
 for writes; a server that cannot register Handbook signs in through Handbook's own
@@ -322,8 +323,14 @@ installation token for READING stays minted read-only (`mint_installation_token`
 An account must be the company's: checked after sign-in (`account_check`: Linear's
 workspace id is a connected one, Google's email is the person's) or on each write's
 target (`target_check`: a GitHub repo in a company installation), or company content
-leaves the company. Google's servers advertise no sign-in, so the preset carries it,
-with `drive.file` only. The model only fills in tool forms (at most
+leaves the company. Slack's and Google's HOSTED MCP servers are gated (internal or
+Marketplace apps; a Developer Preview), so those two are Handbook's own MCP servers
+(`app/mcphost`, `POST /mcp/<name>`, address `ActionsSettings.mcp_host_url`) over the
+vendors' REGULAR APIs, as Onyx does: no credentials of their own, the person's token
+is the bearer and is only forwarded. Slack posts with the person's USER token (never
+the bot's); Google uses `drive.file` + `documents` + `spreadsheets` (no restricted
+scope) and writes cells RAW, never formulas. Names ("#general", a Sheet's title) are
+resolved there, so a target stays the asker's words. The model only fills in tool forms (at most
 `service.MAX_ACTIONS` per request, each its own card, checked and approved on its
 own; a refused one never stops the rest and is said): a write runs only from
 `confirm`, by the person who proposed it, before `expires_at`, with the STORED
@@ -340,9 +347,14 @@ what a read returned in this request, or one of the schema's own allowed values;
 never from a passage. Drafted text keeps links and @-mentions only if the asker or a
 source wrote them. What a tool returns is untrusted text and a private source. The
 audience of an MCP write is unknown, so private content always needs the tick.
-Passages are shown only when the request asks to draft from company content
-(`document_words`, quoted from the request); otherwise the model sees the
-request alone. They are found by Ask's own reading (`api.actions.ask_search`:
+Drafting is one tool loop, paused at each write (`service._agent_loop`): a drafted
+call stays unanswered until its card is decided, then is answered with what really
+happened (the link, the tool's error, "the user cancelled") and the same conversation
+goes on (`continue_run`, `act_runs`). No field the model must remember to fill
+decides what happens next; cancelling every card ends the request. Company content
+is read only through the loop's read tool (`service.SEARCH`), for words quoted
+from the request (`content_words`); a request in the asker's own words reads
+nothing. It is found by Ask's own reading (`api.actions.ask_search`:
 Ask's routing on the words naming the content, then that agent's
 `retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
 can open), never a search of Act's own. Several tools the words name are each
@@ -360,8 +372,12 @@ the person, a channel drafts from that channel only as the room (like a channel
 reply), and its card is ephemeral. Each Slack surface has its own admin switch.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
-owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only
-narrows; company-wide use follows the company switch alone. Admins see switches only,
+owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. The owner
+may also switch off a tool or a whole server for their space (`policy.space_off`, rows
+`mcp:<server>[:<tool>]`); only "off" rows count, checked when offering and at confirm.
+In a space, a connector's tools exist only if that connector is connected IN that space
+(`Preset.source`, `policy.space_sources`); a server added by address has no connector.
+A space only narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
 
 **Gaps.** What people could not get answered reaches the person who can fix it,

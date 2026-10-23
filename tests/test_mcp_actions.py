@@ -173,12 +173,22 @@ def test_every_tool_starts_off_and_a_changed_tool_turns_off_again():
     assert changed.mode("create_task") == "off"            # the server changed it: re-approve
 
 
-def test_destructive_tools_are_blocked_and_lookups_must_be_read_only():
-    assert mcp_store.blocked(DELETE) and mcp_store.blocked({"name": "merge_pull_request"})
-    assert not mcp_store.blocked(CREATE) and not mcp_store.blocked({"name": "disclose_report"})
-    assert mcp_store.blocked({"name": "x", "annotations": {"destructiveHint": True}})
+def test_destructive_tools_are_marked_not_blocked_and_lookups_must_be_read_only():
+    assert mcp_store.destructive(DELETE) and mcp_store.destructive({"name": "merge_pull_request"})
+    assert not mcp_store.destructive(CREATE) and not mcp_store.destructive({"name": "disclose_report"})
+    # Linear marks ordinary saves destructive; only the name decides.
+    assert not mcp_store.destructive({"name": "save_issue", "annotations": {"destructiveHint": True}})
+    assert mcp_store.destructive({"name": "trash_file"}) and mcp_store.destructive({"name": "retire_issue_label"})
     server = _server({"create_task": "lookup", "delete_task": "write"})
-    assert server.mode("create_task") == "off" and server.mode("delete_task") == "off"
+    assert server.mode("create_task") == "off"             # a lookup must be read-only
+    assert server.mode("delete_task") == "write"           # the admin's choice stands
+    assert mcp_store.tool_view(server, DELETE)["destructive"]
+
+
+def test_a_destructive_card_says_it_cannot_be_undone():
+    action = mcp.McpToolAction(_server({"delete_task": "write"}), DELETE)
+    proposal = action.prepare({"request_words": "delete it"}, _ctx("delete it"))
+    assert proposal.payload["details"][0] == ["Can't be undone", "Once approved, Asana can't reverse this (delete task)."]
 
 
 # -- A drafted write --------------------------------------------------------------------------
@@ -226,34 +236,6 @@ def test_execute_sends_the_stored_words_including_an_edit(server):
 # -- Lookups while drafting ---------------------------------------------------------------------
 
 
-def test_a_lookup_runs_with_the_persons_sign_in_and_its_answer_reaches_the_model(server, monkeypatch):
-    from app.actions import service
-    from app.config.settings import ActionsSettings
-
-    srv = _server({"create_task": "write", "list_projects": "lookup"})
-    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
-    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
-    prompts = []
-    calls = iter([[("list_projects", {})], [("create_task", {"request_words": "create a task",
-                                                             "project_id": "P-7", "title": "t"})]])
-
-    class Model:
-        def generate_with_tools(self, messages, tools, tool_choice):
-            prompts.append(messages[0]["content"])
-            return SimpleNamespace(text="", tool_calls=[
-                SimpleNamespace(name=next(a for a in (write, find) if a.mcp_tool["name"] == n).tool["function"]["name"],
-                                arguments=json.dumps(args)) for n, args in next(calls)])
-
-    server.result = {"content": [{"type": "text", "text": '{"id": "P-7", "name": "Atlas"}'}]}
-    found, looked = [], set()
-    picked = service._ask_with_lookups(Model(), "create a task in Atlas", None, [write.tool, find.tool],
-                                       [write, find], org_id="o", user_id="u", found=found, looked=looked,
-                                       settings=ActionsSettings.from_env())
-    assert [a for a, _ in picked] == [write] and looked == {"Asana"}
-    assert "P-7" in found[0] and "P-7" in prompts[-1]                      # fenced into the next ask
-    assert "UNTRUSTED" in prompts[-1]
-
-
 def test_mcp_actions_offer_only_what_an_admin_switched_on(monkeypatch):
     srv = _server({"create_task": "write", "list_projects": "lookup"})
     monkeypatch.setattr(mcp_store, "list_servers", lambda org: [srv])
@@ -295,7 +277,12 @@ def test_an_admin_adds_a_server_and_chooses_each_tools_mode(client, server, stor
     added = client.post("/admin/mcp", json={"name": "Asana", "url": URL}, cookies=cookies).json()
     assert added["auth"] == "none" and {t["mode"] for t in added["tools"]} == {"off"}
     sid = added["id"]
-    assert client.put(f"/admin/mcp/{sid}/tools/delete_task", json={"mode": "write"}, cookies=cookies).status_code == 400
+    assert client.put(f"/admin/mcp/{sid}/tools/delete_task", json={"mode": "write"}, cookies=cookies).json()["mode"] == "write"
+    client.put(f"/admin/mcp/{sid}/tools", json={"choice": "off"}, cookies=cookies)
+    turned = client.put(f"/admin/mcp/{sid}/tools", json={"choice": "all"}, cookies=cookies).json()
+    assert {t["name"]: t["mode"] for t in turned["tools"]} == {
+        "create_task": "write", "list_projects": "lookup", "delete_task": "write"}  # all, labelled
+    client.put(f"/admin/mcp/{sid}/tools", json={"choice": "off"}, cookies=cookies)
     assert client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "lookup"}, cookies=cookies).status_code == 400
     assert client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "write"}, cookies=cookies).json()["mode"] == "write"
     mine = client.get("/act/mcp", cookies=cookies).json()["servers"]
@@ -308,3 +295,462 @@ def test_an_admin_adds_a_server_and_chooses_each_tools_mode(client, server, stor
     client.put(f"/admin/mcp/{sid}", json={"enabled": False}, cookies=cookies)
     assert not get_action(f"mcp:{sid}:create_task", org_id).enabled_for(org_id, None)
     assert client.delete(f"/admin/mcp/{sid}", cookies=cookies).json() == {"deleted": True}
+
+
+@requires_db
+def test_a_space_owner_only_switches_tools_off_for_their_space(client, server, store, org_cleanup):
+    from app.actions import policy
+    from app.actions.factory import get_action
+    from app.auth import create_admin, create_session_token
+    from app.workspaces.store import create_workspace
+
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"mcp-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    cookies = {"session": create_session_token(admin)}
+    policy.set_policy(org_id, policy.ACT_KEY, True)
+    ws = create_workspace(org_id, "Ops", admin.id)
+    sid = client.post("/admin/mcp", json={"name": "Asana", "url": URL}, cookies=cookies).json()["id"]
+    client.put(f"/admin/mcp/{sid}/tools/create_task", json={"mode": "write"}, cookies=cookies)
+    client.put(f"/admin/mcp/{sid}/tools/list_projects", json={"mode": "lookup"}, cookies=cookies)
+
+    def names(workspace):
+        return {a.mcp_tool["name"] for a in mcp.mcp_actions(org_id, admin.id, workspace)}
+
+    listed = client.get(f"/act/spaces/{ws}/tools", cookies=cookies).json()["servers"]
+    assert [t["name"] for t in listed[0]["tools"]] == ["create_task", "list_projects"]   # only what the admin turned on
+    client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": "create_task", "enabled": False},
+               cookies=cookies)
+    assert names(ws) == {"list_projects"} and names(None) == {"create_task", "list_projects"}
+    assert not get_action(f"mcp:{sid}:create_task", org_id).enabled_for(org_id, ws)    # checked again at approval
+    assert get_action(f"mcp:{sid}:create_task", org_id).enabled_for(org_id, None)
+
+    # "On" in a space never turns on what the admin left off.
+    client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": "delete_task", "enabled": True},
+               cookies=cookies)
+    assert "delete_task" not in names(ws)
+    client.put(f"/act/spaces/{ws}/tools", json={"server_id": sid, "tool": None, "enabled": False}, cookies=cookies)
+    assert names(ws) == set()
+
+
+def test_a_connectors_tools_are_offered_in_a_space_only_where_it_is_connected(monkeypatch):
+    from app.actions import mcp_presets, policy
+
+    linear = mcp_store.McpServer(str(uuid.uuid4()), "org", "Linear", mcp_presets.LINEAR.url, "none", None, [CREATE],
+                                 {"create_task": {"mode": "write", "hash": mcp_store.tool_hash(CREATE)}}, True)
+    custom = _server({"create_task": "write"})
+    monkeypatch.setattr(mcp_store, "list_servers", lambda org: [linear, custom])
+    monkeypatch.setattr("app.auth.user_connections.list_user_connections", lambda org, uid: [])
+    monkeypatch.setattr(policy, "space_off", lambda org, ws: set())
+    connected = {"slack"}
+    monkeypatch.setattr(policy, "space_sources", lambda org, ws: None if ws is None else connected)
+
+    def servers(ws):
+        return [a.server.name for a in mcp.mcp_actions("org", "u1", ws)]
+
+    assert servers("ws") == ["Asana"]                       # Linear isn't connected in this space
+    assert servers(None) == ["Linear", "Asana"]             # company-wide: every connector
+    connected = {"slack", "linear"}
+    assert servers("ws") == ["Linear", "Asana"]
+
+
+def test_prose_is_found_by_field_name_and_nested_values_are_grounded():
+    """Google's ``textContent`` and Notion's nested ``pages`` are drafted words;
+    a nested id is still a value to ground, and a value the tool documents
+    (a mimeType) is the tool's own."""
+    doc = {"name": "create_file", "description": "Create a file. mimeType e.g. text/plain.",
+           "inputSchema": {"type": "object", "required": ["title"], "properties": {
+               "title": {"type": "string"}, "textContent": {"type": "string"}, "mimeType": {"type": "string"}}}}
+    pages = {"name": "notion-create-pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
+        "pages": {"type": "array", "items": {"type": "object", "properties": {
+            "properties": {"type": "object"}, "content": {"type": "string"}}}},
+        "parent": {"type": "object", "properties": {"page_id": {"type": "string"}}}}}}
+    tools = [doc, pages]
+    server = mcp_store.McpServer(str(uuid.uuid4()), "org", "Docs", URL, "none", None, tools,
+                                 {t["name"]: {"mode": "write", "hash": mcp_store.tool_hash(t)} for t in tools}, True)
+    made = mcp.McpToolAction(server, doc).prepare(
+        {"request_words": "create a doc", "title": "MCP test doc", "textContent": "How approvals work.",
+         "mimeType": "text/plain"}, _ctx("create a doc called MCP test doc"))
+    assert (made.payload["title"], made.payload["body"]) == ("MCP test doc", "How approvals work.")
+    page = {"request_words": "create a page", "pages": [{"properties": {"title": "Notes"}, "content": "- one"}]}
+    made = mcp.McpToolAction(server, pages).prepare(page, _ctx("create a Notion page titled Notes"))
+    assert made.payload["args"]["pages"][0]["content"] == "- one"
+    # An invented id under an optional field is left out and said, never sent.
+    made = mcp.McpToolAction(server, pages).prepare({**page, "parent": {"page_id": "abc-123"}}, _ctx("create a page"))
+    assert "parent" not in made.payload["args"] and ["Left out", "parent (not in your request)"] in made.payload["details"]
+
+
+@requires_db
+def test_two_quick_switches_both_stick_and_turn_all_on_is_one_write(store, org_cleanup):
+    """Each switch merges only its own tool in the database: two clicks from one
+    stale page view both stick (the second used to undo the first)."""
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    stale = mcp_store.create_server(org_id, name="Asana", url=URL, auth="none", oauth=None,
+                                    tools=[CREATE, FIND, DELETE], created_by=None)
+    mcp_store.set_mode(org_id, stale, "create_task", "write")
+    mcp_store.set_mode(org_id, stale, "list_projects", "lookup")      # same stale view
+    now = mcp_store.get_server(org_id, stale.id)
+    assert (now.mode("create_task"), now.mode("list_projects")) == ("write", "lookup")
+    mcp_store.set_modes(org_id, now, {"create_task": "off", "delete_task": "write"})
+    now = mcp_store.get_server(org_id, stale.id)
+    assert (now.mode("create_task"), now.mode("list_projects"), now.mode("delete_task")) == ("off", "lookup", "write")
+
+
+def test_recent_cards_reuse_the_servers_read_once(monkeypatch):
+    """The Agent page's twenty cards resolve their tools from one read of the
+    servers, never one server read each (that page took ~9s)."""
+    from datetime import datetime, timezone
+
+    from app.api.actions import _card
+
+    def no_reads(*a, **k):
+        raise AssertionError("read a server per card")
+
+    monkeypatch.setattr(mcp_store, "get_server", no_reads)
+    srv = _server({"create_task": "write"})
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(id="a1", action=f"mcp:{srv.id}:create_task", org_id="org", payload={"title": "t"},
+                          target={}, original_payload=None, payload_hash="h", status="succeeded", exposure="none",
+                          acknowledged=False, sources=[], result=None, expires_at=now, created_at=now)
+    assert _card(row, servers={srv.id: srv})["label"] == "Asana: Create task"
+
+
+def test_reversible_code_writes_are_not_labelled_destructive():
+    for name in ("create_branch", "create_or_update_file", "push_files", "rename_file"):
+        assert not mcp_store.destructive({"name": name}), name
+    assert mcp_store.destructive({"name": "merge_pull_request"}) and mcp_store.destructive({"name": "delete_file"})
+
+
+@requires_db
+def test_servers_on_retired_vendor_addresses_move_onto_handbooks_own(store, org_cleanup, monkeypatch):
+    """The Slack and Google Drive/Sheets rows added when those presets used the
+    vendors' gated servers carry on in the admin's list as Slack and Google
+    Workspace: one row each, switch kept, tools and old sign-ins cleared."""
+    from app.actions import mcp_presets
+
+    monkeypatch.setenv("SLACK_CLIENT_ID", "slack-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "google-id")
+    org_id = store.create_organization(f"MCP {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    made = {u: mcp_store.create_server(org_id, name=u, url=u, auth="oauth", oauth={"x": 1},
+                                       tools=[CREATE], created_by=None) for u in mcp_presets.RETIRED}
+    drive = made["https://drivemcp.googleapis.com/mcp/v1"]
+    mcp_store.set_mode(org_id, drive, "create_task", "write")
+    mcp_store.set_enabled(org_id, made["https://mcp.slack.com/mcp"].id, False)
+
+    servers = mcp_store.list_servers(org_id)
+    assert sorted(s.name for s in servers) == ["Google Workspace", "Slack"]
+    slack, google = sorted(servers, key=lambda s: s.name, reverse=True)
+    assert slack.preset is mcp_presets.SLACK and not slack.enabled and slack.oauth["client_id"] == "slack-id"
+    assert google.id == drive.id and google.preset is mcp_presets.GOOGLE_WORKSPACE
+    assert google.tools == [] and google.tool_modes == {}
+
+
+def test_an_optional_value_nobody_asked_for_is_left_out_and_said():
+    """Linear's save_issue drafted a state the request never named; the whole
+    card was refused. An optional value is left out and the card says so."""
+    tool = {**CREATE, "inputSchema": {**CREATE["inputSchema"], "properties": {
+        **CREATE["inputSchema"]["properties"], "state": {"type": "string"}}}}
+    action = mcp.McpToolAction(_server({"create_task": "write"}), tool)
+    made = action.prepare({"request_words": "create a task", "project_id": "P-7", "title": "Fix login",
+                           "state": "Todo"}, _ctx("create a task in P-7: fix login"))
+    assert "state" not in made.payload["args"] and ["Left out", "state (not in your request)"] in made.payload["details"]
+
+
+def test_an_optional_field_in_a_shape_the_tool_does_not_take_is_left_out():
+    """Notion refused a page whose optional ``parent`` the model filled in
+    wrong, so the whole card failed. It is left out and said instead."""
+    tool = {"name": "create_pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
+        "pages": {"type": "array"},
+        "parent": {"anyOf": [{"type": "object", "required": ["page_id"], "properties": {"page_id": {"type": "string"}}},
+                             {"type": "object", "required": ["type"], "properties": {"type": {"enum": ["workspace"]}}}]}}}}
+    action = mcp.McpToolAction(_server(), tool)
+    made = action.prepare({"request_words": "make a page", "pages": [{"content": "- one"}], "parent": {"type": "memory"}},
+                          _ctx("make a page in memory"))
+    assert "parent" not in made.payload["args"]
+    assert ["Left out", "parent (not in a form Asana takes)"] in made.payload["details"]
+    # The model is told the forms it may use (it sent Notion a bare page id).
+    assert mcp.form_problem(tool["inputSchema"]["properties"]["parent"], "abc123", "parent") == \
+        'parent must be one of: {"page_id": …}, {"type": …}'
+
+
+NOTION_PAGES = {"name": "create_pages", "inputSchema": {"type": "object", "required": ["pages"], "properties": {
+    "pages": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {
+        "properties": {"type": "object"}, "content": {"type": "string"}}}}}}}
+
+
+def test_a_form_the_tools_schema_refuses_is_caught_before_the_card():
+    """Notion refused a page with "title" where its schema has none, after the
+    person had approved it. The schema is checked before the card instead."""
+    bad = {"pages": [{"title": "Notes", "content": "- one"}]}
+    assert "has no field title" in mcp.form_problem(NOTION_PAGES["inputSchema"], bad)
+    assert mcp.form_problem(NOTION_PAGES["inputSchema"], {"pages": [{"properties": {"title": "Notes"}}]}) is None
+    assert mcp.form_problem({"type": "integer"}, True) == "the form must be integer"
+    assert mcp.form_problem({"anyOf": [{"type": "string"}, {"type": "array"}]}, ["x"]) is None
+
+
+def test_a_cards_link_is_a_page_never_an_api_address():
+    """GitHub's create_branch returns only its API address, a 404 in a browser."""
+    assert mcp._page_link("https://api.github.com/repos/o/r/git/refs/heads/mcp-suite-1613") == \
+        "https://github.com/o/r/tree/mcp-suite-1613"
+    assert mcp._page_link("https://api.github.com/repos/o/r/pulls/21") == "https://github.com/o/r/pull/21"
+    assert mcp._page_link("https://api.linear.app/graphql") is None
+    assert mcp._page_link("https://linear.app/acme/issue/BEN-1.") == "https://linear.app/acme/issue/BEN-1"
+
+
+
+def test_a_merge_with_no_link_links_to_the_pull_request():
+    assert mcp._github_page({"owner": "o", "repo": "r", "pullNumber": 25}) == "https://github.com/o/r/pull/25"
+    assert mcp._github_page({"owner": "o", "repo": "r", "issue_number": 7}) == "https://github.com/o/r/issues/7"
+    assert mcp._github_page({"owner": "o"}) is None
+
+
+# -- The tool loop ---------------------------------------------------------------------------
+
+
+class Scripted:
+    """A model that makes the scripted calls, one turn each, then replies in words."""
+
+    def __init__(self, *turns):
+        self.turns, self.seen = iter(turns), []
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        from app.llm.base import ChatResult, ToolCall
+
+        self.seen.append(list(messages))
+        turn = next(self.turns, None)
+        if turn is None:
+            return ChatResult(text="Done.")
+        return ChatResult(text=None, tool_calls=[ToolCall(f"c{len(self.seen)}{i}", a.tool["function"]["name"],
+                                                          json.dumps(args)) for i, (a, args) in enumerate(turn)])
+
+
+def _loop(model, question, offered, found=None, looked=None):
+    from app.actions import service
+
+    return service._agent_loop(model, question, [a.tool for a in offered], offered, org_id="o",
+                               user_id="u", email="a@x.com", found=[] if found is None else found,
+                               looked=set() if looked is None else looked, ran={},
+                               settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+
+
+def _tool_answers(messages):
+    return [m["content"] for m in messages if m.get("role") == "tool"]
+
+
+def test_a_lookups_answer_comes_back_as_a_tool_result_and_its_id_fills_the_form(server, monkeypatch):
+    """The lookup found BEN-1, but its answer sat among the documents the
+    prompt forbids targets from, and the model asked the user for the id."""
+    srv = _server({"create_task": "write", "list_projects": "lookup"})
+    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": '{"id": "P-7", "name": "Atlas"}'}]}
+    model = Scripted([(find, {})], [(write, {"request_words": "create a task", "project_id": "P-7", "title": "t"})])
+    found, looked = [], set()
+    run = _loop(model, "create a task in Atlas", [write, find], found, looked)
+    assert [a for a, _, _ in run.picked] == [write] and looked == {"Asana"} and "P-7" in found[0]
+    second = model.seen[1]
+    assert second[1]["tool_calls"][0]["id"] == second[2]["tool_call_id"]
+    assert "P-7" in second[2]["content"] and "UNTRUSTED_TOOL_RESULT" in second[2]["content"]
+    assert len(model.seen) == 2                    # paused at the draft: answered once decided
+
+
+def test_every_action_of_a_turn_is_drafted_once_and_the_loop_pauses_there():
+    """Asked "anything else?", the model drafted the same DM twice: a repeat
+    is one card. The loop then waits for the person, as any tool loop waits
+    for a tool's answer; nothing more is asked of the model until then."""
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = lambda t: {"request_words": f"a task titled {t}", "project_id": "P-7", "title": t}  # noqa: E731
+    model = Scripted([(write, form("t")), (write, form("t")), (write, form("u"))])
+    run = _loop(model, "In P-7 make a task titled t and a task titled u", [write])
+    assert [a["title"] for _, a, _ in run.picked] == ["t", "u"] and len(model.seen) == 1
+    calls = run.messages[-2]["tool_calls"]
+    assert [cid for _, _, cid in run.picked] == [calls[0]["id"], calls[2]["id"]]
+    assert "Already drafted" in run.messages[-1]["content"]   # only the repeat is answered now
+
+
+def test_a_refused_form_goes_back_to_the_model_and_its_fix_is_drafted():
+    action = mcp.McpToolAction(_server(), NOTION_PAGES)
+    model = Scripted([(action, {"request_words": "make a page", "pages": [{"title": "Notes"}]})],
+                     [(action, {"request_words": "make a page", "pages": [{"properties": {"title": "Notes"}}]})])
+    run = _loop(model, "make a page", [action])
+    assert [a["pages"] for _, a, _ in run.picked] == [[{"properties": {"title": "Notes"}}]]
+    assert "has no field title" in _tool_answers(model.seen[1])[0]
+    assert run.refused == []                       # fixed, so not said to the person
+
+
+def test_a_value_nobody_gave_is_said_back_so_the_model_looks_it_up(server, monkeypatch):
+    srv = _server({"create_task": "write", "list_projects": "lookup"})
+    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": '{"id": "P-9", "name": "Atlas"}'}]}
+    form = {"request_words": "create a task", "project_id": "P-9", "title": "t"}
+    model = Scripted([(write, form)], [(find, {})], [(write, form)])
+    run = _loop(model, "create a task in Atlas", [write, find])
+    assert "must come from your request" in _tool_answers(model.seen[1])[0]
+    assert len(run.picked) == 1 and run.refused == []
+
+
+def test_a_model_that_only_repeats_itself_is_stopped():
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    model = Scripted(*([[(write, form)]] * 20))
+    run = _loop(model, "make a task in P-7", [write])
+    assert len(run.picked) == 1 and len(model.seen) == 1
+
+
+def test_an_action_nobody_asked_for_is_refused_and_said():
+    write = mcp.McpToolAction(_server(), CREATE)
+    model = Scripted([(write, {"request_words": "delete everything", "project_id": "P-7", "title": "t"})])
+    run = _loop(model, "what tasks are in P-7?", [write])
+    assert run.picked == [] and "only act when you ask" in run.refused[0]
+
+
+def test_a_code_the_fields_description_defines_for_the_askers_words_is_kept():
+    """"priority medium" filled Linear's priority with 3 ("3=Medium"), and the
+    card left it out because 3 is not in the request."""
+    prop = {"type": "number", "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low"}
+    assert mcp._code_label("3", prop) == "Medium"
+    assert mcp._code_label("3", {"description": "how many"}) is None
+    tool = {**CREATE, "inputSchema": {**CREATE["inputSchema"], "properties": {
+        **CREATE["inputSchema"]["properties"], "priority": prop}}}
+    action = mcp.McpToolAction(_server(), tool)
+    asked = action.prepare({"project_id": "P-7", "title": "t", "priority": 3},
+                           _ctx("make a task in P-7, priority medium"))
+    assert asked.payload["args"]["priority"] == 3
+
+
+def test_a_code_nobody_asked_for_is_left_out_even_when_a_lookup_holds_it():
+    """GPT-OSS added priority 0 to "Create a Linear issue in BEN titled …":
+    the team lookup's text held a "0", so it passed as grounded."""
+    prop = {"type": "number", "description": "0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low"}
+    tool = {**CREATE, "inputSchema": {**CREATE["inputSchema"], "properties": {
+        **CREATE["inputSchema"]["properties"], "priority": prop}}}
+    action = mcp.McpToolAction(_server(), tool)
+    got = action.prepare({"project_id": "P-7", "title": "t", "priority": 0},
+                         _ctx("make a task in P-7", lookups='{"id": "P-7", "count": 0}'))
+    assert "priority" not in got.payload["args"]
+
+
+def test_an_id_a_lookup_returned_is_shown_by_its_name():
+    action = mcp.McpToolAction(_server(), CREATE)
+    team = "db73111d-8073-4456-8cdb-b184d67b5318"
+    got = action.prepare({"project_id": team, "title": "t"},
+                         _ctx("make a task in BEN", lookups=f'[{{"id": "{team}", "name": "Bench", "key": "BEN"}}]'))
+    assert got.payload["args"]["project_id"] == team
+    assert dict(got.payload["details"])["project_id"] == "Bench (BEN)"
+
+
+def test_the_askers_dashes_match_the_models():
+    """The asker typed "UI test – slack bug" (en dash); the draft's plain hyphen
+    was not their words, so the card asked for the private-content tick."""
+    from app.actions.service import _only_askers_words
+
+    assert _only_askers_words({"title": "UI test - slack bug"}, 'Create an issue titled "UI test \u2013 slack bug"')
+
+
+def test_a_models_non_breaking_hyphens_are_the_askers_plain_ones():
+    """GPT-OSS quoted "sana18‑syv/bench‑sandbox" (U+2011): the GitHub half of a
+    two-tool request was refused as not asked for."""
+    write = mcp.McpToolAction(_server(), CREATE)
+    model = Scripted([(write, {"request_words": "a task in P\u20117", "project_id": "P\u20117", "title": "t"})])
+    run = _loop(model, "make a task in P-7", [write])
+    assert [a["project_id"] for _, a, _ in run.picked] == ["P-7"]
+
+
+def test_a_model_that_says_it_drafted_without_calling_the_tool_is_told_once(server, monkeypatch):
+    """GPT-OSS looked the issue up, then replied "I've drafted a change" and
+    called nothing: no card, and the person was told it was done."""
+    from app.actions import service
+    from app.llm.base import ChatResult
+
+    srv = _server({"create_task": "write", "list_projects": "lookup"})
+    write, find = mcp.McpToolAction(srv, CREATE), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": '{"id": "P-7"}'}]}
+
+    class Claims(Scripted):
+        def generate_with_tools(self, messages, **kw):
+            if len(self.seen) == 1 and messages[-1]["role"] == "tool":
+                self.seen.append(list(messages))
+                return ChatResult(text="I've drafted the task.")       # but called nothing
+            return super().generate_with_tools(messages, **kw)
+
+    model = Claims([(find, {})], [(write, {"request_words": "create a task", "project_id": "P-7", "title": "t"})])
+    run = _loop(model, "create a task in Atlas", [write, find])
+    assert model.seen[2][-1]["content"] == service.NOTHING_DRAFTED and len(run.picked) == 1
+
+
+def test_an_ask_shared_with_another_action_is_the_askers_words_in_order():
+    """"Create a Linear issue in BEN and a GitHub issue in acme/app": the GitHub
+    ask is "Create … a GitHub issue in acme/app", in no one phrase."""
+    from app.actions.draft import asked_for
+
+    q = "Create a Linear issue in BEN and a GitHub issue in acme/app, both titled x"
+    assert asked_for("Create a GitHub issue in acme/app", q)
+    assert asked_for('Create two Linear issues in BEN: "B"', 'Create two Linear issues in BEN: "A" and "B".')
+    assert not asked_for("Delete a GitHub issue", q)
+    assert not asked_for("GitHub issue Create", q)            # out of order
+    assert not asked_for("please file", "what is blocking Platform?") and not asked_for("", q)
+
+
+def test_a_refused_form_brings_the_tools_whole_manual_and_each_new_try_is_progress():
+    """Notion's "set the title in properties" sat past the 300 characters a
+    card shows, so the model never learned where the title goes; and two
+    refusals in a row ended the loop while it was still fixing the form."""
+    long = {**NOTION_PAGES, "description": "x" * 400 + " Set the title in properties."}
+    action = mcp.McpToolAction(_server(), long)
+    tries = [(action, {"request_words": "make a page", "pages": [{"title": f"Notes {i}"}]}) for i in range(3)]
+    model = Scripted([tries[0]], [tries[1]], [tries[2]],
+                     [(action, {"request_words": "make a page", "pages": [{"properties": {"title": "Notes"}}]})])
+    run = _loop(model, "make a page", [action])
+    told = _tool_answers(model.seen[1])[0]
+    assert "Set the title in properties" in told and "UNTRUSTED_TOOL_RESULT" in told
+    assert len(run.picked) == 1                    # three different wrong forms, then the right one
+
+
+def test_company_content_is_read_through_its_tool_and_only_for_the_askers_words():
+    """"… summarising the Q4 roadmap page" made a page that said "Summarising
+    the Q4 roadmap page.": a field the model had to fill was left empty, so
+    nothing was read. Reading is a tool now, as Onyx's search is."""
+    from app.actions import service
+    from app.actions.base import Source
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    reader = SimpleNamespace(tool=service.SEARCH)
+    asked = []
+
+    def read(words):
+        asked.append(words)
+        return [Source("d1", "Q4 roadmap", False, ("a@x.com",))], "[Q4 roadmap]\nShip search in Q4."
+
+    q = "make a task in P-7 summarising the Q4 roadmap page"
+    model = Scripted([(reader, {"content_words": "the board minutes"})],
+                     [(reader, {"content_words": "the Q4 roadmap page"})],
+                     [(write, {"request_words": "make a task", "project_id": "P-7", "title": "Q4",
+                               "notes": "Ship search in Q4."})])
+    run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
+                              found=[], looked=set(), ran={},
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5), read=read)
+    assert asked == ["the Q4 roadmap page"]                      # the unasked read never ran
+    assert "QUESTION's own words" in _tool_answers(model.seen[1])[0]
+    assert "Ship search in Q4" in _tool_answers(model.seen[2])[-1]
+    assert [s.document_id for s in run.sources] == ["d1"] and len(run.picked) == 1
+
+
+def test_a_tool_call_the_model_wrote_as_text_is_made():
+    """GPT-OSS replied with the call instead of making it, by name or as the
+    bare arguments of the one tool they fit; nothing was drafted."""
+    from app.actions import service
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    tools = [write.tool]
+    name = write.tool["function"]["name"]
+    named = service._calls_in_text(f'Here: {{"tool": "{name}", "toolInput": {{"project_id": "P-7", "title": "t"}}}}',
+                                   tools)
+    assert [(c.name, json.loads(c.arguments)) for c in named] == [(name, {"project_id": "P-7", "title": "t"})]
+    bare = service._calls_in_text('{"project_id": "P-7", "title": "t", "request_words": "make"}', tools)
+    assert [c.name for c in bare] == [name]
+    assert service._calls_in_text('{"colour": "red"}', tools) == []           # fits no form
+    assert service._calls_in_text("Done, nothing to add.", tools) == []

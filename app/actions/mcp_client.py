@@ -50,7 +50,14 @@ class McpUnauthorized(OAuthReauthRequiredError):
 
 
 def public_https(url: str) -> str:
-    """``url`` if it is https to a public address, else ``ActionRejected``."""
+    """``url`` if it is https to a public address, else ``ActionRejected``.
+    Handbook's own servers (``mcp_host_url``, set by the operator, never by an
+    admin) are trusted as configured, so they also work on a local address."""
+    from ..config.settings import ActionsSettings
+
+    own = ActionsSettings.from_env().mcp_host_url
+    if own and (url or "").startswith(own.rstrip("/") + "/"):
+        return url
     parsed = urlparse(url or "")
     if parsed.scheme != "https" or not parsed.hostname:
         raise ActionRejected("An MCP server address must start with https://.")
@@ -63,6 +70,19 @@ def public_https(url: str) -> str:
         if not ip.is_global:
             raise ActionRejected("That address is not on the public internet.")
     return url
+
+
+def _reason(response) -> str:
+    """The server's own short reason for an error ("API not enabled…"), so an
+    admin can act on it. Outside text: one line, bounded, never a link."""
+    try:
+        body = response.json()
+        error = body.get("error") if isinstance(body, dict) else None
+        said = (error.get("message") if isinstance(error, dict) else error) or ""
+    except ValueError:
+        said = response.text or ""
+    said = re.sub(r"https?://\S+", "", " ".join(str(said).split()))[:200].strip()
+    return f": {said}" if said else ""
 
 
 class McpSession:
@@ -106,7 +126,7 @@ class McpSession:
         if response.status_code == 403:
             raise ActionError("The tool refused: your account isn't allowed to do that.")
         if response.status_code >= 400:
-            raise ActionError(f"The tool answered {response.status_code}.")
+            raise ActionError(f"The tool answered {response.status_code}{_reason(response)}.")
         if response.headers.get("mcp-session-id"):
             self.session_id = response.headers["mcp-session-id"]
         if notify:

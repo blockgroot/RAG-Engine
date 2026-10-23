@@ -206,7 +206,12 @@ export function ActPanel() {
               <div className="account-actions-list">
                 {recent.map((r) =>
                   r.status === "proposed" || r.status === "executing" ? (
-                    <ActionCard key={r.id} card={r} onChange={updated} />
+                    <ActionCard
+                      key={r.id}
+                      card={r}
+                      onChange={updated}
+                      onNext={(next) => setRecent((all) => [...next.actions, ...all])}
+                    />
                   ) : (
                     <ActionHistoryRow key={r.id} action={r} />
                   ),

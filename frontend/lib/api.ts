@@ -202,6 +202,14 @@ export interface Me {
   drive_ready: boolean;
 }
 
+/** What a chain drafts next, once the cards it waited on are decided:
+ *  "open a GitHub issue, then comment its link on Linear" drafts the comment
+ *  after the issue exists. Each new card is approved on its own. */
+export interface ActNext {
+  reply: string;
+  actions: ActCard[];
+}
+
 /** One proposed (or finished) write, as the Act page shows it. The payload
  *  is exactly what will be sent; approving sends back its hash. */
 export interface ActCard {
@@ -248,6 +256,26 @@ export interface SpaceAct {
   can_change: boolean;
 }
 
+/** A tool the admin switched on, as a space's owner sees it: on unless they switched it off here. */
+export interface SpaceTool {
+  name: string;
+  title: string;
+  description: string;
+  read_only: boolean;
+  destructive: boolean;
+  on: boolean;
+}
+
+export interface SpaceToolServer {
+  id: string;
+  name: string;
+  group: string | null;
+  group_name: string | null;
+  brand: string | null;
+  on: boolean;
+  tools: SpaceTool[];
+}
+
 export interface AdminActions {
   enabled: boolean;
   block_wider: boolean;
@@ -261,7 +289,8 @@ export interface McpTool {
   title: string;
   description: string;
   read_only: boolean;
-  blocked: boolean;
+  /** Deletes or can't be undone: never turned on by "Turn all on". */
+  destructive: boolean;
   mode: "off" | "lookup" | "write";
 }
 
@@ -271,6 +300,8 @@ export interface McpServerAdmin {
   url: string;
   auth: "none" | "oauth";
   enabled: boolean;
+  /** Servers of one product (Google Workspace) share a row and a sign-in. */
+  group: string | null;
   tools: McpTool[];
 }
 
@@ -278,9 +309,10 @@ export interface McpServerAdmin {
 export interface McpPreset {
   key: string;
   name: string;
-  url: string;
+  url: string | null;
   note: string;
   added: boolean;
+  group?: string;
 }
 
 export interface McpServerMine {
@@ -868,20 +900,11 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
   actStatus: () => request<ActStatus>("/act/status"),
-  /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
-  act: (question: string, workspaceId?: string | null, model?: string | null) =>
-    request<{ reply: string; action: ActCard | null; actions?: ActCard[] }>("/act", {
-      method: "POST",
-      body: JSON.stringify({
-        question,
-        workspace_id: workspaceId ?? null,
-        model: model && model !== "auto" ? model : null,
-      }),
-    }),
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
-    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
       method: "POST",
-      body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
+      // What comes next is streamed (``streamContinue``): it can outlast the proxy.
+      body: JSON.stringify({ payload_hash: payloadHash, acknowledged, wait_for_next: false }),
     }),
   /** Ask the model to rework a pending draft's words; where it goes never changes. */
   reviseAction: (id: string, payloadHash: string, instruction: string, model?: string | null) =>
@@ -907,8 +930,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+  spaceTools: (workspaceId: string) =>
+    request<{ servers: SpaceToolServer[] }>(`/act/spaces/${encodeURIComponent(workspaceId)}/tools`),
+  /** ``tool`` null switches the whole server off or back on for this space. */
+  setSpaceTool: (workspaceId: string, serverId: string, tool: string | null, enabled: boolean) =>
+    request<{ servers: SpaceToolServer[] }>(`/act/spaces/${encodeURIComponent(workspaceId)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ server_id: serverId, tool, enabled }),
+    }),
   rejectAction: (id: string) =>
-    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/reject?wait_for_next=false`, {
       method: "POST",
     }),
   adminActions: () => request<AdminActions>("/admin/actions"),
@@ -922,8 +953,8 @@ export const api = {
   /** Add a connector by its preset key, or any server by name and address. */
   addMcpServer: (server: { preset: string } | { name: string; url: string }) =>
     request<McpServerAdmin>("/admin/mcp", { method: "POST", body: JSON.stringify(server) }),
-  /** "recommended": reads as lookups, allowed writes as writes (each approved on a card). */
-  setMcpModes: (id: string, choice: "recommended" | "off") =>
+  /** "all": reads as lookups, every write as a write (each approved on a card). */
+  setMcpModes: (id: string, choice: "all" | "off") =>
     request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/tools`, {
       method: "PUT",
       body: JSON.stringify({ choice }),

@@ -1463,6 +1463,38 @@ ALTER TABLE actions ADD CONSTRAINT actions_surface_check
 -- edit so the log shows both what the model wrote and what was approved.
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS original_payload JSONB;
 
+-- Chains: a request whose next step needs an approved card's result ("open a
+-- GitHub issue, then comment its link on the Linear issue"). The model's
+-- conversation is kept until the person decides the cards it waits on; their
+-- results are then given to it and it drafts the next cards. The person's own:
+-- every read is pinned to org and user. ``messages`` holds what lookups
+-- returned (private to them), so a run lives no longer than its cards.
+CREATE TABLE IF NOT EXISTS act_runs (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id             UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id       UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id            UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    surface            JSONB NOT NULL,
+    question           TEXT NOT NULL,
+    model              TEXT,
+    messages           JSONB NOT NULL,
+    found              JSONB NOT NULL DEFAULT '[]',
+    sources            JSONB NOT NULL DEFAULT '[]',
+    -- waiting: paused at its cards' calls, answered once they are decided;
+    -- standby: an older paused run, continued the same way.
+    status             TEXT NOT NULL DEFAULT 'waiting'
+                       CHECK (status IN ('waiting', 'standby', 'resuming', 'done')),
+    steps              INT NOT NULL DEFAULT 1,
+    drafted            JSONB NOT NULL DEFAULT '[]',
+    expires_at         TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_act_runs_owner ON act_runs (org_id, user_id, status);
+ALTER TABLE act_runs DROP CONSTRAINT IF EXISTS act_runs_status_check;
+ALTER TABLE act_runs ADD CONSTRAINT act_runs_status_check
+    CHECK (status IN ('waiting', 'standby', 'resuming', 'done'));
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS run_id UUID REFERENCES act_runs (id) ON DELETE SET NULL;
+
 -- Other tools through MCP servers (docs/plans/2026-10-21-mcp-actions.md). Only
 -- an admin adds a server. Every tool starts OFF; ``tool_modes`` holds the
 -- admin's choice per tool ("lookup": a read run without a card, "write":

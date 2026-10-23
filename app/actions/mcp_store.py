@@ -7,8 +7,10 @@ choice is stored with the hash of the tool's schema and description: a tool
 the server later changes is OFF again until an admin looks at it, so an
 update on the server's side never widens what Handbook may do.
 
-A tool whose name or hints say it deletes, merges, closes or edits code is
-BLOCKED: no mode can be set. A server's own hints are only hints (MCP says so),
+Nothing is blocked: the admin decides. A tool whose name says it deletes,
+merges, closes or rewrites is labelled DESTRUCTIVE, and its card says it
+cannot be undone.
+Like every write it still runs only on the person's approval. A server's own hints are only hints (MCP says so),
 so "read-only" never makes a tool a lookup by itself; the admin must choose
 it, and only a tool the server ALSO marks read-only can be a lookup.
 """
@@ -21,18 +23,23 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Json
 
 from ..db.connection import get_connection
 
 MODES = ("off", "lookup", "write")
 
-#: Names that delete, merge, close, move or rewrite things. Blocked, whatever
-#: the server says: Handbook's writes add things, never take them away.
+#: Names that delete, merge, close or revoke things, which cannot be taken
+#: back: destructive, whatever the server says. Creating a branch, committing
+#: or renaming can be undone, so they are ordinary writes. Decided by the NAME only: MCP's ``destructiveHint``
+#: also covers ordinary updates (Linear marks ``save_issue`` and ``save_comment``
+#: destructive because they can edit), which would label creating an issue
+#: as something that cannot be undone.
 _DESTRUCTIVE = re.compile(
-    r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|close|merge|revoke|transfer|"
-    r"push|commit|reset|revert|force|ban|kick|deactivate|disable|cancel|wipe|truncate|"
-    r"uninstall|rename|move|edit_file|write_file|create_branch|update_file)", re.IGNORECASE)
+    r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|trash|retire|unshare|unpublish|"
+    r"close|merge|revoke|transfer|"
+    r"reset|force|ban|kick|deactivate|disable|cancel|wipe|truncate|uninstall)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -62,22 +69,16 @@ class McpServer:
     def tool(self, name: str) -> dict | None:
         return next((t for t in self.tools if t.get("name") == name), None)
 
-    def permitted(self, tool: dict) -> bool:
-        """May an admin turn this tool on at all? A preset's list of allowed
-        tools decides for the connectors; destructive tools never."""
-        preset = self.preset
-        return not blocked(tool) and (preset is None or preset.allows(tool.get("name") or ""))
-
     def is_read(self, tool: dict) -> bool:
         preset = self.preset
         return read_only(tool) or bool(preset and preset.is_read(tool.get("name") or ""))
 
     def mode(self, name: str) -> str:
         """What a tool may do now: its admin-chosen mode, if the tool is still
-        exactly what the admin chose it for and is permitted; else off."""
+        exactly what the admin chose it for; else off."""
         tool = self.tool(name)
         chosen = self.tool_modes.get(name) or {}
-        if tool is None or not self.permitted(tool) or chosen.get("hash") != tool_hash(tool):
+        if tool is None or chosen.get("hash") != tool_hash(tool):
             return "off"
         mode = chosen.get("mode")
         if mode == "lookup" and not self.is_read(tool):
@@ -92,14 +93,27 @@ def tool_hash(tool: dict) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def tool_title(tool: dict, server: str = "") -> str:
+    """A tool's name as people read it: the server's own short title, else the
+    name in words without the server's prefix ("notion-create-pages" in Notion:
+    "Create pages"; "save_issue": "Save issue"). A sentence-long title (Google
+    gives "Returns a range of values…") is a description, not a name."""
+    own = str(tool.get("title") or (tool.get("annotations") or {}).get("title") or "").strip()
+    if own and len(own) <= 48 and not own.endswith("."):
+        return own
+    words = re.sub(r"[-_]+", " ", str(tool.get("name") or "")).strip()
+    prefix = server.split()[-1].lower() + " " if server.strip() else ""
+    if prefix and words.lower().startswith(prefix) and len(words) > len(prefix):
+        words = words[len(prefix):]
+    return words[:1].upper() + words[1:]
+
+
 def read_only(tool: dict) -> bool:
     return bool((tool.get("annotations") or {}).get("readOnlyHint"))
 
 
-def blocked(tool: dict) -> bool:
-    hints = tool.get("annotations") or {}
-    return bool(_DESTRUCTIVE.search(tool.get("name") or "")) or (
-        hints.get("destructiveHint") is True and not hints.get("readOnlyHint"))
+def destructive(tool: dict) -> bool:
+    return bool(_DESTRUCTIVE.search(tool.get("name") or ""))
 
 
 _COLUMNS = "id::text, org_id::text, name, url, auth, oauth, tools, tool_modes, enabled"
@@ -113,7 +127,55 @@ def list_servers(org_id: str) -> list[McpServer]:
     with get_connection() as conn:
         rows = conn.execute(f"SELECT {_COLUMNS} FROM mcp_servers WHERE org_id = %s::uuid "
                             "ORDER BY created_at", (org_id,)).fetchall()
-    return [_row(r) for r in rows]
+    servers = [_row(r) for r in rows]
+    from .mcp_presets import RETIRED
+
+    if any(s.url.rstrip("/") in RETIRED for s in servers) and _move_retired(org_id, servers):
+        return list_servers(org_id)
+    return servers
+
+
+def _move_retired(org_id: str, servers: list[McpServer]) -> bool:
+    """Move rows on a retired vendor address onto the preset that replaced it
+    (``mcp_presets.RETIRED``): same row and on/off switch, the new address, and
+    no tools or sign-ins (the tools differ and old sign-ins lack the scopes).
+    A second row for the same replacement (Drive and Sheets) is removed.
+    Returns whether anything changed; a replacement that cannot be set up yet
+    (its app not configured) leaves the row as it was."""
+    from ..core.exceptions import ActionError
+    from .mcp_client import discover
+    from .mcp_presets import PRESETS, RETIRED
+
+    taken = {s.url.rstrip("/") for s in servers}
+    changed = False
+    for s in servers:
+        key = RETIRED.get(s.url.rstrip("/"))
+        if key is None:
+            continue
+        preset = PRESETS[key]
+        with get_connection() as conn:
+            if preset.url.rstrip("/") in taken:
+                conn.execute("DELETE FROM user_connections WHERE org_id = %s::uuid AND provider = %s",
+                             (org_id, s.provider))
+                conn.execute("DELETE FROM mcp_servers WHERE org_id = %s::uuid AND id = %s::uuid", (org_id, s.id))
+                changed = True
+                continue
+            try:
+                oauth = discover(preset.url, "", preset=preset)
+            except ActionError:
+                continue
+            conn.execute("DELETE FROM user_connections WHERE org_id = %s::uuid AND provider = %s",
+                         (org_id, s.provider))
+            try:  # another request moved its twin first: the next listing removes this one
+                conn.execute("UPDATE mcp_servers SET name = %s, url = %s, auth = 'oauth', oauth = %s, "
+                             "tools = '[]', tool_modes = '{}', updated_at = now() "
+                             "WHERE org_id = %s::uuid AND id = %s::uuid",
+                             (preset.name, preset.url, Json(oauth), org_id, s.id))
+            except UniqueViolation:
+                conn.rollback()
+        taken.add(preset.url.rstrip("/"))
+        changed = True
+    return changed
 
 
 def get_server(org_id: str, server_id: str) -> McpServer | None:
@@ -142,15 +204,21 @@ def set_tools(org_id: str, server_id: str, tools: list[dict]) -> None:
 
 
 def set_mode(org_id: str, server: McpServer, tool_name: str, mode: str) -> None:
-    tool = server.tool(tool_name)
-    modes = dict(server.tool_modes)
-    if mode == "off" or tool is None:
-        modes.pop(tool_name, None)
-    else:
-        modes[tool_name] = {"mode": mode, "hash": tool_hash(tool)}
+    set_modes(org_id, server, {tool_name: mode})
+
+
+def set_modes(org_id: str, server: McpServer, modes: dict[str, str]) -> None:
+    """Set several tools in ONE write that changes only those tools, merged in
+    the database: "Turn all on" was a write and a re-read per tool (68 for
+    Linear), slow enough for the proxy to cut it off half done, and two quick
+    switches each rewrote the whole map, so one undid the other."""
+    on = {name: {"mode": mode, "hash": tool_hash(server.tool(name))}
+          for name, mode in modes.items() if mode != "off" and server.tool(name) is not None}
+    off = [name for name in modes if name not in on]
     with get_connection() as conn:
-        conn.execute("UPDATE mcp_servers SET tool_modes = %s, updated_at = now() "
-                     "WHERE org_id = %s::uuid AND id = %s::uuid", (Json(modes), org_id, server.id))
+        conn.execute("UPDATE mcp_servers SET tool_modes = (COALESCE(tool_modes, '{}'::jsonb) - %s::text[]) "
+                     "|| %s::jsonb, updated_at = now() WHERE org_id = %s::uuid AND id = %s::uuid",
+                     (off, Json(on), org_id, server.id))
 
 
 def set_enabled(org_id: str, server_id: str, enabled: bool) -> None:
@@ -171,7 +239,7 @@ def delete_server(org_id: str, server_id: str) -> bool:
 
 def tool_view(server: McpServer, tool: dict[str, Any]) -> dict:
     """What the admin page shows for one tool."""
-    return {"name": tool.get("name"), "title": tool.get("title") or tool.get("name"),
+    return {"name": tool.get("name"), "title": tool_title(tool, server.name),
             "description": (tool.get("description") or "")[:400],
-            "read_only": server.is_read(tool), "blocked": not server.permitted(tool),
+            "read_only": server.is_read(tool), "destructive": destructive(tool),
             "mode": server.mode(tool["name"])}
