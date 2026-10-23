@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { ApiError, api, type ActCard } from "@/lib/api";
+import { ApiError, api, type ActCard, type ActNext } from "@/lib/api";
 import { DraftText } from "./AnswerText";
 
 /**
@@ -44,10 +44,13 @@ function shortLabel(title: string): string {
 export function ActionCard({
   card,
   onChange,
+  onNext,
   model,
 }: {
   card: ActCard;
   onChange: (next: ActCard) => void;
+  /** A chain's next drafts, once this card (and any it waited with) is decided. */
+  onNext?: (next: ActNext) => void;
   /** The chat's model pick, used for "Ask for changes". */
   model?: string | null;
 }) {
@@ -78,8 +81,9 @@ export function ActionCard({
     setBusy(true);
     setError(null);
     try {
-      const { action } = await api.confirmAction(card.id, card.payload_hash, ack);
+      const { action, next } = await api.confirmAction(card.id, card.payload_hash, ack);
       onChange(action);
+      if (next) onNext?.(next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send it. Nothing was sent.");
     } finally {
@@ -131,8 +135,9 @@ export function ActionCard({
     setBusy(true);
     setError(null);
     try {
-      const { action } = await api.rejectAction(card.id);
+      const { action, next } = await api.rejectAction(card.id);
       onChange(action);
+      if (next) onNext?.(next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not cancel it.");
     } finally {

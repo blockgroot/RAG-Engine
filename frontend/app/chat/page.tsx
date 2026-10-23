@@ -1125,6 +1125,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                           ),
                         )
                       }
+                      // A chain's next step arrives as the next reply, under this one.
+                      onNext={(next) =>
+                        setMessages((prev) => [
+                          ...prev,
+                          { role: "assistant", text: next.reply, acts: next.actions.length ? next.actions : null },
+                        ])
+                      }
                     />
                   </div>
                 ))}

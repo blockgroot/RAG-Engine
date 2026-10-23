@@ -402,7 +402,36 @@ def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depen
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ActionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return {"action": _card(row)}
+    return {"action": _card(row), "next": _continue(session, action_id)}
+
+
+def _continue(session: SessionClaims, action_id: str) -> dict | None:
+    """What a chain drafts next once the cards it waited on are decided, as
+    ``/act`` replies; ``None`` when nothing continues. The approval itself has
+    already run and is reported either way, so a model failure here is said,
+    never an error for the approve click."""
+    user, viewer = get_user(session.user_id), viewer_for(session)
+    if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
+        return None
+    try:
+        got = service.continue_run(org_id=session.org_id, user_id=session.user_id, email=user.email,
+                                   viewer_for=lambda surface: _surface_viewer(session, user.email, viewer, surface),
+                                   action_id=_action_id(action_id),
+                                   llm=_llm(), embedder=_embedder())
+    except LLMProviderError as exc:
+        logger.warning("Act continue: model unavailable: %s", exc)
+        return {"reply": _model_down(exc), "action": None, "actions": []}
+    return _act_reply(got[0]) if got else None
+
+
+def _surface_viewer(session: SessionClaims, email: str, viewer, surface: dict):
+    """Asked in the web chat: the person. Asked in Slack and approved here: as
+    Slack decided it (a channel reads as the room), never wider."""
+    if str(surface.get("kind", "web")).startswith("slack_"):
+        from .slack_act import surface_viewer
+
+        return surface_viewer(session.org_id, email, surface)
+    return viewer
 
 
 class EditRequest(BaseModel):
@@ -473,7 +502,9 @@ def reject(action_id: str, session: SessionClaims = Depends(get_session)):
     row = store.get(session.org_id, session.user_id, _action_id(action_id))
     if row is None:
         raise HTTPException(status_code=404, detail="No such action.")
-    return {"action": _card(row)}
+    # A chain whose last pending card was cancelled continues with what was
+    # approved (or says what it cannot do now).
+    return {"action": _card(row), "next": _continue(session, action_id)}
 
 
 # -- Connecting your own account ----------------------------------------------

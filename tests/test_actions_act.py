@@ -1159,3 +1159,162 @@ def test_a_model_failure_says_why():
     assert "refused" in said("LLM API error: Error code: 401 - {'error': {'message': 'Unauthorized'}}")
     assert "credit" in said("Your credit balance is too low")
     assert "temporarily" in said("LLM API error: Error code: 503 - overloaded")
+
+
+# --------------------------------------------------------------------------
+# Chains: a later step that needs an approved card's result
+# --------------------------------------------------------------------------
+
+
+class ChainLLM:
+    """Files the issue and waits; given the results, comments the link it got.
+    ``first`` and ``then`` are the forms of each step, ``wait`` whether to wait."""
+
+    def __init__(self, first, then, wait=True):
+        self.first, self.then, self.wait, self.seen = first, then, wait, []
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        import re
+
+        self.seen.append(messages)
+        last = messages[-1]
+        if last["role"] == "tool":
+            return ChatResult(text="Done.")
+        calls = []
+        if "decided the cards" in last["content"]:
+            link = (re.search(r"https://\S+", last["content"]) or [""])[0]
+            calls = [("test_create", f(link)) for f in self.then]
+        else:
+            calls = [("test_create", f) for f in self.first]
+            if self.wait:
+                calls.append((service.CONTINUE["function"]["name"], {"remaining": "comment its link"}))
+        return ChatResult(text=None, tool_calls=[ToolCall(f"c{i}", n, json.dumps(a)) for i, (n, a) in enumerate(calls)])
+
+
+CHAIN_Q = "File an issue in Platform about the export, then comment its link in Engineering"
+ISSUE = {"request_words": "File an issue in Platform", "team": "Platform", "title": "Export", "body": "b"}
+
+
+def _link_comment(link):
+    return {"request_words": "comment its link in Engineering", "team": "Engineering",
+            "title": "Link", "body": f"Filed: {link}"}
+
+
+def _continue(org, action_id, llm):
+    return service.continue_run(org_id=org.id, user_id=org.member.id, email=org.member.email,
+                                viewer_for=lambda surface: Viewer(email=org.member.email),
+                                action_id=action_id, llm=llm, embedder=FakeEmbedder(), settings=ON)
+
+
+def _approve(org, row):
+    return service.confirm(org_id=org.id, user_id=org.member.id, action_id=row.id,
+                           shown_hash=row.payload_hash, acknowledged=True, settings=ON)
+
+
+@requires_db
+def test_a_chain_drafts_its_next_step_with_the_approved_cards_real_link(org):
+    """X26 commented "[link removed]": the GitHub issue's link did not exist
+    until its card was approved. The run waits, and the approval continues it."""
+    llm = ChainLLM([ISSUE], [_link_comment])
+    out = _propose(org, CHAIN_Q, llm)
+    assert len(out.drafts) == 1 and "continue with: comment its link" in out.reply
+    assert _continue(org, out.action.id, llm) is None              # not approved yet: nothing continues
+    _approve(org, out.action)
+    nxt, surface = _continue(org, out.action.id, llm)
+    assert surface["kind"] == "web" and nxt.action.target["name"] == "Engineering (ENG)"
+    assert "https://example.com/issue/PLA-9" in nxt.action.payload["body"]   # the approved card's own link
+    assert _continue(org, out.action.id, llm) is None              # continued once
+
+
+@requires_db
+def test_a_chain_waits_for_every_card_and_continues_after_a_cancel(org):
+    two = [ISSUE, {**ISSUE, "team": "Engineering", "request_words": "File an issue"}]
+    llm = ChainLLM(two, [_link_comment])
+    out = _propose(org, CHAIN_Q.replace("File an issue in Platform", "File an issue in Platform and Engineering"),
+                   llm)
+    first, second = (row for row, _ in out.drafts)
+    _approve(org, first)
+    assert _continue(org, first.id, llm) is None                   # the other card is still pending
+    store.reject(org.id, org.member.id, second.id)
+    assert _continue(org, second.id, llm) is not None
+
+
+@requires_db
+def test_a_continued_chain_never_drafts_a_decided_card_again(org):
+    llm = ChainLLM([ISSUE], [lambda link: ISSUE, _link_comment])   # the model repeats the issue
+    out = _propose(org, CHAIN_Q, llm)
+    _approve(org, out.action)
+    nxt, _ = _continue(org, out.action.id, llm)
+    assert [row.target["name"] for row, _ in nxt.drafts] == ["Engineering (ENG)"]
+    told = [m["content"] for m in llm.seen[-1] if m.get("role") == "tool"]
+    assert any("already decided" in t for t in told)
+
+
+@requires_db
+def test_a_request_that_needs_no_result_is_never_continued(org):
+    llm = ChainLLM([ISSUE], [_link_comment], wait=False)
+    out = _propose(org, CHAIN_Q, llm)
+    _approve(org, out.action)
+    assert _continue(org, out.action.id, llm) is None
+
+
+def test_continuing_before_anything_is_drafted_is_refused():
+    from types import SimpleNamespace as NS
+
+    out = service._Drafting([], [], [])
+    said, progress = service._one_call(NS(name=service.CONTINUE["function"]["name"], arguments="{}"), {}, "q",
+                                       org_id="o", user_id="u", email="e", found=[], looked=set(), ran={},
+                                       settings=ON, out=out, drafted={}, refused={}, passages=None)
+    assert "draft the steps you can do now first" in said and not progress and out.waits is None
+
+
+@requires_db
+def test_approving_over_http_returns_the_chains_next_card(client, org, monkeypatch):
+    llm = ChainLLM([ISSUE], [_link_comment])
+    out = _propose(org, CHAIN_Q, llm)
+    monkeypatch.setattr("app.api.actions._llm", lambda: llm)
+    monkeypatch.setattr("app.api.actions._embedder", lambda: FakeEmbedder())
+    r = client.post(f"/act/actions/{out.action.id}/confirm",
+                    json={"payload_hash": out.action.payload_hash, "acknowledged": True}, cookies=_cookies(org.member))
+    body = r.json()
+    assert r.status_code == 200 and body["action"]["status"] == "succeeded"
+    assert "https://example.com/issue/PLA-9" in body["next"]["actions"][0]["payload"]["body"]
+
+
+@requires_db
+def test_a_step_that_names_the_card_it_needs_is_held_until_approval(org):
+    """GPT-OSS skipped the separate continue call and wrote "<GitHub issue
+    link>"; a field on the form it was already filling is a signal it gives."""
+    waits = lambda link: {**_link_comment(link), "needs_result_of": "the issue"}  # noqa: E731
+
+    class FieldLLM(ChainLLM):
+        def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+            last = messages[-1]
+            if last["role"] == "user" and "decided the cards" not in last["content"]:
+                self.seen.append(messages)
+                return ChatResult(text=None, tool_calls=[ToolCall("c0", "test_create", json.dumps(ISSUE)),
+                                                         ToolCall("c1", "test_create", json.dumps(waits("<link>")))])
+            return super().generate_with_tools(messages, tools, tool_choice, timeout)
+
+    llm = FieldLLM([ISSUE], [_link_comment], wait=False)
+    out = _propose(org, CHAIN_Q, llm)
+    assert len(out.drafts) == 1 and "continue with" in out.reply          # the comment was held back
+    _approve(org, out.action)
+    nxt, _ = _continue(org, out.action.id, llm)
+    assert "https://example.com/issue/PLA-9" in nxt.action.payload["body"]
+
+
+@requires_db
+def test_a_card_the_tool_refuses_after_approval_can_be_corrected(org):
+    """Notion refused "creation_mode with parent" after approval: nothing was
+    written, so the request continues and the model drafts it fixed."""
+    llm = ChainLLM([ISSUE], [lambda link: {**ISSUE, "title": "Export (fixed)"}], wait=False)
+    out = _propose(org, "File an issue in Platform about the export", llm)
+    FakeTool.raises = ActionRejected("Tool refused it: invalid field combination.")
+    row = _approve(org, out.action)
+    assert row.status == "failed"
+    FakeTool.raises = None
+    nxt, _ = _continue(org, out.action.id, llm)
+    assert nxt.action.payload["title"] == "Export (fixed)"
+    said = [m["content"] for m in llm.seen[-1] if m.get("role") == "user"][-1]
+    assert "invalid field combination" in said
