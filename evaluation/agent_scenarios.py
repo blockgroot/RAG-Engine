@@ -57,6 +57,8 @@ LINK = "https://linear.app/bench/issue/BEN-999/scenario"
 #: What an earlier request in the same session made (``service._earlier``).
 EARLIER_LINK = "https://github.com/sana18-syv/bench-sandbox/issues/12"
 EARLIER = f'- GitHub: Create or update issue/pull request: "UI test - pair 4", id 12, link {EARLIER_LINK}'
+EARLIER_LINEAR_LINK = "https://linear.app/syvora/issue/BEN-167/summary-of-hb-testing-discussion"
+EARLIER_LINEAR = f'- Linear: Create or update issue: "Summary of hb-testing discussion", id BEN-167, link {EARLIER_LINEAR_LINK}'
 TRACE_CHANNEL: list = []
 #: The GitHub tools a company turns on for issues (the server has ~40).
 GITHUB_TOOLS = {"issue_read", "issue_write", "add_issue_comment", "list_issues", "search_issues",
@@ -191,6 +193,14 @@ SCENARIOS = {
         [card_count(1), cards_with(EARLIER_LINK), card_tool("send_dm"), not_pasted,
          lambda t: "a blank was left in the text" if re.search(r"\[[A-Z][A-Za-z ]+\]", json.dumps(t.cards))
          else ""], earlier=EARLIER),
+    "post_linear_link": Scenario(
+        # Prod: answered "Here is the link…" in words; no Slack card.
+        "Post the link of the Linear issue we created in #hb-testing",
+        [card_count(1), cards_with(EARLIER_LINEAR_LINK), card_tool("send_message")], earlier=EARLIER_LINEAR),
+    "bare_repo": Scenario(
+        # Prod: asked "who owns bench-sandbox?" instead of drafting the GitHub card.
+        "Create an issue titled Agent check 23 Oct in Linear BEN and in GitHub bench-sandbox",
+        [card_count(2)]),
     "question": Scenario(
         "What open issues do we have in BEN?",
         [card_count(0)]),
@@ -230,7 +240,11 @@ def offered_tools():
     offered += [mcp.McpToolAction(slack, t) for t in slack_tools]
     for cls in (mcp.McpLookup, mcp.McpToolAction):
         cls.token_for = lambda self, *a, **k: tokens[self.server.id]
-    object.__setattr__(github, "target_check", None)   # reads the company's installations from the DB
+    # The real check reads the company's installations from the DB; here the
+    # one installation is the bench's, so an owner left out or guessed wrong is
+    # set the same way.
+    object.__setattr__(github, "target_check", lambda _org, args: args.update(owner=REPO.split("/")[0])
+                       if args.get("repo") == REPO.split("/")[1] else None)
     return offered
 
 
@@ -249,8 +263,8 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
     calls_before = getattr(llm, "calls", 0)
     try:
         messages, already = None, frozenset()
-        sources = (Source("act-result:earlier", "what GitHub made", False, (EMAIL,), EARLIER_LINK),) \
-            if sc.earlier else ()
+        sources = (Source("act-result:earlier", "what an earlier card made", False, (EMAIL,),
+                          re.search(r"link (\S+)", sc.earlier).group(1)),) if sc.earlier else ()
         for step, decision in enumerate(sc.decide):
             loop = service._agent_loop(llm, sc.question, [a.tool for a in offered], offered, org_id="o",
                                        user_id="u", email=EMAIL, found=found, looked=looked, ran={},

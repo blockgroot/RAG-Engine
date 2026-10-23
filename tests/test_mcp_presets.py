@@ -158,6 +158,39 @@ def test_a_github_repo_named_by_the_asker_gets_the_company_owner(monkeypatch):
     args = {"owner": "syvora", "repo": "bench-sandbox"}
     _github_target("o", args)
     assert args["owner"] == "sana18-syv"
+    args = {"repo": "bench-sandbox"}               # left out: "in GitHub bench-sandbox"
+    _github_target("o", args)
+    assert args["owner"] == "sana18-syv"
     owned["other"].add("bench-sandbox")
     with pytest.raises(ActionRejected, match="several named bench-sandbox"):
         _github_target("o", {"owner": "syvora", "repo": "bench-sandbox"})
+
+
+def test_github_offers_owner_as_optional_and_fills_it(monkeypatch):
+    """GPT-OSS asked "who owns bench-sandbox?" rather than draft; the owner is
+    Handbook's to fill from the company's installations, never a reason to ask."""
+    from app.actions import mcp, mcp_store
+    from app.actions.base import ActionContext
+
+    tool = {"name": "issue_write", "description": "Create an issue", "inputSchema": {
+        "type": "object", "required": ["method", "owner", "repo"], "properties": {
+            "method": {"type": "string", "enum": ["create", "update"]}, "owner": {"type": "string"},
+            "repo": {"type": "string"}, "title": {"type": "string"}}}}
+    server = mcp_store.McpServer("s1", "o", "GitHub", mcp_presets.GITHUB.url, "oauth", None, [tool],
+                                 {"issue_write": {"mode": "write"}}, True)
+    action = mcp.McpToolAction(server, tool)
+    assert "owner" not in action.tool["function"]["parameters"]["required"]
+    args = {"method": "create", "repo": "bench-sandbox", "title": "Agent check"}
+    assert action.form_problem(args) is None
+    from dataclasses import replace
+
+    def checked(fill):
+        monkeypatch.setitem(mcp_presets.PRESETS, "github", replace(mcp_presets.GITHUB, target_check=fill))
+
+    checked(lambda org, a: a.setdefault("owner", "sana18-syv"))
+    ctx = ActionContext("o", None, "u", "a@x.com", "Create an issue titled Agent check in GitHub bench-sandbox",
+                        "tok", (), None, None, "")
+    assert action.prepare(args, ctx).payload["args"]["owner"] == "sana18-syv"
+    checked(lambda org, a: None)
+    with pytest.raises(ActionRejected, match="needs owner"):
+        action.prepare(args, ctx)

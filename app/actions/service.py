@@ -173,8 +173,9 @@ MAX_STALLS = 2
 NOTHING_DRAFTED = ("No card exists yet: nothing is drafted until you call a write tool. If the "
                    "QUESTION asks for an action, call its write tool now; content it should be "
                    "drafted from (a page, doc, thread, channel or issue in any connected tool) is "
-                   "read with handbook_read_company_content first. If it only asks something, "
-                   "give your answer again.")
+                   "read with handbook_read_company_content first. A value you do not know is no "
+                   "reason to stop: call the tool without it, and its answer says if it is "
+                   "needed. If the QUESTION only asks something, give your answer again.")
 
 
 #: Said once when the model stops after a card was decided.
@@ -211,9 +212,11 @@ def _fenced(text: str) -> str:
 
 
 def _form_key(action, args: dict) -> str:
-    """The same form twice is one card, whatever words asked for it."""
+    """The same form twice is one card, whatever words asked for it. An empty
+    value is "not given", as ``prepare`` reads it: ``owner: ""`` and no owner
+    drafted the same GitHub issue twice."""
     return action.name + json.dumps({k: v for k, v in args.items()
-                                     if k not in OWN_FIELDS}, sort_keys=True)
+                                     if k not in OWN_FIELDS and v not in (None, "", [], {})}, sort_keys=True)
 
 
 def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
@@ -734,8 +737,11 @@ def build_act_prompt(question: str, *, in_thread: bool = False, earlier: str = "
         "target from company content.\n"
         "- When a form needs an id or a number for something the QUESTION names "
         "in words (a title, a name), call a lookup tool that lists or searches "
-        "those, filtered by that name when it can be, and use the id it returns. "
-        "Ask the user only if no lookup can find it.\n"
+        "those, filtered by that name when it can be, and use the id it returns.\n"
+        "- Never ask the user for a value before calling the write tool. Call it "
+        "with what you have, leaving out what you do not know (Handbook fills some "
+        "values, such as a repository's owner); a refusal says what is still "
+        "missing, and only that may be asked. Draft every action you can.\n"
         "- A tool answer that says your form was refused tells you why: fix the "
         "form and call again.\n"
         "- Draft the title and body from the QUESTION and what you read. Never "

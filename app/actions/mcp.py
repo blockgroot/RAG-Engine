@@ -186,13 +186,24 @@ class McpToolAction(Action):
         self.provider = server.provider
         self.label = f"{server.name}: {mcp_store.tool_title(tool, server.name)}"
         schema = _schema(tool)
+        props = {k: ({**v, "description": f"{v.get('description') or ''} Leave it out unless the user "
+                      "said it: Handbook finds it from the company's connections.".strip()}
+                     if k in self._filled and isinstance(v, dict) else v)
+                 for k, v in schema["properties"].items()}
         self.tool = {"type": "function", "function": {
             "name": _function_name(server, tool["name"]),
-            "description": _describe(server, tool),
-            "parameters": {**schema, "properties": {**schema["properties"], "request_words": {
+            # Said here too: GPT-OSS reads the tool's description, not each field's.
+            "description": _describe(server, tool) + "".join(
+                f" Leave {k} out unless the user said it: Handbook fills it." for k in self._filled),
+            "parameters": {**schema, "properties": {**props, "request_words": {
                 "type": "string", "description": "The exact words from the user's message that "
                 "ask for this action, copied verbatim."}},
-                "required": [*schema["required"], "request_words"]}}}
+                "required": [*(r for r in schema["required"] if r not in self._filled), "request_words"]}}}
+
+    @property
+    def _filled(self) -> tuple[str, ...]:
+        preset = self.server.preset
+        return preset.fills if preset and preset.target_check else ()
 
     def enabled_for(self, org_id: str, workspace_id: str | None) -> bool:
         from . import policy
@@ -216,7 +227,10 @@ class McpToolAction(Action):
         server will receive (not Handbook's ``request_words``)."""
         sent = {k: v for k, v in args.items()
                 if k != "request_words" and v not in _EMPTY}
-        return form_problem(self.mcp_tool.get("inputSchema"), sent)
+        schema = self.mcp_tool.get("inputSchema")
+        if isinstance(schema, dict) and isinstance(schema.get("required"), list):
+            schema = {**schema, "required": [r for r in schema["required"] if r not in self._filled]}
+        return form_problem(schema, sent)
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         schema = _schema(self.mcp_tool)
@@ -224,7 +238,7 @@ class McpToolAction(Action):
         # An empty value is "not given": GPT-OSS closed an issue with
         # ``labels: []``, which GitHub reads on an update as "remove them all".
         given = {k: v for k, v in args.items() if k in props and v not in _EMPTY}
-        missing = [k for k in schema["required"] if k not in given]
+        missing = [k for k in schema["required"] if k not in given and k not in self._filled]
         if missing:
             raise ActionRejected(f"{self.server.name} needs {', '.join(missing)} for that. Say it in your request.")
 
@@ -265,6 +279,9 @@ class McpToolAction(Action):
         preset = self.server.preset
         if preset and preset.target_check:
             preset.target_check(ctx.org_id, cleaned)  # e.g. GitHub: a company repository only
+        unfilled = [k for k in schema["required"] if k not in cleaned]
+        if unfilled:
+            raise ActionRejected(f"{self.server.name} needs {', '.join(unfilled)} for that. Say it in your request.")
 
         payload: dict[str, Any] = {"args": cleaned, "fields": {"title": title_key, "body": body_key},
                                    "details": details(

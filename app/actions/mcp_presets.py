@@ -52,6 +52,10 @@ class Preset:
     reads: re.Pattern | None = None
     account_check: Callable[[str, str, str], bool] | None = None  # (org_id, email, token)
     target_check: Callable[[str, dict], None] | None = None       # (org_id, args)
+    #: Required fields ``target_check`` fills from the company's own connections
+    #: when the asker did not say them, offered to the model as optional: asked
+    #: for "GitHub bench-sandbox", GPT-OSS asked who owns it instead of drafting.
+    fills: tuple[str, ...] = ()
     extra_auth_params: dict = field(default_factory=dict)
     #: Which of the scopes a server advertises to ask for (least privilege);
     #: ``None`` asks for all of them.
@@ -115,26 +119,27 @@ def _github_client() -> tuple[str | None, str | None]:
 def _github_target(org_id: str, args: dict) -> None:
     """A write's repository must be one of the company's own installations.
 
-    The asker names a repository ("in GitHub bench-sandbox"); the model guesses
-    its owner (it wrote "syvora"). When the owner it guessed holds no such
-    company repository but exactly one installation does, that is the one
-    named, and ``args["owner"]`` is set to it, as Slack's "#general" is
-    resolved to its channel. Two candidates are refused, never picked."""
+    The asker names a repository ("in GitHub bench-sandbox"); the model leaves
+    the owner out or guesses it (it wrote "syvora"). When the owner is missing
+    or holds no such company repository but exactly one installation does,
+    that is the one named, and ``args["owner"]`` is set to it, as Slack's
+    "#general" is resolved to its channel. Two candidates are refused, never picked."""
     from ..auth.credentials import connected_anywhere
     from ..core.exceptions import SourceError
     from ..githublive.repos import resolve_repo, scope_from_config
 
     owner, repo = str(args.get("owner") or ""), str(args.get("repo") or "")
-    if not (owner and repo):
+    if not repo:
         return  # not aimed at a repository (e.g. a search); GitHub's own checks apply
     scopes = [scope_from_config(config) for _ext, config in connected_anywhere(org_id, "github")]
     named = set()
     for scope in scopes:
-        try:
-            resolve_repo(scope, f"{owner}/{repo}")
-            return
-        except SourceError:
-            pass
+        if owner:
+            try:
+                resolve_repo(scope, f"{owner}/{repo}")
+                return
+            except SourceError:
+                pass
         try:
             named.add(resolve_repo(scope, repo))
         except SourceError:
@@ -142,7 +147,7 @@ def _github_target(org_id: str, args: dict) -> None:
     if len(named) == 1:
         args["owner"] = next(iter(named)).split("/")[0]
         return
-    raise ActionRejected(f"{owner}/{repo} isn't a repository your company connected to Handbook."
+    raise ActionRejected(f"{owner + '/' if owner else ''}{repo} isn't a repository your company connected to Handbook."
                          + (f" It has several named {repo}: {', '.join(sorted(named))}. Say which." if named else ""))
 
 
@@ -154,6 +159,7 @@ GITHUB = Preset(
     scopes=re.compile(r"^$"),
     reads=re.compile(r"^(issue_read|get_|list_|search_)"),
     target_check=_github_target,
+    fills=("owner",),
 )
 
 
