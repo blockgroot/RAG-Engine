@@ -825,6 +825,10 @@ def test_a_card_missing_part_of_the_request_is_sent_back_once_then_said():
     assert len(run.picked) == 1 and run.gaps[write.name] == ["the roadmap summary"]   # said, not hidden
     assert "a part nobody wrote" not in judge.prompts[1]                         # parts are the asker's words
     assert service._completeness(object(), q)("x", form) == []                   # a failed check never blocks
+    # Judged on the body only: a title naming the summary is not the summary.
+    titled = Judge(["[1]"])
+    service._completeness(titled, q)("x", {**form, "title": "Summary of the plan", "body": "b"})
+    assert "Summary of the plan" not in titled.prompts[-1] and '"body": "b"' in titled.prompts[-1]
 
 
 def test_a_card_drafted_from_a_named_channel_it_never_read_is_sent_back():

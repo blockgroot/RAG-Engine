@@ -520,7 +520,13 @@ def _completeness(llm, question: str):
                                               or any(asked_in(n, p) for n in names))]
             if not mine:
                 return []               # the request asks for no content of its own
-            form = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS}, ensure_ascii=False)
+            # Content is judged in the card's body, never its title: Gemma took
+            # "Summary of #hb-testing discussion" for the summary, and the card
+            # had no description at all.
+            from .mcp import _TITLE
+
+            form = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS and not _TITLE.search(k)},
+                              ensure_ascii=False)
             gone = _json_list(llm.generate(build_cover_prompt(mine, label, form), max_tokens=CHECK_TOKENS))
         except Exception:  # noqa: BLE001 - a check that fails never blocks the card
             logger.warning("Act: the completeness check failed", exc_info=True)
