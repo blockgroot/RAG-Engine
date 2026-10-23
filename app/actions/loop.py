@@ -16,7 +16,7 @@ from ..security.links import enforce_link_provenance
 from .base import Action
 from .checks import _CHANNEL, OWN_FIELDS, _channels_read, _found_nothing, _precheck
 from .draft import TYPOGRAPHY, asked_for, asked_in
-from .prompts import ALL_DONE, DECIDED, NOTHING_DRAFTED, NOTHING_FOUND, SEARCH, _fenced, build_act_prompt
+from .prompts import ALL_DONE, DECIDED, DONE_BEFORE, NOTHING_DRAFTED, NOTHING_FOUND, SEARCH, _fenced, build_act_prompt
 
 
 #: Drafts one request may make ("an issue in Linear and in GitHub"). Each is
@@ -60,6 +60,22 @@ class _Drafting:
     #: Each drafted card's form as prepared (``_form_key``), so the same card
     #: asked again in other words is known after the person decides it.
     keys: list = field(default_factory=list)
+    #: Per drafted call, what it does (``_did``): once its card succeeds, the
+    #: same action is not drafted again in this request.
+    did: dict = field(default_factory=dict)
+
+
+def _did(action, args: dict, request_words=None) -> str:
+    """One action of the request: the tool, the words that asked for it and
+    where it goes (every value but the drafted text). After "Post in
+    #hb-testing the pointers from …" was approved, GPT-OSS posted the issue's
+    link there too, quoting the same words: the same action, done twice."""
+    from .mcp import _prose
+
+    words = " ".join(str(request_words or args.get("request_words") or "").casefold().split())
+    where = {k: v for k, v in args.items() if k not in OWN_FIELDS and v not in (None, "", [], {})
+             and not (isinstance(v, str) and _prose(k))}
+    return f"did:{action.name}:{words}:" + json.dumps(where, sort_keys=True, default=str)
 
 
 def _form_key(action, args: dict) -> str:
@@ -111,7 +127,8 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
                 # look, as Onyx reminds on its last cycle.
                 reminded = True
                 messages += [{"role": "assistant", "content": result.text or "(no reply)"},  # never empty
-                             {"role": "user", "content": ALL_DONE if already else NOTHING_DRAFTED}]
+                             {"role": "user", "content": (ALL_DONE + _still_refused(messages, by_name))
+                              if already else NOTHING_DRAFTED}]
                 continue
             # A link survives as in any answer: only one the model was shown
             # (the request, a lookup, an approved card's result), never one it
@@ -150,6 +167,22 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
     out.refused = [why for name, turn, why in refused.values() if out.drafted_in.get(name, -1) <= turn]
     out.messages = messages
     return out
+
+
+def _still_refused(messages: list[dict], by_name: dict) -> str:
+    """The tools whose card was refused and never drafted since, named in the
+    reminder: a Slack post drafted before the GitHub issue existed was refused
+    for its link, and after the issue was approved GPT-OSS said "links posted"
+    without drafting it again."""
+    names = {c["id"]: c["function"]["name"] for m in messages for c in m.get("tool_calls") or []}
+    state: dict[str, bool] = {}
+    for m in messages:
+        name = names.get(m.get("tool_call_id")) if m.get("role") == "tool" else None
+        if name in by_name and not by_name[name].lookup:
+            state[name] = str(m.get("content") or "").startswith("Refused")
+    pending = [by_name[n].label for n, refused in state.items() if refused]
+    return (f" Refused above and not drafted since: {'; '.join(pending)}. If the QUESTION asks for it, "
+            "draft it now with the real values you have." if pending else "")
 
 
 def _call_extras(raw_message) -> dict[str, dict]:
@@ -191,6 +224,12 @@ def _calls_in_text(text: str | None, tools: list[dict]) -> list:
             continue
         name = next((obj[k] for k in _NAME_KEYS if isinstance(obj.get(k), str) and obj[k] in forms), None)
         args = next((obj[k] for k in _ARG_KEYS if k in obj), None) if name else obj
+        if name and args is None:
+            # Any other key, by shape: the one object beside the tool's name.
+            # GPT-OSS wrote {"tool": "…save_issue", "value": {…}}, and no list
+            # of key names would have held "value".
+            others = [v for k, v in obj.items() if k not in _NAME_KEYS and isinstance(v, dict)]
+            args = others[0] if len(others) == 1 else None
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -275,9 +314,14 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
                 f"again." + (f"\n{_fenced(guide)}" if guide else "")), fresh
     # A channel the QUESTION names as content, drafted from without reading
     # it: GPT-OSS wrote "pointers from #hb-testing today" it made up, which
-    # reads as complete to any check of the text.
+    # reads as complete to any check of the text. Only a channel inside a
+    # content part: "…then post both links in #hb-testing" names where a card
+    # goes, and reading it put a week of the channel into a Linear issue.
+    content = getattr(check, "content", None)
+    asked = [p.casefold() for p in content()] if content else None
     unread = [c for c in dict.fromkeys(_CHANNEL.findall(question))
               if read is not None and c.casefold() not in _channels_read(out.messages or [])
+              and (asked is None or any(f"#{c.casefold()}" in p for p in asked))
               and not any(isinstance(v, str) and v.lstrip("#").casefold() == c.casefold() for v in args.values())]
     missing = (check(action.label, args) if check is not None else []) + \
         [f"what was said in #{c}" for c in unread]
@@ -304,6 +348,9 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         return DECIDED, False
     if done in drafted:
         return "Already drafted in this turn. Do not draft it again.", False
+    did = _did(action, prepared.get("args") or args, args.get("request_words"))
+    if did in already:
+        return DONE_BEFORE, False
     if len(out.picked) >= MAX_ACTIONS:
         out.left_out.append(action.label)
         return f"Not drafted: at most {MAX_ACTIONS} cards at a time.", False
@@ -311,6 +358,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     out.drafted_in[action.name] = out.turn
     drafted[key] = drafted[done] = len(out.picked)
     out.keys.append(done)
+    out.did[call_id] = did
     progress.report(f"Preparing a card: {action.label}")
     return None, True
 

@@ -924,3 +924,114 @@ def test_a_channel_read_for_zero_days_reads_today_and_says_it_is_the_whole_chann
                         settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
     assert asked == [{"channel": "hb-testing", "days": 1}]
     assert "every message in #hb-testing" in _tool_answers(model.seen[1])[0]
+
+
+def test_a_write_with_no_link_of_its_own_links_to_the_record_it_acted_on():
+    """A Linear comment answers with ids only; its card had nothing to open."""
+    looked = ('[Linear: List issues]\n{"issues": [{"id": "BEN-168", "priority": {"value": 0}, '
+              '"url": "https://linear.app/acme/issue/BEN-168/e2e"}]}')
+    assert mcp._target_link({"issueId": "BEN-168", "body": "Verified"}, looked) == \
+        "https://linear.app/acme/issue/BEN-168/e2e"
+    earlier = '- Linear: Save issue: "E2E", id BEN-170, link https://linear.app/acme/issue/BEN-170/x'
+    assert mcp._target_link({"issueId": "BEN-170"}, earlier) == "https://linear.app/acme/issue/BEN-170/x"
+    assert mcp._target_link({"issueId": "BEN-9"}, looked) is None                 # no record of it
+    assert mcp._target_link({"body": "BEN-168"}, looked) is None                  # drafted text is not a target
+
+
+def test_a_channel_the_request_only_posts_to_is_not_read_first():
+    """"…then post both links in #hb-testing": reading it put a week of the
+    channel into the Linear issue. Only a channel named as content is read."""
+    from app.actions import service
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    q = "make a task in P-7 titled t, then post its link in #hb-testing"
+
+    def check(label, args):
+        return []
+    check.content = lambda: ["its link"]                 # the parts check: #hb-testing is no content
+    model = Scripted([(write, form)])
+    run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
+                              found=[], looked=set(), ran={}, read=lambda w, **kw: ([], "x"), check=check,
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert len(run.picked) == 1 and not run.gaps
+    check.content = lambda: ["what #hb-testing discussed"]
+    model = Scripted([(write, form)])
+    run = service._agent_loop(model, q, [write.tool], [write], org_id="o", user_id="u", email="a@x.com",
+                              found=[], looked=set(), ran={}, read=lambda w, **kw: ([], "x"), check=check,
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert "Read #hb-testing first" in _tool_answers(model.seen[1])[0]
+
+
+def test_an_approved_action_is_not_done_again_in_other_text():
+    """After "Post in #hb-testing the pointers…" was approved, GPT-OSS posted
+    the issue's link there too, quoting the same words."""
+    from app.actions import service
+
+    write = mcp.McpToolAction(_server(), CREATE)
+    form = {"request_words": "make a task", "project_id": "P-7", "title": "t"}
+    first = _loop(Scripted([(write, form)]), "make a task in P-7", [write])
+    model = Scripted([(write, {**form, "title": "something else"})],
+                     [(write, {**form, "request_words": "make a task in P-7", "title": "x"})])
+    again = service._agent_loop(model, "make a task in P-7", [write.tool], [write], org_id="o", user_id="u",
+                                email="a@x.com", found=[], looked=set(), ran={},
+                                already=frozenset(first.did.values()),
+                                settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5))
+    assert "already did this part" in _tool_answers(model.seen[1])[0]
+    assert len(again.picked) == 1            # other words asking for it: another part of the request
+
+
+def test_content_for_another_card_or_already_on_this_one_is_not_judged():
+    """GPT-OSS judged a sheet holding every column and row as lacking them, and
+    asked the Slack post for them, which then repeated the sheet."""
+    from app.actions import service
+
+    q = 'Create a Google Sheet titled "T" with columns Issue, Tool, then post in #eng that the tracker is ready'
+
+    class Judge:
+        judged = []
+
+        def generate(self, prompt, max_tokens=None):
+            if "Split this request into its parts" in prompt:
+                return json.dumps([
+                    {"quote": "columns Issue, Tool", "kind": "content", "in": 'a Google Sheet titled "T"',
+                     "values": ["Issue", "Tool"]},
+                    {"quote": "that the tracker is ready", "kind": "content", "in": "post in #eng", "values": []}])
+            self.judged.append(prompt)
+            return "[1]"
+
+    judge = Judge()
+    check = service._completeness(judge, q)
+    sheet = {"title": "T", "rows": [["Issue", "Tool"]]}
+    assert check("Google Workspace: Create a Google Sheet", sheet) == []        # its items are all there
+    assert judge.judged == []                                                   # and the post's part is not its own
+    assert check("Slack: Send a message", {"channel": "#eng", "text": "Done"}) == ["that the tracker is ready"]
+    listed = judge.judged[-1].split("It asks for this content:")[1].split("A card was drafted")[0]
+    assert listed.strip() == "1. that the tracker is ready"                   # the sheet's part is not the post's
+
+
+def test_the_reminder_names_a_card_refused_and_never_drafted_again():
+    """A Slack post refused for a link that did not exist yet was never drafted
+    again once it did; GPT-OSS said "links posted"."""
+    post = SimpleNamespace(label="Slack: Send a message", lookup=False)
+    issue = SimpleNamespace(label="GitHub: Create issue", lookup=False)
+    by_name = {"post": post, "issue": issue}
+    messages = [{"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "post"}}]},
+                {"role": "tool", "tool_call_id": "a", "content": "Refused, not drafted: the link …"},
+                {"role": "assistant", "tool_calls": [{"id": "b", "function": {"name": "issue"}}]},
+                {"role": "tool", "tool_call_id": "b", "content": "Done: the user approved it"}]
+    assert "Slack: Send a message" in act_loop._still_refused(messages, by_name)
+    messages += [{"role": "assistant", "tool_calls": [{"id": "c", "function": {"name": "post"}}]},
+                 {"role": "tool", "tool_call_id": "c", "content": "Done: the user approved it"}]
+    assert act_loop._still_refused(messages, by_name) == ""
+
+
+def test_a_call_written_as_text_is_read_whatever_key_holds_its_arguments():
+    """GPT-OSS wrote {"tool": "…save_issue", "value": {…}}: no card was drafted."""
+    write = mcp.McpToolAction(_server(), CREATE)
+    tools = [write.tool]
+    name = write.tool["function"]["name"]
+    said = act_loop._calls_in_text(f'{{"tool": "{name}", "value": {{"project_id": "P-7", "title": "t"}}}} Done.', tools)
+    assert [(c.name, json.loads(c.arguments)) for c in said] == [(name, {"project_id": "P-7", "title": "t"})]
+    two = act_loop._calls_in_text(f'{{"tool": "{name}", "a": {{"x": 1}}, "b": {{"y": 2}}}}', tools)
+    assert two == []                                   # two objects: which one is not guessed

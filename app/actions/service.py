@@ -394,7 +394,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
     # Over the limit: the first ones are drafted and the rest is SAID, never
     # dropped silently (a fourth action simply vanished).
     left_out = run.left_out
-    drafts, refusals, calls = [], list(run.refused), {}
+    drafts, refusals, calls, did = [], list(run.refused), {}, {}
     messages = list(run.messages or [])
     for action, args, call_id in run.picked:
         progress.report(f"Preparing a card: {action.label}")
@@ -409,6 +409,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
         else:
             drafts.append(made)
             calls[made[0].id] = call_id
+            did[made[0].id] = run.did.get(call_id)
     if not drafts:
         return ActOutcome(" ".join(dict.fromkeys(refusals)) or run.reply or "Nothing more to do.")
     reply = ("Here's what I'll do. Check it, then approve." if len(drafts) == 1 else
@@ -426,7 +427,7 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
             runs.create(org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, surface=surface,
                         question=question, model=model, messages=messages, found=found, sources=sources,
                         drafted={"keys": sorted({*already, *(_form_key(a, args) for a, args, _ in run.picked), *run.keys}),
-                                 "calls": calls},
+                                 "calls": calls, "did": did},
                         action_ids=list(calls), ttl_seconds=settings.ttl_seconds, step=step)
         except DatabaseError:
             # The cards stand on their own; only going on after them is lost
@@ -462,6 +463,9 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
     try:
         kept = run.drafted if isinstance(run.drafted, dict) else {}
         calls, keys = kept.get("calls") or {}, frozenset(kept.get("keys") or ())
+        # An approved card's action is done: not drafted again in other words.
+        did = kept.get("did") or {}
+        keys |= {did[aid] for aid, _name, status, _r in cards if status == "succeeded" and did.get(aid)}
         if not calls or set(calls) - {aid for aid, *_ in cards}:
             return None                    # a run from before calls were kept, or a card gone
         offered, why_not = offered_actions(org_id, user_id, settings, run.surface.get("slack_user"),
@@ -623,7 +627,10 @@ def revise(
         data = None
     fields = {k: v for k, v in (data or {}).items() if k in current and isinstance(v, str)}
     if not fields or all(fields[k] == current[k] for k in fields):
-        raise ActionError("I couldn't rework that. Edit it yourself, or say it another way.")
+        # Only the words are rewritten: "add name, status in the rows as well"
+        # asked for a sheet's rows, which are part of the form, not its text.
+        raise ActionError("I couldn't rework that. I can change only the drafted text; to change rows, "
+                          "a target or a setting, cancel and ask again with them.")
     asked = "\n".join([*current.values(), instruction])
     return store.update_payload(org_id, user_id, action_id, shown_hash=shown_hash,
                                 payload=action.edit(row.payload, fields, asked=asked))

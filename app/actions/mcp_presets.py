@@ -233,6 +233,18 @@ def _google_account(org_id: str, email: str, token: str) -> bool:
     return bool(info.get("email_verified")) and (info.get("email") or "").lower() == email.lower()
 
 
+def _google_target(org_id: str, args: dict) -> None:
+    """A file is shared only with someone in the company: company content
+    never goes to an outside address, as an account must be the company's."""
+    person = str(args.get("person") or "").strip()
+    if not person:
+        return
+    from ..auth.users import get_member_by_address
+
+    if get_member_by_address(person, org_id) is None:
+        raise ActionRejected(f"{person} isn't in your company on Handbook, so the file can't be shared with them.")
+
+
 _GOOGLE_OAUTH = {
     "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
     "token_endpoint": "https://oauth2.googleapis.com/token",
@@ -250,6 +262,7 @@ GOOGLE_WORKSPACE = Preset(
     extra_auth_params={"access_type": "offline", "prompt": "consent"},
     reads=re.compile(r"^(search_|read_)"),
     account_check=_google_account,
+    target_check=_google_target,
 )
 
 PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_WORKSPACE)}

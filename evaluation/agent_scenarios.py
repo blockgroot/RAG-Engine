@@ -126,6 +126,14 @@ def not_pasted(t):
     return "the messages were pasted, not summarised" if " UTC " in json.dumps(t.cards) else ""
 
 
+def no_gaps(t):
+    return f"said missing: {t.gaps}" if t.gaps else ""
+
+
+def no_channel_read(t):
+    return "a channel the request only posts to was read" if TRACE_CHANNEL else ""
+
+
 def read_something(t):
     return "" if t.reads else "nothing was read"
 
@@ -204,6 +212,45 @@ SCENARIOS = {
         # Prod: asked "who owns bench-sandbox?" instead of drafting the GitHub card.
         "Create an issue titled Agent check 23 Oct in Linear BEN and in GitHub bench-sandbox",
         [card_count(2)]),
+    "sheet_header": Scenario(
+        # Prod: the sheet had the row but not the columns it was asked for.
+        'Create a Google Sheet titled "Scenario Sheet" with columns Name, Status and a row Login bug, Open',
+        [card_count(1), card_tool("create_sheet"), cards_with('["Name", "Status"]'), no_gaps]),
+    "sheet_then_post": Scenario(
+        # Prod: right cards, but "couldn't include … what was said in #hb-testing".
+        'Create a Google Sheet titled "Scenario Tracker" with columns Issue, Tool and rows E2E Multi, Linear '
+        'and E2E Multi, GitHub, then post in #hb-testing that the tracker is ready',
+        [card_count(2), card_tool("send_message"), no_channel_read, no_gaps,
+         # Prod: the post restated the sheet's columns and rows.
+         lambda t: "the post repeats the sheet's rows" if any(
+             n == "send_message" and "E2E Multi" in json.dumps(a) for n, a in t.cards) else ""]),
+    "three_links": Scenario(
+        # Prod: #hb-testing (where the links go) was read into the Linear issue.
+        f'Create a Linear issue in BEN titled "Scenario Three" and a GitHub issue in {REPO.split("/")[1]} with '
+        'the same title, then post both links in #hb-testing',
+        [card_count(3), card_tool("send_message"), cards_with(LINK), no_channel_read]),
+    "post_pointers_once": Scenario(
+        # Prod: after the pointers were posted, the issue's link was posted too.
+        'Post in #hb-testing the pointers from the Linear issue "Checkout page times out on slow networks"',
+        [card_count(1), card_tool("send_message")]),
+    "doc_append": Scenario(
+        'Add "Next steps: ship v2" to the Google Doc "Weekly notes"',
+        [card_count(1), card_tool("append_to_doc"), cards_with("ship v2")]),
+    "share_editor": Scenario(
+        # Drive calls an editor "writer"; the asker's word must choose the role.
+        f'Share the Google Doc "Weekly notes" with {EMAIL} as an editor',
+        [card_count(1), card_tool("share_file"), cards_with('"role": "editor"')]),
+    "rename_sheet": Scenario(
+        'Rename the Google Sheet "E2E Tracker" to "E2E Tracker done"',
+        [card_count(1), card_tool("rename_file"), cards_with("E2E Tracker done")]),
+    "folder_then_move": Scenario(
+        'Create a Google Drive folder "Scenario Folder" and move the Google Sheet "E2E Tracker" into it',
+        [card_count(2), card_tool("create_folder"), card_tool("move_file")]),
+    "folder_with_doc": Scenario(
+        'Create a Google Drive folder "Scenario Q4" and a Google Doc "Scenario plan" inside it saying "Ship v2"',
+        [card_count(2), card_tool("create_folder"),
+         lambda t: "" if any(n == "create_doc" and a.get("folder") == "Scenario Q4" for n, a in t.cards)
+         else "the doc was not put in the folder"]),
     "question": Scenario(
         "What open issues do we have in BEN?",
         [card_count(0)]),
@@ -241,11 +288,21 @@ def offered_tools():
                                               for t in slack_tools}, True)
     tokens[slack.id] = "unused"
     offered += [mcp.McpToolAction(slack, t) for t in slack_tools]
+    from app.mcphost.google import TOOLS as GOOGLE_TOOLS
+
+    google_tools = [t.listing() for t in GOOGLE_TOOLS if not t.read_only]
+    google = mcp_store.McpServer(str(uuid.uuid4()), "org", "Google Workspace", mcp_presets.GOOGLE_WORKSPACE.url,
+                                 "oauth", None, google_tools,
+                                 {t["name"]: {"mode": "write", "hash": mcp_store.tool_hash(t)} for t in google_tools},
+                                 True)
+    tokens[google.id] = "unused"
+    offered += [mcp.McpToolAction(google, t) for t in google_tools]
     for cls in (mcp.McpLookup, mcp.McpToolAction):
         cls.token_for = lambda self, *a, **k: tokens[self.server.id]
     # The real check reads the company's installations from the DB; here the
     # one installation is the bench's, so an owner left out or guessed wrong is
     # set the same way.
+    object.__setattr__(mcp_presets.GOOGLE_WORKSPACE, "target_check", None)   # company members are in the DB
     object.__setattr__(github, "target_check", lambda _org, args: args.update(owner=REPO.split("/")[0])
                        if args.get("repo") == REPO.split("/")[1] else None)
     return offered
@@ -304,6 +361,8 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
             if decision == "cancel":
                 break                     # a cancel ends the request (runs.resume)
             already = already | {service._form_key(a, args) for a, args, _ in loop.picked} | set(loop.keys)
+            if decision == "approve":
+                already |= set(loop.did.values())
             sources = (*loop.sources, *made)
     finally:
         act_loop._read_content = orig

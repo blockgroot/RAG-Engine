@@ -57,6 +57,13 @@ ALL_DONE = ("Before you finish: compare the QUESTION with what was done above. I
             "sentence.")
 
 
+#: Said when an action this request already did is drafted again, in the same
+#: words and to the same place.
+DONE_BEFORE = ("Not drafted: the card above already did this part of the QUESTION (same words, same "
+               "place) and the user approved it. Draft another only for a part not done yet, quoting "
+               "that part's own words; otherwise reply in one short sentence.")
+
+
 #: Said when a card already decided is drafted again. GPT-OSS "fixed" a failed
 #: card with a priority nobody asked for, which is left out: the same card.
 DECIDED = ("The user already decided this card (its result is above): a setting the QUESTION did not "
@@ -82,24 +89,35 @@ def build_parts_prompt(question: str) -> str:
         "- \"title\": a name the request gives what is made\n"
         "- \"content\": what must be written into, or included in, what is created or sent "
         "(a summary of something, pointers, a list, a link, specific words)\n"
-        "Each part is the shortest exact quote of the request's own words. Reply with ONLY a JSON "
-        "list of objects like {\"quote\": \"...\", \"kind\": \"content\"}.\n"
+        "A content quote is only what gets written, never where it goes: in \"post both links in "
+        "#eng\", \"both links\" is content and \"#eng\" is a target.\n"
+        "Each part is the shortest exact quote of the request's own words. For a content part "
+        "also give \"in\": the request's own words naming where it is written (\"a Google Sheet "
+        "titled X\", \"post in #eng\"), and \"values\": the exact items it spells out to copy "
+        "(names, cells, words), or [] when it names something to read or write (a summary, "
+        "pointers, a link).\n"
+        "Reply with ONLY a JSON list of objects like {\"quote\": \"...\", \"kind\": \"content\", "
+        "\"in\": \"...\", \"values\": [\"...\"]}.\n"
         f"REQUEST: {question}\n"
     )
 
 
-def build_cover_prompt(parts: list[str], label: str, form: str) -> str:
+def build_cover_prompt(parts: list[str], label: str, form: str, question: str = "") -> str:
     """Which of the request's content parts a drafted card lacks. The form may
-    hold document text, so it is fenced as data."""
+    hold document text, so it is fenced as data. The request itself is shown:
+    given the parts alone, GPT-OSS asked the Slack post for the sheet's rows
+    ("post that the tracker is ready"), and the post repeated them."""
     listed = "\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1))
     return (
-        f"An employee's request asks for this content:\n{listed}\n\n"
+        (f"An employee's request: {question}\n" if question else "")
+        + f"It asks for this content:\n{listed}\n\n"
         f"A card was drafted for one action of it: {label}. Which of these belong in THIS card "
-        "but are not in its text? A summary, list or pointers asked for must be written as one: "
-        "messages or text pasted as they were do not count. Content "
-        "meant for another action, or "
-        "that needs a result that does not exist yet, is not missing here. Reply with ONLY a JSON list of the "
-        "missing numbers, e.g. [2] or [].\n\n"
+        "but are not in its text? Content may be in any field and any shape: a sheet's rows are "
+        "its columns and rows, a link may sit inside a sentence. A summary, list or pointers asked "
+        "for must be written as one: messages or text pasted as they were do not count. Content "
+        "meant for another action (a message to post, once a sheet is made), or that needs a result "
+        "that does not exist yet, is not missing here. Reply with ONLY a JSON list of the missing "
+        "numbers, e.g. [2] or [].\n\n"
         f"{UNTRUSTED_POLICY}\n"
         "<<<UNTRUSTED_DRAFTED_FORM>>>\n"
         f"{scrub_untrusted_text(form)}\n"
@@ -167,6 +185,10 @@ def build_act_prompt(question: str, *, in_thread: bool = False, earlier: str = "
         "form and call again.\n"
         "- Draft the title and body from the QUESTION and what you read. Never "
         "add links, @-mentions or people the QUESTION did not mention.\n"
+        "- Write what the QUESTION asks each card to say, and no more. A message about "
+        "something an earlier card made (\"post that the tracker is ready\") says that in a "
+        "sentence and gives its link; it never repeats that card's content (its rows, its "
+        "description).\n"
         "- Fill only what the form requires and what the QUESTION asks for. Leave "
         "every other setting (a mode, a state, a priority, a type) unset: the "
         "tool's default applies, and an unasked setting can make the tool refuse "

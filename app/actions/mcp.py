@@ -291,6 +291,9 @@ class McpToolAction(Action):
                                        ("Left out", ", ".join(left_out) or None),
                                        *((k, _named(v, ctx.lookups)) for k, v in cleaned.items()
                                          if k not in (title_key, body_key)))}
+        target_link = _target_link(cleaned, ctx.lookups or "")
+        if target_link:
+            payload["target_link"] = target_link
         if title_key:
             payload["title"] = cleaned[title_key]
         if body_key:
@@ -349,7 +352,44 @@ class McpToolAction(Action):
         link = next((page for page in map(_page_link, candidates) if page), None)
         if link is None and self.server.preset and self.server.preset.key == "github":
             link = _github_page(arguments)        # a merge answers with no link at all
+        link = link or payload.get("target_link")
         return ActionResult(str(structured.get("id") or structured.get("identifier") or key), link)
+
+
+def _target_link(args: dict[str, Any], lookups: str) -> str | None:
+    """The page of the record a write acts on, for an answer with no link of
+    its own: a Linear comment answers with ids only, and its card had nothing
+    to open. Only a link a lookup returned beside that record's id (its
+    ``url``-like field in the same object), or an earlier card's "id …, link …"."""
+    ids = {v for k, v in args.items() if isinstance(v, str) and 3 <= len(v) <= 200 and not _prose(k)}
+    if not ids or not lookups:
+        return None
+    for value in ids:
+        m = re.search(rf"\bid {re.escape(value)}, link (https://\S+)", lookups)
+        if m:
+            return _page_link(m.group(1).rstrip(".,"))
+    decoder, i = json.JSONDecoder(), lookups.find("{")
+    while i != -1:
+        try:
+            obj, end = decoder.raw_decode(lookups, i)
+        except json.JSONDecodeError:
+            i = lookups.find("{", i + 1)
+            continue
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                if ids & {v for v in node.values() if isinstance(v, str)}:
+                    url = next((node[k] for k in ("url", "html_url", "permalink", "link")
+                                if isinstance(node.get(k), str)), None)
+                    page = _page_link(url) if url else None
+                    if page:
+                        return page
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        i = lookups.find("{", end)
+    return None
 
 
 _GITHUB_API = re.compile(r"^https://api\.github\.com/repos/([^/]+)/([^/]+)/(?:git/refs/heads/(.+)|(issues|pulls)/(\d+))$")

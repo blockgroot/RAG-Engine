@@ -45,15 +45,50 @@ def _completeness(llm, question: str):
     they are in it; the judgement is the model's, every check of it is code's.
     A failed call checks nothing: it never blocks a card."""
     parts: list[str] | None = None
+    #: Per part, as the model labelled it and code kept it: the request's words
+    #: naming where it is written, and the items it spells out to copy.
+    where: dict[str, str] = {}
+    values: dict[str, list[str]] = {}
+
+    def content() -> list[str]:
+        """The request's content parts, read once: quotes of the request."""
+        nonlocal parts
+        if parts is None:
+            try:
+                said = _json_list(llm.generate(build_parts_prompt(question), max_tokens=CHECK_TOKENS))
+            except Exception:  # noqa: BLE001 - a check that fails never blocks the card
+                logger.warning("Act: the completeness check failed", exc_info=True)
+                said = []
+            quotes = (str(p.get("quote") or "").strip() for p in said
+                      if isinstance(p, dict) and p.get("kind") == "content")
+            parts = list(dict.fromkeys(q for q in quotes if q and asked_in(q, question)))[:MAX_PARTS]
+            for p in said:
+                q = str(p.get("quote") or "").strip() if isinstance(p, dict) else ""
+                if q not in parts:
+                    continue
+                said_in = str(p.get("in") or "").strip()
+                if said_in and asked_in(said_in, question):
+                    where[q] = said_in.casefold()
+                items = [str(v).strip() for v in p.get("values") or [] if str(v).strip()]
+                if items and all(asked_in(v, question) for v in items):
+                    values[q] = items
+        return parts
+
+    def belongs(part: str, label: str, args: dict) -> bool:
+        """Whether the part is written into this card: its "in" words name the
+        card's tool or one of its values. Unlabelled, every card is judged."""
+        said_in = where.get(part)
+        if not said_in:
+            return True
+        named = [label.split(":")[0], *(v for v in args.values() if isinstance(v, str) and 0 < len(v) <= 200)]
+        # Whole words: a sheet titled "T" is not named by "pos(t) in #eng".
+        return any(re.search(rf"(?<!\w){re.escape(n.casefold().lstrip('#'))}(?!\w)", said_in)
+                   for n in named if n.strip().lstrip("#"))
 
     def check(label: str, args: dict) -> list[str]:
         nonlocal parts
         try:
-            if parts is None:
-                said = _json_list(llm.generate(build_parts_prompt(question), max_tokens=CHECK_TOKENS))
-                quotes = (str(p.get("quote") or "").strip() for p in said
-                          if isinstance(p, dict) and p.get("kind") == "content")
-                parts = list(dict.fromkeys(q for q in quotes if q and asked_in(q, question)))[:MAX_PARTS]
+            content()
             if not parts:
                 return []               # the request asks for no content of its own
             # Content is judged in the card's body, never its title: Gemma took
@@ -63,13 +98,25 @@ def _completeness(llm, question: str):
 
             form = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS and not _TITLE.search(k)},
                               ensure_ascii=False)
-            gone = _json_list(llm.generate(build_cover_prompt(parts, label, form), max_tokens=CHECK_TOKENS))
+            # What code can check, it does: a part for another card ("post that
+            # the tracker is ready" is not the sheet's) is not judged here, and
+            # a part whose items are all on the card is there. GPT-OSS judged a
+            # sheet with every column and row as lacking them, and asked the
+            # Slack post for them, which then repeated the sheet.
+            sent = json.dumps(args, ensure_ascii=False).casefold()
+            judged = [p for p in parts if belongs(p, label, args)
+                      and not (values.get(p) and all(v.casefold() in sent for v in values[p]))]
+            if not judged:
+                return []
+            gone = _json_list(llm.generate(build_cover_prompt(judged, label, form, question),
+                                           max_tokens=CHECK_TOKENS))
         except Exception:  # noqa: BLE001 - a check that fails never blocks the card
             logger.warning("Act: the completeness check failed", exc_info=True)
             parts = parts or []
             return []
-        return [parts[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(parts)]
+        return [judged[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(judged)]
 
+    check.content = content
     return check
 
 

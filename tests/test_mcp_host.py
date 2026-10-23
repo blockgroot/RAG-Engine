@@ -156,3 +156,74 @@ def test_agent_modes_own_client_lists_and_calls_the_hosted_server(client, monkey
     assert result["structuredContent"]["url"].startswith("https://acme.slack.com/")
     with pytest.raises(Exception, match="public internet|https"):
         mcp_client.public_https("http://localhost:9999/elsewhere")
+
+
+class GoogleEdits(GoogleFake):
+    """Answers the edits the newer tools make."""
+
+    def request(self, method, url, headers=None, timeout=None, params=None, json=None):
+        if url.endswith(":batchUpdate") and "replaceAllText" in str(json):
+            self.calls.append((method, url, params or {}, json))
+            changed = 2 if json["requests"][0]["replaceAllText"]["containsText"]["text"] == "v1" else 0
+            body = {"replies": [{"replaceAllText": {"occurrencesChanged": changed}}]}
+            return type("R", (), {"status_code": 200, "content": b"{}", "json": lambda self: body})()
+        return super().request(method, url, headers=headers, timeout=timeout, params=params, json=json)
+
+
+def _call(client, name, arguments):
+    return _rpc(client, "google", "tools/call", {"name": name, "arguments": arguments},
+                token="ya29.person").json()["result"]
+
+
+def test_text_is_added_to_the_end_of_a_doc_and_replaced_only_where_it_is(client, monkeypatch):
+    fake = GoogleEdits()
+    monkeypatch.setattr(google.httpx, "request", fake.request)
+    r = _call(client, "append_to_doc", {"doc": "MCP test sheet", "text": "Next steps"})
+    assert not r.get("isError")
+    assert fake.calls[-1][3] == {"requests": [{"insertText": {"endOfSegmentLocation": {}, "text": "\nNext steps"}}]}
+    assert "Replaced 2 places" in _call(client, "replace_in_doc", {"doc": "x", "find": "v1", "replace": "v2"})[
+        "content"][0]["text"]
+    missing = _call(client, "replace_in_doc", {"doc": "x", "find": "nowhere", "replace": "v2"})
+    assert missing.get("isError") and "no text" in missing["content"][0]["text"]
+
+
+def test_a_file_moves_into_a_folder_and_is_shared_only_in_a_role_drive_has(client, monkeypatch):
+    fake = GoogleEdits()
+    monkeypatch.setattr(google.httpx, "request", fake.request)
+    assert not _call(client, "move_file", {"file": "MCP test sheet", "folder": "Team"}).get("isError")
+    patch = [c for c in fake.calls if c[0] == "PATCH"][-1]
+    assert patch[2]["addParents"] == "S" * 30           # the folder the name resolved to
+    shared = _call(client, "share_file", {"file": "MCP test sheet", "person": "raj@acme.com", "role": "editor"})
+    assert not shared.get("isError") and fake.calls[-1][3] == {
+        "type": "user", "role": "writer", "emailAddress": "raj@acme.com"}
+    owner = _call(client, "share_file", {"file": "MCP test sheet", "person": "raj@acme.com", "role": "owner"})
+    assert owner.get("isError")                          # ownership is never handed over
+
+
+def test_a_file_is_shared_only_with_someone_in_the_company(monkeypatch):
+    from app.actions import mcp_presets
+    from app.core.exceptions import ActionRejected
+
+    members = {"raj@acme.com"}
+    monkeypatch.setattr("app.auth.users.get_member_by_address",
+                        lambda email, org: object() if email.lower() in members else None)
+    mcp_presets.GOOGLE_WORKSPACE.target_check("org", {"file": "Plan", "person": "Raj@acme.com"})
+    with pytest.raises(ActionRejected, match="isn't in your company"):
+        mcp_presets.GOOGLE_WORKSPACE.target_check("org", {"file": "Plan", "person": "someone@gmail.com"})
+    mcp_presets.GOOGLE_WORKSPACE.target_check("org", {"title": "New doc"})       # not a share: nothing to check
+
+
+def test_a_doc_is_created_inside_the_folder_named(client, monkeypatch):
+    """"Create a folder Q4 and a Doc Plan inside it": the Doc is moved into
+    the folder from My Drive; without a folder nothing is moved."""
+    fake = GoogleEdits()
+    monkeypatch.setattr(google.httpx, "request", fake.request)
+    r = _call(client, "create_doc", {"title": "Plan", "content": "1) ship", "folder": "Q4"})
+    assert not r.get("isError") and "in the folder" in r["content"][0]["text"]
+    patch = [c for c in fake.calls if c[0] == "PATCH"][-1]
+    assert ("D" * 30) in patch[1] and patch[2]["addParents"] == "S" * 30
+    folder_search = [c for c in fake.calls if c[1] == google.DRIVE and c[0] == "GET"][-1][2]["q"]
+    assert google.FOLDER_TYPE in folder_search and "name = 'Q4'" in folder_search
+    fake.calls.clear()
+    _call(client, "create_doc", {"title": "Loose", "content": "x"})
+    assert not [c for c in fake.calls if c[0] == "PATCH"]
