@@ -921,9 +921,10 @@
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   gap: clamp(2rem, 5vw, 4.5rem);
-  align-items: center;
+  /* Both columns start at the same line: a centred card floated well below
+     the heading once the steps figure made the left column tall. */
+  align-items: start;
   padding-block: clamp(2rem, 5vw, 4rem);
-  min-height: calc(100vh - 4.5rem);
   box-sizing: border-box;
 }
 .auth-scene2 .sec-title { font-size: clamp(2rem, 3.6vw, 2.9rem); }
@@ -939,7 +940,7 @@
   margin-left: 0.35rem;
   vertical-align: middle;
 }
-.auth-form { width: 100%; max-width: 28rem; justify-self: end; }
+.auth-form { width: 100%; max-width: 28rem; justify-self: end; position: sticky; top: 6.5rem; }
 .auth-card {
   background: #fff;
   border: 1px solid var(--s-line);
@@ -1047,7 +1048,7 @@
 @media (max-width: 900px) {
   .auth-stage { grid-template-columns: minmax(0, 1fr); min-height: 0; }
   /* On a phone the form comes first; the story follows it. */
-  .auth-form { order: -1; justify-self: stretch; max-width: none; }
+  .auth-form { order: -1; justify-self: stretch; max-width: none; position: static; }
 }
 .auth-card .auth-v2-card-kicker {
   display: inline-flex;

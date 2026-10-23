@@ -39,3 +39,6 @@ evaluation/reports/bench2/bodies*.jsonl
 evaluation/reports/bench2-followup/bodies*.jsonl
 # Benchmark run outputs stay local; files already tracked stay tracked
 evaluation/reports/**
+
+# The Handbook vs Onyx agent benchmark harness: run locally, not shipped.
+evaluation/agentbench2/
