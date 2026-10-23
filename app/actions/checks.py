@@ -49,6 +49,8 @@ def _completeness(llm, question: str):
     #: naming where it is written, and the items it spells out to copy.
     where: dict[str, str] = {}
     values: dict[str, list[str]] = {}
+    #: The request's action parts ("Add", "share"), quotes of its own words.
+    doing: list[str] = []
 
     def content() -> list[str]:
         """The request's content parts, read once: quotes of the request."""
@@ -62,6 +64,9 @@ def _completeness(llm, question: str):
             quotes = (str(p.get("quote") or "").strip() for p in said
                       if isinstance(p, dict) and p.get("kind") == "content")
             parts = list(dict.fromkeys(q for q in quotes if q and asked_in(q, question)))[:MAX_PARTS]
+            doing[:] = list(dict.fromkeys(
+                q for p in said if isinstance(p, dict) and p.get("kind") == "action"
+                and (q := str(p.get("quote") or "").strip()) and asked_in(q, question)))[:MAX_PARTS]
             for p in said:
                 q = str(p.get("quote") or "").strip() if isinstance(p, dict) else ""
                 if q not in parts:
@@ -116,7 +121,12 @@ def _completeness(llm, question: str):
             return []
         return [judged[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(judged)]
 
+    def actions() -> list[str]:
+        content()
+        return doing
+
     check.content = content
+    check.actions = actions
     return check
 
 

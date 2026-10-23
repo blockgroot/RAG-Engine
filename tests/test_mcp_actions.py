@@ -1088,3 +1088,17 @@ def test_a_link_the_tool_only_echoed_is_not_the_cards_link():
     finally:
         mcp_client.McpSession = original
     assert made.url == "https://linear.app/acme/issue/BEN-171/x" and made.external_id == "c-1"
+
+
+def test_the_reminder_names_an_action_of_the_request_no_card_did():
+    """"Add … and share it with Raj as an editor": after the text was approved,
+    GPT-OSS stopped and the share was never drafted."""
+    write = SimpleNamespace(label="Google: Add text", lookup=False)
+    by_name = {"append": write}
+    check = SimpleNamespace(actions=lambda: ["Add", "share"])
+    messages = [{"role": "assistant", "tool_calls": [{"id": "a", "function": {
+        "name": "append", "arguments": json.dumps({"request_words": 'Add "Status" to the Google Doc'})}}]}]
+    said = act_loop._not_asked_yet(messages, by_name, check)
+    assert "“share”" in said and "“Add”" not in said
+    assert act_loop._not_asked_yet(messages, by_name, SimpleNamespace(actions=lambda: ["Add"])) == ""
+    assert act_loop._not_asked_yet(messages, by_name, None) == ""

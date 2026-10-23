@@ -130,7 +130,8 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
                 # look, as Onyx reminds on its last cycle.
                 reminded = True
                 messages += [{"role": "assistant", "content": result.text or "(no reply)"},  # never empty
-                             {"role": "user", "content": (ALL_DONE + _still_refused(messages, by_name))
+                             {"role": "user", "content": (ALL_DONE + _still_refused(messages, by_name)
+                                                          + _not_asked_yet(messages, by_name, check))
                               if already else NOTHING_DRAFTED}]
                 continue
             # A link survives as in any answer: only one the model was shown
@@ -172,6 +173,29 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
     out.refused = [why for name, turn, why in refused.values() if out.drafted_in.get(name, -1) <= turn]
     out.messages = messages
     return out
+
+
+def _not_asked_yet(messages: list[dict], by_name: dict, check) -> str:
+    """The request's actions no card has asked for yet, named in the reminder:
+    "Add … and share it with Raj as an editor" drafted the text, and after its
+    approval GPT-OSS stopped; the share was never drafted. An action counts as
+    done when some write's request_words quote it (code checks the quote)."""
+    actions = getattr(check, "actions", None)
+    if actions is None:
+        return ""
+    asked = []
+    for m in messages:
+        for c in m.get("tool_calls") or []:
+            action = by_name.get(c["function"]["name"])
+            if action is None or action.lookup:
+                continue
+            try:
+                asked.append(str(json.loads(c["function"].get("arguments") or "{}").get("request_words") or ""))
+            except (TypeError, ValueError):
+                continue
+    missing = [a for a in actions() if not any(asked_for(a, words) for words in asked)]
+    return (f" The QUESTION also asks: {'; '.join(f'“{a}”' for a in missing)}, and no card has done it yet. "
+            "If a tool you have does it, draft it now; if none does, say so." if missing else "")
 
 
 def _names(args: dict) -> set[str]:

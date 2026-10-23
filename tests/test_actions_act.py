@@ -1208,6 +1208,28 @@ def test_tools_are_narrowed_per_connector_so_each_keeps_its_best():
     assert sum(lbl.startswith("linear") for lbl in labels) == 2
     assert service._fit_tools(offered[:3], "x", None, 4) == offered[:3]
 
+    # With embeddings down (prod's embedding key ran out), the first tools in
+    # connector order were offered and a later connector's share tool cut.
+    from app.core.exceptions import EmbeddingProviderError
+
+    class Down:
+        def embed(self, texts):
+            raise EmbeddingProviderError("no balance")
+
+    # A tool the request names by its own title word is kept even when its
+    # meaning ranks low: Share a file was not offered for "…and share it".
+    class Flat:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    named = offered + [tool("google", i, "rename a file") for i in range(10)] + [
+        SimpleNamespace(label="Google: Share a file", server=SimpleNamespace(id="google"),
+                        tool={"function": {"description": "one person"}})]
+    assert "Google: Share a file" in [a.label for a in service._fit_tools(named, "share it with Raj", Flat(), 6)]
+    late = offered + [tool("google", i, "rename a file") for i in range(10)] + [tool("google", 99, "share a file")]
+    kept = [a.label for a in service._fit_tools(late, "add text to the doc and share it", Down(), 6)]
+    assert "google99" in kept and len(kept) == 6
+
 
 def test_a_model_failure_says_why():
     """Everything read "temporarily unavailable": Groq's 413 (too large for the

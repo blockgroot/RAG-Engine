@@ -53,7 +53,7 @@ from .factory import get_action
 from .store import ActionRow
 
 from .checks import _completeness
-from .loop import MAX_ACTIONS, _agent_loop, _Drafting, _form_key
+from .loop import MAX_ACTIONS, _agent_loop, _Drafting, _form_key, _not_asked_yet
 from .prompts import _decided, _fenced, build_revise_prompt
 
 logger = logging.getLogger("actions")
@@ -68,6 +68,9 @@ DRAFT_FIELDS = ("title", "body", "text")
 SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
                 "google": "Google Drive", "slack": "Slack"}
 
+
+#: A word of a request or a tool's text, for ranking when embeddings fail.
+_TOOL_WORD = re.compile(r"[^\W_]{3,}")
 
 #: Embeddings of tool texts, by text. A tool's text changes only when its
 #: server does, so each is embedded once per process.
@@ -92,17 +95,29 @@ def _fit_tools(offered: list[Action], question: str, embedder, cap: int) -> list
         if missing:
             _TOOL_VECTORS.update(zip(missing, embedder.embed(missing)))
         [q] = embedder.embed([question])
+
+        def score(i: int) -> float:
+            v = _TOOL_VECTORS[texts[i]]
+            dot = sum(a * b for a, b in zip(q, v))
+            norm = (sum(a * a for a in q) * sum(b * b for b in v)) ** 0.5
+            return dot / norm if norm else 0.0
     except EmbeddingProviderError as exc:
-        logger.warning("Act: ranking %d tools failed, offering the first %d: %s", len(offered), cap, exc)
-        return offered[:cap]
+        # Ranked by the words the request shares with each tool instead: "the
+        # first 40" cut every later connector's last tools, and "…and share it
+        # with Raj" was never offered Share a file.
+        logger.warning("Act: ranking %d tools by meaning failed, ranking by words: %s", len(offered), exc)
+        asked = set(_TOOL_WORD.findall(question.casefold()))
 
-    def cosine(v: list[float]) -> float:
-        dot = sum(a * b for a, b in zip(q, v))
-        norm = (sum(a * a for a in q) * sum(b * b for b in v)) ** 0.5
-        return dot / norm if norm else 0.0
+        def score(i: int) -> float:
+            return float(len(asked & set(_TOOL_WORD.findall(texts[i].casefold()))))
 
+    # A tool whose own name shares a word with the request comes first, then
+    # by meaning: "…and share it with Raj as an editor" ranked Share a file
+    # below eight other Google tools, and it was not offered at all.
+    said = set(_TOOL_WORD.findall(question.casefold()))
+    named = [len(said & set(_TOOL_WORD.findall(a.label.split(":", 1)[-1].casefold()))) for a in offered]
     by_server: dict[str, list[int]] = {}
-    for i in sorted(range(len(offered)), key=lambda i: cosine(_TOOL_VECTORS[texts[i]]), reverse=True):
+    for i in sorted(range(len(offered)), key=lambda i: (named[i], score(i)), reverse=True):
         server = getattr(offered[i], "server", None)
         by_server.setdefault(server.id if server else offered[i].label, []).append(i)
     keep: list[int] = []
@@ -501,12 +516,15 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
         # ponytail: no content read when going on (the reader needs the
         # request's own search scope); the first turn reads what it needs.
         looked: set[str] = set()
+        check = _completeness(llm, run.question)
         loop = _agent_loop(llm, run.question, [a.tool for a in offered], offered, org_id=org_id,
                            user_id=user_id, email=email, found=found, looked=looked, ran={}, settings=settings,
-                           messages=messages, already=keys, sources=tuple(sources),
-                           check=_completeness(llm, run.question))
+                           messages=messages, already=keys, sources=tuple(sources), check=check)
         if not loop.picked:
-            if not loop.refused and all(s in ("succeeded", "rejected") for s in statuses):
+            # Silent only when nothing the request asked for is left: "…and share
+            # it with Raj" stopped after the text, and its reason went unsaid.
+            left = _not_asked_yet(loop.messages or [], {a.tool["function"]["name"]: a for a in offered}, check)
+            if not left and not loop.refused and all(s in ("succeeded", "rejected") for s in statuses):
                 return None                # all went through and nothing remains: nothing to say
             return _nothing_drafted(loop), run.surface
         return _cards(loop, question=run.question, sources=[*loop.sources, *_lookup_sources(looked, email)],

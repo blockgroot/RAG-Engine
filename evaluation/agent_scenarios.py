@@ -91,6 +91,8 @@ class Scenario:
     decide: list = field(default_factory=lambda: ["approve", "approve", "approve"])
     #: What earlier approved cards made, as ``service._earlier`` gives it.
     earlier: str = ""
+    #: Tools not offered (an admin left them off), by MCP tool name.
+    without: tuple = ()
 
 
 @dataclass
@@ -267,6 +269,12 @@ SCENARIOS = {
         # Prod: only the text was added; the share card was never drafted.
         f'Add "Status: verified on prod" to the Google Doc "Final E2E notes" and share it with {EMAIL} as an editor',
         [card_count(2), card_tool("append_to_doc"), card_tool("share_file"), cards_with('"role": "editor"')]),
+    "share_tool_off": Scenario(
+        # Prod: with Share a file off, the run ended silently after the text.
+        f'Add "Status: verified on prod" to the Google Doc "Final E2E notes" and share it with {EMAIL} as an editor',
+        [card_tool("append_to_doc"),
+         lambda t: "" if "shar" in " ".join(r or "" for r in t.replies).lower()
+         else "nothing said about the share it could not do"], without=("share_file",)),
     "comment_earlier_link": Scenario(
         # Prod: the comment went to Handbook's card id, then the right issue.
         'Comment the link of the GitHub issue we created on the Linear issue "Checkout page times out on slow '
@@ -330,6 +338,7 @@ def offered_tools():
 
 
 def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[str]]:
+    offered = [a for a in offered if a.mcp_tool["name"] not in sc.without]
     trace, found, looked = Trace(), [sc.earlier] if sc.earlier else [], set()
     TRACE_CHANNEL.clear()
     orig = act_loop._read_content
