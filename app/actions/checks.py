@@ -108,7 +108,10 @@ def _completeness(llm, question: str):
             # a part whose items are all on the card is there. GPT-OSS judged a
             # sheet with every column and row as lacking them, and asked the
             # Slack post for them, which then repeated the sheet.
-            sent = json.dumps(args, ensure_ascii=False).casefold()
+            # Only what is written counts: request_words quotes the request
+            # ("…with the title, assignee and status of…"), so every item was
+            # "on the card" and an empty sheet passed.
+            sent = form.casefold()
             judged = [p for p in parts if belongs(p, label, args)
                       and not (values.get(p) and all(v.casefold() in sent for v in values[p]))]
             if not judged:

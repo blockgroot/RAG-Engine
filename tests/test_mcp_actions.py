@@ -1008,6 +1008,10 @@ def test_content_for_another_card_or_already_on_this_one_is_not_judged():
     assert check("Slack: Send a message", {"channel": "#eng", "text": "Done"}) == ["that the tracker is ready"]
     listed = judge.judged[-1].split("It asks for this content:")[1].split("A card was drafted")[0]
     assert listed.strip() == "1. that the tracker is ready"                   # the sheet's part is not the post's
+    # The items quoted in request_words are not on the card: an empty sheet
+    # for "…with columns Issue, Tool…" passed as holding them.
+    empty = {"title": "T", "request_words": "Create a Google Sheet titled T with columns Issue, Tool"}
+    assert check("Google Workspace: Create a Google Sheet", empty) == ["columns Issue, Tool"]
 
 
 def test_the_reminder_names_a_card_refused_and_never_drafted_again():
