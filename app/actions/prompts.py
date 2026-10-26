@@ -71,8 +71,12 @@ DECIDED = ("The user already decided this card (its result is above): a setting 
            "the user why in one sentence.")
 
 
+#: How a tool's answer opens: a fetched answer is told from a plain refusal by it.
+TOOL_FENCE = "<<<UNTRUSTED_TOOL_RESULT>>>"
+
+
 def _fenced(text: str) -> str:
-    return ("<<<UNTRUSTED_TOOL_RESULT>>>\n" + scrub_untrusted_text(text)
+    return (f"{TOOL_FENCE}\n" + scrub_untrusted_text(text)
             + f"\n<<<END_UNTRUSTED_TOOL_RESULT>>>\n{UNTRUSTED_REMINDER}")
 
 
@@ -96,9 +100,12 @@ def build_parts_prompt(question: str) -> str:
         "also give \"in\": the request's own words naming where it is written (\"a Google Sheet "
         "titled X\", \"post in #eng\"), and \"values\": the exact items it spells out to copy "
         "(names, cells, words), or [] when it names something to read or write (a summary, "
-        "pointers, a link).\n"
+        "pointers, a link), and \"from\": where that content comes from: \"read\" (company "
+        "content to read: a page, doc, sheet, thread, channel or message), \"lookup\" (records in a "
+        "connected tool and their fields: issues, files, people), \"earlier\" (something made "
+        "before this request), or \"request\" (written out in the request itself).\n"
         "Reply with ONLY a JSON list of objects like {\"quote\": \"...\", \"kind\": \"content\", "
-        "\"in\": \"...\", \"values\": [\"...\"]}.\n"
+        "\"in\": \"...\", \"values\": [\"...\"], \"from\": \"lookup\"}.\n"
         f"REQUEST: {question}\n"
     )
 

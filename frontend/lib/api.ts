@@ -642,6 +642,8 @@ export interface OrgModel {
   key_tail: string | null;
   checked_at: string | null;
   saved_at: string | null;
+  /** Agent mode's tool-calling test at save; null for a model saved before it. */
+  agent: "native" | "text" | "none" | "unknown" | null;
 }
 
 export interface ModelPreset {

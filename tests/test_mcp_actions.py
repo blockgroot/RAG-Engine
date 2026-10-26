@@ -872,6 +872,55 @@ def test_a_reply_in_words_keeps_only_the_links_the_model_was_shown():
     assert run.reply == "Here: https://linear.app/x/issue/BEN-5 and [link removed]"
 
 
+SHEET = {"name": "create_sheet", "title": "Create sheet", "description": "A new sheet.",
+         "inputSchema": {"type": "object", "required": ["title"], "properties": {
+             "title": {"type": "string"},
+             "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}}}
+
+
+def test_content_that_comes_from_a_lookup_is_looked_up_before_it_is_drafted(server, monkeypatch):
+    """"A Google Sheet … with the title, assignee and status of the open issues
+    in BEN" became an empty sheet: no lookup ran, and the judge passed it."""
+    from app.actions import service
+
+    q = 'Create a sheet titled "BEN open issues" with the title and status of the open issues in BEN'
+
+    class Judge:
+        def generate(self, prompt, max_tokens=None):
+            if "Split this request into its parts" in prompt:
+                return json.dumps([{"quote": "the title and status of the open issues in BEN", "kind": "content",
+                                    "in": 'a sheet titled "BEN open issues"', "values": [], "from": "lookup"}])
+            return "[]"                                   # the judge sees nothing missing
+
+    srv = _server({"list_projects": "lookup"})
+    sheet, find = mcp.McpToolAction(srv, SHEET), mcp.McpLookup(srv, FIND)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    server.result = {"content": [{"type": "text", "text": json.dumps({"issues": [
+        {"title": "Login fails", "status": "Todo"}, {"title": "Export slow", "status": "Done"}]})}]}
+    form = {"request_words": "Create a sheet", "title": "BEN open issues"}
+    rows = [["Title", "Status"], ["Login fails", "Todo"], ["Export slow", "Done"]]
+    model = Scripted([(sheet, form)], [(find, {})], [(sheet, {**form, "rows": rows})])
+    run = service._agent_loop(model, q, [sheet.tool, find.tool], [sheet, find], org_id="o", user_id="u",
+                              email="a@x.com", found=[], looked=set(), ran={},
+                              settings=SimpleNamespace(mcp_max_lookups=8, mcp_timeout_seconds=5),
+                              check=service._completeness(Judge(), q))
+    assert "Nothing has been read or looked up yet" in _tool_answers(model.seen[1])[0]
+    assert [a.get("rows") for _, a, _ in run.picked] == [rows] and not run.gaps
+
+
+def test_a_cards_list_items_must_come_from_what_was_fetched():
+    from app.actions.checks import _untraced
+
+    fetched = ['{"issues": [{"title": "Login fails", "status": "Todo"}, {"title": "Export slow", "status": "Done"}]}']
+    made_up = {"rows": [["Title", "Status"], ["Checkout bug", "Open"], ["Search slow", "Open"]]}
+    real = {"rows": [["Title", "Status"], ["Login fails", "Todo"], ["Export slow", "Done"]]}
+    redated = {"rows": [["Login fails", "Todo", "Oct 21"], ["Export slow", "Done", "Oct 22"]]}
+    assert _untraced(made_up, ["the title and status", *fetched])
+    assert not _untraced(real, ["the title and status", *fetched])
+    assert not _untraced(redated, fetched)                      # a reformatted date is one cell of many
+    assert not _untraced({"labels": ["bug"]}, [])               # one label is not a table
+
+
 def test_a_lookup_that_found_nothing_asks_for_another_search():
 
     assert act_checks._found_nothing('[Linear: List issues] {"issues": []}')

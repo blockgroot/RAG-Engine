@@ -14,7 +14,7 @@ from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError
 from ..rag import progress
 from ..security.links import enforce_link_provenance
 from .base import Action
-from .checks import _CHANNEL, OWN_FIELDS, _channels_read, _found_nothing, _precheck
+from .checks import _CHANNEL, OWN_FIELDS, _channels_read, _fetched, _found_nothing, _precheck, _untraced
 from .draft import TYPOGRAPHY, asked_for, asked_in
 from .prompts import _LATER, ALL_DONE, DECIDED, DONE_BEFORE, NOTHING_DRAFTED, NOTHING_FOUND, SEARCH, _fenced, build_act_prompt
 
@@ -111,6 +111,8 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
                                                                                earlier=earlier)}])
     if read is not None:
         tools = [*tools, SEARCH]
+    if hasattr(check, "start"):
+        check.start()             # the request's parts, read beside the first turn
     by_name = {a.tool["function"]["name"]: a for a in offered}
     out = _Drafting([], [], [], drafted_in={}, sources=list(sources), messages=messages)
     drafted: dict[str, int] = {}
@@ -385,8 +387,18 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
               if read is not None and c.casefold() not in _channels_read(out.messages or [])
               and (asked is None or any(f"#{c.casefold()}" in p for p in asked))
               and not any(isinstance(v, str) and v.lstrip("#").casefold() == c.casefold() for v in args.values())]
+    # Fetched before drafted: content the request says comes from a read or a
+    # lookup, drafted before anything was fetched, is made up whatever the
+    # model ("a Google Sheet … with the open issues in BEN" became an empty
+    # sheet, no lookup). And a card's lists must come from what was fetched.
+    fetchers = {n for n, a in by_name.items() if getattr(a, "lookup", False)} | {SEARCH["function"]["name"]}
+    seen = _fetched(out.messages or [], fetchers)
+    unfetched = [] if seen else list(getattr(check, "needs", lambda *_: [])(action.label, args))
+    untraced = _untraced(args, [question, *found, *seen])
     missing = (check(action.label, args) if check is not None else []) + \
-        [f"what was said in #{c}" for c in unread]
+        [f"what was said in #{c}" for c in unread] + \
+        unfetched + (["items taken from what was read or looked up"] if untraced else [])
+    missing = list(dict.fromkeys(missing))
     first = action.name not in out.checked
     out.checked.add(action.name)
     if missing:
@@ -400,7 +412,11 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
                     "what you need, then call the tool again with it included, keeping everything else "
                     "this call had (its links too)."
                     + "".join(f" Read #{c} first: {SEARCH['function']['name']} with slack_channel "
-                              f'"{c}".' for c in unread)), True
+                              f'"{c}".' for c in unread)
+                    + (" Nothing has been read or looked up yet: call the lookup or read tool that has "
+                       "it, then draft from its answer." if unfetched else "")
+                    + (" Most items in its lists are in nothing you read or looked up: take them from "
+                       "those answers." if untraced else "")), True
     else:
         out.gaps.pop(action.name, None)
     # The same card in other words: GPT-OSS left GitHub's owner out, then after

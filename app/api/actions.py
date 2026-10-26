@@ -288,6 +288,20 @@ def _selectable_model(org_id: str, model: str) -> bool:
     return bool(own and own["model"] == model)
 
 
+_NO_TOOLS = ("This model can't use tools, so it can't run Agent mode. Nothing was sent. "
+             "Pick another model in the model menu.")
+
+
+def _cannot_call_tools(org_id: str, model: str) -> bool:
+    """The company's own model failed Agent mode's test when it was saved
+    (``llm_model._agent_probe``): said before drafting, never a request that
+    quietly drafts nothing. Untested or unknown is allowed."""
+    from ..llm import org_model
+
+    own = org_model.get_org_model_summary(org_id)
+    return bool(own and own["model"] == model and own.get("agent") == "none")
+
+
 class ActRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     #: Act mode in a space's chat drafts from that space; a non-member is 403.
@@ -336,6 +350,8 @@ def _act_args(body: ActRequest, session: SessionClaims) -> dict:
         raise HTTPException(status_code=403, detail="Sign in again to use Agent mode.")
     if body.model and not _selectable_model(session.org_id, body.model):
         raise HTTPException(status_code=400, detail="Unknown model")
+    if body.model and _cannot_call_tools(session.org_id, body.model):
+        raise HTTPException(status_code=400, detail=_NO_TOOLS)
     workspace_id = str(body.workspace_id) if body.workspace_id else None
     if workspace_id is not None:
         try:

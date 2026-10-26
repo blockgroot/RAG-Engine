@@ -5,14 +5,16 @@ The model judges meaning; code checks what is checkable."""
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
+import threading
 
 from ..core.exceptions import ActionError, ConfigurationError, OAuthReauthRequiredError
 from .base import ActionContext
 from .draft import asked_in
-from .prompts import SEARCH, _LATER, build_cover_prompt, build_parts_prompt
+from .prompts import SEARCH, TOOL_FENCE, _LATER, build_cover_prompt, build_parts_prompt
 
 logger = logging.getLogger("actions")
 
@@ -51,9 +53,17 @@ def _completeness(llm, question: str):
     values: dict[str, list[str]] = {}
     #: The request's action parts ("Add", "share"), quotes of its own words.
     doing: list[str] = []
+    #: Per part, where its content comes from as the model said: "read",
+    #: "lookup", "earlier" or "request".
+    origin: dict[str, str] = {}
+    once = threading.Lock()
 
     def content() -> list[str]:
         """The request's content parts, read once: quotes of the request."""
+        with once:
+            return _content()
+
+    def _content() -> list[str]:
         nonlocal parts
         if parts is None:
             try:
@@ -77,7 +87,19 @@ def _completeness(llm, question: str):
                 items = [str(v).strip() for v in p.get("values") or [] if str(v).strip()]
                 if items and all(asked_in(v, question) for v in items):
                     values[q] = items
+                if p.get("from") in ("read", "lookup", "earlier", "request"):
+                    origin[q] = p["from"]
         return parts
+
+    def start() -> None:
+        """Read the parts now, beside the loop's first turn, so the first
+        card's check does not wait for them. The request's model choice is a
+        ContextVar, so the thread runs in this request's context."""
+        threading.Thread(target=contextvars.copy_context().run, args=(content,), daemon=True).start()
+
+    def needs(label: str, args: dict) -> list[str]:
+        """This card's content parts that must be read or looked up first."""
+        return [p for p in content() if origin.get(p) in ("read", "lookup") and belongs(p, label, args)]
 
     def belongs(part: str, label: str, args: dict) -> bool:
         """Whether the part is written into this card: its "in" words name the
@@ -130,6 +152,8 @@ def _completeness(llm, question: str):
 
     check.content = content
     check.actions = actions
+    check.start = start
+    check.needs = needs
     return check
 
 
@@ -156,6 +180,46 @@ def _channels_read(messages: list[dict]) -> set[str]:
             seen.add(str(given.get("slack_channel") or "").lstrip("#").casefold())
             seen |= {x.casefold() for x in _CHANNEL.findall(str(given.get("content_words") or ""))}
     return seen
+
+
+def _fetched(messages: list[dict], fetchers: set[str]) -> list[str]:
+    """What reads and lookups in EARLIER turns returned: a draft written in
+    the same turn as its fetch never saw the answer, and a refused read
+    (answered in plain words, not fenced) fetched nothing."""
+    answers = {m.get("tool_call_id"): str(m.get("content") or "") for m in messages if m.get("role") == "tool"}
+    now = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=len(messages))
+    return [answers[c["id"]] for m in messages[:now] for c in m.get("tool_calls") or []
+            if c["function"]["name"] in fetchers and answers.get(c["id"], "").startswith(TOOL_FENCE)]
+
+
+#: Fewer list items than this are not judged: one label is not a table.
+MIN_TRACED = 3
+
+
+def _untraced(args: dict, texts: list[str]) -> bool:
+    """Whether most of the text items in a card's lists (a Sheet's rows, a
+    list of names) are in nothing the request said or the loop fetched. A
+    sheet "of the open issues in BEN" built with no lookup is made up,
+    whatever its words; a date written in another format is one cell of
+    many, so half is the line, not every cell."""
+    cells: list[str] = []
+
+    def walk(value, in_list: bool) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k not in OWN_FIELDS:
+                    walk(v, in_list)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v, True)
+        elif in_list and isinstance(value, str) and len(value.strip()) >= 3 and re.search(r"[^\W\d_]", value):
+            cells.append(" ".join(value.split()).casefold())
+
+    walk(args, False)
+    if len(cells) < MIN_TRACED:
+        return False
+    seen = " ".join(" ".join(t.split()) for t in texts).casefold()
+    return sum(c not in seen for c in cells) * 2 > len(cells)
 
 
 def _found_nothing(text: str) -> bool:
