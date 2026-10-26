@@ -134,17 +134,28 @@ def _completeness(llm, question: str):
             # ("…with the title, assignee and status of…"), so every item was
             # "on the card" and an empty sheet passed.
             sent = form.casefold()
+            # Only content the request writes out ("rows A, B") is there when
+            # its items are: content to read or look up is not. "The title,
+            # assignee and status of the open issues in BEN" listed its column
+            # names as items, and a sheet of just that header passed.
             judged = [p for p in parts if belongs(p, label, args)
-                      and not (values.get(p) and all(v.casefold() in sent for v in values[p]))]
+                      and not (values.get(p) and origin.get(p) not in ("read", "lookup")
+                               and all(v.casefold() in sent for v in values[p]))]
+            # Content to read or look up, whose card lists hold only the
+            # request's own words (a header), is missing: checked in code.
+            cells = _list_cells(args)
+            hollow = [p for p in judged if origin.get(p) in ("read", "lookup") and cells
+                      and all(c in question.casefold() for c in cells)]
+            judged = [p for p in judged if p not in hollow]
             if not judged:
-                return []
+                return hollow
             gone = _json_list(llm.generate(build_cover_prompt(judged, label, form, question),
                                            max_tokens=CHECK_TOKENS))
         except Exception:  # noqa: BLE001 - a check that fails never blocks the card
             logger.warning("Act: the completeness check failed", exc_info=True)
             parts = parts or []
             return []
-        return [judged[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(judged)]
+        return hollow + [judged[n - 1] for n in dict.fromkeys(gone) if isinstance(n, int) and 0 < n <= len(judged)]
 
     def actions() -> list[str]:
         content()
@@ -196,12 +207,9 @@ def _fetched(messages: list[dict], fetchers: set[str]) -> list[str]:
 MIN_TRACED = 3
 
 
-def _untraced(args: dict, texts: list[str]) -> bool:
-    """Whether most of the text items in a card's lists (a Sheet's rows, a
-    list of names) are in nothing the request said or the loop fetched. A
-    sheet "of the open issues in BEN" built with no lookup is made up,
-    whatever its words; a date written in another format is one cell of
-    many, so half is the line, not every cell."""
+def _list_cells(args: dict) -> list[str]:
+    """The text items inside a card's lists (a Sheet's rows, a list of
+    names), casefolded with spaces folded; never Handbook's own fields."""
     cells: list[str] = []
 
     def walk(value, in_list: bool) -> None:
@@ -216,6 +224,16 @@ def _untraced(args: dict, texts: list[str]) -> bool:
             cells.append(" ".join(value.split()).casefold())
 
     walk(args, False)
+    return cells
+
+
+def _untraced(args: dict, texts: list[str]) -> bool:
+    """Whether most of the text items in a card's lists (a Sheet's rows, a
+    list of names) are in nothing the request said or the loop fetched. A
+    sheet "of the open issues in BEN" built with no lookup is made up,
+    whatever its words; a date written in another format is one cell of
+    many, so half is the line, not every cell."""
+    cells = _list_cells(args)
     if len(cells) < MIN_TRACED:
         return False
     seen = " ".join(" ".join(t.split()) for t in texts).casefold()

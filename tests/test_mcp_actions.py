@@ -908,6 +908,29 @@ def test_content_that_comes_from_a_lookup_is_looked_up_before_it_is_drafted(serv
     assert [a.get("rows") for _, a, _ in run.picked] == [rows] and not run.gaps
 
 
+def test_a_header_alone_is_not_content_that_comes_from_a_lookup():
+    """Prod: a sheet of just "Title, Assignee, Status" passed, because the
+    parts call listed those column names as the content's items."""
+    from app.actions import service
+
+    q = 'Create a Google Sheet titled "BEN open issues" with the title, assignee and status of the open issues in BEN'
+    part = "the title, assignee and status of the open issues in BEN"
+
+    class Judge:                                   # GPT-OSS's own parts for this request
+        def generate(self, prompt, max_tokens=None):
+            if "Split this request into its parts" in prompt:
+                return json.dumps([{"quote": part, "kind": "content", "in": 'Google Sheet titled "BEN open issues"',
+                                    "values": ["title", "assignee", "status"], "from": "lookup"}])
+            return "[]"                            # the judge sees nothing missing
+
+    check = service._completeness(Judge(), q)
+    label = "Google Workspace: Create a Google Sheet"
+    header = [["Title", "Assignee", "Status"]]
+    assert check(label, {"title": "BEN open issues", "rows": header}) == [part]
+    filled = header + [["Login fails", "Asha", "Todo"], ["Export slow", "Ravi", "Done"]]
+    assert check(label, {"title": "BEN open issues", "rows": filled}) == []
+
+
 def test_a_cards_list_items_must_come_from_what_was_fetched():
     from app.actions.checks import _untraced
 
