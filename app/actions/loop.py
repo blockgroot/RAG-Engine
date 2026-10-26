@@ -14,7 +14,7 @@ from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError
 from ..rag import progress
 from ..security.links import enforce_link_provenance
 from .base import Action
-from .checks import _CHANNEL, OWN_FIELDS, _channels_read, _fetched, _found_nothing, _precheck, _untraced
+from .checks import _CHANNEL, OWN_FIELDS, _channels_read, _cut_short, _fetched, _found_nothing, _precheck, _untraced
 from .draft import TYPOGRAPHY, asked_for, asked_in
 from .prompts import _LATER, ALL_DONE, DECIDED, DONE_BEFORE, NOTHING_DRAFTED, NOTHING_FOUND, SEARCH, _fenced, build_act_prompt
 
@@ -422,10 +422,12 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     fetchers = {n for n, a in by_name.items() if getattr(a, "lookup", False)} | {SEARCH["function"]["name"]}
     seen = _fetched(out.messages or [], fetchers)
     unfetched = [] if seen else list(getattr(check, "needs", lambda *_: [])(action.label, args))
-    untraced = _untraced(args, [question, *found, *seen])
+    untraced = _untraced(args, [question, *found, *seen], question)
+    cut = _cut_short(args, [question, *found, *seen])
     missing = (check(action.label, args) if check is not None else []) + \
         [f"what was said in #{c}" for c in unread] + \
-        unfetched + (["items taken from what was read or looked up"] if untraced else [])
+        unfetched + (["items taken from what was read or looked up"] if untraced else []) + \
+        (["every item in full"] if cut else [])
     missing = list(dict.fromkeys(missing))
     first = action.name not in out.checked
     out.checked.add(action.name)
@@ -444,7 +446,9 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
                     + (" Nothing has been read or looked up yet: call the lookup or read tool that has "
                        "it, then draft from its answer." if unfetched else "")
                     + (" Most items in its lists are in nothing you read or looked up: take them from "
-                       "those answers." if untraced else "")), True
+                       "those answers." if untraced else "")
+                    + (f" {cut[0]!r} is cut short: write every item the QUESTION asks for, each in full, "
+                       "never \"...\" for the rest." if cut else "")), True
     else:
         out.gaps.pop(action.name, None)
     # The same card in other words: GPT-OSS left GitHub's owner out, then after

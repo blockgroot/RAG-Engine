@@ -219,7 +219,10 @@ SCENARIOS = {
         'Create a Google Sheet titled "BEN open issues" with the title, assignee and status of the open '
         'issues in BEN',
         [card_count(1), card_tool("create_sheet"),
-         lambda t: "" if any(len(a.get("rows") or []) > 1 for _, a in t.cards) else "the sheet has no issue rows"]),
+         lambda t: "" if any(len(a.get("rows") or []) > 1 for _, a in t.cards) else "the sheet has no issue rows",
+         # Prod: three rows, then "E3..." for the rest.
+         lambda t: "" if any(len(a.get("rows") or []) >= 6 and not re.search(r'(\.\.\.|…)"', json.dumps(a["rows"]))
+                             for _, a in t.cards) else "the sheet stops short of BEN's issues"]),
     "post_linear_link": Scenario(
         # Prod: answered "Here is the link…" in words; no Slack card.
         "Post the link of the Linear issue we created in #hb-testing",

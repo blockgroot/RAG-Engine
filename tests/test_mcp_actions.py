@@ -960,6 +960,21 @@ def test_a_cards_list_items_must_come_from_what_was_fetched():
     assert not _untraced(real, ["the title and status", *fetched])
     assert not _untraced(redated, fetched)                      # a reformatted date is one cell of many
     assert not _untraced({"labels": ["bug"]}, [])               # one label is not a table
+    # Prod: one made-up issue under the request's own header was "half traced".
+    invented = {"rows": [["Title", "Assignee", "Status"], ["Weekly report email has broken formatting", "Sana Asiwal", "Backlog"]]}
+    q = "a sheet with the title, assignee and status of the open issues in BEN"
+    assert _untraced(invented, [q, '{"issues": []}'], q)
+    assert not _untraced(real, [q, *fetched], q)
+
+
+def test_a_list_the_model_ended_with_an_ellipsis_is_cut_short():
+    """Prod: a sheet of BEN's open issues stopped after three rows at "E3..."."""
+    from app.actions.checks import _cut_short
+
+    fetched = ['{"issues": [{"title": "Final E2E"}, {"title": "E3E Three"}, {"title": "Waiting..."}]}']
+    cut = {"rows": [["Title"], ["Final E2E"], ["E3..."]]}
+    assert _cut_short(cut, fetched) == ["e3..."]
+    assert _cut_short({"rows": [["Final E2E"], ["Waiting..."]]}, fetched) == []   # the source's own words
 
 
 def test_a_lookup_that_found_nothing_asks_for_another_search():

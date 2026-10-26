@@ -234,17 +234,28 @@ def _list_cells(args: dict) -> list[str]:
     return cells
 
 
-def _untraced(args: dict, texts: list[str]) -> bool:
+def _untraced(args: dict, texts: list[str], question: str = "") -> bool:
     """Whether most of the text items in a card's lists (a Sheet's rows, a
     list of names) are in nothing the request said or the loop fetched. A
     sheet "of the open issues in BEN" built with no lookup is made up,
     whatever its words; a date written in another format is one cell of
     many, so half is the line, not every cell."""
-    cells = _list_cells(args)
+    # A header is the request's own words, not data: with it counted, a sheet
+    # of one made-up issue under "Title, Assignee, Status" was half traced.
+    said = " ".join(question.split()).casefold()
+    cells = [c for c in _list_cells(args) if c not in said]
     if len(cells) < MIN_TRACED:
         return False
     seen = " ".join(" ".join(t.split()) for t in texts).casefold()
     return sum(c not in seen for c in cells) * 2 > len(cells)
+
+
+def _cut_short(args: dict, texts: list[str]) -> list[str]:
+    """List items the model ended with an ellipsis that nothing fetched or
+    said has: its shorthand for "and the rest". Prod: a sheet of BEN's open
+    issues stopped after three rows at "E3...". By format, not wording."""
+    seen = " ".join(" ".join(t.split()) for t in texts).casefold()
+    return [c for c in _list_cells(args) if re.search(r"(\.\.\.|…)$", c) and c not in seen]
 
 
 def _found_nothing(text: str) -> bool:
