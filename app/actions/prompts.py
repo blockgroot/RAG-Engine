@@ -124,6 +124,7 @@ def build_cover_prompt(parts: list[str], label: str, form: str, question: str = 
         "its columns and rows, a link may sit inside a sentence. A summary, list or pointers asked "
         "for must be written as one: messages or text pasted as they were do not count, and neither "
         "does a link or a reference to where it is written: the card must hold the content itself. "
+        "A value the source does not have (an issue with no assignee) left empty is not missing. "
         "Content "
         "meant for another action (a message to post, once a sheet is made), or that needs a result "
         "that does not exist yet, is not missing here. Reply with ONLY a JSON list of the missing "

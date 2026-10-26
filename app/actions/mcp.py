@@ -141,6 +141,20 @@ def _code_label(text: str, prop: dict) -> str | None:
     return m.group(1) if m else None
 
 
+def asked_filters(tool: dict, args: dict, question: str) -> dict:
+    """A lookup's arguments without a coded choice the asker never made: GPT-OSS
+    searched Linear with ``priority: 0`` ("0=None", only issues with no
+    priority) on every call, and a team's open issues came back empty. As a
+    write's coded value, it is kept only when the asker used its words."""
+    props = _schema(tool)["properties"]
+    kept = {}
+    for k, v in args.items():
+        label = _code_label(str(v), props.get(k) or {}) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        if label is None or asked_in(label, question):
+            kept[k] = v
+    return kept
+
+
 def _chosen_by_asker(key: str, value: Any, prop: dict, question: str) -> None:
     """An optional setting the tool offers as a list of choices is the
     asker's to make: GPT-OSS set Notion's ``creation_mode`` to "draft", which

@@ -1187,3 +1187,14 @@ def test_an_id_an_earlier_card_made_is_shown_by_its_name():
     assert '"Final E2E notes", id 1Eh7ylq3FaV7b08y6cM2SOErk9tz' in said
     assert mcp._named("1Eh7ylq3FaV7b08y6cM2SOErk9tz", said) == "Final E2E notes"
     assert mcp._named("1Eh7ylq3FaV7b08y6cM2SOErk9tzX", said) != "Final E2E notes"   # whole ids only
+
+
+def test_a_lookup_keeps_a_coded_filter_only_when_the_asker_chose_it():
+    """GPT-OSS searched Linear with priority 0 ("0=None") on every call, and a
+    team's open issues came back empty."""
+    tool = {"inputSchema": {"type": "object", "properties": {
+        "priority": {"type": "number", "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low"},
+        "limit": {"type": "number"}, "team": {"type": "string"}}}}
+    assert mcp.asked_filters(tool, {"priority": 0, "limit": 20, "team": "BEN"}, "the open issues in BEN") == \
+        {"limit": 20, "team": "BEN"}
+    assert mcp.asked_filters(tool, {"priority": 2}, "the High priority issues in BEN") == {"priority": 2}

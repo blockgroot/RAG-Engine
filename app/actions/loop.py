@@ -329,6 +329,10 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         return "The arguments must be a JSON object.", False
 
     if action.lookup:
+        if getattr(action, "mcp_tool", None):
+            from .mcp import asked_filters
+
+            args = asked_filters(action.mcp_tool, args, question)
         key = action.name + json.dumps(args, sort_keys=True)
         if key in ran:
             return "You already ran this lookup; its answer is above. Use it.", False
@@ -347,7 +351,13 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         if _found_nothing(ran[key]):
             # A title written without its dash ("UI test from slack 4") found
             # nothing, and the model gave up after one search.
-            return _fenced(ran[key]) + "\n" + NOTHING_FOUND, True
+            given = [f"{k}={v}" for k, v in args.items() if v not in (None, "", [], {}, False)
+                     and not isinstance(v, (list, dict))]
+            return _fenced(ran[key]) + "\n" + NOTHING_FOUND + (
+                f" You filtered by {', '.join(given)}: a filter value the tool does not use exactly (a "
+                "state, status, label or team named differently) matches nothing. Look up its real values "
+                "with the tool that lists them, or drop that filter and pick from what comes back, before "
+                "telling the user it cannot be found." if given else ""), True
         return _fenced(ran[key]), True
 
     # A write: drafted only when the asker asked for it, in their own words.

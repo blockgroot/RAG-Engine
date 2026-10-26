@@ -214,6 +214,12 @@ SCENARIOS = {
         [card_count(1), card_tool("send_dm"), cards_with(EARLIER_LINEAR_LINK), not_pasted,
          lambda t: "" if sum(w in json.dumps(t.cards) for w in ("Notion", "Linear", "Bench notes")) >= 2
          else "the DM has no pointers"], earlier=EARLIER_LINEAR),
+    "ben_sheet": Scenario(
+        # Prod: a sheet of just its header, then "no open issues in BEN".
+        'Create a Google Sheet titled "BEN open issues" with the title, assignee and status of the open '
+        'issues in BEN',
+        [card_count(1), card_tool("create_sheet"),
+         lambda t: "" if any(len(a.get("rows") or []) > 1 for _, a in t.cards) else "the sheet has no issue rows"]),
     "post_linear_link": Scenario(
         # Prod: answered "Here is the link…" in words; no Slack card.
         "Post the link of the Linear issue we created in #hb-testing",
@@ -299,9 +305,18 @@ def load(name, url, token, keep, is_write, tokens):
     try:
         s.open()
     except mcp_client.McpUnauthorized:
-        # A bench sign-in expired: the scenarios that need it fail, the rest run.
-        print(f"!! {name}: the bench sign-in expired; its tools are not offered", flush=True)
-        return []
+        # Linear's token is renewed from its saved refresh token
+        # (``evaluation.linear_signin``); otherwise the scenarios that need
+        # it fail and the rest run.
+        from evaluation.linear_signin import refresh
+
+        token = refresh() if name == "Linear" else None
+        if not token:
+            print(f"!! {name}: the bench sign-in expired; its tools are not offered "
+                  "(Linear: run python -m evaluation.linear_signin)", flush=True)
+            return []
+        s = mcp_client.McpSession(url, token, timeout=60)
+        s.open()
     tools = [t for t in s.list_tools()[0] if keep(t["name"])]
     modes = {t["name"]: {"mode": "write" if is_write(t["name"]) else "lookup", "hash": mcp_store.tool_hash(t)}
              for t in tools}
