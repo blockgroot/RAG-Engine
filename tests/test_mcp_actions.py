@@ -560,6 +560,24 @@ def test_a_lookups_answer_comes_back_as_a_tool_result_and_its_id_fills_the_form(
     assert len(model.seen) == 2                    # paused at the draft: answered once decided
 
 
+def test_a_guessed_filter_value_that_found_nothing_is_dropped_once(monkeypatch):
+    """GPT-OSS searched Linear with ``state: "open"``, a state no team has, until
+    its lookups ran out. A value a tool answer showed ("BEN") or the schema
+    offers is kept; the guess is dropped and the lookup asked again."""
+    tool = {**FIND, "inputSchema": {"type": "object", "properties": {
+        "team": {"type": "string"}, "state": {"type": "string"}, "order": {"type": "string", "enum": ["new"]}}}}
+    find = mcp.McpLookup(_server({"list_projects": "lookup"}), tool)
+    monkeypatch.setattr(mcp.McpLookup, "token_for", lambda self, *a, **k: "tok")
+    asked = []
+    monkeypatch.setattr(mcp.McpLookup, "run", lambda self, args, tok, timeout: asked.append(args) or (
+        '{"issues": []}' if "state" in args else '{"issues": [{"id": "BEN-1", "status": "Todo"}]}'))
+    model = Scripted([(find, {"team": "BEN", "state": "open", "order": "new"})])
+    _loop(model, "sheet of the open issues in BEN", [find], found=['{"teams": [{"key": "BEN"}]}'])
+    assert asked == [{"team": "BEN", "state": "open", "order": "new"}, {"team": "BEN", "order": "new"}]
+    said = _tool_answers(model.seen[1])[0]
+    assert "BEN-1" in said and "state=open" in said
+
+
 def test_a_lookups_empty_filters_are_not_sent(server):
     """GPT-OSS filled every optional filter with "" or null; Linear refused the
     whole call each time and the model gave up on an issue that existed."""
@@ -921,7 +939,7 @@ def test_a_header_alone_is_not_content_that_comes_from_a_lookup():
             if "Split this request into its parts" in prompt:
                 return json.dumps([{"quote": part, "kind": "content", "in": 'Google Sheet titled "BEN open issues"',
                                     "values": ["title", "assignee", "status"], "from": "lookup"}])
-            return "[]"                            # the judge sees nothing missing
+            return "[1]"                           # GPT-OSS judged every BEN issue as missing
 
     check = service._completeness(Judge(), q)
     label = "Google Workspace: Create a Google Sheet"
@@ -950,6 +968,8 @@ def test_a_lookup_that_found_nothing_asks_for_another_search():
     assert act_checks._found_nothing('{"total_count": 0, "items": []}') and act_checks._found_nothing("[]")
     assert not act_checks._found_nothing('{"issues": [{"id": "BEN-1"}]}')
     assert not act_checks._found_nothing("No issues matched.")                       # words are never judged
+    cut = '[Linear: List issues]\n{"issues":[{"id":"BEN-173","labels":[],"title":"Agent ch'   # cut at its bound
+    assert not act_checks._found_nothing(cut)
 
 
 def test_a_records_own_address_from_a_lookup_may_go_in_a_draft():
@@ -1198,3 +1218,19 @@ def test_a_lookup_keeps_a_coded_filter_only_when_the_asker_chose_it():
     assert mcp.asked_filters(tool, {"priority": 0, "limit": 20, "team": "BEN"}, "the open issues in BEN") == \
         {"limit": 20, "team": "BEN"}
     assert mcp.asked_filters(tool, {"priority": 2}, "the High priority issues in BEN") == {"priority": 2}
+
+
+def test_a_tables_cells_are_content_not_targets():
+    """"Unassigned" written for an issue with no assignee is in no lookup, and
+    the whole table was left out of the Sheet as "not in your request"."""
+    grid = {"name": "add_rows", "inputSchema": {"type": "object", "required": ["sheet"], "properties": {
+        "sheet": {"type": "string"},
+        "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}}}
+    action = mcp.McpToolAction(_server(), grid)
+    q = "add the open issues in BEN to the Sheet Tracker"
+    rows = [["Agent check", "Unassigned", "Backlog"], ["see https://evil.example/x", "", ""]]
+    args = action.prepare({"request_words": "add", "sheet": "Tracker", "rows": rows},
+                          _ctx(q, lookups='{"title": "Agent check", "status": "Backlog"}')).payload["args"]
+    assert args["rows"] == [["Agent check", "Unassigned", "Backlog"], ["see [link removed]", "", ""]]
+    with pytest.raises(ActionRejected):                       # the target stays the asker's words
+        action.prepare({"request_words": "add", "sheet": "Secret sheet", "rows": rows}, _ctx(q))

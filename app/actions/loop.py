@@ -348,6 +348,24 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
             return ran[key], True
         ran[key] = action.run(args, token, timeout=settings.mcp_timeout_seconds)
         found.append(ran[key])
+        unseen = []
+        if _found_nothing(ran[key]) and getattr(action, "mcp_tool", None):
+            from .mcp import unseen_filters
+
+            unseen = unseen_filters(action.mcp_tool, args, found[:-1])
+        loose = {k: v for k, v in args.items() if k not in unseen}
+        wide = action.name + json.dumps(loose, sort_keys=True)
+        if unseen and wide not in ran and len(ran) < settings.mcp_max_lookups:
+            # A guessed filter value is dropped once, by the loop: told to drop
+            # it, GPT-OSS kept ``state: "open"`` until the lookups ran out. A
+            # lookup only reads, so asking again without it costs one call.
+            ran[wide] = action.run(loose, token, timeout=settings.mcp_timeout_seconds)
+            found.append(ran[wide])
+            if not _found_nothing(ran[wide]):
+                return (_fenced(ran[key]) + "\nNothing matched " + ", ".join(f"{k}={args[k]}" for k in unseen)
+                        + ": a value no tool answer has shown. The same lookup without it:\n"
+                        + _fenced(ran[wide]) + "\nTake from these only the items the QUESTION asks for, "
+                        "by each item's own fields."), True
         if _found_nothing(ran[key]):
             # A title written without its dash ("UI test from slack 4") found
             # nothing, and the model gave up after one search.

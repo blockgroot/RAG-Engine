@@ -43,6 +43,14 @@ _TITLE = re.compile(r"title|^name$|summary|subject|heading", re.IGNORECASE)
 _NOT_PROSE = re.compile(r"(id|ids|email|url|uri|type|format)$|user|assignee|owner", re.IGNORECASE)
 
 
+def _grid(value: Any) -> bool:
+    """Rows of cells: a non-empty list whose every item is a list of plain
+    values. Known by its shape, whatever the tool calls the field."""
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(r, list) and all(c is None or isinstance(c, (str, int, float, bool)) for c in r)
+                    for r in value))
+
+
 def _prose(key: str) -> bool:
     return bool(_PROSE.search(key)) and not _NOT_PROSE.search(key)
 _URL = re.compile(r"https://[^\s\"'<>)\]]+")
@@ -153,6 +161,20 @@ def asked_filters(tool: dict, args: dict, question: str) -> dict:
         if label is None or asked_in(label, question):
             kept[k] = v
     return kept
+
+
+def unseen_filters(tool: dict, args: dict, seen: list[str]) -> list[str]:
+    """A lookup's text filters whose value is in nothing a tool returned and is
+    not one of the schema's own choices: the model's guess at a value. GPT-OSS
+    searched Linear with ``state: "open"``, a state no team has, on every try,
+    and a team's 50 issues came back as none. ``team: "BEN"`` is kept: Linear's
+    team list returned it."""
+    props = _schema(tool)["properties"]
+    text = "\n".join(seen).casefold()
+    return [k for k, v in args.items()
+            if isinstance(v, str) and v.strip()
+            and v not in ((props.get(k) or {}).get("enum") or ())
+            and json.dumps(v.casefold()) not in text]
 
 
 def _chosen_by_asker(key: str, value: Any, prop: dict, question: str) -> None:
@@ -327,6 +349,13 @@ class McpToolAction(Action):
         an id, a setting) must be in the asker's words, in what a lookup
         returned in this request, or in the tool's own definition."""
         prop = prop if isinstance(prop, dict) else {}
+        if _grid(value) and not _NOT_PROSE.search(key):
+            # A table (a Sheet's rows) is content, cleaned cell by cell like
+            # drafted text, never matched cell by cell like a target: "Unassigned"
+            # for an issue with no assignee left the whole table out. Whether
+            # its cells are real is ``checks._untraced``'s question.
+            return [[clean_body(c, ctx.question, uris) if isinstance(c, str) else c for c in row]
+                    for row in value]
         if isinstance(value, dict):
             sub = prop.get("properties") or {}
             return {k: self._clean(k, v, sub.get(k) or {}, ctx, uris, defined) for k, v in value.items()}

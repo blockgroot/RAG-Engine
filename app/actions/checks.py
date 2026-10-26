@@ -147,6 +147,13 @@ def _completeness(llm, question: str):
             hollow = [p for p in judged if origin.get(p) in ("read", "lookup") and cells
                       and all(c in question.casefold() for c in cells)]
             judged = [p for p in judged if p not in hollow]
+            # The mirror: lists holding more than the request's words hold what
+            # was fetched (``_untraced`` refuses them otherwise). GPT-OSS judged
+            # a sheet of every BEN issue as lacking "the title, assignee and
+            # status of the open issues". With one such part, they are it.
+            fetched = [p for p in judged if origin.get(p) in ("read", "lookup")]
+            if len(fetched) == 1 and cells:
+                judged.remove(fetched[0])
             if not judged:
                 return hollow
             gone = _json_list(llm.generate(build_cover_prompt(judged, label, form, question),
@@ -244,15 +251,13 @@ def _found_nothing(text: str) -> bool:
     """A lookup's answer that is an empty list, or an object whose lists are
     all empty (``{"issues": []}``, ``{"total_count": 0, "items": []}``). By
     shape only: a tool that answers in words is never judged."""
-    # The first place JSON parses: an answer is labelled ("[Linear: List issues] {…}").
-    body, decoder = None, json.JSONDecoder()
-    for start in (i for i, c in enumerate(text) if c in "{["):
-        try:
-            body, _ = decoder.raw_decode(text, start)
-            break
-        except json.JSONDecodeError:
-            continue
-    else:
+    # The answer after its label ("[Linear: List issues]\n{…}"), never a piece
+    # inside it: a long answer is cut at its bound, and the first part that
+    # parsed was an issue's ``"labels": []``, so 50 issues read as none.
+    label = re.match(r"\s*\[[^\]\n]*\]\s*(?=[{\[])", text)
+    try:
+        body, _ = json.JSONDecoder().raw_decode(text[label.end() if label else 0:].strip())
+    except json.JSONDecodeError:
         return False
     if isinstance(body, list):
         return not body

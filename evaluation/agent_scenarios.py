@@ -390,7 +390,7 @@ def run(name: str, sc: Scenario, llm, offered, settings) -> tuple[Trace, list[st
                                        sources=sources, read=read if step == 0 else None,
                                        earlier=sc.earlier if step == 0 else "",
                                        check=service._completeness(llm, sc.question))
-            trace.gaps += [g for gaps in loop.gaps.values() for g in gaps]
+            trace.gaps += [g for a, _, _ in loop.picked for g in loop.gaps.get(a.name, ())]
             trace.replies.append(loop.reply)
             trace.messages = loop.messages
             if not loop.picked:
@@ -464,7 +464,7 @@ def main(only: list[str]) -> int:
             print(f"   read: {trace.reads}" + (f" (live: {TRACE_CHANNEL})" if TRACE_CHANNEL else ""), flush=True)
         if trace.gaps:
             print(f"   said missing: {trace.gaps}", flush=True)
-        if wrong and os.environ.get("SCENARIO_DUMP"):
+        if (wrong or trace.gaps) and os.environ.get("SCENARIO_DUMP"):
             with open(f"{os.environ['SCENARIO_DUMP']}/{name}-{int(t)}.json", "w") as f:
                 json.dump(trace.messages, f, indent=1, ensure_ascii=False)
         if not trace.cards:
