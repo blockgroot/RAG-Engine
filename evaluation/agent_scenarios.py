@@ -206,6 +206,14 @@ SCENARIOS = {
         [card_count(1), cards_with(EARLIER_LINK), card_tool("send_dm"), not_pasted,
          lambda t: "a blank was left in the text" if re.search(r"\[[A-Z][A-Za-z ]+\]", json.dumps(t.cards))
          else ""], earlier=EARLIER),
+    "dm_pointers_and_link": Scenario(
+        # Prod: the DM said "Here are the pointers…" and gave only the link of
+        # the issue titled "Summary of hb-testing discussion": no pointers.
+        f"DM {EMAIL} about the pointers which are discussed in #hb-testing today along with the link of "
+        "linear issue we created",
+        [card_count(1), card_tool("send_dm"), cards_with(EARLIER_LINEAR_LINK), not_pasted,
+         lambda t: "" if sum(w in json.dumps(t.cards) for w in ("Notion", "Linear", "Bench notes")) >= 2
+         else "the DM has no pointers"], earlier=EARLIER_LINEAR),
     "post_linear_link": Scenario(
         # Prod: answered "Here is the link…" in words; no Slack card.
         "Post the link of the Linear issue we created in #hb-testing",
@@ -288,7 +296,12 @@ SCENARIOS = {
 
 def load(name, url, token, keep, is_write, tokens):
     s = mcp_client.McpSession(url, token, timeout=60)
-    s.open()
+    try:
+        s.open()
+    except mcp_client.McpUnauthorized:
+        # A bench sign-in expired: the scenarios that need it fail, the rest run.
+        print(f"!! {name}: the bench sign-in expired; its tools are not offered", flush=True)
+        return []
     tools = [t for t in s.list_tools()[0] if keep(t["name"])]
     modes = {t["name"]: {"mode": "write" if is_write(t["name"]) else "lookup", "hash": mcp_store.tool_hash(t)}
              for t in tools}
