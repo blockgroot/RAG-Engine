@@ -42,7 +42,7 @@ from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..auth.oauth_state import LINK_GITHUB, peek_state_provider
 from ..workspaces import assert_member
-from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
+from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session, public_api_url
 from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, bounded
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -103,7 +103,7 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
 
     owner_email = EmailSettings.from_env().owner_notification_email
     if owner_email:
-        base = str(http_request.base_url).rstrip("/")
+        base = public_api_url(http_request)
         approve_link = f"{base}/auth/signup-requests/approve?token={request.approve_token}"
         reject_link = f"{base}/auth/signup-requests/reject?token={request.reject_token}"
         background_tasks.add_task(

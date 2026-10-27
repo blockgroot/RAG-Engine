@@ -1,0 +1,116 @@
+# Handbook, self-hosted. Everything runs from this file and one .env beside it.
+#
+#   cp .env.example .env    # then fill it in (see the comments there)
+#   docker compose up -d
+#
+# Only caddy is reachable from outside (ports 80/443). Every address the app
+# and the connector apps need is built from HANDBOOK_DOMAIN below, so the
+# domain is set in exactly one place. To change anything here, put it in a
+# docker-compose.override.yml next to this file: upgrades never touch that.
+
+x-backend: &backend
+  image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-api:${HANDBOOK_VERSION:?set HANDBOOK_VERSION in .env}
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: ${DATABASE_URL:-postgresql://handbook:${POSTGRES_PASSWORD}@db:5432/handbook}
+    FRONTEND_URL: https://${HANDBOOK_DOMAIN}
+    API_CORS_ORIGINS: https://${HANDBOOK_DOMAIN}
+    SLACK_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/slack/callback
+    GOOGLE_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/google/callback
+    NOTION_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/notion/callback
+    LINEAR_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/linear/callback
+    MCP_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/act/mcp/callback
+    DRIVE_PUSH_BASE_URL: https://${HANDBOOK_DOMAIN}/api
+    # Agent mode's own MCP servers, reached inside this install.
+    HANDBOOK_MCP_URL: http://api:8000/mcp
+    # caddy overwrites X-Real-IP, so a visitor cannot pick their own
+    # rate-limit bucket by sending a header (app/security/client_ip.py).
+    CLIENT_IP_HEADER: x-real-ip
+    # The worker service below does the background work; models are remote.
+    INGEST_WORKER_IN_API: "false"
+    MODEL_WARMUP_ON_STARTUP: "false"
+
+services:
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      HANDBOOK_DOMAIN: ${HANDBOOK_DOMAIN:?set HANDBOOK_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+  web:
+    image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-web:${HANDBOOK_VERSION}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Same image as api. Waits for api so the schema is applied once, not by
+  # two processes at the same time.
+  worker:
+    <<: *backend
+    entrypoint: ["python", "scripts/run_worker.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Expiry, Drive watch renewal and backfills run only on /internal/tick
+  # (app/jobs/worker.py run_external_tick). On our Cloud a GitHub Action
+  # calls it; here this does, every 10 minutes.
+  tick:
+    image: curlimages/curl:8.10.1
+    restart: unless-stopped
+    environment:
+      INTERNAL_TICK_SECRET: ${INTERNAL_TICK_SECRET:?set INTERNAL_TICK_SECRET in .env}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        while true; do
+          sleep 600
+          curl -fsS -m 300 -X POST -H "X-Tick-Secret: $$INTERNAL_TICK_SECRET" http://api:8000/internal/tick > /dev/null || echo "tick failed"
+        done
+    depends_on:
+      api:
+        condition: service_healthy
+
+  db:
+    image: pgvector/pgvector:0.8.0-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: handbook
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: handbook
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U handbook -d handbook"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  db_data:
+  caddy_data:
+  caddy_config:

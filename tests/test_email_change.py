@@ -73,6 +73,9 @@ def test_a_confirmed_change_moves_the_login_and_keeps_the_old_address(client, me
 
     response = _request(client, cookies, new)
     assert response.status_code == 200
+    assert response.json()["dev_link"].startswith(
+        "https://portal.example.com/api/auth/email-change/confirm?token="
+    )
     token = _token(response.json()["dev_link"])
 
     # GET only shows what WOULD change: a mail scanner must not move the account.

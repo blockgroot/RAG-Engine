@@ -1,0 +1,12 @@
+# HTTPS for the install's domain. Caddy gets and renews the certificate on
+# its own; the domain must already point at this server, with ports 80 and
+# 443 open. With HANDBOOK_DOMAIN=localhost it uses a local certificate
+# instead (fine for trying the install; the browser will warn).
+
+{$HANDBOOK_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000 {
+		# Overwritten, never appended: the app rate-limits on this value.
+		header_up X-Real-IP {remote_host}
+	}
+}
