@@ -120,6 +120,8 @@ A member writes a request such as "What did the Platform team ship?" and chooses
 - **Charts:** posted as an image, with a link to the interactive chart.
 - **Actions:** requests such as "agent, post this to #team" create an approval card inside Slack.
 
+<p align="center"><img src="docs/poc-images/slack-thread.png" alt="Slack thread answer" width="420"><br><em>Mentioned in a channel, Handbook answers in the thread from that channel's messages.</em></p>
+
 ---
 
 ## 8. Feedback and Missing-Information Alerts
