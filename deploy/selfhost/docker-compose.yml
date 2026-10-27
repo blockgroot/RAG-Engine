@@ -30,6 +30,17 @@ x-backend: &backend
     # The worker service below does the background work; models are remote.
     INGEST_WORKER_IN_API: "false"
     MODEL_WARMUP_ON_STARTUP: "false"
+    # Self-hosted choices where the code's own default does not fit (it
+    # defaults to local models, console email and web search on). Each can
+    # be overridden by setting the same name in .env.
+    LLM_ADAPTER: ${LLM_ADAPTER:-anthropic}
+    LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+    EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-remote}
+    EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.jina.ai/v1}
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-jina-embeddings-v3}
+    RERANKER_BACKEND: ${RERANKER_BACKEND:-remote}
+    EMAIL_SENDER: ${EMAIL_SENDER:-smtp}
+    WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
 
 services:
   caddy:
