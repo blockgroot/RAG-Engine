@@ -66,31 +66,12 @@ services:
       retries: 30
       start_period: 30s
 
-  # Same image as api. Waits for api so the schema is applied once, not by
-  # two processes at the same time.
+  # Same image as api. Runs every background job, including the ones Cloud
+  # gets from its /internal/tick cron. Waits for api so the schema is
+  # applied once, not by two processes at the same time.
   worker:
     <<: *backend
     entrypoint: ["python", "scripts/run_worker.py"]
-    depends_on:
-      api:
-        condition: service_healthy
-
-  # Expiry, Drive watch renewal and backfills run only on /internal/tick
-  # (app/jobs/worker.py run_external_tick). On our Cloud a GitHub Action
-  # calls it; here this does, every 10 minutes.
-  tick:
-    image: curlimages/curl:8.10.1
-    restart: unless-stopped
-    environment:
-      INTERNAL_TICK_SECRET: ${INTERNAL_TICK_SECRET:?set INTERNAL_TICK_SECRET in .env}
-    entrypoint:
-      - sh
-      - -c
-      - |
-        while true; do
-          sleep 600
-          curl -fsS -m 300 -X POST -H "X-Tick-Secret: $$INTERNAL_TICK_SECRET" http://api:8000/internal/tick > /dev/null || echo "tick failed"
-        done
     depends_on:
       api:
         condition: service_healthy
