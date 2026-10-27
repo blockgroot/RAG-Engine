@@ -23,13 +23,12 @@ This guide takes you from an empty server to signing in to Handbook. After that,
 
 ## 1. Get the install package
 
-Download the install package for your version and unzip it on the server:
+Download `handbook-selfhost-<version>.zip` from the release we point you to, and unzip it on the server:
 
 ```
 handbook/
-├── docker-compose.yml
-├── Caddyfile
-├── .env.example
+├── install.sh   upgrade.sh   backup.sh
+├── docker-compose.yml   Caddyfile   .env.example   VERSION
 ├── apps/        templates for your Slack and GitHub apps
 └── docs/        these guides
 ```
@@ -40,37 +39,42 @@ Log in to our image registry with the username and token we gave you:
 docker login ghcr.io
 ```
 
-## 2. Fill in the settings
+## 2. Run the installer
 
 ```sh
 cd handbook
-cp .env.example .env
+./install.sh
 ```
 
-Open `.env` and fill in every value. The file explains each one. In short:
+It asks for your domain, your email, the Claude and Jina keys, and your SMTP details. Everything else is generated or has a default. Then it:
 
-1. `HANDBOOK_VERSION`: the version you downloaded. `HANDBOOK_DOMAIN`: your domain, without `https://`.
-2. Three secrets. Generate each one once:
-   ```sh
-   openssl rand -hex 32    # run twice: POSTGRES_PASSWORD, AUTH_JWT_SECRET
-   python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
-                           # AUTH_ENCRYPTION_KEYS
-   ```
-3. `LLM_API_KEY` (Claude) and `EMBEDDING_API_KEY` (Jina).
-4. Your SMTP server details.
-5. `OWNER_NOTIFICATION_EMAIL`: your own address. You approve your company's sign-up with it (step 4).
+1. generates the three secrets;
+2. writes `.env`, readable only by you;
+3. writes your domain into the Slack and GitHub templates;
+4. downloads the images and starts Handbook;
+5. waits until Handbook is healthy and prints your next steps.
 
-Leave the connector keys empty for now.
+The first start takes a few minutes. You can run `./install.sh` again at any time: it keeps your `.env` and simply (re)starts Handbook.
 
 > **Keep a copy of `.env` somewhere safe.** `AUTH_ENCRYPTION_KEYS` protects every connected tool's sign-in. If it is lost, every tool has to be connected again.
 
-## 3. Start Handbook
+<details>
+<summary>Installing by hand instead</summary>
 
-```sh
-docker compose up -d
-```
+1. `cp .env.example .env` and fill in every value; the file explains each one.
+2. Generate the three secrets once:
+   ```sh
+   openssl rand -hex 32                              # POSTGRES_PASSWORD, AUTH_JWT_SECRET (once each)
+   openssl rand -base64 32 | tr '+/' '-_'            # AUTH_ENCRYPTION_KEYS
+   ```
+3. Replace `HANDBOOK_DOMAIN` in `apps/slack-manifest.yml` and `apps/github-app.html` with your domain.
+4. Run `docker compose up -d`.
 
-The first start downloads the images and takes a few minutes. Check that everything is running:
+</details>
+
+## 3. If Handbook does not start
+
+Check the services:
 
 ```sh
 docker compose ps
@@ -99,6 +103,24 @@ Handbook checks its settings when it starts and stops with a message when someth
 ## 5. Connect your tools
 
 Follow [CONNECTORS.md](CONNECTORS.md) for each tool you use. Then, in Handbook, choose what each tool syncs and invite your colleagues.
+
+## Everyday commands
+
+Run these from the Handbook folder.
+
+| To | Run |
+| --- | --- |
+| See if everything is running | `docker compose ps` |
+| Read the logs | `docker compose logs --tail 100 api worker` (add `-f` to follow) |
+| Apply a change you made in `.env` | `docker compose up -d` |
+| Stop Handbook (data is kept) | `docker compose stop` |
+| Start it again | `docker compose up -d` |
+| Back up | `./backup.sh` ([BACKUP.md](BACKUP.md)) |
+| Upgrade | `./upgrade.sh <version>` ([UPGRADE.md](UPGRADE.md)) |
+| Remove Handbook but keep the data | `docker compose down` |
+| Remove Handbook **and delete all its data** | `docker compose down -v` (cannot be undone; back up first) |
+
+Handbook starts again by itself after a server restart.
 
 ## Choosing an embedding model
 

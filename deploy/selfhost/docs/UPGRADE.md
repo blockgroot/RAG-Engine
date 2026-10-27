@@ -19,22 +19,28 @@ We support the current version and the one before it.
 
 ## How to upgrade
 
-1. **Back up** (see [BACKUP.md](BACKUP.md)). This is your way back if anything goes wrong.
-2. In `.env`, set the new version:
-   ```
-   HANDBOOK_VERSION=1.4.0
-   ```
-3. Make any `.env` or connector-app changes the release notes ask for.
-4. Download and start the new version:
+1. Make any `.env` or connector-app changes the release notes ask for.
+2. Run:
    ```sh
-   docker compose pull
-   docker compose up -d
+   ./upgrade.sh 1.4.0
    ```
-5. Check it is running: `docker compose ps` shows `api` as `healthy`.
+   It backs up the database, switches the version, downloads the new images, restarts Handbook and waits until it is healthy. It prints how to go back to your previous version if you need to.
 
 When it starts, the new version updates the database on its own. There is no separate migration step.
 
-Upgrades also refresh `docker-compose.yml` from the new install package when it changes. Keep your own changes in a `docker-compose.override.yml` next to it, so they are never overwritten.
+<details>
+<summary>Upgrading by hand instead</summary>
+
+1. Back up: `./backup.sh`.
+2. In `.env`, set `HANDBOOK_VERSION=1.4.0`.
+3. `docker compose pull && docker compose up -d`
+4. Check `docker compose ps` shows `api` as `healthy`.
+
+</details>
+
+**When the release notes say the install package changed** (for example a new service in `docker-compose.yml`), download the new `handbook-selfhost-<version>.zip` first. Copy its files over your Handbook folder, **keeping your `.env`, `backups/` and `apps/`**, then run `./upgrade.sh`. Most releases change only the images, and need just `./upgrade.sh`.
+
+Keep your own changes to the Compose setup in a `docker-compose.override.yml` next to `docker-compose.yml`, so copying in a new package never overwrites them.
 
 ## If something goes wrong
 

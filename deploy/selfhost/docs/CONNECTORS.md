@@ -10,13 +10,7 @@ For every tool:
 
 In the steps below, `<domain>` means your `HANDBOOK_DOMAIN`, for example `handbook.yourcompany.com`.
 
-## Fill your domain into the templates
-
-Slack and GitHub apps are created from templates in `apps/`. Write your domain into them once:
-
-```sh
-sed -i.bak "s/HANDBOOK_DOMAIN/handbook.yourcompany.com/g" apps/slack-manifest.yml apps/github-app.html
-```
+Slack and GitHub apps are created from templates in `apps/`. `install.sh` has already written your domain into them.
 
 ---
 

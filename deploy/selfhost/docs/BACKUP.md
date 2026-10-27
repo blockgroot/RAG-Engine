@@ -14,29 +14,29 @@ Synced content can always be fetched again from your tools. Chats, settings, and
 
 ## Taking a backup
 
-From the folder with `docker-compose.yml`:
+From the Handbook folder:
 
 ```sh
-docker compose exec -T db pg_dump -U handbook -Fc handbook > handbook-$(date +%Y%m%d-%H%M).dump
+./backup.sh
 ```
 
-This works while Handbook is running. Copy the file off the server.
+It saves the database to `backups/handbook-<date and time>.dump`. This works while Handbook is running. Copy the file off the server. `upgrade.sh` runs it for you before every upgrade.
 
-**How often:** daily is a sensible default, and always right before an upgrade. A simple way to make it daily is a cron entry on the server (create the `backups` folder first):
+**How often:** daily is a sensible default. A simple way to make it daily is a cron entry on the server:
 
 ```
-0 2 * * * cd /path/to/handbook && docker compose exec -T db pg_dump -U handbook -Fc handbook > backups/handbook-$(date +\%Y\%m\%d).dump
+0 2 * * * /path/to/handbook/backup.sh
 ```
 
 Delete old files as you see fit.
 
 ## Restoring
 
-This replaces everything in the database with the backup.
+This replaces everything in the database with the backup. Use the name of the file you want from `backups/`.
 
 ```sh
 docker compose stop web api worker
-docker compose exec -T db pg_restore -U handbook -d handbook --clean --if-exists < handbook-20261027-0200.dump
+docker compose exec -T db pg_restore -U handbook -d handbook --clean --if-exists < backups/handbook-20261027-020000.dump
 docker compose up -d
 ```
 
