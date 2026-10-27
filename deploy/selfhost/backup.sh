@@ -16,6 +16,8 @@ if [ -n "$(get_env DATABASE_URL)" ]; then
   exit 0
 fi
 
+# A dump holds everything Handbook stores: readable by you only.
+umask 077
 mkdir -p backups
 file="backups/handbook-$(date +%Y%m%d-%H%M%S).dump"
 docker compose exec -T db pg_dump -U handbook -Fc handbook > "$file" \

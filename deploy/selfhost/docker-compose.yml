@@ -4,8 +4,8 @@
 #   docker compose up -d
 #
 # Only caddy is reachable from outside (ports 80/443). Every address the app
-# and the connector apps need is built from HANDBOOK_DOMAIN below, so the
-# domain is set in exactly one place. To change anything here, put it in a
+# and the connector apps need comes from HANDBOOK_DOMAIN, so the domain is set
+# in exactly one place. To change anything here, put it in a
 # docker-compose.override.yml next to this file: upgrades never touch that.
 
 x-backend: &backend
@@ -14,13 +14,9 @@ x-backend: &backend
   env_file: .env
   environment:
     DATABASE_URL: ${DATABASE_URL:-postgresql://handbook:${POSTGRES_PASSWORD}@db:5432/handbook}
+    # Every sign-in return address is worked out from this one.
     FRONTEND_URL: https://${HANDBOOK_DOMAIN}
-    API_CORS_ORIGINS: https://${HANDBOOK_DOMAIN}
-    SLACK_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/slack/callback
-    GOOGLE_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/google/callback
-    NOTION_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/notion/callback
-    LINEAR_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/auth/linear/callback
-    MCP_REDIRECT_URI: https://${HANDBOOK_DOMAIN}/api/act/mcp/callback
+    # Drive live updates (off when unset, so it is turned on here).
     DRIVE_PUSH_BASE_URL: https://${HANDBOOK_DOMAIN}/api
     # Agent mode's own MCP servers, reached inside this install.
     HANDBOOK_MCP_URL: http://api:8000/mcp

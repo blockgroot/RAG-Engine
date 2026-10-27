@@ -173,6 +173,17 @@ def env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _oauth_redirect(name: str, provider: str) -> str | None:
+    """``name`` if set, else the address the browser returns to after signing
+    in to ``provider``: the frontend origin plus ``/api`` (the rewrite to this
+    API), as ``MCP_REDIRECT_URI`` already does. An install then sets one
+    address, ``FRONTEND_URL``, instead of one per tool."""
+    frontend = os.getenv("FRONTEND_URL")
+    return os.getenv(name) or (
+        f"{frontend.rstrip('/')}/api/auth/{provider}/callback" if frontend else None
+    )
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     """LLM provider configuration."""
@@ -709,7 +720,7 @@ class NotionSettings:
             tokens=tokens,
             client_id=os.getenv("NOTION_CLIENT_ID"),
             client_secret=os.getenv("NOTION_CLIENT_SECRET"),
-            redirect_uri=os.getenv("NOTION_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("NOTION_REDIRECT_URI", "notion"),
         )
 
     def resolve_token(self, name: str | None = None) -> str:
@@ -789,7 +800,7 @@ class LinearSettings:
             tokens=tokens,
             client_id=os.getenv("LINEAR_CLIENT_ID"),
             client_secret=os.getenv("LINEAR_CLIENT_SECRET"),
-            redirect_uri=os.getenv("LINEAR_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("LINEAR_REDIRECT_URI", "linear"),
             scopes=os.getenv("LINEAR_OAUTH_SCOPES", DEFAULT_LINEAR_OAUTH_SCOPES),
         )
 
@@ -899,7 +910,7 @@ class GoogleSettings:
         return cls(
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-            redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("GOOGLE_REDIRECT_URI", "google"),
             scopes=scopes,
             forms_enabled=forms_enabled,
             groups_enabled=groups_enabled,
@@ -985,7 +996,7 @@ class SlackSettings:
         return cls(
             client_id=os.getenv("SLACK_CLIENT_ID"),
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
-            redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("SLACK_REDIRECT_URI", "slack"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
             signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
             backfill_days=int(
