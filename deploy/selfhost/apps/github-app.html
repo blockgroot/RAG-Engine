@@ -1,0 +1,70 @@
+<!doctype html>
+<!--
+  GitHub App for a self-hosted Handbook, created from a manifest.
+
+  1. Replace HANDBOOK_DOMAIN in this file with your domain
+     (docs/CONNECTORS.md shows a one-line command).
+  2. Open this file in a browser, type your GitHub organization, and press
+     "Create on GitHub". GitHub shows the App with everything filled in;
+     choose a name (it must be unique on all of GitHub) and confirm.
+  3. GitHub then sends you to https://HANDBOOK_DOMAIN/?code=... . Copy the
+     code from the address bar and follow step 4 in docs/CONNECTORS.md
+     within one hour.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Create Handbook's GitHub App</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem; }
+    input, button { font: inherit; padding: .4rem .6rem; }
+  </style>
+</head>
+<body>
+  <h1>Create Handbook's GitHub App</h1>
+  <p>The App is created in your organization with the permissions Handbook needs:
+     read access to code, pull requests and repository details, and issue
+     writing for Agent mode.</p>
+  <form id="create" method="post">
+    <label>GitHub organization
+      <input id="org" required placeholder="your-org">
+    </label>
+    <input type="hidden" name="manifest" id="manifest">
+    <p><button type="submit">Create on GitHub</button></p>
+  </form>
+  <script>
+    const domain = "https://HANDBOOK_DOMAIN";
+    const manifest = {
+      name: "Handbook",
+      url: domain,
+      // GitHub sends the one-time code here after the App is created.
+      redirect_url: domain + "/",
+      // Order matters: Handbook's sign-in names no return address, so GitHub
+      // uses the first one.
+      callback_urls: [
+        domain + "/api/auth/github/callback",
+        domain + "/api/act/mcp/callback"
+      ],
+      setup_url: domain + "/api/auth/github/callback",
+      request_oauth_on_install: true,
+      public: false,
+      // Handbook does not use GitHub webhooks.
+      hook_attributes: { url: domain + "/api/github/unused", active: false },
+      default_permissions: {
+        metadata: "read",
+        contents: "read",
+        pull_requests: "read",
+        // Agent mode creates and edits issues. Reading always uses
+        // read-only tokens, whatever the App holds.
+        issues: "write"
+      },
+      default_events: []
+    };
+    document.getElementById("create").addEventListener("submit", (e) => {
+      const org = document.getElementById("org").value.trim();
+      e.target.action = "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new";
+      document.getElementById("manifest").value = JSON.stringify(manifest);
+    });
+  </script>
+</body>
+</html>

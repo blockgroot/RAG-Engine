@@ -360,10 +360,20 @@ class EmbeddingSettings:
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
     batch_size: int = DEFAULT_EMBED_BATCH_SIZE
+    #: Size to ask a remote model for (EMBEDDING_SEND_DIMENSIONS=true). Many
+    #: newer models can shorten their vectors on request, which lets a model
+    #: whose natural size is not the database's still fit. Off by default:
+    #: a provider that does not support it rejects the request.
+    dimensions: int | None = None
 
     @classmethod
     def from_env(cls) -> "EmbeddingSettings":
         return cls(
+            dimensions=(
+                int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM)
+                if env_bool("EMBEDDING_SEND_DIMENSIONS", False)
+                else None
+            ),
             backend=(os.getenv("EMBEDDING_BACKEND") or DEFAULT_EMBEDDING_BACKEND).lower(),
             model=os.getenv("EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL,
             device=os.getenv("EMBEDDING_DEVICE") or None,

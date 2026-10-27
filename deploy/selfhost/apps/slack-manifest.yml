@@ -1,0 +1,76 @@
+# Slack app for a self-hosted Handbook.
+#
+# 1. Replace HANDBOOK_DOMAIN below with your domain (docs/CONNECTORS.md shows a
+#    one-line command that does it for every template).
+# 2. https://api.slack.com/apps -> Create New App -> From an app manifest ->
+#    pick your workspace -> paste this file -> Create.
+#
+# Every value here is what Handbook's code expects. Change the names freely;
+# change the scopes, events or addresses only if a release note says so.
+
+display_information:
+  name: Handbook
+  description: Answers from your company's documents, with sources.
+
+features:
+  app_home:
+    home_tab_enabled: false
+    # People can DM the bot with questions.
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Handbook
+    always_online: true
+
+oauth_config:
+  redirect_urls:
+    # Connecting Slack as a source.
+    - https://HANDBOOK_DOMAIN/api/auth/slack/callback
+    # Agent mode: each person signs in to post as themselves.
+    - https://HANDBOOK_DOMAIN/api/act/mcp/callback
+  scopes:
+    bot:
+      - channels:history
+      - channels:read
+      - channels:join
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - mpim:history
+      - mpim:read
+      - users:read
+      - users:read.email
+      - chat:write
+      - app_mentions:read
+      - files:write
+      - im:write
+    # Agent mode only: posting is done with the person's own token.
+    user:
+      - channels:read
+      - groups:read
+      - channels:history
+      - groups:history
+      - users:read
+      - users:read.email
+      - chat:write
+      - im:write
+
+settings:
+  event_subscriptions:
+    request_url: https://HANDBOOK_DOMAIN/api/slack/events
+    bot_events:
+      # Questions: an @mention in a channel, or a DM.
+      - app_mention
+      - message.im
+      # Keeps synced channels fresh between scheduled syncs.
+      - message.channels
+      - message.groups
+  interactivity:
+    is_enabled: true
+    # Agent mode's Approve / Edit / Cancel buttons.
+    request_url: https://HANDBOOK_DOMAIN/api/slack/interactivity
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  # Must stay off: Handbook keeps the bot token, which never expires.
+  token_rotation_enabled: false
