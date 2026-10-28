@@ -104,11 +104,9 @@ Handbook checks its settings when it starts and stops with a message when someth
 
 There is no public sign-up page: your Handbook holds only your company. Colleagues join when an admin invites them from the admin page.
 
-## 5. Connect your tools
+## 5. Get Handbook ready for your company
 
-Follow [CONNECTORS.md](CONNECTORS.md) for each tool you use. Then, in Handbook, choose what each tool syncs and invite your colleagues.
-
-If we installed Handbook for you, go through [REMOVING-OUR-ACCESS.md](REMOVING-OUR-ACCESS.md) once setup is finished.
+Follow [CHECKLIST.md](CHECKLIST.md): a checklist for connecting your tools ([CONNECTORS.md](CONNECTORS.md)), checking the answers, deciding who sees what, and inviting your colleagues. If we installed Handbook for you, its last section removes our access.
 
 ## Everyday commands
 

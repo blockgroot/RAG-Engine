@@ -33,8 +33,9 @@ Share the screen with each tool's admin and follow `CONNECTORS.md`. The apps are
 - Ask a question that each connected tool should answer, and check the answer cites it.
 - Run `./backup.sh` once, and set up the daily backup and the off-server copy (`BACKUP.md`) with their IT.
 - Show their IT `INSTALL.md` ("Everyday commands") and `UPGRADE.md`.
+- Go through `CHECKLIST.md` with the admin: sections 1–3 together, and the rest (spaces, settings, invites) is theirs to finish.
 - Add the admin's email to our release email list.
 
 ## 5. Hand back access
 
-Remove our SSH key and any accounts we were given, and tell the company it is done. Send them `REMOVING-OUR-ACCESS.md` (in the package's `docs/`) so they can check every item themselves; it also lists which secrets to change if their policy asks for it. If they keep us on a support plan for upgrades, keep only the access the plan names, and write down what it is.
+Remove our SSH key and any accounts we were given, and tell the company it is done. Point them to section 8 of `CHECKLIST.md` (in the package's `docs/`) so they can check every item themselves; it also lists which secrets to change if their policy asks for it. If they keep us on a support plan for upgrades, keep only the access the plan names, and write down what it is.
