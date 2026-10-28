@@ -23,7 +23,7 @@ This guide takes you from an empty server to signing in to Handbook. After that,
 
 ## 1. Get the install package
 
-Download `handbook-selfhost-<version>.zip` from the release we point you to, and unzip it on the server:
+Download `handbook-selfhost-<version>.zip` from the latest release at [github.com/blockgroot/handbook-releases/releases](https://github.com/blockgroot/handbook-releases/releases), and unzip it on the server:
 
 ```
 handbook/

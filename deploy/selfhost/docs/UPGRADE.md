@@ -66,7 +66,7 @@ When it starts, the new version updates the database on its own. There is no sep
 
 </details>
 
-**When the release notes say the install package changed** (for example a new service in `docker-compose.yml`), download the new `handbook-selfhost-<version>.zip` first. Copy its files over your Handbook folder, **keeping your `.env`, `backups/` and `apps/`**, then run `./upgrade.sh`. Most releases change only the images, and need just `./upgrade.sh`.
+**When the release notes say the install package changed** (for example a new service in `docker-compose.yml`), download the new `handbook-selfhost-<version>.zip` from [our releases page](https://github.com/blockgroot/handbook-releases/releases) first. Copy its files over your Handbook folder, **keeping your `.env`, `backups/` and `apps/`**, then run `./upgrade.sh`. Most releases change only the images, and need just `./upgrade.sh`.
 
 Keep your own changes to the Compose setup in a `docker-compose.override.yml` next to `docker-compose.yml`, so copying in a new package never overwrites them.
 

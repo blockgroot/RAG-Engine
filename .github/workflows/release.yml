@@ -17,9 +17,10 @@
 # install package attached: handbook-selfhost-1.0.0.zip (deploy/selfhost/ plus
 # a VERSION file, so install.sh knows which images to run).
 #
-# Last, the release is added to the public list every install checks
-# (blockgroot/handbook-releases: releases.json and notes/<version>.md). That
-# push needs the RELEASES_REPO_TOKEN secret: a fine-grained token with
+# Last, the release goes to the public repo blockgroot/handbook-releases: a
+# GitHub release there with the install package (what companies download),
+# then releases.json and notes/<version>.md (what every install checks).
+# That needs the RELEASES_REPO_TOKEN secret: a fine-grained token with
 # "Contents: read and write" on that repo only. Admins are told about the
 # release only from this point, so Cloud should be deployed before it.
 
@@ -101,6 +102,10 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/handbook-selfhost-*.zip \
             --title "$GITHUB_REF_NAME" --generate-notes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-zip
+          path: dist/handbook-selfhost-*.zip
 
   feed:
     needs: package
@@ -112,10 +117,22 @@ jobs:
           repository: blockgroot/handbook-releases
           token: ${{ secrets.RELEASES_REPO_TOKEN }}
           path: releases
+      - uses: actions/download-artifact@v4
+        with:
+          name: selfhost-zip
+          path: dist
       - name: Add the release to the public list
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           python3 scripts/release_feed.py "$version" "release-notes/$version.md" releases
+          # The install package goes public before the version is announced,
+          # so a company told about it can download it. It holds no code:
+          # the images stay behind the registry token.
+          gh release create "$GITHUB_REF_NAME" dist/handbook-selfhost-*.zip \
+            --repo blockgroot/handbook-releases \
+            --title "Handbook $version" --notes-file "releases/notes/$version.md"
           cd releases
           git config user.name "handbook-release"
           git config user.email "handbook-release@users.noreply.github.com"

@@ -23,8 +23,8 @@ How we ship a version to Cloud and to every self-hosted install, and how their a
 3. **Tag:** `git tag v<version> && git push origin v<version>`. The workflow (`.github/workflows/release.yml`):
    1. stops at once if the notes file is missing or malformed;
    2. builds and pushes `handbook-api`, `handbook-web` and `handbook-updater`;
-   3. creates the GitHub release with the install package;
-   4. adds the release to `releases.json` in the public repo.
+   3. creates the GitHub release here, with the install package;
+   4. publishes the install package as a release in the public repo (the link companies download from), then adds the version to its `releases.json`.
 4. **Email** the release notes to self-hosted customers.
 
 ## What admins see

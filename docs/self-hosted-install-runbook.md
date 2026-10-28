@@ -20,7 +20,7 @@ Agree in writing what we may access and until when. We do not take copies of the
 ## 2. Install
 
 1. Send them the pull token for our image registry (one per company, read-only), unless the images are public.
-2. On their server, download and unzip the release's `handbook-selfhost-<version>.zip`, then run `docker login ghcr.io` and `./install.sh` (`INSTALL.md`). Let their IT person type the API keys and the SMTP password themselves, if they prefer.
+2. On their server, download and unzip `handbook-selfhost-<version>.zip` from https://github.com/blockgroot/handbook-releases/releases, then run `docker login ghcr.io` and `./install.sh` (`INSTALL.md`). Let their IT person type the API keys and the SMTP password themselves, if they prefer.
 3. Check: `docker compose ps` shows all six services running and `api` healthy, and `https://<domain>` opens with a valid certificate.
 4. The admin signs in at `https://<domain>` with the email given to the installer.
 
