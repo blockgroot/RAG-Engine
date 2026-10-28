@@ -186,12 +186,12 @@ Found by reading the code. Each has the evidence and the planned fix.
 
 | # | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| 1 | The worker script is not in the backend image, so a separate `worker` service cannot start | `Dockerfile:24` copies only two scripts | Also copy `scripts/run_worker.py` |
-| 2 | Clean-up and some sync work run only when `/internal/tick` is called: Drive watch renewal, expiry of files and chats, backfills. Cloud gets this from GitHub Actions. | `app/jobs/worker.py:373-470`, `.github/workflows/tick.yml` | A `tick` service in Compose calling it every 10 minutes |
-| 3 | Uploaded files can only be stored in Cloudinary; uploads fail without it | `app/attachments/blobstore.py:75-90` | An S3-compatible storage option (works with AWS S3, MinIO and others). A local-disk option for single-server installs is worth considering. |
-| 4 | No single-company setup: anyone who reaches `/signup` can request a new company, and only the address in `OWNER_NOTIFICATION_EMAIL` can approve it, by email | `app/api/auth.py:71-125` | A single-company mode: the company and its admin are created at install, and public sign-up is turned off |
-| 5 | Sign-up approval and email-change links are built from the address the backend sees, which inside Compose is the internal `api:8000`, so the links would not open | `app/api/auth.py:106`, `app/api/account.py:248` | Build them from `FRONTEND_URL`, like every other link |
-| 6 | A shipped prompt names our own test channel, `#hand-book-testing` | `app/rag/prompts.py:1003` | Use a neutral example |
+| 1 | The worker script is not in the backend image, so a separate `worker` service cannot start | `Dockerfile:24` copies only two scripts | **Done.** The image copies `scripts/run_worker.py` |
+| 2 | Clean-up and some sync work run only when `/internal/tick` is called: Drive watch renewal, expiry of files and chats, backfills. Cloud gets this from GitHub Actions. | `app/jobs/worker.py:373-470`, `.github/workflows/tick.yml` | **Done.** The worker runs the tick's jobs itself every 10 minutes; no extra service |
+| 3 | Uploaded files can only be stored in Cloudinary; uploads fail without it | `app/attachments/blobstore.py:75-90` | **Done.** With no Cloudinary keys, an upload's text is kept in Postgres (`store.save_attachment`); the original bytes are dropped. S3 only if a customer needs the originals. |
+| 4 | No single-company setup: anyone who reaches `/signup` can request a new company, and only the address in `OWNER_NOTIFICATION_EMAIL` can approve it, by email | `app/api/auth.py:71-125` | **Done.** `SIGNUP_ENABLED=false` in Compose; `install.sh` runs `scripts/create_company.py` |
+| 5 | Sign-up approval and email-change links are built from the address the backend sees, which inside Compose is the internal `api:8000`, so the links would not open | `app/api/auth.py:106`, `app/api/account.py:248` | **Done.** `deps.public_api_url` builds them from `FRONTEND_URL` |
+| 6 | A shipped prompt names our own test channel, `#hand-book-testing` | `app/rag/prompts.py:1003` | **Done.** Now `#general` |
 
 **Should fix soon**
 
@@ -268,8 +268,8 @@ The new backend applies its database changes on start, as Cloud does today. Rele
 ## 11. Build order
 
 1. **Done:** web image and release workflow (`frontend/Dockerfile`, `.github/workflows/release.yml`).
-2. Code fixes 1, 2, 5 and 6, plus the Compose file, Caddyfile and `.env.example`. Test on a fresh server.
-3. Fix 4 (single-company mode) and fix 3 (file storage).
-4. `install.sh`, `upgrade.sh`, `backup.sh`, the Slack and GitHub templates, and the four guides.
+2. **Done:** code fixes 1, 2, 5 and 6, plus the Compose file, Caddyfile and `.env.example`. Tested in Docker on a Mac.
+3. **Done:** fix 4 (single-company mode) and fix 3 (file storage).
+4. **Done:** `install.sh`, `upgrade.sh`, `backup.sh`, the Slack and GitHub templates, and the four guides.
 5. Measure memory, CPU and disk on a test install with real content, then publish the sizing guide.
 6. First release tag and a pilot with one friendly company.

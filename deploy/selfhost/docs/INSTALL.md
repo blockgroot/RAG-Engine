@@ -46,13 +46,14 @@ cd handbook
 ./install.sh
 ```
 
-It asks for your domain, your email, the Claude and Jina keys, and your SMTP details. Everything else is generated or has a default. Then it:
+It asks for your domain, your company's name, your work email, the Claude and Jina keys, and your SMTP details. Everything else is generated or has a default. Then it:
 
 1. generates the three secrets;
 2. writes `.env`, readable only by you;
 3. writes your domain into the Slack and GitHub templates;
 4. downloads the images and starts Handbook;
-5. waits until Handbook is healthy and prints your next steps.
+5. waits until Handbook is healthy;
+6. creates your company, with you as its admin, and prints your next steps.
 
 The first start takes a few minutes. You can run `./install.sh` again at any time: it keeps your `.env` and simply (re)starts Handbook.
 
@@ -69,6 +70,10 @@ The first start takes a few minutes. You can run `./install.sh` again at any tim
    ```
 3. Replace `HANDBOOK_DOMAIN` in `apps/slack-manifest.yml` and `apps/github-app.html` with your domain.
 4. Run `docker compose up -d`.
+5. Once `api` is healthy, create your company:
+   ```sh
+   docker compose exec api python scripts/create_company.py "Your Company" you@yourcompany.com
+   ```
 
 </details>
 
@@ -92,17 +97,18 @@ Handbook checks its settings when it starts and stops with a message when someth
 - `LLM check: FAILED ...` means the Claude key or model name is wrong.
 - `Embedding check: FAILED ...` means the embedding model does not fit (see below).
 
-## 4. Create your company and sign in
+## 4. Sign in
 
-1. Open `https://<your domain>/signup`, enter your work email and company name.
-2. An approval email arrives at `OWNER_NOTIFICATION_EMAIL`. Open it and press **Approve**.
-3. A sign-in link arrives at the email you signed up with. Open it, and you are in as your company's admin.
+1. Open `https://<your domain>` and enter the work email you gave the installer.
+2. Open the sign-in link that arrives by email. You are in as your company's admin.
 
-> This approval step exists because the same software also runs our multi-company cloud. A setting that creates your company during installation and turns public sign-up off is planned.
+There is no public sign-up page: your Handbook holds only your company. Colleagues join when an admin invites them from the admin page.
 
 ## 5. Connect your tools
 
 Follow [CONNECTORS.md](CONNECTORS.md) for each tool you use. Then, in Handbook, choose what each tool syncs and invite your colleagues.
+
+If we installed Handbook for you, go through [REMOVING-OUR-ACCESS.md](REMOVING-OUR-ACCESS.md) once setup is finished.
 
 ## Everyday commands
 
@@ -144,6 +150,6 @@ Changing the database's vector size is not a self-service step yet. Contact us *
 
 ## Current limitations
 
-- **Chat file uploads** are stored with Cloudinary. Fill in the `CLOUDINARY_*` settings, or leave them empty to turn uploads off. Support for your own storage (Amazon S3 and compatible services) is planned.
+- **Chat file uploads** are kept in Handbook's own database, so they stay on your server and are included in backups. Only the text read from each file is kept, not the original file. To store files with Cloudinary instead, fill in the `CLOUDINARY_*` settings.
 - **Only GitHub.com** is supported, not GitHub Enterprise Server.
 - **Slack, Notion and Linear send live updates over the internet,** so Handbook must be reachable at its public address. Without that, your tools are still synced on a schedule, but the Slack bot cannot answer questions.

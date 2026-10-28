@@ -33,7 +33,8 @@ else
   [ -n "$version" ] || ask version "Handbook version to install (e.g. 1.0.0)"
   ask domain "Domain for Handbook, pointing at this server (e.g. handbook.yourcompany.com)"
   domain="${domain#https://}"; domain="${domain#http://}"; domain="${domain%/}"
-  ask admin_email "Your email (approves your company's sign-up)"
+  ask company "Your company's name"
+  ask admin_email "Your work email (you become Handbook's first admin)"
   ask llm_key "Claude API key" secret
   ask embedding_key "Jina API key (search)" secret
   echo "Email for sign-in links, through your SMTP server:"
@@ -56,7 +57,8 @@ else
   set_env EMAIL_SMTP_USERNAME "$smtp_user"
   set_env EMAIL_SMTP_PASSWORD "$smtp_pass"
   set_env EMAIL_SMTP_FROM "$smtp_from"
-  set_env OWNER_NOTIFICATION_EMAIL "$admin_email"
+  set_env HANDBOOK_COMPANY "$company"
+  set_env HANDBOOK_ADMIN_EMAIL "$admin_email"
   say "Settings written to .env. Keep a copy of it somewhere safe: it holds the key to every connected tool's sign-in."
 fi
 
@@ -70,13 +72,18 @@ say "Starting Handbook (the first start takes a minute or two)"
 docker compose up -d
 wait_healthy
 
+admin_email="$(get_env HANDBOOK_ADMIN_EMAIL)"
+if [ -n "$admin_email" ]; then
+  docker compose exec -T api python scripts/create_company.py \
+    "$(get_env HANDBOOK_COMPANY)" "$admin_email"
+fi
+
 say "Handbook is running at https://$domain"
 cat << EOF
 
 Next:
-  1. Open https://$domain/signup and sign up with your work email.
-  2. Approve the request in the email sent to $(get_env OWNER_NOTIFICATION_EMAIL),
-     then use the sign-in link that follows.
-  3. Connect your tools: docs/CONNECTORS.md. The Slack and GitHub templates
+  1. Open https://$domain and sign in with $admin_email.
+  2. Connect your tools: docs/CONNECTORS.md. The Slack and GitHub templates
      in apps/ already contain your domain.
+  3. Invite your colleagues from the admin page.
 EOF

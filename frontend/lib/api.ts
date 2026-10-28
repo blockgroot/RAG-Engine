@@ -478,6 +478,8 @@ export interface JobRecord {
 export interface MagicLinkResponse {
   status: "sent" | "no_account";
   message: string;
+  /** False on a self-hosted copy: its one company exists, others join by invite. */
+  signup_enabled?: boolean;
   dev_link: string | null;
 }
 

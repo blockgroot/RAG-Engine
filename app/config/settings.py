@@ -1830,6 +1830,10 @@ class AuthSettings:
     session_ttl_minutes: int = DEFAULT_SESSION_TTL_MINUTES
     magic_link_ttl_minutes: int = DEFAULT_MAGIC_LINK_TTL_MINUTES
     signup_action_ttl_hours: int = DEFAULT_SIGNUP_ACTION_TTL_HOURS
+    #: Off in a self-hosted copy: its one company is created at install
+    #: (``scripts/create_company.py``), and a public sign-up form would let
+    #: anyone who finds the address queue a second one.
+    signup_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
@@ -1847,6 +1851,7 @@ class AuthSettings:
             signup_action_ttl_hours=int(
                 os.getenv("AUTH_SIGNUP_ACTION_TTL_HOURS") or DEFAULT_SIGNUP_ACTION_TTL_HOURS
             ),
+            signup_enabled=env_bool("SIGNUP_ENABLED", True),
         )
 
 

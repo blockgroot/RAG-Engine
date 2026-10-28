@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir -r requirements-deploy.txt
 COPY app/ ./app/
 # run_worker.py: the self-hosted install runs this same image as its worker.
 COPY scripts/init_db.py scripts/check_llm_config.py scripts/check_embedding_config.py \
-     scripts/run_worker.py ./scripts/
+     scripts/run_worker.py scripts/create_company.py ./scripts/
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

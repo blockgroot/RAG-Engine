@@ -111,9 +111,11 @@ export default function LoginPage() {
           </div>
           <p className="muted auth-v2-notfound-copy">{result.message}</p>
           <div className="auth-v2-notfound-actions">
-            <Link href="/signup" className="button">
-              Set up your company
-            </Link>
+            {result.signup_enabled !== false && (
+              <Link href="/signup" className="button">
+                Set up your company
+              </Link>
+            )}
             <button type="button" className="button button-secondary" onClick={reset}>
               Try another email
             </button>

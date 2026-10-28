@@ -2,6 +2,10 @@
 
 New features and fixes arrive as new versions. Your data is never inside the images: documents, chats and settings live in the database and in `.env`, which an upgrade does not touch.
 
+## Hearing about new versions
+
+We email every release, with its notes, to the contact on your license. Each release is also listed on the release page we gave you, with its install package and notes. Nothing upgrades by itself: you choose when.
+
 ## Version numbers
 
 | Change | Example | What it means for you |

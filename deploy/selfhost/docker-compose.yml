@@ -23,6 +23,8 @@ x-backend: &backend
     # caddy overwrites X-Real-IP, so a visitor cannot pick their own
     # rate-limit bucket by sending a header (app/security/client_ip.py).
     CLIENT_IP_HEADER: x-real-ip
+    # One company, created by install.sh; everyone else joins by invite.
+    SIGNUP_ENABLED: "false"
     # The worker service below does the background work; models are remote.
     INGEST_WORKER_IN_API: "false"
     MODEL_WARMUP_ON_STARTUP: "false"

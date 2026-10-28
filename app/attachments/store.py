@@ -60,7 +60,35 @@ def save_attachment(
     discarded them (or a test) can store text alone; when it is absent the
     plaintext asset is still written, so answering works and only the
     "download the original" affordance is missing.
+
+    With no object store configured (a self-hosted copy that keeps files on
+    its own server), the text goes in the ``content`` column, which
+    ``_resolve_text`` already reads, and the original bytes are dropped.
     """
+    if not blobstore.configured():
+        with get_connection() as conn:
+            row = conn.execute(
+                "INSERT INTO conversation_attachments "
+                "(conversation_id, org_id, user_id, filename, content_type, "
+                " content, char_count, truncated, injection_score) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING id::text",
+                (
+                    conversation_id,
+                    org_id,
+                    user_id,
+                    filename,
+                    content_type,
+                    content,
+                    len(content),
+                    truncated,
+                    injection_score,
+                ),
+            ).fetchone()
+        return Attachment(
+            row[0], filename, len(content), truncated, injection_score=injection_score
+        )
+
     with get_connection() as conn:
         row = conn.execute(
             "INSERT INTO conversation_attachments "
