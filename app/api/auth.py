@@ -42,7 +42,7 @@ from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..auth.oauth_state import LINK_GITHUB, peek_state_provider
 from ..workspaces import assert_member
-from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
+from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session, public_api_url
 from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, bounded
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -67,6 +67,14 @@ def _build_magic_link(email: str) -> str:
     return f"{base}/verify?token={token}"
 
 
+#: A self-hosted copy (SIGNUP_ENABLED=false) has one company, created at
+#: install; everyone else joins by an admin's invite.
+_SIGNUP_OFF = "This Handbook doesn't take new sign-ups. Ask your Handbook admin to invite you."
+_NO_ACCOUNT_INVITE_ONLY = (
+    "We couldn't find an account for that email. Ask your Handbook admin to invite you."
+)
+
+
 @router.post("/signup")
 def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request):
     """Queue a request to create a brand-new org — does NOT create it.
@@ -77,6 +85,8 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
     admin user get created and a sign-in link get emailed. An email that's
     already a user anywhere, or already has a pending request, is rejected.
     """
+    if not AuthSettings.from_env().signup_enabled:
+        raise HTTPException(status_code=403, detail=_SIGNUP_OFF)
     email = bounded(
         (body.get("email") or "").strip().lower(),
         field="Email",
@@ -103,7 +113,7 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
 
     owner_email = EmailSettings.from_env().owner_notification_email
     if owner_email:
-        base = str(http_request.base_url).rstrip("/")
+        base = public_api_url(http_request)
         approve_link = f"{base}/auth/signup-requests/approve?token={request.approve_token}"
         reject_link = f"{base}/auth/signup-requests/reject?token={request.reject_token}"
         background_tasks.add_task(
@@ -159,13 +169,17 @@ def request_magic_link(
             "dev_link": dev_link,
         }
 
+    signup_enabled = AuthSettings.from_env().signup_enabled
     return {
         "status": "no_account",
         "message": (
             "We couldn't find an account for that email. If your company already "
             "uses Handbook, ask an admin to invite you. If not, you can set your "
             "company up."
+            if signup_enabled
+            else _NO_ACCOUNT_INVITE_ONLY
         ),
+        "signup_enabled": signup_enabled,
         "dev_link": None,
     }
 

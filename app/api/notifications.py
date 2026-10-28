@@ -32,6 +32,7 @@ from ..guard.flagged import MAX_LISTED, flagged_documents
 from ..auth.session import SessionClaims
 from ..auth.user_connections import list_user_connections
 from ..jobs.autosync import SCOPE_KEYS
+from ..updates import update_status
 from ..workspaces.store import list_my_workspaces
 from .deps import get_session
 
@@ -106,6 +107,45 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
     return items + _flagged_items(org_id, workspace_id, scope, href) + _gap_items(
         org_id, workspace_id, scope, feedback_href
     )
+
+
+def _update_items() -> list[dict]:
+    """A newer version (self-hosted) or what the last update changed. Admins
+    only, and never fails the bell: an unreachable feed is no item."""
+    try:
+        status = update_status()
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    latest = status.latest
+    if latest and status.deployment == "selfhosted":
+        security = any(r.security for r in status.newer)
+        return [{
+            "kind": "update",
+            "severity": "high" if security else "medium",
+            "provider": "",
+            "scope": "Company",
+            "title": f"Handbook {latest.version} is available",
+            "detail": (
+                "It includes a security fix. Update soon."
+                if security else
+                (latest.notes[0] if latest.notes else f"You are on {status.current}.")
+            ),
+            "action": "Update" if status.can_update else "See how to update",
+            "href": "/admin/updates",
+        }]
+    if status.whats_new:
+        release = status.whats_new
+        return [{
+            "kind": "update",
+            "severity": "medium",
+            "provider": "",
+            "scope": "Company",
+            "title": f"Handbook was updated to {release.version}",
+            "detail": release.notes[0] if release.notes else "See what changed.",
+            "action": "See what's new",
+            "href": "/admin/updates",
+        }]
+    return []
 
 
 def _act_items(org_id: str, user_id: str) -> list[dict]:
@@ -208,6 +248,7 @@ def list_notifications(session: SessionClaims = Depends(get_session)):
     if session.role == "admin" or owned:
         assign_topics_soon(session.org_id)
     if session.role == "admin":
+        items += _update_items()
         items += _items_in(session.org_id, None, "Company", "/admin/connections", "/admin/feedback")
     # A member cannot reconnect a space's sources (the space page disables
     # every control for them), so telling them one is broken is noise.

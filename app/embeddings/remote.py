@@ -36,6 +36,7 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         base_url: str | None,
         timeout: float = DEFAULT_TIMEOUT,
         batch_size: int = 16,
+        dimensions: int | None = None,
     ) -> None:
         missing = [
             name
@@ -56,6 +57,7 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         self.base_url = base_url
         self.timeout = timeout
         self.batch_size = max(1, batch_size)
+        self.dimensions = dimensions
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
@@ -67,7 +69,9 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         except PrivacyError as exc:
             raise EmbeddingProviderError(str(exc), cause=exc) from exc
         try:
-            response = self._client.embeddings.create(model=self.model, input=batch)
+            # Sent only when asked for: a provider without it rejects the call.
+            extra = {"dimensions": self.dimensions} if self.dimensions else {}
+            response = self._client.embeddings.create(model=self.model, input=batch, **extra)
         except APITimeoutError as exc:
             raise EmbeddingProviderError(
                 f"Embedding request timed out after {self.timeout}s", cause=exc
