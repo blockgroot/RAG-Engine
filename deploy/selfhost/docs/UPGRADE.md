@@ -43,7 +43,7 @@ services:
     profiles: [off]
 ```
 
-Admin › Updates then shows the command instead of the button. If our images are private to you, put the registry username and token we sent you in `.env` (`REGISTRY_USERNAME`, `REGISTRY_TOKEN`) so the updater can download them.
+Admin › Updates then shows the command instead of the button. The updater downloads new versions with the registry username and token you gave the installer (`REGISTRY_USERNAME`, `REGISTRY_TOKEN` in `.env`).
 
 ## Upgrading from the server
 

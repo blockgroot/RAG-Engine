@@ -19,11 +19,18 @@ This guide takes you from an empty server to signing in to Handbook. After that,
 | A Claude API key ([console.anthropic.com](https://console.anthropic.com)) | Answers, charts and Agent mode |
 | A Jina API key ([jina.ai](https://jina.ai)) | Search. Another embedding service can be used instead; see "Choosing an embedding model" below. |
 | An SMTP server for sending email | Sign-in links are sent by email |
-| Access to our image registry | We send you a username and token with your license |
+| A username and token for our image registry | We send them with your license. The installer asks for them. |
 
 ## 1. Get the install package
 
-Download `handbook-selfhost-<version>.zip` from the latest release at [github.com/blockgroot/handbook-releases/releases](https://github.com/blockgroot/handbook-releases/releases), and unzip it on the server:
+Download `handbook-selfhost-<version>.zip` from the latest release at [github.com/blockgroot/handbook-releases/releases](https://github.com/blockgroot/handbook-releases/releases), and unzip it on the server. For example, for version 1.0.0:
+
+```sh
+curl -LO https://github.com/blockgroot/handbook-releases/releases/download/v1.0.0/handbook-selfhost-1.0.0.zip
+unzip handbook-selfhost-1.0.0.zip
+```
+
+This creates a `handbook` folder. Every command in these guides is run from inside it.
 
 ```
 handbook/
@@ -33,12 +40,6 @@ handbook/
 └── docs/        these guides
 ```
 
-Log in to our image registry with the username and token we gave you:
-
-```sh
-docker login ghcr.io
-```
-
 ## 2. Run the installer
 
 ```sh
@@ -46,12 +47,12 @@ cd handbook
 ./install.sh
 ```
 
-It asks for your domain, your company's name, your work email, the Claude and Jina keys, and your SMTP details. Everything else is generated or has a default. Then it:
+It asks for your domain, your company's name, your work email, the Claude and Jina keys, your SMTP details, and the registry username and token we sent you. Everything else is generated or has a default. Then it:
 
-1. generates the three secrets;
+1. generates the four secrets;
 2. writes `.env`, readable only by you;
 3. writes your domain into the Slack and GitHub templates;
-4. downloads the images and starts Handbook;
+4. logs in to our image registry, downloads the images and starts Handbook;
 5. waits until Handbook is healthy;
 6. creates your company, with you as its admin, and prints your next steps.
 
@@ -63,13 +64,13 @@ The first start takes a few minutes. You can run `./install.sh` again at any tim
 <summary>Installing by hand instead</summary>
 
 1. `cp .env.example .env` and fill in every value; the file explains each one.
-2. Generate the three secrets once:
+2. Generate the four secrets once:
    ```sh
-   openssl rand -hex 32                              # POSTGRES_PASSWORD, AUTH_JWT_SECRET (once each)
+   openssl rand -hex 32                              # POSTGRES_PASSWORD, AUTH_JWT_SECRET, UPDATER_TOKEN (once each)
    openssl rand -base64 32 | tr '+/' '-_'            # AUTH_ENCRYPTION_KEYS
    ```
 3. Replace `HANDBOOK_DOMAIN` in `apps/slack-manifest.yml` and `apps/github-app.html` with your domain.
-4. Run `docker compose up -d`.
+4. Log in to our registry with the username and token we sent you (`docker login ghcr.io`), then run `docker compose up -d`.
 5. Once `api` is healthy, create your company:
    ```sh
    docker compose exec api python scripts/create_company.py "Your Company" you@yourcompany.com

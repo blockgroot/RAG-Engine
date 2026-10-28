@@ -27,6 +27,7 @@ trap 'echo; echo "$rollback"' EXIT
 say "Upgrading $old -> $new"
 set_env HANDBOOK_VERSION "$new"
 ensure_updater_token
+registry_login
 pull_images
 docker compose up -d
 wait_healthy

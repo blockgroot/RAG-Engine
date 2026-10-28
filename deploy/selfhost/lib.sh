@@ -39,10 +39,22 @@ need_docker() {
 }
 
 # Pull the images, explaining the usual cause when the registry refuses.
+# Log in to the image registry with the username and token in .env, when
+# set. Private images need it; the updater uses the same two values.
+registry_login() {
+  local user token registry
+  user="$(get_env REGISTRY_USERNAME)"; token="$(get_env REGISTRY_TOKEN)"
+  [ -n "$user" ] && [ -n "$token" ] || return 0
+  registry="$(get_env HANDBOOK_REGISTRY)"; registry="${registry:-ghcr.io/blockgroot}"
+  printf '%s' "$token" | docker login "${registry%%/*}" -u "$user" --password-stdin > /dev/null \
+    || fail "The registry refused REGISTRY_USERNAME / REGISTRY_TOKEN in .env. Check them with us."
+}
+
 pull_images() {
   docker compose pull || fail "Could not download Handbook's images. If the
-error says 'unauthorized' or 'denied', log in to the registry with the
-username and token we sent you:  docker login ghcr.io"
+error says 'unauthorized' or 'denied', check REGISTRY_USERNAME and
+REGISTRY_TOKEN in .env (the username and token we sent you), then run this
+again."
 }
 
 # Wait until the api service reports healthy (it applies database changes

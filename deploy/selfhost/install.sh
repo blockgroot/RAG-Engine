@@ -42,6 +42,11 @@ else
   ask smtp_user "  SMTP username"
   ask smtp_pass "  SMTP password" secret
   ask smtp_from "  Send from address"
+  echo "The username and token we sent you for our image registry"
+  echo "(press Enter to skip if our images are public to you):"
+  read -r -p "  Registry username: " registry_user
+  registry_token=""
+  [ -z "$registry_user" ] || ask registry_token "  Registry token" secret
 
   cp .env.example .env
   chmod 600 .env
@@ -59,6 +64,9 @@ else
   set_env EMAIL_SMTP_FROM "$smtp_from"
   set_env HANDBOOK_COMPANY "$company"
   set_env HANDBOOK_ADMIN_EMAIL "$admin_email"
+  # Kept so the Update button (Admin › Updates) can download new versions.
+  set_env REGISTRY_USERNAME "$registry_user"
+  set_env REGISTRY_TOKEN "$registry_token"
   say "Settings written to .env. Keep a copy of it somewhere safe: it holds the key to every connected tool's sign-in."
 fi
 
@@ -69,6 +77,7 @@ sed -i.bak "s/HANDBOOK_DOMAIN/$domain/g" apps/slack-manifest.yml apps/github-app
 rm -f apps/*.bak
 
 say "Downloading Handbook"
+registry_login
 pull_images
 say "Starting Handbook (the first start takes a minute or two)"
 docker compose up -d
