@@ -62,6 +62,8 @@ else
   say "Settings written to .env. Keep a copy of it somewhere safe: it holds the key to every connected tool's sign-in."
 fi
 
+ensure_updater_token
+
 # Write the domain into the Slack and GitHub app templates.
 sed -i.bak "s/HANDBOOK_DOMAIN/$domain/g" apps/slack-manifest.yml apps/github-app.html
 rm -f apps/*.bak

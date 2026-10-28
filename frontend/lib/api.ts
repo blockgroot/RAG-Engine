@@ -761,8 +761,35 @@ export type ConnectorFreshness = {
   chartable: boolean;
 };
 
+export type Release = {
+  version: string;
+  date: string;
+  security: boolean;
+  manual_steps: boolean;
+  notes: string[];
+  notes_url: string | null;
+};
+
+export type UpdateInfo = {
+  deployment: "cloud" | "selfhosted";
+  current: string | null;
+  latest: string | null;
+  /** Newer releases, newest first. */
+  newer: Release[];
+  whats_new: Release | null;
+  can_update: boolean;
+  blocked_reason: string | null;
+};
+
+export type UpdateProgress = {
+  state: "idle" | "running" | "done" | "failed" | "rolled_back";
+  version: string | null;
+  step: string | null;
+  error: string | null;
+};
+
 export type Notification = {
-  kind: "reauth" | "scope" | "injection" | "gap";
+  kind: "reauth" | "scope" | "injection" | "gap" | "update";
   severity: "high" | "medium";
   provider: string;
   scope: string;
@@ -982,6 +1009,13 @@ export const api = {
   disconnectMcp: (id: string) =>
     request<{ deleted: boolean }>(`/act/mcp/${encodeURIComponent(id)}/connection`, { method: "DELETE" }),
   getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
+  getUpdates: () => request<UpdateInfo>("/admin/updates"),
+  startUpdate: (version: string) =>
+    request<UpdateProgress>("/admin/updates", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+  getUpdateProgress: () => request<UpdateProgress>("/admin/updates/progress"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),
   saveOrgModel: (preset: string, model: string, apiKey: string) =>

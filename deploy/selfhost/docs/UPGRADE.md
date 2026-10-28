@@ -4,7 +4,9 @@ New features and fixes arrive as new versions. Your data is never inside the ima
 
 ## Hearing about new versions
 
-We email every release, with its notes, to the contact on your license. Each release is also listed on the release page we gave you, with its install package and notes. Nothing upgrades by itself: you choose when.
+When a new version is out, Handbook tells your admins: an entry in the bell and on **Admin › Updates**, with what changed. A security fix is marked as urgent. To do this, Handbook reads our public list of releases a few times a day; nothing about your company is sent. To turn it off, set `UPDATE_CHECK_ENABLED=false` in `.env`.
+
+We also email every release, with its notes, to the contact on your license. Nothing upgrades by itself: you choose when.
 
 ## Version numbers
 
@@ -21,7 +23,29 @@ We email every release, with its notes, to the contact on your license. Each rel
 
 We support the current version and the one before it.
 
-## How to upgrade
+## Upgrading from Handbook (one click)
+
+In **Admin › Updates**, read the notes and press **Update to <version>**. Handbook then:
+
+1. backs up the database (into `backups/`, as `backup.sh` does);
+2. downloads the new version and restarts Handbook, which is unavailable for a minute or two;
+3. checks that it started, and **goes back to your previous version by itself** if it did not.
+
+The page shows each step and reloads when it is done.
+
+The button is not offered when a version needs steps on your server first (the notes say which). Then the page shows the command for the next section instead.
+
+**How it works, and turning it off.** The button uses the `updater` service in `docker-compose.yml`. It is the only part of Handbook with access to Docker on this server, which it needs to restart Handbook. It accepts one request, protected by `UPDATER_TOKEN` in `.env`, to install a version on our public release list, and runs only Handbook's own images. If your security policy does not allow a container with Docker access, disable it in `docker-compose.override.yml`:
+
+```yaml
+services:
+  updater:
+    profiles: [off]
+```
+
+Admin › Updates then shows the command instead of the button. If our images are private to you, put the registry username and token we sent you in `.env` (`REGISTRY_USERNAME`, `REGISTRY_TOKEN`) so the updater can download them.
+
+## Upgrading from the server
 
 1. Make any `.env` or connector-app changes the release notes ask for.
 2. Run:

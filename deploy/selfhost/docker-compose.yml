@@ -8,6 +8,10 @@
 # in exactly one place. To change anything here, put it in a
 # docker-compose.override.yml next to this file: upgrades never touch that.
 
+# Fixed, so the updater (which sees this folder as /handbook) and you
+# address the same containers and volumes.
+name: handbook
+
 x-backend: &backend
   image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-api:${HANDBOOK_VERSION:?set HANDBOOK_VERSION in .env}
   restart: unless-stopped
@@ -25,6 +29,10 @@ x-backend: &backend
     CLIENT_IP_HEADER: x-real-ip
     # One company, created by install.sh; everyone else joins by invite.
     SIGNUP_ENABLED: "false"
+    # Admin › Updates offers new versions and installs them through the
+    # updater below (HANDBOOK_VERSION and UPDATER_TOKEN come from .env).
+    HANDBOOK_DEPLOYMENT: selfhosted
+    UPDATER_URL: http://updater:8080
     # The worker service below does the background work; models are remote.
     INGEST_WORKER_IN_API: "false"
     MODEL_WARMUP_ON_STARTUP: "false"
@@ -84,6 +92,22 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  # Installs a new version when an admin presses Update (deploy/updater).
+  # It holds the Docker socket, which is control of this server, so nothing
+  # else does: it accepts one request, with UPDATER_TOKEN, for a version on
+  # our public release list. Remove this service (or put it in an override
+  # with "profiles: [off]") if your security policy does not allow it;
+  # Admin › Updates then shows the ./upgrade.sh command instead.
+  updater:
+    image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-updater:${HANDBOOK_VERSION}
+    restart: unless-stopped
+    environment:
+      UPDATER_TOKEN: ${UPDATER_TOKEN:-}
+      UPDATE_FEED_URL: ${UPDATE_FEED_URL:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/handbook
 
   db:
     image: pgvector/pgvector:0.8.0-pg17

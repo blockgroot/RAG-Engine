@@ -85,7 +85,7 @@ Check the services:
 docker compose ps
 ```
 
-All five services (`caddy`, `web`, `api`, `worker`, `db`) should show `running`, and `api` should show `healthy`.
+All six services (`caddy`, `web`, `api`, `worker`, `updater`, `db`) should show `running`, and `api` should show `healthy`.
 
 If `api` keeps restarting, its log names the problem:
 

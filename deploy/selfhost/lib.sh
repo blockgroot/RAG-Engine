@@ -21,6 +21,12 @@ set_env() {
   rm -f .env.tmp
 }
 
+# The secret the API uses to ask the updater for an update. Added to an
+# existing .env too, so installs made before the updater get one.
+ensure_updater_token() {
+  [ -n "$(get_env UPDATER_TOKEN)" ] || set_env UPDATER_TOKEN "$(openssl rand -hex 32)"
+}
+
 # get_env KEY: the value set in .env, or empty.
 get_env() {
   awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' .env

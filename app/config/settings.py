@@ -1855,6 +1855,50 @@ class AuthSettings:
         )
 
 
+#: Every install reads the same public list of releases: the main repo and
+#: the images can stay private while the version check needs no credentials.
+DEFAULT_UPDATE_FEED_URL = (
+    "https://raw.githubusercontent.com/blockgroot/handbook-releases/main/releases.json"
+)
+
+
+@dataclass(frozen=True)
+class UpdateSettings:
+    """Which version this copy runs, and how it hears about newer ones.
+
+    - ``deployment``  ``cloud`` (we update it; admins are told what changed) or
+      ``selfhosted`` (the company updates it; admins are offered the update).
+    - ``current_version``  ``HANDBOOK_VERSION``: the self-hosted ``.env`` sets
+      it for the images it runs; Cloud sets it when a release is deployed.
+      Unset means no version is known and nothing is shown.
+    - ``check_enabled``  off for a server that must not contact anyone.
+    - ``updater_url`` / ``updater_token``  the self-hosted updater container.
+      Both or neither: without them the page shows the upgrade command.
+    """
+
+    deployment: str = "cloud"
+    current_version: str | None = None
+    feed_url: str = DEFAULT_UPDATE_FEED_URL
+    check_enabled: bool = True
+    updater_url: str | None = None
+    updater_token: str | None = None
+
+    @property
+    def updater_configured(self) -> bool:
+        return bool(self.updater_url and self.updater_token)
+
+    @classmethod
+    def from_env(cls) -> "UpdateSettings":
+        return cls(
+            deployment=(os.getenv("HANDBOOK_DEPLOYMENT") or "cloud").strip().lower(),
+            current_version=(os.getenv("HANDBOOK_VERSION") or "").strip().lstrip("v") or None,
+            feed_url=os.getenv("UPDATE_FEED_URL") or DEFAULT_UPDATE_FEED_URL,
+            check_enabled=env_bool("UPDATE_CHECK_ENABLED", True),
+            updater_url=os.getenv("UPDATER_URL") or None,
+            updater_token=os.getenv("UPDATER_TOKEN") or None,
+        )
+
+
 @dataclass(frozen=True)
 class ApiSettings:
     """HTTP API server configuration (Phase 10+).

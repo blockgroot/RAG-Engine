@@ -1,10 +1,13 @@
-# Release — builds the two images every install runs (self-hosted, dedicated)
-# and pushes them to GitHub Container Registry when a version is tagged:
+# Release — builds the images every self-hosted install runs and pushes them
+# to GitHub Container Registry when a version is tagged. Write the notes
+# first (format: scripts/release_feed.py), or the release stops at once:
 #
+#   release-notes/1.0.0.md
 #   git tag v1.0.0 && git push origin v1.0.0
 #
-# -> ghcr.io/<owner>/handbook-api:1.0.0  (backend; the same image runs the worker)
-# -> ghcr.io/<owner>/handbook-web:1.0.0  (Next.js, /api proxied to http://api:8000)
+# -> ghcr.io/<owner>/handbook-api:1.0.0      (backend; the same image runs the worker)
+# -> ghcr.io/<owner>/handbook-web:1.0.0      (Next.js, /api proxied to http://api:8000)
+# -> ghcr.io/<owner>/handbook-updater:1.0.0  (the Update button's updater)
 #
 # Both for amd64 and arm64, so a customer's ARM server works too. A new GHCR
 # package starts private: check its visibility under the repo's Packages after
@@ -13,6 +16,12 @@
 # Once both images are pushed, a GitHub release is made for the tag with the
 # install package attached: handbook-selfhost-1.0.0.zip (deploy/selfhost/ plus
 # a VERSION file, so install.sh knows which images to run).
+#
+# Last, the release is added to the public list every install checks
+# (blockgroot/handbook-releases: releases.json and notes/<version>.md). That
+# push needs the RELEASES_REPO_TOKEN secret: a fine-grained token with
+# "Contents: read and write" on that repo only. Admins are told about the
+# release only from this point, so Cloud should be deployed before it.
 
 name: release
 
@@ -25,7 +34,17 @@ permissions:
   packages: write
 
 jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python3 scripts/release_feed.py "$version" "release-notes/$version.md" --check
+
   image:
+    needs: notes
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -34,6 +53,8 @@ jobs:
             context: .
           - name: handbook-web
             context: frontend
+          - name: handbook-updater
+            context: deploy/updater
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -80,3 +101,24 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/handbook-selfhost-*.zip \
             --title "$GITHUB_REF_NAME" --generate-notes
+
+  feed:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: blockgroot/handbook-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+          path: releases
+      - name: Add the release to the public list
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python3 scripts/release_feed.py "$version" "release-notes/$version.md" releases
+          cd releases
+          git config user.name "handbook-release"
+          git config user.email "handbook-release@users.noreply.github.com"
+          git add releases.json notes
+          git commit -m "Handbook $version"
+          git push

@@ -5,7 +5,7 @@ Handbook is installed and you can sign in as its admin. This checklist takes you
 ## 1. Check the installation
 
 - [ ] `https://<your domain>` opens with a valid certificate, and you can sign in.
-- [ ] `docker compose ps` shows all five services running, and `api` as `healthy`.
+- [ ] `docker compose ps` shows all six services running, and `api` as `healthy`.
 - [ ] A sign-in link reached your inbox, not spam. If it went to spam, ask your mail team to allow the sending address.
 - [ ] A daily backup is scheduled, and the backups are copied off the server ([BACKUP.md](BACKUP.md)).
 - [ ] A copy of `.env` is kept somewhere safe, apart from the backups.
