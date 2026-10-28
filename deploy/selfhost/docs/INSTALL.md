@@ -16,10 +16,10 @@ This guide takes you from an empty server to signing in to Handbook. After that,
 
 | What | Why |
 | --- | --- |
-| A Claude API key ([console.anthropic.com](https://console.anthropic.com)) | Answers, charts and Agent mode |
-| A Jina API key ([jina.ai](https://jina.ai)) | Search. Another embedding service can be used instead; see "Choosing an embedding model" below. |
+| An API key for an AI model: Claude ([console.anthropic.com](https://console.anthropic.com)), OpenAI, Google Gemini, or any OpenAI-compatible service, including a model on your own server | Answers, charts and Agent mode. Handbook is tuned and tested with Claude; charts and Agent mode need a strong model. |
+| An API key for search: Jina ([jina.ai](https://jina.ai)), OpenAI, or another OpenAI-compatible embedding service | Search. See "Choosing an embedding model" below. |
 | An SMTP server for sending email | Sign-in links are sent by email |
-| A username and token for our image registry | We send them with your license. The installer asks for them. |
+| A username and token for our image registry | We send them with your license. You put them in `.env`. |
 
 ## 1. Get the install package
 
@@ -36,40 +36,64 @@ This creates a `handbook` folder. Every command in these guides is run from insi
 handbook/
 ├── install.sh   upgrade.sh   backup.sh
 ├── docker-compose.yml   Caddyfile   .env.example   VERSION
-├── apps/        templates for your Slack and GitHub apps
+├── apps/        templates for your Slack and GitHub apps (install.sh fills in your domain)
 └── docs/        these guides
 ```
 
 ## 2. Run the installer
+
+The installer runs twice, with you filling in the settings in between.
+
+> **`.env` is filled in by your own team.** It holds your API keys, passwords and the secrets that protect your data. We never need it, and nobody outside your company should see it, including us if we help you install.
+
+**First run: create the settings file.**
 
 ```sh
 cd handbook
 ./install.sh
 ```
 
-It asks for your domain, your company's name, your work email, the Claude and Jina keys, your SMTP details, and the registry username and token we sent you. Everything else is generated or has a default. Then it:
+It creates `.env`, readable only by you, with its four secrets already generated, and stops.
 
-1. generates the four secrets;
-2. writes `.env`, readable only by you;
-3. writes your domain into the Slack and GitHub templates;
-4. logs in to our image registry, downloads the images and starts Handbook;
-5. waits until Handbook is healthy;
-6. creates your company, with you as its admin, and prints your next steps.
+**Fill in `.env`.** Open it in any editor (for example `nano .env`) and fill in every value under **"Fill these in"**. The comments above each one say what it is, where to find it, and the choices you have:
 
-The first start takes a few minutes. You can run `./install.sh` again at any time: it keeps your `.env` and simply (re)starts Handbook.
+| Section | What you enter |
+| --- | --- |
+| Your Handbook | The domain, your company's name, and your work email (you become the first admin) |
+| AI model | The API key; for a provider other than Claude, also its name and the model |
+| Search | The API key; for a service other than Jina, also its address and model |
+| Email | Your SMTP server's host, username, password and from address |
+| Our image registry | The username and token we sent you |
+
+Leave the tool sections empty for now; you fill them in when you connect each tool ([CONNECTORS.md](CONNECTORS.md)).
+
+**Second run: start Handbook.**
+
+```sh
+./install.sh
+```
+
+It checks that nothing required is empty (and names anything that is), then:
+
+1. writes your domain into the Slack and GitHub app templates (`apps/`);
+2. logs in to our image registry, downloads the images and starts Handbook;
+3. waits until Handbook is healthy (the first start takes a few minutes);
+4. creates your company, with you as its admin, and prints your next steps.
+
+If Handbook refuses to start, the installer shows why, for example a wrong API key. Fix it in `.env` and run `./install.sh` again. You can run it again at any time: it applies what is in `.env` and restarts Handbook.
 
 > **Keep a copy of `.env` somewhere safe.** `AUTH_ENCRYPTION_KEYS` protects every connected tool's sign-in. If it is lost, every tool has to be connected again.
 
 <details>
 <summary>Installing by hand instead</summary>
 
-1. `cp .env.example .env` and fill in every value; the file explains each one.
+1. `cp .env.example .env` and fill in every value under "Fill these in"; the file explains each one. Set `HANDBOOK_VERSION` to the version in `VERSION`.
 2. Generate the four secrets once:
    ```sh
    openssl rand -hex 32                              # POSTGRES_PASSWORD, AUTH_JWT_SECRET, UPDATER_TOKEN (once each)
    openssl rand -base64 32 | tr '+/' '-_'            # AUTH_ENCRYPTION_KEYS
    ```
-3. Replace `HANDBOOK_DOMAIN` in `apps/slack-manifest.yml` and `apps/github-app.html` with your domain.
+3. Copy `apps/templates/slack-manifest.yml` and `apps/templates/github-app.html` into `apps/`, replacing `HANDBOOK_DOMAIN` in them with your domain.
 4. Log in to our registry with the username and token we sent you (`docker login ghcr.io`), then run `docker compose up -d`.
 5. Once `api` is healthy, create your company:
    ```sh
@@ -95,12 +119,12 @@ docker compose logs api
 ```
 
 Handbook checks its settings when it starts and stops with a message when something is wrong. Two examples:
-- `LLM check: FAILED ...` means the Claude key or model name is wrong.
+- `LLM check: FAILED ...` means the AI model's key or model name is wrong.
 - `Embedding check: FAILED ...` means the embedding model does not fit (see below).
 
 ## 4. Sign in
 
-1. Open `https://<your domain>` and enter the work email you gave the installer.
+1. Open `https://<your domain>` and enter the work email you set as `HANDBOOK_ADMIN_EMAIL` in `.env`.
 2. Open the sign-in link that arrives by email. You are in as your company's admin.
 
 There is no public sign-up page: your Handbook holds only your company. Colleagues join when an admin invites them from the admin page.

@@ -36,7 +36,7 @@ Only connect what people should be able to ask about. Handbook follows each tool
 
 ## 5. Choose your settings
 
-- [ ] **AI model:** check the model Handbook answers with (**Admin › Model**). It uses your Claude key by default.
+- [ ] **AI model:** check the model Handbook answers with (**Admin › Model**). It uses the model and key set in `.env` (`LLM_API_KEY`, and `LLM_ADAPTER`/`LLM_MODEL` for a provider other than Claude).
 - [ ] **Agent mode** (Handbook carrying out actions in your tools, such as posting a Slack message or creating an issue): off until you turn it on. Every tool action starts off, and each one you turn on is either read-only or needs the person to approve a card before it runs (**Admin › Actions**). Leave it off if you are not ready for it.
 
 ## 6. Invite your colleagues

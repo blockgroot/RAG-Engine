@@ -29,7 +29,7 @@ set_env HANDBOOK_VERSION "$new"
 ensure_updater_token
 registry_login
 pull_images
-docker compose up -d
+docker compose up -d || true
 wait_healthy
 
 say "Handbook is now on $new"

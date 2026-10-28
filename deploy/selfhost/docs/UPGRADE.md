@@ -43,7 +43,7 @@ services:
     profiles: [off]
 ```
 
-Admin › Updates then shows the command instead of the button. The updater downloads new versions with the registry username and token you gave the installer (`REGISTRY_USERNAME`, `REGISTRY_TOKEN` in `.env`).
+Admin › Updates then shows the command instead of the button. The updater downloads new versions with the registry username and token you put in `.env` (`REGISTRY_USERNAME`, `REGISTRY_TOKEN`).
 
 ## Upgrading from the server
 

@@ -28,10 +28,10 @@ The first version should let a technical person at a company go from an empty se
 
 | Onyx provides | How Onyx does it | Handbook, first version |
 | --- | --- | --- |
-| One-line install | `install.sh` downloads a CLI, which asks for the version and mode, checks RAM and disk, can install Docker, and writes `.env` with generated secrets | **Yes:** `install.sh`, also asking for the domain and admin email |
+| One-line install | `install.sh` downloads a CLI, which asks for the version and mode, checks RAM and disk, can install Docker, and writes `.env` with generated secrets | **Yes, in two runs:** `install.sh` writes `.env` with generated secrets; the company fills in the rest (the file explains each value); `install.sh` again checks it and starts Handbook |
 | Lifecycle commands | `onyx-cli deploy status / logs / stop / upgrade / uninstall` | **Partly:** `upgrade.sh` and `backup.sh`; plain `docker compose` for the rest |
 | A minimal mode | "Lite": Postgres only, 2 vCPU / 2 GB | Not needed: our full install is already Postgres plus three small services |
-| Working without editing settings | Only one setting is required; everything else has a default | **Yes:** `install.sh` fills every required setting except the AI model key |
+| Working without editing settings | Only one setting is required; everything else has a default | **Partly:** the company fills in its domain, admin, AI model, search, SMTP and registry token; everything else has a default |
 | HTTPS | nginx plus a Let's Encrypt script, or your own certificate | **Yes:** Caddy, which gets and renews certificates by itself |
 | First admin | "The first person to sign up becomes the admin" | **Yes:** the admin is created at install (section 7, item 4) |
 | AI model setup | Chosen in the admin screens; many providers, including local | Settings file; Claude is the supported model |
@@ -66,15 +66,15 @@ Images (GitHub Container Registry, amd64 + arm64, built by .github/workflows/rel
   ghcr.io/<owner>/handbook-web:<version>   web app; sends /api to the backend
 
 Install package (deploy/selfhost/, attached to each release as a .zip)
-  docker-compose.yml      caddy, web, api, worker, tick, db
+  docker-compose.yml      caddy, web, api, worker, updater, db
   Caddyfile               HTTPS for the customer's domain
   .env.example            every setting, grouped and explained
   install.sh              first install
   upgrade.sh              move to a new version
   backup.sh               database dump; reminder to keep the secret keys
-  apps/slack-manifest.yml        Slack app template, domain filled in by install.sh
-  apps/github-app-manifest.json  GitHub App template, domain filled in by install.sh
-  docs/INSTALL.md  docs/CONNECTORS.md  docs/UPGRADE.md  docs/BACKUP.md
+  apps/templates/slack-manifest.yml  Slack app template; install.sh writes apps/ with the domain
+  apps/templates/github-app.html     GitHub App template, the same way
+  docs/INSTALL.md  docs/CHECKLIST.md  docs/CONNECTORS.md  docs/UPGRADE.md  docs/BACKUP.md
 ```
 
 **Services in `docker-compose.yml`:**
@@ -215,16 +215,13 @@ Found by reading the code. Each has the evidence and the planned fix.
 
 **Install (customer)**
 1. Prepare a Linux server with Docker, and point the domain at it.
-2. Log in to our image registry with the access we give them.
-3. Download the install package for a version and run `./install.sh`. It:
-   1. checks Docker, Compose, RAM and disk;
-   2. asks for the domain, admin email and Claude key;
-   3. generates the secrets;
-   4. writes `.env`;
-   5. prints the connector addresses and app templates;
-   6. starts everything;
-   7. waits for `/health`;
-   8. prints the login address.
+2. Download the install package for a version and run `./install.sh`. It writes `.env` with generated secrets and stops.
+3. The company fills in `.env` (domain, admin, AI model, search, SMTP, the registry token we give them) and runs `./install.sh` again. It:
+   1. checks nothing required is empty;
+   2. writes the domain into the app templates;
+   3. logs in to our registry, downloads the images and starts everything;
+   4. waits for `/health`, and names the failing setting if it does not come;
+   5. creates the company and its admin, and prints the login address.
 4. Create the connector apps (`CONNECTORS.md`), paste their keys into `.env`, and run `docker compose up -d`.
 5. The admin logs in, connects the tools and invites people.
 

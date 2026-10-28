@@ -10,7 +10,7 @@ For every tool:
 
 In the steps below, `<domain>` means your `HANDBOOK_DOMAIN`, for example `handbook.yourcompany.com`.
 
-Slack and GitHub apps are created from templates in `apps/`. `install.sh` has already written your domain into them.
+Slack and GitHub apps are created from templates in `apps/`. `install.sh` writes your domain into them each time it runs.
 
 ---
 

@@ -168,7 +168,9 @@ def _env_positive_int(name: str, default: int) -> int:
 
 def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
-    if raw is None:
+    # Empty is unset: the self-hosted .env lists optional switches with no
+    # value, and an empty RETRIEVAL_RERANK_ENABLED= must not turn ranking off.
+    if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
 

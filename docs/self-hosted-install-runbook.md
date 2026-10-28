@@ -10,7 +10,7 @@ Ask the company for:
 | --- | --- |
 | A Linux server (2 CPUs, 4 GB memory, 20 GB disk) with Docker, and SSH access for us | Their IT or cloud team |
 | A domain for Handbook, with a DNS record pointing at the server, and ports 80 and 443 open | Their IT |
-| A Claude API key and a Jina API key, on their accounts | Their IT or finance |
+| An API key for their AI model (Claude, OpenAI, Gemini or another) and for search (Jina or another), on their accounts | Their IT or finance |
 | SMTP details for sending email | Their IT |
 | The company name and the first admin's work email | Our contact |
 | Which tools to connect, and an admin for each (Slack workspace admin, GitHub organization owner, Google Workspace admin, Notion workspace owner, Linear admin) | Our contact |
@@ -20,9 +20,10 @@ Agree in writing what we may access and until when. We do not take copies of the
 ## 2. Install
 
 1. Send them the pull token for our image registry (one per company, read-only), unless the images are public.
-2. On their server, download and unzip `handbook-selfhost-<version>.zip` from https://github.com/blockgroot/handbook-releases/releases, then run `docker login ghcr.io` and `./install.sh` (`INSTALL.md`). Let their IT person type the API keys and the SMTP password themselves, if they prefer.
-3. Check: `docker compose ps` shows all six services running and `api` healthy, and `https://<domain>` opens with a valid certificate.
-4. The admin signs in at `https://<domain>` with the email given to the installer.
+2. On their server, download and unzip `handbook-selfhost-<version>.zip` from https://github.com/blockgroot/handbook-releases/releases and run `./install.sh` once (`INSTALL.md`). It creates `.env` and stops.
+3. **Their IT person fills in `.env`, not us.** It holds their API keys, passwords and the secrets that protect their data. Walk them through the sections on screen share if they want, but never type or copy its values, and never take a copy of the file. Then they run `./install.sh` again.
+4. Check: `docker compose ps` shows all six services running and `api` healthy, and `https://<domain>` opens with a valid certificate.
+5. The admin signs in at `https://<domain>` with the email set as `HANDBOOK_ADMIN_EMAIL`.
 
 ## 3. Connect the tools
 

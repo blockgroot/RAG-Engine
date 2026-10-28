@@ -1,100 +1,84 @@
 #!/usr/bin/env bash
-# Installs Handbook on this server: asks for what only you know, generates
-# the secrets, writes .env, starts everything and waits until it is healthy.
+# Installs Handbook on this server. Run it twice:
 #
-#   ./install.sh
+#   ./install.sh    # 1st time: creates .env with its secrets, then stops
+#   (fill in .env)
+#   ./install.sh    # 2nd time: checks .env, starts Handbook, creates your company
 #
-# Safe to run again: an existing .env is kept, and Handbook is (re)started
-# with it.
+# Safe to run again at any time: it applies what is in .env and (re)starts
+# Handbook. To start over, run "docker compose down -v" (this deletes
+# Handbook's data) and remove .env.
 
 source "$(dirname "$0")/lib.sh"
 
 need_docker
 command -v openssl > /dev/null || fail "openssl is needed to generate secrets. Install it and run again."
 
-ask() {  # ask VAR "Question" [secret]
-  local answer=""
-  while [ -z "$answer" ]; do
-    if [ "${3:-}" = secret ]; then
-      read -r -s -p "$2: " answer; echo
-    else
-      read -r -p "$2: " answer
-    fi
-  done
-  printf -v "$1" '%s' "$answer"
-}
-
-if [ -f .env ]; then
-  say "Keeping the existing .env"
-  domain="$(get_env HANDBOOK_DOMAIN)"
-else
-  say "A few questions. Everything else has a default."
-  version="$(cat VERSION 2> /dev/null || true)"
-  [ -n "$version" ] || ask version "Handbook version to install (e.g. 1.0.0)"
-  ask domain "Domain for Handbook, pointing at this server (e.g. handbook.yourcompany.com)"
-  domain="${domain#https://}"; domain="${domain#http://}"; domain="${domain%/}"
-  ask company "Your company's name"
-  ask admin_email "Your work email (you become Handbook's first admin)"
-  ask llm_key "Claude API key" secret
-  ask embedding_key "Jina API key (search)" secret
-  echo "Email for sign-in links, through your SMTP server:"
-  ask smtp_host "  SMTP host"
-  ask smtp_user "  SMTP username"
-  ask smtp_pass "  SMTP password" secret
-  ask smtp_from "  Send from address"
-  echo "The username and token we sent you for our image registry"
-  echo "(press Enter to skip if our images are public to you):"
-  read -r -p "  Registry username: " registry_user
-  registry_token=""
-  [ -z "$registry_user" ] || ask registry_token "  Registry token" secret
-
+if [ ! -f .env ]; then
   cp .env.example .env
   chmod 600 .env
-  set_env HANDBOOK_VERSION "$version"
-  set_env HANDBOOK_DOMAIN "$domain"
+  set_env HANDBOOK_VERSION "$(cat VERSION 2> /dev/null || true)"
   set_env POSTGRES_PASSWORD "$(openssl rand -hex 32)"
   set_env AUTH_JWT_SECRET "$(openssl rand -hex 32)"
   # A Fernet key: 32 random bytes, URL-safe base64.
   set_env AUTH_ENCRYPTION_KEYS "$(openssl rand -base64 32 | tr '+/' '-_')"
-  set_env LLM_API_KEY "$llm_key"
-  set_env EMBEDDING_API_KEY "$embedding_key"
-  set_env EMAIL_SMTP_HOST "$smtp_host"
-  set_env EMAIL_SMTP_USERNAME "$smtp_user"
-  set_env EMAIL_SMTP_PASSWORD "$smtp_pass"
-  set_env EMAIL_SMTP_FROM "$smtp_from"
-  set_env HANDBOOK_COMPANY "$company"
-  set_env HANDBOOK_ADMIN_EMAIL "$admin_email"
-  # Kept so the Update button (Admin › Updates) can download new versions.
-  set_env REGISTRY_USERNAME "$registry_user"
-  set_env REGISTRY_TOKEN "$registry_token"
-  say "Settings written to .env. Keep a copy of it somewhere safe: it holds the key to every connected tool's sign-in."
+  ensure_updater_token
+  say "Created .env, with its secrets already generated."
+  cat << 'EOF'
+
+Next, open .env in an editor and fill in every value under "Fill these in".
+The comments there say what each one is and where to find it. Then run
+./install.sh again to start Handbook.
+
+Keep a copy of .env somewhere safe: it holds the key to every connected
+tool's sign-in.
+EOF
+  exit 0
 fi
+
+# Everything below runs with the .env you filled in.
+missing=()
+for key in HANDBOOK_VERSION HANDBOOK_DOMAIN HANDBOOK_COMPANY HANDBOOK_ADMIN_EMAIL \
+           LLM_API_KEY EMBEDDING_API_KEY EMAIL_SMTP_HOST EMAIL_SMTP_USERNAME \
+           EMAIL_SMTP_PASSWORD EMAIL_SMTP_FROM POSTGRES_PASSWORD AUTH_JWT_SECRET \
+           AUTH_ENCRYPTION_KEYS; do
+  [ -n "$(get_env "$key")" ] || missing+=("$key")
+done
+[ ${#missing[@]} -eq 0 ] || fail "These are still empty in .env: ${missing[*]}
+Fill them in, then run ./install.sh again."
+
+domain="$(get_env HANDBOOK_DOMAIN)"
+[[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || fail "HANDBOOK_DOMAIN must be only the domain, without
+https:// or a path (for example handbook.yourcompany.com, or localhost)."
+[[ "$(get_env HANDBOOK_ADMIN_EMAIL)" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] \
+  || fail "HANDBOOK_ADMIN_EMAIL does not look like an email address."
 
 ensure_updater_token
 
-# Write the domain into the Slack and GitHub app templates.
-sed -i.bak "s/HANDBOOK_DOMAIN/$domain/g" apps/slack-manifest.yml apps/github-app.html
-rm -f apps/*.bak
+# Fresh copies of the Slack and GitHub app templates with this domain, so a
+# changed domain is picked up on the next run.
+for f in slack-manifest.yml github-app.html; do
+  sed "s/HANDBOOK_DOMAIN/$domain/g" "apps/templates/$f" > "apps/$f"
+done
 
 say "Downloading Handbook"
 registry_login
 pull_images
 say "Starting Handbook (the first start takes a minute or two)"
-docker compose up -d
+# A failed start is explained by wait_healthy, from the api's own log.
+docker compose up -d || true
 wait_healthy
 
 admin_email="$(get_env HANDBOOK_ADMIN_EMAIL)"
-if [ -n "$admin_email" ]; then
-  docker compose exec -T api python scripts/create_company.py \
-    "$(get_env HANDBOOK_COMPANY)" "$admin_email"
-fi
+docker compose exec -T api python scripts/create_company.py \
+  "$(get_env HANDBOOK_COMPANY)" "$admin_email"
 
 say "Handbook is running at https://$domain"
 cat << EOF
 
 Next:
   1. Open https://$domain and sign in with $admin_email.
-  2. Connect your tools: docs/CONNECTORS.md. The Slack and GitHub templates
-     in apps/ already contain your domain.
-  3. Invite your colleagues from the admin page.
+  2. Follow docs/CHECKLIST.md: connect your tools (docs/CONNECTORS.md; the
+     Slack and GitHub templates in apps/ already contain your domain), check
+     the answers, and invite your colleagues.
 EOF

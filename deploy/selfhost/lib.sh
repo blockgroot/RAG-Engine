@@ -58,16 +58,23 @@ again."
 }
 
 # Wait until the api service reports healthy (it applies database changes
-# and checks its settings first), or show why it did not.
+# and checks its settings first), or show why it did not. An api that keeps
+# restarting has refused a setting; that is said at once, not after 5 minutes.
 wait_healthy() {
-  local id status
+  local id status restarts
   for _ in $(seq 1 60); do
     id="$(docker compose ps -q api)"
     status="$(docker inspect --format '{{.State.Health.Status}}' "$id" 2> /dev/null || true)"
     [ "$status" = "healthy" ] && return 0
+    restarts="$(docker inspect --format '{{.RestartCount}}' "$id" 2> /dev/null || echo 0)"
+    [ "${restarts:-0}" -ge 2 ] && break
     sleep 5
   done
-  docker compose logs --tail 40 api >&2
-  fail "Handbook did not become healthy within 5 minutes. The lines above
-usually name the setting that is wrong (look for 'FAILED')."
+  local reason
+  reason="$(docker compose logs --tail 60 api 2>&1 | grep -E "FAILED|Error|error" | tail -5 || true)"
+  echo >&2
+  if [ -n "$reason" ]; then echo "$reason" >&2; else docker compose logs --tail 20 api >&2; fi
+  fail "Handbook did not start. The lines above name the problem (a 'FAILED'
+line names the setting). Fix it in .env, then run this script again.
+Full log: docker compose logs api"
 }
