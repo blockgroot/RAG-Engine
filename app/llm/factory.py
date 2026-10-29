@@ -31,7 +31,10 @@ def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     """
     settings = settings or LLMSettings.from_env()
     routed = RoutedLLMProvider(
-        adapters.build_provider(main_endpoint(settings), timeout=settings.timeout)
+        adapters.build_provider(
+            main_endpoint(settings), timeout=settings.timeout,
+            reasoning_effort=settings.reasoning_effort,
+        )
     )
     return MaskingLLMProvider(routed, build_detector())
 
@@ -83,6 +86,9 @@ def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     """
     settings = settings or LLMSettings.from_env()
     return MaskingLLMProvider(
-        adapters.build_provider(aux_endpoint(settings), timeout=settings.timeout),
+        adapters.build_provider(
+            aux_endpoint(settings), timeout=settings.timeout,
+            reasoning_effort=settings.reasoning_effort,
+        ),
         build_detector(),
     )

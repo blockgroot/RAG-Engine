@@ -4,7 +4,7 @@ New features and fixes arrive as new versions. Your data is never inside the ima
 
 ## Hearing about new versions
 
-When a new version is out, Handbook tells your admins: an entry in the bell and on **Admin › Updates**, with what changed. A security fix is marked as urgent. To do this, Handbook reads our public list of releases a few times a day; nothing about your company is sent. To turn it off, set `UPDATE_CHECK_ENABLED=false` in `.env`.
+When a new version is out, Handbook tells your admins: an entry in the bell and on **Updates** (sidebar), with what changed. A security fix is marked as urgent. To do this, Handbook reads our public list of releases a few times a day; nothing about your company is sent. To turn it off, set `UPDATE_CHECK_ENABLED=false` in `.env`.
 
 We also email every release, with its notes, to the contact on your license. Nothing upgrades by itself: you choose when.
 
@@ -25,7 +25,7 @@ We support the current version and the one before it.
 
 ## Upgrading from Handbook (one click)
 
-In **Admin › Updates**, read the notes and press **Update to <version>**. Handbook then:
+In **Updates** (sidebar), read the notes and press **Update to <version>**. Handbook then:
 
 1. backs up the database (into `backups/`, as `backup.sh` does);
 2. downloads the new version and restarts Handbook, which is unavailable for a minute or two;
@@ -43,7 +43,7 @@ services:
     profiles: [off]
 ```
 
-Admin › Updates then shows the command instead of the button. The updater downloads new versions with the registry username and token you put in `.env` (`REGISTRY_USERNAME`, `REGISTRY_TOKEN`).
+**Updates** then shows the command instead of the button. The updater downloads new versions with the registry username and token you put in `.env` (`REGISTRY_USERNAME`, `REGISTRY_TOKEN`).
 
 ## Upgrading from the server
 

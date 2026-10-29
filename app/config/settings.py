@@ -218,6 +218,11 @@ class LLMSettings:
     #: adapter, a model the provider does not list), ``warn`` only logs,
     #: ``off`` skips it. An unreachable model list is never a failure.
     config_check: str = "strict"
+    #: Sent as ``reasoning_effort`` to the configured models (``low``,
+    #: ``none``, ...). A reasoning model such as GPT-OSS otherwise spends a
+    #: short call's whole token cap thinking and returns an empty message.
+    #: Dropped for an endpoint that refuses it.
+    reasoning_effort: str | None = None
 
     @property
     def aux_has_own_endpoint(self) -> bool:
@@ -246,6 +251,7 @@ class LLMSettings:
             adapter=(os.getenv("LLM_ADAPTER") or "").strip().lower() or None,
             aux_adapter=(os.getenv("LLM_AUX_ADAPTER") or "").strip().lower() or None,
             config_check=check if check in ("strict", "warn", "off") else "strict",
+            reasoning_effort=(os.getenv("LLM_REASONING_EFFORT") or "").strip().lower() or None,
         )
 
 

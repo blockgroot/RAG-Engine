@@ -140,7 +140,8 @@ def _update_items() -> list[dict]:
             "severity": "medium",
             "provider": "",
             "scope": "Company",
-            "title": f"Handbook was updated to {release.version}",
+            # Not "updated to": a fresh install is on its first version.
+            "title": f"What's new in Handbook {release.version}",
             "detail": release.notes[0] if release.notes else "See what changed.",
             "action": "See what's new",
             "href": "/admin/updates",

@@ -12,7 +12,7 @@ Handbook is installed and you can sign in as its admin. This checklist takes you
 
 ## 2. Connect your tools
 
-For each tool your company uses, follow [CONNECTORS.md](CONNECTORS.md), then connect it from **Admin › Connections**.
+For each tool your company uses, follow [CONNECTORS.md](CONNECTORS.md), then connect it from **Sources**.
 
 - [ ] **Slack:** pick the channels Handbook reads. To use the bot in a channel, invite it there (`/invite @Handbook`). It can only read and answer in channels it has been added to.
 - [ ] **Google Drive:** pick the folder Handbook reads. Connect with an account that can open everything in that folder.
@@ -28,24 +28,26 @@ Only connect what people should be able to ask about. Handbook follows each tool
 - [ ] Ask a few questions whose answers you know, one for each connected tool, and check that each answer cites the right document.
 - [ ] Ask something that is not in your tools, and check that Handbook says it could not find an answer rather than guessing.
 - [ ] In Slack, mention the bot in a channel it was invited to, and send it a direct message.
+  The bot answers only people whose Slack email has a Handbook account; invite yours under **People** if it uses another address.
 
 ## 4. Decide who sees what
 
-- [ ] **Company-wide or spaces.** Tools connected in **Admin › Connections** are for the whole company. For a team that needs its own private area (HR, leadership, a project), create a **space**: it has its own members and its own connected tools, and sees only its own content.
+- [ ] **Company-wide or spaces.** Tools connected in **Sources** are for the whole company. For a team that needs its own private area (HR, leadership, a project), create a **space**: it has its own members and its own connected tools, and sees only its own content.
 - [ ] **Space owners.** Make one person the owner of each space. Owners invite members and connect the space's tools.
 
 ## 5. Choose your settings
 
-- [ ] **AI model:** check the model Handbook answers with (**Admin › Model**). It uses the model and key set in `.env` (`LLM_API_KEY`, and `LLM_ADAPTER`/`LLM_MODEL` for a provider other than Claude).
-- [ ] **Agent mode** (Handbook carrying out actions in your tools, such as posting a Slack message or creating an issue): off until you turn it on. Every tool action starts off, and each one you turn on is either read-only or needs the person to approve a card before it runs (**Admin › Actions**). Leave it off if you are not ready for it.
+- [ ] **AI model:** check the model Handbook answers with (**Model** in the sidebar). It uses the model and key set in `.env` (`LLM_API_KEY`, and `LLM_ADAPTER`/`LLM_MODEL` for a provider other than Claude).
+- [ ] **Agent mode** (Handbook carrying out actions in your tools, such as posting a Slack message or creating an issue): off until you turn it on. Every tool action starts off, and each one you turn on is either read-only or needs the person to approve a card before it runs (**Actions** in the sidebar). Leave it off if you are not ready for it.
 
 ## 6. Invite your colleagues
 
 There is no public sign-up page: people join when an admin invites them.
 
-- [ ] Invite colleagues from **Admin › Members**. Each gets an email with a sign-in link. Start with a small group if you prefer.
+- [ ] Invite colleagues from **People**. Each gets an email with a sign-in link. Start with a small group if you prefer.
 - [ ] Make at least one more person an admin, so you are not the only one who can manage Handbook.
-- [ ] Ask people with access to private GitHub repositories to link their GitHub account from **Account**, so Handbook can answer about those repositories for them.
+- [ ] Ask everyone with access to private GitHub repositories, admins included, to link their GitHub account (**Account → Link GitHub**). Until they do, Handbook answers them "No answer found" about those repositories.
+- [ ] Invite people with the same email they use in Slack, so the Slack bot recognises them.
 - [ ] Tell people where Handbook is, and that they can also ask in Slack.
 
 ## 7. Keep it running
@@ -54,7 +56,7 @@ There is no public sign-up page: people join when an admin invites them.
 | --- | --- |
 | Weekly | Look at the bell. It shows tools that stopped syncing, and topics several people could not get answered, which point to documents that are missing or out of date. |
 | Each new version | Read the release notes and run `./upgrade.sh` ([UPGRADE.md](UPGRADE.md)). |
-| When someone leaves | Remove them in **Admin › Members**. Their access ends at once. |
+| When someone leaves | Remove them in **People**. Their access ends at once. |
 | Monthly | Check that recent backups exist and that the disk is not filling up (`df -h`). |
 
 ## 8. If we installed Handbook for you: remove our access

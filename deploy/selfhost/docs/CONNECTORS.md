@@ -5,8 +5,8 @@ Handbook reads Slack, GitHub, Google Drive, Notion and Linear through **apps tha
 For every tool:
 1. Create the app (below).
 2. Copy its keys into `.env`.
-3. Run `docker compose up -d` so Handbook picks up the keys.
-4. In Handbook, open **Sources** and connect the tool.
+3. Save `.env`, then run `docker compose up -d` in the Handbook folder so Handbook picks up the keys. Handbook reads `.env` only when it starts: a key saved after that is not seen until you run it again.
+4. In Handbook, open **Sources** and connect the tool. Sign in to the tool with the same account (and, for Slack and Linear, the same workspace) you created its app in.
 
 In the steps below, `<domain>` means your `HANDBOOK_DOMAIN`, for example `handbook.yourcompany.com`.
 
@@ -19,7 +19,7 @@ Slack and GitHub apps are created from templates in `apps/`. `install.sh` writes
 **Create the app from the template**
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**.
 2. Pick your workspace, paste the contents of `apps/slack-manifest.yml`, and press **Create**.
-3. Slack may report that the events address did not answer. That is expected, because Handbook does not have the app's keys yet. You fix it in step 6.
+3. Slack may report that the events address did not answer. That is expected, because Handbook does not have the app's keys yet. You fix it in step 5. Slack may then show **"Run your app locally"** with Slack CLI commands: ignore them (Handbook is the app) and press **Go to App Settings**.
 
 **Copy the keys.** Under **Basic Information → App Credentials**:
 
@@ -32,7 +32,10 @@ Slack and GitHub apps are created from templates in `apps/`. `install.sh` writes
 **Finish**
 4. Run `docker compose up -d`.
 5. In Slack's app settings, open **Event Subscriptions** and press **Retry** next to the Request URL. It should show **Verified**.
-6. In Handbook: **Sources → Slack → Connect**, then pick the channels to sync.
+6. In Handbook: **Sources → Slack → Connect**, then pick the channels to sync. If Slack asks which workspace, choose the one you created the app in: the app can only be installed there.
+7. To ask the bot in a channel, invite it there (`/invite @Handbook`). The bot answers only people whose **Slack email belongs to a Handbook account**; anyone else is told to ask an admin for an invite (**People → Invite someone**, with the email they use in Slack).
+
+Slack calls Handbook at its public address for events and buttons, so the bot works only when Handbook is reachable from the internet.
 
 **What the template sets**
 - Two sign-in addresses: connecting Slack, and Agent mode.
@@ -46,27 +49,36 @@ Slack and GitHub apps are created from templates in `apps/`. `install.sh` writes
 ## GitHub
 
 **Create the App from the template**
-1. Open `apps/github-app.html` in a browser on your computer.
-2. Type your GitHub organization and press **Create on GitHub**. You must be an owner of the organization.
-3. GitHub shows the App with everything filled in. Give it a name; it must be unique on all of GitHub, for example "Handbook for Your Company". Then confirm.
-4. GitHub sends you to `https://<domain>/?code=...`. Copy the code from the address bar, and **within one hour** run:
-   ```sh
-   curl -s -X POST https://api.github.com/app-manifests/<code>/conversions
-   ```
-   GitHub answers with the App's details.
+1. Sign in to Handbook as an admin in your browser.
+2. Open `apps/github-app.html` in the same browser.
+3. Type your GitHub organization and press **Create on GitHub**. You must be an **owner** of the organization, and type its handle exactly as in its URL (`github.com/<handle>`). To create the App under your personal account instead, leave the field empty.
+4. GitHub shows the App with everything filled in. Give it a name; it must be unique on all of GitHub, for example "Handbook for Your Company". Then confirm.
+5. GitHub returns you to Handbook, which finishes creating the App and shows **four lines for `.env`** (`GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY`). Press **Copy** and replace the four empty `GITHUB_…=` lines in `.env` with them. The page shows them once: it includes the App's private key.
 
-**Copy the keys** from that answer into `.env`:
+<details>
+<summary>Taking the keys from GitHub instead</summary>
 
-| GitHub's answer | Put in `.env` as |
+If Handbook's page did not appear, or you created the App by hand, take the values from the App's page in GitHub (**Settings → Developer settings → GitHub Apps → your App**; for an organization, the organization's settings):
+
+| In GitHub | Put in `.env` as |
 | --- | --- |
-| `slug` | `GITHUB_APP_SLUG` |
-| `client_id` | `GITHUB_CLIENT_ID` |
-| `client_secret` | `GITHUB_CLIENT_SECRET` |
-| `pem` | `GITHUB_APP_PRIVATE_KEY`, on one line, keeping the `\n` sequences exactly as GitHub returns them |
+| The App's name in the page's address (`…/settings/apps/<name>`) | `GITHUB_APP_SLUG` |
+| **Client ID** | `GITHUB_CLIENT_ID` |
+| **Generate a new client secret** (shown once) | `GITHUB_CLIENT_SECRET` |
+| **Private keys → Generate a private key** (on newer pages: **Credentials → Key pairs**). It downloads a `.pem` file | `GITHUB_APP_PRIVATE_KEY`, on one line (below) |
+
+The `.pem` file has many lines, and `.env` needs it on one, with `\n` where each line break was. This prints that line; copy it over the empty `GITHUB_APP_PRIVATE_KEY=` line in `.env`:
+```sh
+echo "GITHUB_APP_PRIVATE_KEY=$(awk 'NF {printf "%s\\n", $0}' ~/Downloads/<your-app>.*.private-key.pem)"
+```
+It starts `GITHUB_APP_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----\n` and ends `-----END RSA PRIVATE KEY-----\n`, with no quotes. Keep the `.pem` file somewhere safe, or delete it once `.env` is backed up: it is the App's key.
+
+</details>
 
 **Finish**
-5. Run `docker compose up -d`.
-6. In Handbook: **Sources → GitHub → Connect**, and install the App on the repositories Handbook should read.
+6. Run `docker compose up -d`.
+7. In Handbook: **Sources → GitHub → Connect**, and install the App on the repositories Handbook should read.
+8. Each person, admins included, links their own GitHub account in Handbook (**Account → Link GitHub**). A private repository is answered only for people whose linked account can open it; until they link, Handbook answers them "No answer found" about it.
 
 **What the template sets**
 - Permissions:
@@ -74,7 +86,7 @@ Slack and GitHub apps are created from templates in `apps/`. `install.sh` writes
   - Issues: **write**, used only by Agent mode. When Handbook reads, it always uses read-only access, whatever the App holds.
 - Two callback addresses, in this order: connecting GitHub, then Agent mode. **Keep that order** if you edit them.
 - "Request user authorization during installation" on.
-- Webhooks off. Handbook does not use them.
+- No webhook. Handbook does not use GitHub webhooks.
 
 ---
 
@@ -83,13 +95,15 @@ Slack and GitHub apps are created from templates in `apps/`. `install.sh` writes
 Google has no app template, so this one is set up by hand in [Google Cloud Console](https://console.cloud.google.com).
 
 1. **Project.** Create a project (or pick one) in your company's Google organization.
-2. **APIs.** Under **APIs & Services → Library**, enable:
+2. **APIs.** Under **APIs & Services → Library**, search for each of these and press **Enable**. Google refuses any call to an API that is not enabled (*"… API has not been used in project … or it is disabled"*), so enable them now, even if you turn on Agent mode later:
    - **Google Drive API** (always);
-   - **Google Docs API** and **Google Sheets API** (only for Agent mode);
+   - **Google Docs API** and **Google Sheets API** (Agent mode: creating Docs and Sheets);
    - **Google Forms API** (only with `GOOGLE_FORMS_ENABLED=true`);
    - **Admin SDK API** (only with `GOOGLE_GROUPS_ENABLED=true`).
 3. **Consent screen.** Under **OAuth consent screen**, choose **Internal**.
    - Internal means only your company's accounts can sign in, and it skips Google's app review. Drive read access is a "restricted" scope, and External apps need a lengthy review to use it.
+   - On newer consoles this screen is **Google Auth Platform → Branding** (the app's name and your email) and **Audience** (Internal or External).
+   - **No Google Workspace** (for example a personal Gmail account, or trying Handbook first): Internal is not offered. Choose **External**, leave the app in **Testing**, and under **Audience → Test users** add the email of every account that will connect Drive. A Testing app works for up to 100 test users without Google's review.
 4. **Client.** Under **Credentials → Create credentials → OAuth client ID**:
    - Application type: **Web application**.
    - Authorized redirect URIs, add both:
@@ -103,6 +117,16 @@ Google has no app template, so this one is set up by hand in [Google Cloud Conso
 | Client secret | `GOOGLE_CLIENT_SECRET` |
 
 6. Run `docker compose up -d`. In Handbook: **Sources → Google Drive → Connect**, then pick the folder to sync.
+
+**If Google refuses the sign-in**
+
+| Google shows | Fix |
+| --- | --- |
+| **Access blocked: … has not completed the Google verification process** | The app is External and in Testing, and this account is not a test user. Add it under **Audience → Test users** (OAuth consent screen → Test users on older consoles), then connect again. |
+| **Access blocked: … can only be used within its organization** | The app is Internal, and this account is outside your Google Workspace. Sign in with a company account. |
+| **Error 400: redirect_uri_mismatch** | The redirect URI in the client differs from the one Handbook sent. Connecting Drive uses `https://<domain>/api/auth/google/callback`; connecting Google in **Agent mode** uses `https://<domain>/api/act/mcp/callback`. Both must be listed, exactly: `https`, your domain, no trailing `/`. Google can take a few minutes to apply a change. |
+| **Agent mode: "Google Docs API (or Sheets API) has not been used in project … or it is disabled"** | Enable that API (step 2), wait a few minutes, and try again. |
+| **"Google hasn't verified this app"** | Expected for a Testing app. Click **Continue** (under **Advanced** if shown). |
 
 **Optional, off by default**
 - `GOOGLE_FORMS_ENABLED=true`: reads Google Forms responses.
@@ -155,9 +179,11 @@ Without live updates, Notion is synced on a schedule.
 
 Linear has no app template.
 
-1. **OAuth application.** Go to Linear **Settings → API → OAuth applications → New**.
+1. **OAuth application.** Signed in to the Linear workspace you will connect, go to **Settings → API → OAuth applications → New**.
    - Callback URL: `https://<domain>/api/auth/linear/callback`
+   - Developer name and Developer URL are only shown to people on Linear's sign-in screen: your company's name and website.
    - Handbook asks only for **read** access.
+   - The application belongs to this workspace. Signed in to another one, Linear says *"Could not find OAuth client with clientId …"*: switch workspace (top left in Linear), or turn on **Public** in the application.
 2. **Live updates (optional, recommended).** In the same application, turn on webhooks:
    - URL: `https://<domain>/api/webhooks/linear`
    - Events: at least **Issues** and **Comments**.
@@ -187,6 +213,8 @@ Agent mode is off until an admin turns it on, tool by tool, in **Admin → Actio
 | What you see | Usual cause |
 | --- | --- |
 | The tool's sign-in page says the redirect address is not allowed | The address in the tool's app does not exactly match `https://<domain>/api/auth/<tool>/callback`. Check for `http` instead of `https`, a missing `/api`, or a trailing `/`. |
-| The tool is not offered in Sources | Its keys are missing from `.env`, or `docker compose up -d` has not been run since they were added |
+| The tool is not offered in Sources, or its sign-in says *"… requires …_CLIENT_ID … to be set"* | Its keys are missing from `.env`, or `docker compose up -d` has not been run since they were added |
+| `docker compose` says *"required variable HANDBOOK_VERSION is missing a value"* | It was run outside the Handbook folder (or in an old copy of it): `cd` into the folder that holds `.env` and run it again |
 | The Slack bot does not reply | Event Subscriptions is not **Verified** (step 5 under Slack), or Handbook is not reachable from the internet |
+| The Slack bot replies *"You don't have a Handbook account yet"* | That person's Slack email has no Handbook account: invite that email under **People** |
 | Live updates never arrive | The webhook secret in `.env` does not match the tool's, or Handbook is not reachable from the internet |

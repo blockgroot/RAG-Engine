@@ -1,8 +1,7 @@
 # Slack app for a self-hosted Handbook.
 #
-# 1. Replace HANDBOOK_DOMAIN below with your domain (docs/CONNECTORS.md shows a
-#    one-line command that does it for every template).
-# 2. https://api.slack.com/apps -> Create New App -> From an app manifest ->
+# install.sh writes your domain into the copy in apps/; use that copy.
+# https://api.slack.com/apps -> Create New App -> From an app manifest ->
 #    pick your workspace -> paste this file -> Create.
 #
 # Every value here is what Handbook's code expects. Change the names freely;

@@ -2,14 +2,14 @@
 <!--
   GitHub App for a self-hosted Handbook, created from a manifest.
 
-  1. Replace HANDBOOK_DOMAIN in this file with your domain
-     (docs/CONNECTORS.md shows a one-line command).
-  2. Open this file in a browser, type your GitHub organization, and press
+  1. install.sh writes apps/github-app.html from this template with your
+     domain. Open that copy, not this one.
+  2. Open it in a browser, type your GitHub organization (or leave it empty
+     for your personal account), and press
      "Create on GitHub". GitHub shows the App with everything filled in;
      choose a name (it must be unique on all of GitHub) and confirm.
-  3. GitHub then sends you to https://HANDBOOK_DOMAIN/?code=... . Copy the
-     code from the address bar and follow step 4 in docs/CONNECTORS.md
-     within one hour.
+  3. GitHub then returns you to Handbook, which shows the four lines to
+     add to .env (sign in to Handbook as an admin in the same browser first).
 -->
 <html lang="en">
 <head>
@@ -27,7 +27,7 @@
      writing for Agent mode.</p>
   <form id="create" method="post">
     <label>GitHub organization
-      <input id="org" required placeholder="your-org">
+      <input id="org" placeholder="your-org (leave empty for your personal account)">
     </label>
     <input type="hidden" name="manifest" id="manifest">
     <p><button type="submit">Create on GitHub</button></p>
@@ -37,8 +37,9 @@
     const manifest = {
       name: "Handbook",
       url: domain,
-      // GitHub sends the one-time code here after the App is created.
-      redirect_url: domain + "/",
+      // GitHub returns here with a one-time code, and Handbook exchanges it
+      // and shows the .env lines (signed in as an admin).
+      redirect_url: domain + "/api/auth/github/app-created",
       // Order matters: Handbook's sign-in names no return address, so GitHub
       // uses the first one.
       callback_urls: [
@@ -48,8 +49,8 @@
       setup_url: domain + "/api/auth/github/callback",
       request_oauth_on_install: true,
       public: false,
-      // Handbook does not use GitHub webhooks.
-      hook_attributes: { url: domain + "/api/github/unused", active: false },
+      // No hook_attributes: Handbook does not use GitHub webhooks, and GitHub
+      // rejects even an inactive hook whose address it cannot reach.
       default_permissions: {
         metadata: "read",
         contents: "read",
@@ -62,7 +63,9 @@
     };
     document.getElementById("create").addEventListener("submit", (e) => {
       const org = document.getElementById("org").value.trim();
-      e.target.action = "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new";
+      e.target.action = org
+        ? "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new"
+        : "https://github.com/settings/apps/new";
       document.getElementById("manifest").value = JSON.stringify(manifest);
     });
   </script>
