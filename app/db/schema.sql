@@ -145,24 +145,41 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_meta JSONB;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_editor_key TEXT;
 
 
+-- A chunks table from before it was partitioned by organization is moved aside
+-- here, and copied into the partitioned table at the end of this file (once all
+-- its columns exist). Its index names are freed for the new table's.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class WHERE oid = to_regclass('chunks') AND relkind = 'r') THEN
+        ALTER TABLE chunks RENAME TO chunks_unpartitioned;
+        ALTER INDEX chunks_pkey RENAME TO chunks_unpartitioned_pkey;
+        DROP INDEX IF EXISTS idx_chunks_embedding, idx_chunks_content_tsv,
+                             idx_chunks_workspace;
+    END IF;
+END $$;
+
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
--- so every retrieval query can filter by tenant without a join).
+-- so every retrieval query can filter by tenant without a join). One partition
+-- per organization (created and dropped with it, end of this file), so a
+-- search walks only that organization's vectors: a shared index returns the
+-- nearest vectors of EVERY tenant and leaves the filter to drop most of them.
 CREATE TABLE IF NOT EXISTS chunks (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          UUID NOT NULL DEFAULT gen_random_uuid(),
     org_id      UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     document_id UUID NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
     chunk_index INT  NOT NULL,
     content     TEXT NOT NULL,
     embedding   vector(1024) NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, id)
+) PARTITION BY LIST (org_id);
 
--- Tenant filter index: every read filters WHERE org_id = ... first.
-CREATE INDEX IF NOT EXISTS idx_chunks_org ON chunks (org_id);
+-- No org_id index: within a partition every row has the same org_id, and
+-- given one the planner preferred it to the vector index below.
 
--- Approximate-nearest-neighbour index for cosine similarity search.
--- Correctness of isolation does NOT depend on this index — the org_id WHERE
--- clause guarantees it; the index only speeds up ranking within a tenant.
+-- Approximate-nearest-neighbour index for cosine similarity search, built per
+-- partition. Correctness of isolation does NOT depend on this index — the
+-- org_id WHERE clause and the row-level policy guarantee it.
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
     ON chunks USING hnsw (embedding vector_cosine_ops);
 
@@ -1534,3 +1551,89 @@ BEGIN
         INSERT INTO schema_marks (name) VALUES ('act_mcp_only');
     END IF;
 END $$;
+
+-- One chunks partition per organization, in its own schema: the app's role has
+-- no access there, so a partition can only be read through `chunks`, where the
+-- row-level policy below applies. SECURITY DEFINER because only the owner of
+-- `chunks` may add or drop a partition, and the app does not own it.
+CREATE SCHEMA IF NOT EXISTS chunk_partitions;
+
+CREATE OR REPLACE FUNCTION create_chunk_partition(org UUID) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    EXECUTE format(
+        'CREATE TABLE IF NOT EXISTS chunk_partitions.%I PARTITION OF chunks FOR VALUES IN (%L)',
+        'org_' || replace(org::text, '-', ''), org);
+END $$;
+REVOKE EXECUTE ON FUNCTION create_chunk_partition(UUID) FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION chunk_partition_on_org_insert() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    PERFORM create_chunk_partition(NEW.id);
+    RETURN NEW;
+END $$;
+
+-- BEFORE the delete: dropping the partition removes its rows at once, instead
+-- of the cascade deleting them one by one, and leaves no empty table behind.
+CREATE OR REPLACE FUNCTION chunk_partition_on_org_delete() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    EXECUTE format('DROP TABLE IF EXISTS chunk_partitions.%I',
+                   'org_' || replace(OLD.id::text, '-', ''));
+    RETURN OLD;
+END $$;
+
+DROP TRIGGER IF EXISTS organizations_chunk_partition_insert ON organizations;
+CREATE TRIGGER organizations_chunk_partition_insert
+    AFTER INSERT ON organizations
+    FOR EACH ROW EXECUTE FUNCTION chunk_partition_on_org_insert();
+DROP TRIGGER IF EXISTS organizations_chunk_partition_delete ON organizations;
+CREATE TRIGGER organizations_chunk_partition_delete
+    BEFORE DELETE ON organizations
+    FOR EACH ROW EXECUTE FUNCTION chunk_partition_on_org_delete();
+
+-- Every organization has its partition, including one created by a process
+-- still running code from before the trigger.
+SELECT create_chunk_partition(id) FROM organizations;
+
+-- The one-time copy out of the table moved aside at the top of this file.
+DO $$
+BEGIN
+    IF to_regclass('chunks_unpartitioned') IS NOT NULL THEN
+        INSERT INTO chunks (id, org_id, document_id, chunk_index, content, embedding,
+                            created_at, injection_score, injection_model, workspace_id)
+        SELECT id, org_id, document_id, chunk_index, content, embedding,
+               created_at, injection_score, injection_model, workspace_id
+          FROM chunks_unpartitioned;
+        DROP TABLE chunks_unpartitioned;
+        INSERT INTO schema_marks (name) VALUES ('chunks_partitioned_by_org')
+            ON CONFLICT DO NOTHING;
+    END IF;
+END $$;
+
+-- Row-level security on chunks. The app's pooled connections act as
+-- `handbook_app` (app/db/connection.py), which does not bypass row security,
+-- and see only the rows of the organization set for the transaction
+-- (`get_connection(org_id=...)`). Nothing set means no rows: a query that
+-- forgets its org_id filter returns nothing instead of every tenant's text.
+-- `app.all_orgs` is for the few background jobs that work across tenants.
+-- Migrations run as the owner, which the policy does not apply to.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'handbook_app') THEN
+        CREATE ROLE handbook_app NOLOGIN NOBYPASSRLS;
+    END IF;
+END $$;
+GRANT handbook_app TO CURRENT_USER;
+GRANT USAGE ON SCHEMA public TO handbook_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO handbook_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO handbook_app;
+
+ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chunks_one_org ON chunks;
+CREATE POLICY chunks_one_org ON chunks TO handbook_app
+    USING (org_id = nullif(current_setting('app.org_id', true), '')::uuid
+           OR current_setting('app.all_orgs', true) = 'on')
+    WITH CHECK (org_id = nullif(current_setting('app.org_id', true), '')::uuid
+                OR current_setting('app.all_orgs', true) = 'on');
