@@ -472,7 +472,7 @@ def matching_prose(
          ORDER BY r.rank DESC, r.id, c.chunk_index
     """
     try:
-        with get_connection() as conn:
+        with get_connection(org_id=org_id) as conn:
             rows = conn.execute(
                 sql,
                 {"org_id": org_id, "workspace_id": workspace_id, "question": question,

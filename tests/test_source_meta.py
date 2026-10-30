@@ -588,7 +588,7 @@ def test_meta_round_trips_through_postgres():
             org_id, provider="google", external_id="drv",
             chunks=["Context. raw", "second"], embeddings=[vector, vector],
         )
-        with get_connection() as conn:
+        with get_connection(org_id=org_id) as conn:
             after = conn.execute(
                 "SELECT id, doc_is_public, doc_viewers, tags, source_last_editor, "
                 "source_editor_key FROM documents WHERE org_id = %s::uuid AND source_external_id = 'drv'",

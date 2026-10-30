@@ -180,7 +180,7 @@ def walk(
     kept_edges: dict[str, tuple[int, float]] = {}  # edge id -> (depth, score)
     truncated = False
     frontier = list(dict.fromkeys(seeds))
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         for depth in range(1, MAX_HOPS + 1):
             if not frontier or len(kept_edges) >= max_edges:
                 break

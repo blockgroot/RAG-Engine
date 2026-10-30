@@ -290,7 +290,7 @@ def relabel_indexed_channel(
 
     old_header, new_header = f"Channel: #{old}", f"Channel: #{new}"
     try:
-        with get_connection() as conn:
+        with get_connection(org_id=org_id) as conn:
             rows = conn.execute(
                 """
                 UPDATE chunks AS c
