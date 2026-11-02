@@ -1,0 +1,130 @@
+# Handbook, self-hosted. Everything runs from this file and one .env beside it.
+#
+#   cp .env.example .env    # then fill it in (see the comments there)
+#   docker compose up -d
+#
+# Only caddy is reachable from outside (ports 80/443). Every address the app
+# and the connector apps need comes from HANDBOOK_DOMAIN, so the domain is set
+# in exactly one place. To change anything here, put it in a
+# docker-compose.override.yml next to this file: upgrades never touch that.
+
+# Fixed, so the updater (which sees this folder as /handbook) and you
+# address the same containers and volumes.
+name: handbook
+
+x-backend: &backend
+  image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-api:${HANDBOOK_VERSION:?set HANDBOOK_VERSION in .env}
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: ${DATABASE_URL:-postgresql://handbook:${POSTGRES_PASSWORD}@db:5432/handbook}
+    # Every sign-in return address is worked out from this one.
+    FRONTEND_URL: https://${HANDBOOK_DOMAIN}
+    # Drive live updates (off when unset, so it is turned on here).
+    DRIVE_PUSH_BASE_URL: https://${HANDBOOK_DOMAIN}/api
+    # Agent mode's own MCP servers, reached inside this install.
+    HANDBOOK_MCP_URL: http://api:8000/mcp
+    # caddy overwrites X-Real-IP, so a visitor cannot pick their own
+    # rate-limit bucket by sending a header (app/security/client_ip.py).
+    CLIENT_IP_HEADER: x-real-ip
+    # One company, created by install.sh; everyone else joins by invite.
+    SIGNUP_ENABLED: "false"
+    # Admin › Updates offers new versions and installs them through the
+    # updater below (HANDBOOK_VERSION and UPDATER_TOKEN come from .env).
+    HANDBOOK_DEPLOYMENT: selfhosted
+    UPDATER_URL: http://updater:8080
+    # The worker service below does the background work; models are remote.
+    INGEST_WORKER_IN_API: "false"
+    MODEL_WARMUP_ON_STARTUP: "false"
+    # Self-hosted choices where the code's own default does not fit (it
+    # defaults to local models, console email and web search on). Each can
+    # be overridden by setting the same name in .env.
+    LLM_ADAPTER: ${LLM_ADAPTER:-anthropic}
+    LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+    EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-remote}
+    EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.jina.ai/v1}
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-jina-embeddings-v3}
+    RERANKER_BACKEND: ${RERANKER_BACKEND:-remote}
+    EMAIL_SENDER: ${EMAIL_SENDER:-smtp}
+    WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
+
+services:
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      HANDBOOK_DOMAIN: ${HANDBOOK_DOMAIN:?set HANDBOOK_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+  web:
+    image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-web:${HANDBOOK_VERSION}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Same image as api. Runs every background job, including the ones Cloud
+  # gets from its /internal/tick cron. Waits for api so the schema is
+  # applied once, not by two processes at the same time.
+  worker:
+    <<: *backend
+    entrypoint: ["python", "scripts/run_worker.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Installs a new version when an admin presses Update (deploy/updater).
+  # It holds the Docker socket, which is control of this server, so nothing
+  # else does: it accepts one request, with UPDATER_TOKEN, for a version on
+  # our public release list. Remove this service (or put it in an override
+  # with "profiles: [off]") if your security policy does not allow it;
+  # Admin › Updates then shows the ./upgrade.sh command instead.
+  updater:
+    image: ${HANDBOOK_REGISTRY:-ghcr.io/blockgroot}/handbook-updater:${HANDBOOK_VERSION}
+    restart: unless-stopped
+    environment:
+      UPDATER_TOKEN: ${UPDATER_TOKEN:-}
+      UPDATE_FEED_URL: ${UPDATE_FEED_URL:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/handbook
+
+  db:
+    image: pgvector/pgvector:0.8.0-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: handbook
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: handbook
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U handbook -d handbook"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  db_data:
+  caddy_data:
+  caddy_config:

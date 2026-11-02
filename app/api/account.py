@@ -24,7 +24,7 @@ from ..core.exceptions import AuthError, ConfigurationError, OAuthError
 from ..security.rate_limit import check_rate_limit
 from .validation import MAX_EMAIL_CHARS, bounded
 from ..graph import identities
-from .deps import get_session
+from .deps import get_session, public_api_url
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ def request_email_change(
         token = email_change.request_email_change(session.user_id, email)
     except AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    link = f"{str(request.base_url).rstrip('/')}/auth/email-change/confirm?token={token}"
+    link = f"{public_api_url(request)}/auth/email-change/confirm?token={token}"
     background_tasks.add_task(send_email_change_verification_safe, email, link)
     return {
         "status": "sent",

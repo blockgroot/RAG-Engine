@@ -162,7 +162,7 @@ class _Compromised(LLMProvider):
 
 
 def scores(org_id: str) -> dict[str, list]:
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             """SELECT d.title, c.chunk_index, c.injection_score, c.injection_model
                FROM chunks c JOIN documents d ON d.id = c.document_id
@@ -180,7 +180,7 @@ class _ScopedStore:
         self.store, self.org_id = store, org_id
 
     def list_unscored_chunks(self, model, limit):
-        with get_connection() as conn:
+        with get_connection(org_id=self.org_id) as conn:
             rows = conn.execute(
                 """SELECT document_id, chunk_index, content FROM chunks
                    WHERE org_id = %s::uuid AND injection_model IS DISTINCT FROM %s LIMIT %s""",

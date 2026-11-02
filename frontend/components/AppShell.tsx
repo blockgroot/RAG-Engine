@@ -95,6 +95,21 @@ function IconModel() {
   );
 }
 
+function IconUpdates() {
+  // A circular arrow: a new version coming round. Same 18px / 1.75 stroke set.
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function IconPeople() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -359,6 +374,20 @@ export function AppShell({
                   <span className="rail-link-copy">
                     <span className="rail-link-title">Actions</span>
                     <span className="rail-link-hint">What Handbook may do</span>
+                  </span>
+                </Link>
+                <Link
+                  href="/admin/updates"
+                  className="rail-link"
+                  data-active={pathname.startsWith("/admin/updates") ? "true" : "false"}
+                  aria-current={pathname.startsWith("/admin/updates") ? "page" : undefined}
+                >
+                  <span className="rail-ico">
+                    <IconUpdates />
+                  </span>
+                  <span className="rail-link-copy">
+                    <span className="rail-link-title">Updates</span>
+                    <span className="rail-link-hint">Handbook versions</span>
                   </span>
                 </Link>
               </>

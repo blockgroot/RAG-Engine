@@ -109,8 +109,12 @@ def resolve(
     return Endpoint(adapter=spec.id, base_url=url, model=model, api_key=api_key, kind=spec.kind)
 
 
-def build_provider(endpoint: Endpoint, *, timeout: float):
-    """The ``LLMProvider`` for an endpoint. One branch per ``kind``."""
+def build_provider(endpoint: Endpoint, *, timeout: float, reasoning_effort: str | None = None):
+    """The ``LLMProvider`` for an endpoint. One branch per ``kind``.
+
+    ``reasoning_effort`` (``LLM_REASONING_EFFORT``) is added to the vendor's
+    own extras and may be dropped if the endpoint refuses it, like the
+    catalogue's GPT-OSS entries."""
     from .openai_provider import OpenAICompatProvider
 
     if endpoint.kind == KIND_OPENAI_COMPAT:
@@ -119,6 +123,9 @@ def build_provider(endpoint: Endpoint, *, timeout: float):
         from .routed import preset_extra_body
 
         extra_body, optional = preset_extra_body(endpoint.adapter) if endpoint.adapter else (None, False)
+        if reasoning_effort:
+            extra_body = {**(extra_body or {}), "reasoning_effort": reasoning_effort}
+            optional = True
         return OpenAICompatProvider(
             model=endpoint.model,
             api_key=endpoint.api_key,

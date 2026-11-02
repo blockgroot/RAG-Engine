@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  GitHub App for a self-hosted Handbook, created from a manifest.
+
+  1. install.sh writes apps/github-app.html from this template with your
+     domain. Open that copy, not this one.
+  2. Open it in a browser, type your GitHub organization (or leave it empty
+     for your personal account), and press
+     "Create on GitHub". GitHub shows the App with everything filled in;
+     choose a name (it must be unique on all of GitHub) and confirm.
+  3. GitHub then returns you to Handbook, which shows the four lines to
+     add to .env (sign in to Handbook as an admin in the same browser first).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Create Handbook's GitHub App</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem; }
+    input, button { font: inherit; padding: .4rem .6rem; }
+  </style>
+</head>
+<body>
+  <h1>Create Handbook's GitHub App</h1>
+  <p>The App is created in your organization with the permissions Handbook needs:
+     read access to code, pull requests and repository details, and issue
+     writing for Agent mode.</p>
+  <form id="create" method="post">
+    <label>GitHub organization
+      <input id="org" placeholder="your-org (leave empty for your personal account)">
+    </label>
+    <input type="hidden" name="manifest" id="manifest">
+    <p><button type="submit">Create on GitHub</button></p>
+  </form>
+  <script>
+    const domain = "https://HANDBOOK_DOMAIN";
+    const manifest = {
+      name: "Handbook",
+      url: domain,
+      // GitHub returns here with a one-time code, and Handbook exchanges it
+      // and shows the .env lines (signed in as an admin).
+      redirect_url: domain + "/api/auth/github/app-created",
+      // Order matters: Handbook's sign-in names no return address, so GitHub
+      // uses the first one.
+      callback_urls: [
+        domain + "/api/auth/github/callback",
+        domain + "/api/act/mcp/callback"
+      ],
+      setup_url: domain + "/api/auth/github/callback",
+      request_oauth_on_install: true,
+      public: false,
+      // No hook_attributes: Handbook does not use GitHub webhooks, and GitHub
+      // rejects even an inactive hook whose address it cannot reach.
+      default_permissions: {
+        metadata: "read",
+        contents: "read",
+        pull_requests: "read",
+        // Agent mode creates and edits issues. Reading always uses
+        // read-only tokens, whatever the App holds.
+        issues: "write"
+      },
+      default_events: []
+    };
+    document.getElementById("create").addEventListener("submit", (e) => {
+      const org = document.getElementById("org").value.trim();
+      e.target.action = org
+        ? "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new"
+        : "https://github.com/settings/apps/new";
+      document.getElementById("manifest").value = JSON.stringify(manifest);
+    });
+  </script>
+</body>
+</html>

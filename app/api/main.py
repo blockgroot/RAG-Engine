@@ -52,6 +52,7 @@ from . import orgs as orgs_router
 from . import insights as insights_router
 from . import schedulers as schedulers_router
 from . import workspaces as workspaces_router
+from . import updates as updates_router
 
 # Every scripts/*.py entrypoint calls this before reading settings; the ASGI
 # app has no equivalent entrypoint of its own (uvicorn just imports this
@@ -225,6 +226,7 @@ def create_app() -> FastAPI:
     app.include_router(orgs_router.router)
     app.include_router(admin_router.router)
     app.include_router(llm_model_router.router)
+    app.include_router(updates_router.router)
     app.include_router(chat_router.router)
     app.include_router(attachments_router.router)
     app.include_router(feedback_router.router)

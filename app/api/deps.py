@@ -35,6 +35,7 @@ from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
 from ..auth.users import get_user
+from ..config.settings import ApiSettings
 from ..db.connection import get_connection
 from ..sources.google_groups import viewer_for_person
 from ..vectorstore.base import Viewer
@@ -51,6 +52,19 @@ SESSION_COOKIE_FLAGS: dict = {
     "samesite": "lax",
     "path": "/",
 }
+
+
+def public_api_url(request: Request) -> str:
+    """Base for links to this API that land in an inbox.
+
+    The address this process sees is not always public: in the self-hosted
+    install it is the container name (`api:8000`). The frontend origin plus
+    `/api` reaches the API everywhere, the same way the browser does.
+    """
+    frontend = ApiSettings.from_env().frontend_url
+    if frontend:
+        return f"{frontend.rstrip('/')}/api"
+    return str(request.base_url).rstrip("/")
 
 
 @lru_cache(maxsize=1)

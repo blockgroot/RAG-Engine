@@ -294,6 +294,16 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
+**Embeddings stored as `halfvec`** (`feat/deployment-setup`, 2 Nov 2026). `chunks.embedding` and
+`gap_topics.embedding` move from `vector(1024)` to `halfvec(1024)`; existing rows are converted in
+place by `apply_schema()` (a cast, nothing re-embedded; marked `embeddings_halfvec`) and the HNSW
+index is rebuilt. Every pooled connection sets `hnsw.iterative_scan = strict_order`, so a
+tenant's search returns the rows it asked for from the shared index. Measured: the index is a
+third of its old size (2,725 vs 8,380 bytes a vector), and at 1.1M vectors a tenant search
+returned 3.9 of 10 rows without the setting. Built, covered by `tests/test_halfvec.py`
+(local Postgres 17, pgvector 0.8.6); needs pgvector 0.8+ on staging and production
+(`docs/pgvector-sizing-final.md`).
+
 **Masking personal identifiers** (`feat/mask-personal-identifiers`, open). Aadhaar, Virtual
 ID, PAN, card, mobile, IFSC and UPI values are replaced with placeholders before any text goes
 to the AI models, the remote search (Jina) or the Groq checks, and restored in the answer the

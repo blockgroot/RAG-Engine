@@ -47,11 +47,11 @@ def document_similarity(
         from ..vectorstore.pgvector_store import _ANY_WORD
 
         vector = _probe_embedder().embed([question])[0]
-        with get_connection() as conn:
+        with get_connection(org_id=org_id) as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.document_id::text,
-                       MAX(1 - (c.embedding <=> %s::vector)),
+                       MAX(1 - (c.embedding <=> %s::halfvec)),
                        GREATEST(
                          COALESCE(MAX(ts_rank(c.content_tsv, {_ANY_WORD})), 0),
                          ts_rank(

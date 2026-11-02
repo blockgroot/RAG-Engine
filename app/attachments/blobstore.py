@@ -58,6 +58,11 @@ def plaintext_key(key: str) -> str:
     return f"{key}__plaintext"
 
 
+def configured() -> bool:
+    """False when no object store is set up: the caller keeps text in Postgres."""
+    return CloudinarySettings.from_env().configured
+
+
 def _client():
     """The configured Cloudinary SDK, or a raise naming what is missing.
 

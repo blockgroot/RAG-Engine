@@ -119,8 +119,14 @@ def test_signup_notifies_owner_with_one_click_links(client, monkeypatch, signup_
 
     assert captured["to"] == "owner@example.com"
     assert captured["email"] == email
-    assert "/auth/signup-requests/approve?token=" in captured["approve_link"]
-    assert "/auth/signup-requests/reject?token=" in captured["reject_link"]
+    # The public origin, never the address the API process sees (a container
+    # name in the self-hosted install).
+    assert captured["approve_link"].startswith(
+        "https://portal.example.com/api/auth/signup-requests/approve?token="
+    )
+    assert captured["reject_link"].startswith(
+        "https://portal.example.com/api/auth/signup-requests/reject?token="
+    )
 
 
 @requires_db

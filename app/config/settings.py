@@ -119,6 +119,13 @@ DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
 DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+# Answers written at once per process; the rest wait for a slot, then are told
+# "busy". Measured locally with the outside APIs replayed: 20 slots on the
+# 10-connection pool answered 50 askers with no one turned away and no pool
+# errors. The outside APIs cap it lower on free keys (one Jina key and Ollama
+# Cloud already failed 15% at 10 at once): lower it to match the plans.
+DEFAULT_CHAT_MAX_CONCURRENT = 20
+DEFAULT_CHAT_QUEUE_WAIT_SECONDS = 30
 
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
@@ -168,9 +175,22 @@ def _env_positive_int(name: str, default: int) -> int:
 
 def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
-    if raw is None:
+    # Empty is unset: the self-hosted .env lists optional switches with no
+    # value, and an empty RETRIEVAL_RERANK_ENABLED= must not turn ranking off.
+    if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _oauth_redirect(name: str, provider: str) -> str | None:
+    """``name`` if set, else the address the browser returns to after signing
+    in to ``provider``: the frontend origin plus ``/api`` (the rewrite to this
+    API), as ``MCP_REDIRECT_URI`` already does. An install then sets one
+    address, ``FRONTEND_URL``, instead of one per tool."""
+    frontend = os.getenv("FRONTEND_URL")
+    return os.getenv(name) or (
+        f"{frontend.rstrip('/')}/api/auth/{provider}/callback" if frontend else None
+    )
 
 
 @dataclass(frozen=True)
@@ -205,6 +225,11 @@ class LLMSettings:
     #: adapter, a model the provider does not list), ``warn`` only logs,
     #: ``off`` skips it. An unreachable model list is never a failure.
     config_check: str = "strict"
+    #: Sent as ``reasoning_effort`` to the configured models (``low``,
+    #: ``none``, ...). A reasoning model such as GPT-OSS otherwise spends a
+    #: short call's whole token cap thinking and returns an empty message.
+    #: Dropped for an endpoint that refuses it.
+    reasoning_effort: str | None = None
 
     @property
     def aux_has_own_endpoint(self) -> bool:
@@ -233,6 +258,7 @@ class LLMSettings:
             adapter=(os.getenv("LLM_ADAPTER") or "").strip().lower() or None,
             aux_adapter=(os.getenv("LLM_AUX_ADAPTER") or "").strip().lower() or None,
             config_check=check if check in ("strict", "warn", "off") else "strict",
+            reasoning_effort=(os.getenv("LLM_REASONING_EFFORT") or "").strip().lower() or None,
         )
 
 
@@ -360,10 +386,20 @@ class EmbeddingSettings:
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
     batch_size: int = DEFAULT_EMBED_BATCH_SIZE
+    #: Size to ask a remote model for (EMBEDDING_SEND_DIMENSIONS=true). Many
+    #: newer models can shorten their vectors on request, which lets a model
+    #: whose natural size is not the database's still fit. Off by default:
+    #: a provider that does not support it rejects the request.
+    dimensions: int | None = None
 
     @classmethod
     def from_env(cls) -> "EmbeddingSettings":
         return cls(
+            dimensions=(
+                int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM)
+                if env_bool("EMBEDDING_SEND_DIMENSIONS", False)
+                else None
+            ),
             backend=(os.getenv("EMBEDDING_BACKEND") or DEFAULT_EMBEDDING_BACKEND).lower(),
             model=os.getenv("EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL,
             device=os.getenv("EMBEDDING_DEVICE") or None,
@@ -699,7 +735,7 @@ class NotionSettings:
             tokens=tokens,
             client_id=os.getenv("NOTION_CLIENT_ID"),
             client_secret=os.getenv("NOTION_CLIENT_SECRET"),
-            redirect_uri=os.getenv("NOTION_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("NOTION_REDIRECT_URI", "notion"),
         )
 
     def resolve_token(self, name: str | None = None) -> str:
@@ -779,7 +815,7 @@ class LinearSettings:
             tokens=tokens,
             client_id=os.getenv("LINEAR_CLIENT_ID"),
             client_secret=os.getenv("LINEAR_CLIENT_SECRET"),
-            redirect_uri=os.getenv("LINEAR_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("LINEAR_REDIRECT_URI", "linear"),
             scopes=os.getenv("LINEAR_OAUTH_SCOPES", DEFAULT_LINEAR_OAUTH_SCOPES),
         )
 
@@ -889,7 +925,7 @@ class GoogleSettings:
         return cls(
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-            redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("GOOGLE_REDIRECT_URI", "google"),
             scopes=scopes,
             forms_enabled=forms_enabled,
             groups_enabled=groups_enabled,
@@ -975,7 +1011,7 @@ class SlackSettings:
         return cls(
             client_id=os.getenv("SLACK_CLIENT_ID"),
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
-            redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("SLACK_REDIRECT_URI", "slack"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
             signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
             backfill_days=int(
@@ -1558,10 +1594,19 @@ class RateLimitSettings:
     chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
     auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
     window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+    # 0 turns the cap off (every answer starts at once, as before).
+    chat_max_concurrent: int = DEFAULT_CHAT_MAX_CONCURRENT
+    chat_queue_wait_seconds: float = DEFAULT_CHAT_QUEUE_WAIT_SECONDS
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
         return cls(
+            chat_max_concurrent=int(
+                os.getenv("CHAT_MAX_CONCURRENT") or DEFAULT_CHAT_MAX_CONCURRENT
+            ),
+            chat_queue_wait_seconds=float(
+                os.getenv("CHAT_QUEUE_WAIT_SECONDS") or DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+            ),
             enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
             chat_requests_per_window=int(
                 os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
@@ -1809,6 +1854,10 @@ class AuthSettings:
     session_ttl_minutes: int = DEFAULT_SESSION_TTL_MINUTES
     magic_link_ttl_minutes: int = DEFAULT_MAGIC_LINK_TTL_MINUTES
     signup_action_ttl_hours: int = DEFAULT_SIGNUP_ACTION_TTL_HOURS
+    #: Off in a self-hosted copy: its one company is created at install
+    #: (``scripts/create_company.py``), and a public sign-up form would let
+    #: anyone who finds the address queue a second one.
+    signup_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
@@ -1826,6 +1875,51 @@ class AuthSettings:
             signup_action_ttl_hours=int(
                 os.getenv("AUTH_SIGNUP_ACTION_TTL_HOURS") or DEFAULT_SIGNUP_ACTION_TTL_HOURS
             ),
+            signup_enabled=env_bool("SIGNUP_ENABLED", True),
+        )
+
+
+#: Every install reads the same public list of releases: the main repo and
+#: the images can stay private while the version check needs no credentials.
+DEFAULT_UPDATE_FEED_URL = (
+    "https://raw.githubusercontent.com/blockgroot/handbook-releases/main/releases.json"
+)
+
+
+@dataclass(frozen=True)
+class UpdateSettings:
+    """Which version this copy runs, and how it hears about newer ones.
+
+    - ``deployment``  ``cloud`` (we update it; admins are told what changed) or
+      ``selfhosted`` (the company updates it; admins are offered the update).
+    - ``current_version``  ``HANDBOOK_VERSION``: the self-hosted ``.env`` sets
+      it for the images it runs; Cloud sets it when a release is deployed.
+      Unset means no version is known and nothing is shown.
+    - ``check_enabled``  off for a server that must not contact anyone.
+    - ``updater_url`` / ``updater_token``  the self-hosted updater container.
+      Both or neither: without them the page shows the upgrade command.
+    """
+
+    deployment: str = "cloud"
+    current_version: str | None = None
+    feed_url: str = DEFAULT_UPDATE_FEED_URL
+    check_enabled: bool = True
+    updater_url: str | None = None
+    updater_token: str | None = None
+
+    @property
+    def updater_configured(self) -> bool:
+        return bool(self.updater_url and self.updater_token)
+
+    @classmethod
+    def from_env(cls) -> "UpdateSettings":
+        return cls(
+            deployment=(os.getenv("HANDBOOK_DEPLOYMENT") or "cloud").strip().lower(),
+            current_version=(os.getenv("HANDBOOK_VERSION") or "").strip().lstrip("v") or None,
+            feed_url=os.getenv("UPDATE_FEED_URL") or DEFAULT_UPDATE_FEED_URL,
+            check_enabled=env_bool("UPDATE_CHECK_ENABLED", True),
+            updater_url=os.getenv("UPDATER_URL") or None,
+            updater_token=os.getenv("UPDATER_TOKEN") or None,
         )
 
 

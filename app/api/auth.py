@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -42,7 +43,7 @@ from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..auth.oauth_state import LINK_GITHUB, peek_state_provider
 from ..workspaces import assert_member
-from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
+from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session, public_api_url
 from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, bounded
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -67,6 +68,14 @@ def _build_magic_link(email: str) -> str:
     return f"{base}/verify?token={token}"
 
 
+#: A self-hosted copy (SIGNUP_ENABLED=false) has one company, created at
+#: install; everyone else joins by an admin's invite.
+_SIGNUP_OFF = "This Handbook doesn't take new sign-ups. Ask your Handbook admin to invite you."
+_NO_ACCOUNT_INVITE_ONLY = (
+    "We couldn't find an account for that email. Ask your Handbook admin to invite you."
+)
+
+
 @router.post("/signup")
 def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request):
     """Queue a request to create a brand-new org — does NOT create it.
@@ -77,6 +86,8 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
     admin user get created and a sign-in link get emailed. An email that's
     already a user anywhere, or already has a pending request, is rejected.
     """
+    if not AuthSettings.from_env().signup_enabled:
+        raise HTTPException(status_code=403, detail=_SIGNUP_OFF)
     email = bounded(
         (body.get("email") or "").strip().lower(),
         field="Email",
@@ -103,7 +114,7 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
 
     owner_email = EmailSettings.from_env().owner_notification_email
     if owner_email:
-        base = str(http_request.base_url).rstrip("/")
+        base = public_api_url(http_request)
         approve_link = f"{base}/auth/signup-requests/approve?token={request.approve_token}"
         reject_link = f"{base}/auth/signup-requests/reject?token={request.reject_token}"
         background_tasks.add_task(
@@ -159,13 +170,17 @@ def request_magic_link(
             "dev_link": dev_link,
         }
 
+    signup_enabled = AuthSettings.from_env().signup_enabled
     return {
         "status": "no_account",
         "message": (
             "We couldn't find an account for that email. If your company already "
             "uses Handbook, ask an admin to invite you. If not, you can set your "
             "company up."
+            if signup_enabled
+            else _NO_ACCOUNT_INVITE_ONLY
         ),
+        "signup_enabled": signup_enabled,
         "dev_link": None,
     }
 
@@ -732,6 +747,91 @@ def _result_page(message: str, *, ok: bool = True) -> str:
     return _page("Signup request", body)
 
 
+
+
+# -- creating a self-hosted copy's GitHub App (apps/github-app.html) ---------
+
+#: GitHub's one-time manifest code. Checked before it goes into a URL path.
+_MANIFEST_CODE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+def _github_app_page(heading: str, body: str) -> str:
+    return _page("GitHub App", f'''
+    <p class="eyebrow">GitHub App</p>
+    <h1>{html.escape(heading)}</h1>
+    {body}''')
+
+
+@router.get("/github/app-created", response_class=HTMLResponse)
+def github_app_created(request: Request, code: str = ""):
+    """Finish creating a self-hosted copy's GitHub App.
+
+    The template (``deploy/selfhost/apps/templates/github-app.html``) sends
+    the admin to GitHub; GitHub creates the App and returns here with a
+    one-time code. Exchanging it here spares the admin copying the code out
+    of the address bar into a command. The API cannot write ``.env``, so the
+    four values are shown once, to an admin, to paste in. Never logged or
+    cached.
+    """
+    try:
+        session = get_session(request)
+    except HTTPException:
+        return HTMLResponse(_github_app_page(
+            "Sign in to Handbook first",
+            "<p>Sign in as an admin in this browser, then open this page again "
+            "(it is in your browser history). GitHub's link works for an hour.</p>",
+        ), status_code=401)
+    if session.role != "admin":
+        return HTMLResponse(_github_app_page(
+            "Admins only", "<p>Only a Handbook admin can finish creating the GitHub App.</p>"
+        ), status_code=403)
+    if not _MANIFEST_CODE.match(code):
+        return HTMLResponse(_github_app_page(
+            "No code from GitHub",
+            "<p>Open <code>apps/github-app.html</code> and create the App again.</p>",
+        ), status_code=400)
+
+    import httpx
+
+    try:
+        response = httpx.post(
+            f"https://api.github.com/app-manifests/{code}/conversions",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=15.0,
+        )
+        app_data = response.json() if response.status_code in (200, 201) else None
+    except (httpx.HTTPError, ValueError):
+        app_data = None
+    if not app_data or not all(k in app_data for k in ("slug", "client_id", "client_secret", "pem")):
+        return HTMLResponse(_github_app_page(
+            "GitHub did not accept this link",
+            "<p>The link works once, within an hour. If the App was created, open it "
+            "in GitHub (Settings → Developer settings → GitHub Apps) and follow "
+            "<em>Taking the keys from GitHub instead</em> in docs/CONNECTORS.md. "
+            "Otherwise create it again from <code>apps/github-app.html</code>.</p>",
+        ), status_code=502)
+
+    lines = "\n".join([
+        f"GITHUB_APP_SLUG={app_data['slug']}",
+        f"GITHUB_CLIENT_ID={app_data['client_id']}",
+        f"GITHUB_CLIENT_SECRET={app_data['client_secret']}",
+        # One line in .env, with literal \n where the key's lines break.
+        "GITHUB_APP_PRIVATE_KEY=" + str(app_data["pem"]).strip().replace("\n", "\\n"),
+    ])
+    body = f'''
+    <div class="banner banner-ok">GitHub App &ldquo;{html.escape(str(app_data.get("name") or app_data["slug"]))}&rdquo; created.</div>
+    <p>1. In <code>.env</code>, replace the four empty <code>GITHUB_…=</code> lines with these.
+    They include the App's private key: this page shows them once.</p>
+    <textarea id="lines" readonly rows="6" style="width:100%;font-family:monospace;font-size:12px">{html.escape(lines)}</textarea>
+    <p><button class="button" type="button"
+      onclick="navigator.clipboard.writeText(document.getElementById('lines').value);this.textContent='Copied'">Copy</button></p>
+    <p>2. Run <code>docker compose up -d</code>.</p>
+    <p>3. In Handbook, open <strong>Sources → GitHub → Connect company account</strong> and
+    install the App on the repositories Handbook should read.</p>'''
+    return HTMLResponse(
+        _github_app_page("Add the App to .env", body),
+        headers={"Cache-Control": "no-store"},
+    )
 
 # -- sign-in email change (requested from /account, confirmed from the inbox) --
 
