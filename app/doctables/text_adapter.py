@@ -159,7 +159,8 @@ def _header_spans(header: str, text: str) -> list[tuple[int, int]]:
 
 
 def _is_year(value: float) -> bool:
-    return value == int(value) and 1900 <= int(value) <= 2099
+    # Range first: int() of a figure too large for a float (inf) raised and lost the page's tables.
+    return 1900 <= value <= 2099 and value == int(value)
 
 
 def _label_spans(label: str, text: str) -> list[tuple[int, int]]:

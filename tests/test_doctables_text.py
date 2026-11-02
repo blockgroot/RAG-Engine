@@ -601,3 +601,9 @@ def test_a_denominator_and_an_ambiguous_period_never_become_points():
     waste = next(t for t in tables if t.name.startswith("Waste"))
     assert [r[0] for r in waste.raw] == ["January", "February"]
     assert not any(t.name.startswith("Defect") for t in tables)
+
+
+def test_a_figure_too_large_for_a_float_is_not_a_year():
+    from app.doctables.text_adapter import _is_year
+    assert _is_year(2024.0) and not _is_year(2024.5)
+    assert not _is_year(float("inf")) and not _is_year(float("nan"))
