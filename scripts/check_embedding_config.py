@@ -1,7 +1,7 @@
 """Boot-time embedding check: refuse to start when the model's vectors do not fit.
 
 Run by ``docker-entrypoint.sh`` after the schema is applied. The database
-stores vectors of one fixed size (``vector(1024)`` in ``schema.sql``). A model
+stores vectors of one fixed size (``halfvec(1024)`` in ``schema.sql``). A model
 that returns another size would otherwise boot fine and then fail every sync
 with a database error that does not name the cause.
 

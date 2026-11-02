@@ -51,7 +51,7 @@ def document_similarity(
             rows = conn.execute(
                 f"""
                 SELECT c.document_id::text,
-                       MAX(1 - (c.embedding <=> %s::vector)),
+                       MAX(1 - (c.embedding <=> %s::halfvec)),
                        GREATEST(
                          COALESCE(MAX(ts_rank(c.content_tsv, {_ANY_WORD})), 0),
                          ts_rank(

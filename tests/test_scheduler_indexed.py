@@ -27,7 +27,7 @@ from .conftest import requires_db
 NOW = datetime.now(timezone.utc)
 SINCE = NOW - timedelta(days=7)
 
-#: chunks.embedding is NOT NULL and vector(1024); content is what we assert on.
+#: chunks.embedding is NOT NULL and halfvec(1024); content is what we assert on.
 _VEC = [0.0] * 1024
 
 

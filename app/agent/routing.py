@@ -307,7 +307,7 @@ def _probe_scores(
         rows = conn.execute(
             """
             SELECT d.source_provider,
-                   MAX(1 - (c.embedding <=> %s::vector)) AS best
+                   MAX(1 - (c.embedding <=> %s::halfvec)) AS best
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
             WHERE c.org_id = %s
@@ -565,7 +565,7 @@ def _probe_scope_best(
         rows = conn.execute(
             """
             SELECT c.workspace_id::text,
-                   MAX(1 - (c.embedding <=> %s::vector)) AS best
+                   MAX(1 - (c.embedding <=> %s::halfvec)) AS best
             FROM chunks c
             WHERE c.org_id = %s
               AND ((%s AND c.workspace_id IS NULL)

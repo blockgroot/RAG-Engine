@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
-from pgvector import Vector
+from pgvector import HalfVector
 
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
@@ -29,12 +29,16 @@ def _jsonb(value: dict | None) -> str | None:
     return json.dumps(value) if value is not None else None
 
 
-def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
-    """Bind an embedding as a pgvector ``Vector`` value."""
+def _to_db_vector(embedding: list[float] | np.ndarray) -> HalfVector:
+    """Bind an embedding as ``halfvec``, the type of every embedding column.
+
+    A full ``vector`` compared against a ``halfvec`` column cannot use the HNSW
+    index, so the query side must be halfvec too.
+    """
     arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
     if arr.size == 0:
         raise EmbeddingProviderError("embedding is empty")
-    return Vector(arr.tolist())
+    return HalfVector(arr.tolist())
 
 
 # The access predicate and its two helpers live in `security/visibility.py`,

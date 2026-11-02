@@ -92,8 +92,19 @@ def _register_vector_once(conn: "psycopg.Connection") -> None:
 
 
 def _configure(conn: "psycopg.Connection") -> None:
-    """Pool hook: run once when a new physical connection is opened."""
+    """Pool hook: run once when a new physical connection is opened.
+
+    ``hnsw.iterative_scan``: every tenant shares one HNSW index and the tenant
+    filter runs alongside it, so a plain scan stops after ``ef_search`` (40)
+    candidates of which ~1 in 10 belong to the asker. Measured on 1.1M vectors
+    across 10 tenants: 3.9 of 10 requested rows came back. An iterative scan
+    keeps going until the LIMIT is met; ``strict_order`` keeps results in exact
+    distance order. Needs pgvector 0.8+; on an older server the setting is an
+    inert placeholder.
+    """
     _register_vector_once(conn)
+    conn.execute("SET hnsw.iterative_scan = strict_order")
+    conn.commit()
 
 
 def get_pool(settings: DatabaseSettings | None = None) -> ConnectionPool:

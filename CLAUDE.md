@@ -133,6 +133,10 @@ UPDATE; use a CTE. Cap requeue attempts. `ALTER TABLE … ADD COLUMN` follows th
 table's `CREATE TABLE` in `schema.sql`. Partial unique indexes where `NULL` means
 org-wide. `python -m app.db.migrate` does nothing; call `apply_schema()`.
 `register_vector` runs once per physical connection. Every process calls `close_pool()`.
+Embeddings are `halfvec(1024)`: bind a query vector with `_to_db_vector` or cast it
+`::halfvec`, never `::vector` (the HNSW index is skipped). Every pooled connection sets
+`hnsw.iterative_scan = strict_order`: tenants share one index, and without it a tenant's
+search returned 3.9 of 10 rows at 1.1M vectors.
 
 **Charts.** Numbers come from SQL over stored rows (`activity_facts`, or a
 document table in `doc_tables`/`doc_table_rows`). The model never emits a number,

@@ -7,6 +7,10 @@
 -- dimension of the configured embedding model (BGE-M3 = 1024). If the model
 -- changes, this schema and DatabaseSettings.embedding_dim must change together.
 -- See CLAUDE.md.
+--
+-- Embeddings are stored as `halfvec` (2 bytes a dimension): half the table and a
+-- third of the HNSW index of full `vector`, with no measurable loss in ranking.
+-- A query vector must be bound or cast as halfvec too, or the index is skipped.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -153,18 +157,17 @@ CREATE TABLE IF NOT EXISTS chunks (
     document_id UUID NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
     chunk_index INT  NOT NULL,
     content     TEXT NOT NULL,
-    embedding   vector(1024) NOT NULL,
+    embedding   halfvec(1024) NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Tenant filter index: every read filters WHERE org_id = ... first.
 CREATE INDEX IF NOT EXISTS idx_chunks_org ON chunks (org_id);
 
--- Approximate-nearest-neighbour index for cosine similarity search.
--- Correctness of isolation does NOT depend on this index — the org_id WHERE
--- clause guarantees it; the index only speeds up ranking within a tenant.
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding
-    ON chunks USING hnsw (embedding vector_cosine_ops);
+-- The approximate-nearest-neighbour index (`idx_chunks_embedding`) is created
+-- after the halfvec conversion below (search "embeddings_halfvec"): Postgres
+-- checks the operator class before IF NOT EXISTS, so creating it here fails on a
+-- database whose column is still `vector`.
 
 -- Full-text search column for hybrid (keyword/BM25-style) retrieval (Phase 6).
 -- GENERATED from content so it stays in sync automatically (existing rows get it
@@ -1212,11 +1215,41 @@ CREATE TABLE IF NOT EXISTS gap_topics (
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
     label        TEXT NOT NULL,
-    embedding    vector(1024) NOT NULL,
+    embedding    halfvec(1024) NOT NULL,
     handled_at   TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_gap_topics_scope ON gap_topics (org_id, workspace_id);
+
+-- Embeddings were full-precision `vector(1024)` until 2026-11. Convert existing
+-- rows in place (a cast: nothing is re-embedded) and rebuild the HNSW index with
+-- the halfvec operator class. The ALTER rewrites `chunks` under an exclusive
+-- lock: seconds at today's size, minutes at a million rows.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'embeddings_halfvec') THEN
+        IF format_type((SELECT atttypid FROM pg_attribute
+                         WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'),
+                       NULL) = 'vector' THEN
+            DROP INDEX IF EXISTS idx_chunks_embedding;
+            ALTER TABLE chunks
+                ALTER COLUMN embedding TYPE halfvec(1024) USING embedding::halfvec(1024);
+        END IF;
+        IF format_type((SELECT atttypid FROM pg_attribute
+                         WHERE attrelid = 'gap_topics'::regclass AND attname = 'embedding'),
+                       NULL) = 'vector' THEN
+            ALTER TABLE gap_topics
+                ALTER COLUMN embedding TYPE halfvec(1024) USING embedding::halfvec(1024);
+        END IF;
+        INSERT INTO schema_marks (name) VALUES ('embeddings_halfvec');
+    END IF;
+END $$;
+
+-- Approximate-nearest-neighbour index for cosine similarity search.
+-- Correctness of isolation does NOT depend on this index — the org_id WHERE
+-- clause guarantees it; the index only speeds up ranking within a tenant.
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding
+    ON chunks USING hnsw (embedding halfvec_cosine_ops);
 
 ALTER TABLE feedback_and_gaps
     ADD COLUMN IF NOT EXISTS topic_id UUID REFERENCES gap_topics (id) ON DELETE SET NULL;
