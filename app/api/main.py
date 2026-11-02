@@ -34,6 +34,7 @@ from ..config.settings import ApiSettings, SchedulerSettings, env_bool
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from . import admin as admin_router
+from . import data_access as data_access_router
 from . import internal as internal_router
 from . import account as account_router
 from . import actions as actions_router
@@ -225,6 +226,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(orgs_router.router)
     app.include_router(admin_router.router)
+    app.include_router(data_access_router.router)
     app.include_router(llm_model_router.router)
     app.include_router(updates_router.router)
     app.include_router(chat_router.router)

@@ -1662,6 +1662,14 @@ GRANT handbook_app TO CURRENT_USER;
 GRANT USAGE ON SCHEMA public TO handbook_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO handbook_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO handbook_app;
+-- Supabase installs pgvector in `extensions`; without USAGE there the role
+-- cannot see the vector types and no pooled connection opens.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'extensions') THEN
+        GRANT USAGE ON SCHEMA extensions TO handbook_app;
+    END IF;
+END $$;
 
 ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chunks_one_org ON chunks;
@@ -1670,3 +1678,128 @@ CREATE POLICY chunks_one_org ON chunks TO handbook_app
            OR current_setting('app.all_orgs', true) = 'on')
     WITH CHECK (org_id = nullif(current_setting('app.org_id', true), '')::uuid
                 OR current_setting('app.all_orgs', true) = 'on');
+
+-- Tenant direct access (docs/tenant-direct-access-plan.md): a company gets one
+-- read-only Postgres login, meant for the read replica, that sees only its own
+-- `chunks`. The login is in `tenant_readers`, which may SELECT the parent
+-- `chunks` and nothing else (never a partition: reading one directly would skip
+-- the policy). Its organization comes from `tenant_reader_logins`, keyed on the
+-- login name, never on `app.org_id`: any user can SET that to another company.
+-- Logins are cluster-wide and replicate with the rest, so all of this is made on
+-- the primary. The app cannot create logins, so the functions below run as the
+-- owner and only `handbook_app` may call them.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tenant_readers') THEN
+        CREATE ROLE tenant_readers NOLOGIN NOBYPASSRLS;
+    END IF;
+END $$;
+
+-- One login per organization. `allowed_ips` is the record of where it may
+-- connect from; the replica's pg_hba.conf or firewall enforces it
+-- (app/tenantaccess/hba.py renders the lines).
+CREATE TABLE IF NOT EXISTS tenant_reader_logins (
+    org_id      UUID PRIMARY KEY REFERENCES organizations (id) ON DELETE CASCADE,
+    role_name   TEXT NOT NULL UNIQUE,
+    allowed_ips CIDR[] NOT NULL CHECK (cardinality(allowed_ips) > 0),
+    created_by  UUID REFERENCES users (id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_reader_logins TO handbook_app;
+
+-- A reader may see its own mapping row (the chunks policy below reads it as the
+-- reader), never another company's name or addresses.
+ALTER TABLE tenant_reader_logins ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_reader_logins_app ON tenant_reader_logins;
+CREATE POLICY tenant_reader_logins_app ON tenant_reader_logins TO handbook_app
+    USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS tenant_reader_logins_self ON tenant_reader_logins;
+CREATE POLICY tenant_reader_logins_self ON tenant_reader_logins
+    FOR SELECT TO tenant_readers USING (role_name = current_user);
+GRANT SELECT (org_id, role_name) ON tenant_reader_logins TO tenant_readers;
+
+GRANT USAGE ON SCHEMA public TO tenant_readers;
+GRANT SELECT ON chunks TO tenant_readers;
+DROP POLICY IF EXISTS chunks_tenant_reader ON chunks;
+CREATE POLICY chunks_tenant_reader ON chunks FOR SELECT TO tenant_readers
+    USING (org_id = (SELECT m.org_id FROM tenant_reader_logins m
+                     WHERE m.role_name = current_user));
+
+-- Takes a SCRAM verifier, never a password, so the password is not in any
+-- statement or log. The name comes from the organization id, not the caller.
+-- statement_timeout and the like are only per-login DEFAULTS (a user can SET
+-- them); read-only comes from having SELECT alone, the cap from CONNECTION LIMIT.
+CREATE OR REPLACE FUNCTION tenant_reader_create(
+    org UUID, verifier TEXT, ips CIDR[], conn_limit INT, timeout_ms INT,
+    creator UUID
+) RETURNS TEXT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+    rname TEXT := 'reader_' || replace(org::text, '-', '');
+BEGIN
+    IF verifier NOT LIKE 'SCRAM-SHA-256$%' THEN
+        RAISE EXCEPTION 'tenant_reader_create takes a SCRAM verifier, not a password';
+    END IF;
+    INSERT INTO tenant_reader_logins (org_id, role_name, allowed_ips, created_by)
+        VALUES (org, rname, ips, creator);
+    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L CONNECTION LIMIT %s IN ROLE tenant_readers',
+                   rname, verifier, conn_limit);
+    EXECUTE format('ALTER ROLE %I SET statement_timeout = %s', rname, timeout_ms);
+    EXECUTE format('ALTER ROLE %I SET idle_in_transaction_session_timeout = %s',
+                   rname, timeout_ms);
+    EXECUTE format('ALTER ROLE %I SET default_transaction_read_only = on', rname);
+    RETURN rname;
+END $$;
+
+CREATE OR REPLACE FUNCTION tenant_reader_set_password(org UUID, verifier TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+    rname TEXT;
+BEGIN
+    IF verifier NOT LIKE 'SCRAM-SHA-256$%' THEN
+        RAISE EXCEPTION 'tenant_reader_set_password takes a SCRAM verifier, not a password';
+    END IF;
+    SELECT role_name INTO rname FROM tenant_reader_logins WHERE org_id = org;
+    IF rname IS NULL THEN
+        RETURN false;
+    END IF;
+    EXECUTE format('ALTER ROLE %I PASSWORD %L', rname, verifier);
+    RETURN true;
+END $$;
+
+-- The mapping row goes first in the same transaction: from then on the login
+-- matches no rows, including in a session the replica still has open.
+CREATE OR REPLACE FUNCTION tenant_reader_drop(org UUID) RETURNS BOOLEAN
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+    rname TEXT;
+BEGIN
+    DELETE FROM tenant_reader_logins WHERE org_id = org RETURNING role_name INTO rname;
+    IF rname IS NULL THEN
+        RETURN false;
+    END IF;
+    EXECUTE format('ALTER ROLE %I NOLOGIN', rname);
+    EXECUTE format('DROP ROLE IF EXISTS %I', rname);
+    RETURN true;
+END $$;
+
+REVOKE EXECUTE ON FUNCTION tenant_reader_create(UUID, TEXT, CIDR[], INT, INT, UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION tenant_reader_set_password(UUID, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION tenant_reader_drop(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tenant_reader_create(UUID, TEXT, CIDR[], INT, INT, UUID) TO handbook_app;
+GRANT EXECUTE ON FUNCTION tenant_reader_set_password(UUID, TEXT) TO handbook_app;
+GRANT EXECUTE ON FUNCTION tenant_reader_drop(UUID) TO handbook_app;
+
+-- A deleted organization takes its login with it (the mapping row alone would
+-- cascade, leaving a login that can still connect).
+CREATE OR REPLACE FUNCTION tenant_reader_on_org_delete() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    PERFORM tenant_reader_drop(OLD.id);
+    RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS organizations_tenant_reader_delete ON organizations;
+CREATE TRIGGER organizations_tenant_reader_delete
+    BEFORE DELETE ON organizations
+    FOR EACH ROW EXECUTE FUNCTION tenant_reader_on_org_delete();
