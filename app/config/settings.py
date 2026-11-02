@@ -119,6 +119,13 @@ DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
 DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+# Answers written at once per process; the rest wait for a slot, then are told
+# "busy". Measured locally with the outside APIs replayed: 20 slots on the
+# 10-connection pool answered 50 askers with no one turned away and no pool
+# errors. The outside APIs cap it lower on free keys (one Jina key and Ollama
+# Cloud already failed 15% at 10 at once): lower it to match the plans.
+DEFAULT_CHAT_MAX_CONCURRENT = 20
+DEFAULT_CHAT_QUEUE_WAIT_SECONDS = 30
 
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
@@ -1587,10 +1594,19 @@ class RateLimitSettings:
     chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
     auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
     window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+    # 0 turns the cap off (every answer starts at once, as before).
+    chat_max_concurrent: int = DEFAULT_CHAT_MAX_CONCURRENT
+    chat_queue_wait_seconds: float = DEFAULT_CHAT_QUEUE_WAIT_SECONDS
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
         return cls(
+            chat_max_concurrent=int(
+                os.getenv("CHAT_MAX_CONCURRENT") or DEFAULT_CHAT_MAX_CONCURRENT
+            ),
+            chat_queue_wait_seconds=float(
+                os.getenv("CHAT_QUEUE_WAIT_SECONDS") or DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+            ),
             enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
             chat_requests_per_window=int(
                 os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS

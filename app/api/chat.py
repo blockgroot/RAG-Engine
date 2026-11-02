@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 
 import json
@@ -14,10 +15,11 @@ import threading
 import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 
 def _stream_word_delay_seconds() -> float:
     raw = os.getenv("CHAT_STREAM_WORD_DELAY_MS")
@@ -58,7 +60,7 @@ from ..agent.routing import (
     named_providers,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import AttachmentSettings, GraphSettings, RagSettings
+from ..config.settings import AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings
 from ..rag import progress
 from ..rag.deep import reset_deep_read, use_deep_read
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
@@ -998,6 +1000,52 @@ def _sse_event(event: str, data: dict | str) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+_answer_slots: asyncio.Semaphore | None = None
+
+
+def _slots(size: int) -> asyncio.Semaphore:
+    global _answer_slots
+    if _answer_slots is None:  # created on the event loop; no await between check and set
+        _answer_slots = asyncio.Semaphore(size)
+    return _answer_slots
+
+
+async def _in_a_slot(stream: Iterator[str], settings: RateLimitSettings) -> AsyncIterator[str]:
+    """Write at most ``chat_max_concurrent`` answers at once; the rest wait.
+
+    Without it a burst started every answer together and the outside APIs
+    (embedding, rerank, model) refused most of them with 429s, so a person got
+    a failure instead of a short wait. Acquired INSIDE the stream: a slot taken
+    before the generator starts would never be released if the client left
+    first. A waiter is told so, and one that waits past the limit is told the
+    service is busy rather than silently timing out.
+
+    The wait is on the event loop, not a worker thread: a blocking wait held
+    one of the ~40 threads per waiter, so at 100 askers the waiters starved
+    every sync endpoint (measured: 29 s before a stream's headers). The answer
+    itself still runs in the threadpool, exactly as Starlette runs a sync stream.
+    """
+    # ponytail: per-process slots; a shared (DB) queue when there is more than one worker.
+    slots = _slots(settings.chat_max_concurrent)
+    if slots.locked():
+        yield _sse_event("status", "Many people are asking right now, waiting for a free slot…")
+        try:
+            await asyncio.wait_for(slots.acquire(), timeout=settings.chat_queue_wait_seconds)
+        except TimeoutError:
+            yield _sse_event(
+                "error",
+                {"message": "Many people are asking right now. Please try again in a moment."},
+            )
+            return
+    else:
+        await slots.acquire()
+    try:
+        async for event in iterate_in_threadpool(stream):
+            yield event
+    finally:
+        slots.release()
+
+
 def _shown_live(result) -> list[dict]:
     """The live reads the ANSWER uses: those whose document it cites.
 
@@ -1740,19 +1788,20 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
-    return StreamingResponse(
-        _stream_answer(
-            question,
-            session.org_id,
-            conversation_id,
-            workspace_id=workspace_id,
-            requested_agent=requested_agent,
-            model=model,
-            session=session,
-            # Chat's Chart and Deep analysis toggles. Anything else is normal Ask.
-            chart_mode=body.get("mode") == "chart",
-            deep_mode=body.get("mode") in ("deep", "deep_extra"),
-            extra_effort=body.get("mode") == "deep_extra",
-        ),
-        media_type="text/event-stream",
+    stream = _stream_answer(
+        question,
+        session.org_id,
+        conversation_id,
+        workspace_id=workspace_id,
+        requested_agent=requested_agent,
+        model=model,
+        session=session,
+        # Chat's Chart and Deep analysis toggles. Anything else is normal Ask.
+        chart_mode=body.get("mode") == "chart",
+        deep_mode=body.get("mode") in ("deep", "deep_extra"),
+        extra_effort=body.get("mode") == "deep_extra",
     )
+    limits = RateLimitSettings.from_env()
+    if limits.chat_max_concurrent > 0:
+        stream = _in_a_slot(stream, limits)
+    return StreamingResponse(stream, media_type="text/event-stream")
