@@ -38,6 +38,12 @@ GitHub; employees get answers from *their* data.
 - `org_id` is on every tenant table. Every read and write filters on it in the
   query, before ranking. The vector index is not the isolation boundary
   (`tests/test_isolation.py`).
+- `chunks` has one partition per organization (made and dropped by triggers on
+  `organizations`) and row-level security: pooled connections act as
+  `handbook_app` and see only the rows of `get_connection(org_id=...)`, and
+  none without it. Every `chunks` query passes the org (`all_orgs=True` only for
+  cross-tenant background jobs) and still filters on `org_id`, which is also
+  what prunes to the partition (`tests/test_chunk_partitions.py`).
 - `workspace_id` nests inside `org_id` and is never used alone. `NULL` is org-wide.
   A workspace sees only its own rows, never also the org-wide ones.
   `workspaces/store.py::assert_member` is the membership check. A non-member gets

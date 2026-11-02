@@ -269,7 +269,7 @@ def fetch_indexed_activity(
 
     viewer_sql, viewer_params = viewer_clause(viewer, alias="d")
 
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             f"""
             SELECT d.title,

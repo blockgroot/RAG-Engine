@@ -19,7 +19,7 @@ DISTRACTOR = "Fire drills occur twice per year in spring and autumn seasons."
 
 
 def _ts_rank_order(org_id: str, query: str, limit: int) -> list[str]:
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             """
             SELECT content

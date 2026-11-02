@@ -303,7 +303,7 @@ def _probe_scores(
         logger.warning("Agent routing: could not embed the question", exc_info=True)
         return {}
 
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             """
             SELECT d.source_provider,
@@ -561,7 +561,7 @@ def _probe_scope_best(
     spaces = [w for w in workspace_ids if w is not None]
     include_org_wide = None in workspace_ids
 
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             """
             SELECT c.workspace_id::text,

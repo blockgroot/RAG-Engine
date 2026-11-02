@@ -78,7 +78,7 @@ def _char_chunk_demo() -> None:
 def _bm25_demo(org_id: str, embedder, store) -> None:
     query = "wellness supplements protein allowance"
     qvec = embedder.embed([query])[0]
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         ts_rows = conn.execute(
             """
             SELECT content

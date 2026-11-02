@@ -18,7 +18,7 @@ def flagged_documents(
     org_id: str, workspace_id: str | None, threshold: float
 ) -> list[tuple[str, str | None]]:
     """``(title, provider)`` of documents in exactly this scope with a flagged chunk."""
-    with get_connection() as conn:
+    with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             """
             SELECT d.title, d.source_provider
