@@ -31,7 +31,6 @@ from ..attachments import (
 from ..core.exceptions import AuthError
 from ..config.settings import AttachmentSettings
 from ..guard.live import is_flagged, score_attachment
-from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from ..auth.session import SessionClaims
 from .deps import get_session
@@ -84,9 +83,8 @@ async def upload_attachment(
     Only the things that are true of the REQUEST rather than of a file -- the
     rate limit, the conversation not being theirs -- still fail it outright.
     """
-    # Parsing is CPU work on member-supplied bytes, so it is rate limited like
-    # a question rather than left open.
-    check_rate_limit(f"attach:{session.org_id}:{session.user_id}")
+    # Parsing is CPU work on member-supplied bytes; the per-person limit every
+    # route takes (`security.rate_limit.limit_request`) bounds it.
     _guard(conversation_id, session, workspace_id)
 
     settings = AttachmentSettings.from_env()

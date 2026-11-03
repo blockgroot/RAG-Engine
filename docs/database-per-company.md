@@ -71,7 +71,6 @@ The web app, the API code and the user experience are unchanged. Only where data
 | `users`, `user_email_aliases` | Sign-in starts from an email; we must find the user's company first |
 | `magic_link_tokens`, `email_change_requests`, `org_signup_requests` | Sign-in and sign-up happen before a company is chosen |
 | `oauth_states`, `github_install_pending` | A tool's sign-in returns with only a `state` value; it must lead back to the company |
-| `api_rate_counters` | Rate limits are per visitor, across companies |
 | `ingestion_jobs` | One job queue the worker polls, each job naming its company (section 8) |
 | **New:** `company_databases` | The directory: `org_id` → where its database is, its status, its schema version |
 | **New:** `connector_routes` | Incoming events → company: Slack workspace ID, Notion workspace ID, Linear organization ID, Drive channel ID, GitHub installation ID |

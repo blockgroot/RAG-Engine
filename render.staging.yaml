@@ -68,6 +68,10 @@ services:
         sync: false
       - key: RATE_LIMIT_ENABLED
         value: "true"
+      # Shared rate-limit buckets (app/ratelimit/). Unset, each instance counts
+      # on its own. Paste a Redis (e.g. Render Key Value) internal URL.
+      - key: REDIS_URL
+        sync: false
       # Real client IP for the rate limiter when the frontend is on Vercel.
       - key: CLIENT_IP_HEADER
         value: x-vercel-forwarded-for

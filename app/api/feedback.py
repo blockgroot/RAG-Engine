@@ -22,7 +22,6 @@ from ..feedback import (
     mark_handled,
     record_rating,
 )
-from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from ..auth.session import SessionClaims
 from .deps import get_session, require_admin, require_workspace_owner
@@ -49,8 +48,6 @@ def submit_feedback(
     text, so accepting an id without the owner check would let anyone write
     another member's exchange into a table their admin reads.
     """
-    check_rate_limit(f"feedback:{session.org_id}:{session.user_id}")
-
     conversation_id = (body.get("conversation_id") or "").strip()
     question = (body.get("question") or "").strip()
     if not conversation_id or not question:

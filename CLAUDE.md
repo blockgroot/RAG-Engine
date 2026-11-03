@@ -399,6 +399,13 @@ offered, else a new topic. Grouping runs in the background when they open the
 bell or the page, never on the answer path. Counts are distinct
 people, never names. Chart refusals and figure failures are ours, never shown.
 
+**Rate limits.** Token buckets (`app/ratelimit/`), in Redis when `REDIS_URL` is
+set, else per process. Which buckets a request takes is `security/rate_limit.py`
+only: every router a person calls takes `limit_request`; a question (chat, Agent,
+charts, scheduler setup, Slack) takes the person's AND the company's bucket in
+one step; sending an email takes `limit_email`. Slack, webhooks, the cron and the
+MCP host are not limited. A limiter fault lets the request through.
+
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
 live read the answer cites (`api/chat.py::_shown_live`). Personal

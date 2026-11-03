@@ -27,6 +27,8 @@ x-backend: &backend
     # caddy overwrites X-Real-IP, so a visitor cannot pick their own
     # rate-limit bucket by sending a header (app/security/client_ip.py).
     CLIENT_IP_HEADER: x-real-ip
+    # Rate-limit buckets, shared by api and worker (app/ratelimit/).
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     # One company, created by install.sh; everyone else joins by invite.
     SIGNUP_ENABLED: "false"
     # Admin › Updates offers new versions and installs them through the
@@ -76,6 +78,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 10s
@@ -122,6 +126,17 @@ services:
       test: ["CMD-SHELL", "pg_isready -U handbook -d handbook"]
       interval: 5s
       timeout: 5s
+      retries: 20
+
+  # Holds only rate-limit counts, which expire on their own: nothing to back up.
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 20
 
 volumes:

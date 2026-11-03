@@ -1,94 +1,130 @@
-"""Postgres-backed HTTP rate limiting (Phase 21).
+"""Which rate limits a request takes (the counting is ``app/ratelimit``).
 
-Fixed-window counters keyed by an arbitrary scope string (e.g. ``org:<uuid>``).
-No Redis required — reuses the existing connection pool. Intended for the chat
-endpoint at minimum; callers choose scope + limit.
+* Every API call: the person's request bucket, or the IP's when signed out
+  (``limit_request``, a dependency on every router a person calls).
+* A question, which costs the model (chat, Agent, charts, scheduler setup,
+  Slack): the person's question bucket AND their company's, taken together
+  (``limit_question``). The company's grows with its members: every company
+  shares one AI account, and per-person limits alone let a large company use
+  all of it.
+* Anything that sends an email (login link, email change): its own small
+  bucket, per IP or person (``limit_email``).
+
+A limiter fault lets the request through and logs an error: the limiter must
+never be what takes the product down.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+import math
+import time
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from ..config.settings import RateLimitSettings
+from ..core.exceptions import AuthError, RateLimiterError
 from ..db.connection import get_connection
+from ..ratelimit import Bucket, Decision, build_rate_limiter
+from .client_ip import resolve_client_ip
+
+logger = logging.getLogger(__name__)
+
+# Members change rarely; counting them on every question would be a query per
+# question.
+_MEMBER_COUNT_TTL_SECONDS = 300
+_member_counts: dict[str, tuple[float, int]] = {}
 
 
-def _window_start(now: datetime, window_seconds: int) -> datetime:
-    epoch = int(now.timestamp())
-    start = epoch - (epoch % window_seconds)
-    return datetime.fromtimestamp(start, tz=timezone.utc)
+def refusal_message(retry_after: float) -> str:
+    seconds = max(1, math.ceil(retry_after))
+    unit = "second" if seconds == 1 else "seconds"
+    return f"Too many requests. Please try again in {seconds} {unit}."
 
 
-def check_rate_limit(
-    scope_key: str,
-    *,
-    settings: RateLimitSettings | None = None,
-    limit: int | None = None,
-) -> None:
-    """Increment the counter for ``scope_key``; raise 429 if over limit.
+def question_decision(
+    user_id: str, org_id: str, *, settings: RateLimitSettings | None = None
+) -> Decision:
+    """The person's and the company's question buckets, taken together.
 
-    ``limit`` overrides the default chat budget. It exists because the endpoints
-    guarded here have genuinely different shapes: chat is authenticated and
-    scoped per org, while the magic-link endpoint is anonymous and scoped per
-    IP — so an office behind one NAT shares a single bucket there and needs a
-    more generous allowance than one user's chat session.
+    Returns the decision rather than raising, for Slack, which answers in the
+    thread instead of with an HTTP status.
     """
     settings = settings or RateLimitSettings.from_env()
+    org_rate = max(
+        float(settings.org_questions_min),
+        settings.org_questions_per_member * _member_count(org_id),
+    )
+    return _take(
+        [
+            Bucket(f"q:user:{user_id}", settings.question_burst, settings.questions_per_minute),
+            Bucket(f"q:org:{org_id}", math.ceil(org_rate), org_rate),
+        ],
+        settings,
+    )
+
+
+def limit_question(session) -> None:
+    _raise_if_refused(question_decision(session.user_id, session.org_id))
+
+
+def limit_email(key: str) -> None:
+    """``key`` is ``ip:<address>`` for a signed-out caller, ``user:<id>`` otherwise."""
+    settings = RateLimitSettings.from_env()
+    _raise_if_refused(
+        _take([Bucket(f"email:{key}", settings.email_burst, settings.emails_per_minute)], settings)
+    )
+
+
+def limit_request(request: Request) -> None:
+    """Router dependency: every call, per person, or per IP when signed out.
+
+    Reads the session's signed claims only (no database): a revoked session is
+    still that person for counting, and the route itself refuses it.
+    """
+    from ..api.deps import SESSION_COOKIE_NAME
+    from ..auth.session import decode_session_token
+
+    who = f"ip:{resolve_client_ip(request)}"
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        try:
+            who = f"user:{decode_session_token(token).user_id}"
+        except AuthError:
+            pass
+    settings = RateLimitSettings.from_env()
+    _raise_if_refused(
+        _take([Bucket(f"req:{who}", settings.request_burst, settings.requests_per_minute)], settings)
+    )
+
+
+def _take(buckets: list[Bucket], settings: RateLimitSettings) -> Decision:
     if not settings.enabled:
+        return Decision(allowed=True)
+    try:
+        return build_rate_limiter(settings).take(buckets)
+    except RateLimiterError as exc:
+        logger.error("Rate limiter unavailable, request let through: %s", exc.cause or exc)
+        return Decision(allowed=True)
+
+
+def _raise_if_refused(decision: Decision) -> None:
+    if decision.allowed:
         return
+    raise HTTPException(
+        status_code=429,
+        detail=refusal_message(decision.retry_after),
+        headers={"Retry-After": str(max(1, math.ceil(decision.retry_after)))},
+    )
 
-    now = datetime.now(timezone.utc)
-    window = _window_start(now, settings.window_seconds)
-    limit = limit if limit is not None else settings.chat_requests_per_window
 
+def _member_count(org_id: str) -> int:
+    now = time.monotonic()
+    cached = _member_counts.get(org_id)
+    if cached and now - cached[0] < _MEMBER_COUNT_TTL_SECONDS:
+        return cached[1]
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            INSERT INTO api_rate_counters (scope_key, window_start, request_count)
-            VALUES (%s, %s, 1)
-            ON CONFLICT (scope_key, window_start) DO UPDATE
-              SET request_count = api_rate_counters.request_count + 1
-            RETURNING request_count
-            """,
-            (scope_key, window),
-        ).fetchone()
-    count = int(row[0])
-    if count > limit:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many requests — please wait a moment and try again.",
-        )
-
-
-def prune_old_windows(
-    *, settings: RateLimitSettings | None = None, limit: int = 10_000
-) -> int:
-    """Delete counters for windows that have already closed. Returns the count.
-
-    Only the CURRENT window is ever read, so every past row is dead weight — but
-    nothing deleted them, and the table grew one row per scope per window
-    forever (a single user chatting for a year is ~525k rows). Bounded per sweep
-    for the same reason as ``query_cache.prune_expired``: a neglected table must
-    not turn a maintenance tick into a long lock-holding DELETE.
-
-    Keeps one extra window of history so a sweep landing exactly on a boundary
-    cannot delete the window a concurrent request is still incrementing.
-    """
-    settings = settings or RateLimitSettings.from_env()
-    cutoff = _window_start(datetime.now(timezone.utc), settings.window_seconds)
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            DELETE FROM api_rate_counters
-            WHERE ctid IN (
-                SELECT ctid FROM api_rate_counters
-                WHERE window_start < %s - (%s || ' seconds')::interval
-                LIMIT %s
-            )
-            RETURNING 1
-            """,
-            (cutoff, settings.window_seconds, limit),
-        ).fetchall()
-    return len(rows)
+        row = conn.execute("SELECT count(*) FROM users WHERE org_id = %s", (org_id,)).fetchone()
+    count = int(row[0]) if row else 0
+    _member_counts[org_id] = (now, count)
+    return count

@@ -77,7 +77,7 @@ from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
 from ..agent.orchestration import INSIGHTS_KEY
 from ..insights import query
 from ..insights.resolve import spec_to_dict
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import limit_question
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
 from .deps import (
@@ -1748,7 +1748,7 @@ def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
 ):
-    check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
+    limit_question(session)
 
     question = (body.get("question") or "").strip()
     if not question:
