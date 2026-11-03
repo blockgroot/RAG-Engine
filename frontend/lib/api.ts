@@ -636,6 +636,19 @@ export interface SetupChatMessage {
   content: string;
 }
 
+/** The company's read-only database login (Admin › Database access). */
+export interface DataAccess {
+  enabled: boolean;
+  login: { role_name: string; allowed_ips: string[]; created_at: string } | null;
+}
+
+/** Returned only when a login is created or its password reset; never again. */
+export interface DataAccessCredentials {
+  role_name: string;
+  password: string;
+  uri: string;
+}
+
 export interface OrgModel {
   model: string;
   label: string;
@@ -1025,6 +1038,25 @@ export const api = {
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),
+
+  getDataAccess: () => request<DataAccess>("/admin/data-access"),
+  createDataAccess: (allowedIps: string[], acknowledgeAllDocuments: boolean) =>
+    request<DataAccessCredentials>("/admin/data-access", {
+      method: "POST",
+      body: JSON.stringify({
+        allowed_ips: allowedIps,
+        acknowledge_all_documents: acknowledgeAllDocuments,
+      }),
+    }),
+  setDataAccessIps: (allowedIps: string[]) =>
+    request<{ allowed_ips: string[] }>("/admin/data-access/ips", {
+      method: "PUT",
+      body: JSON.stringify({ allowed_ips: allowedIps }),
+    }),
+  resetDataAccessPassword: () =>
+    request<DataAccessCredentials>("/admin/data-access/reset-password", { method: "POST" }),
+  deleteDataAccess: () =>
+    request<{ deleted: boolean }>("/admin/data-access", { method: "DELETE" }),
 
   checkConnectionHealth: (connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(

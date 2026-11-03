@@ -95,6 +95,20 @@ function IconModel() {
   );
 }
 
+function IconDatabase() {
+  // A cylinder: the database itself, drawn at the rail's 18px / 1.75 stroke.
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <ellipse cx="12" cy="6" rx="7" ry="2.5" stroke="currentColor" strokeWidth="1.75" />
+      <path
+        d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"
+        stroke="currentColor"
+        strokeWidth="1.75"
+      />
+    </svg>
+  );
+}
+
 function IconUpdates() {
   // A circular arrow: a new version coming round. Same 18px / 1.75 stroke set.
   return (
@@ -345,6 +359,20 @@ export function AppShell({
                   <span className="rail-link-copy">
                     <span className="rail-link-title">Model</span>
                     <span className="rail-link-hint">Use your own key</span>
+                  </span>
+                </Link>
+                <Link
+                  href="/admin/data-access"
+                  className="rail-link"
+                  data-active={pathname.startsWith("/admin/data-access") ? "true" : "false"}
+                  aria-current={pathname.startsWith("/admin/data-access") ? "page" : undefined}
+                >
+                  <span className="rail-ico">
+                    <IconDatabase />
+                  </span>
+                  <span className="rail-link-copy">
+                    <span className="rail-link-title">Database</span>
+                    <span className="rail-link-hint">Read-only SQL login</span>
                   </span>
                 </Link>
                 <Link

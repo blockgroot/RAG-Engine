@@ -436,6 +436,37 @@ class DatabaseSettings:
 
 
 @dataclass(frozen=True)
+class TenantAccessSettings:
+    """Direct read-only database logins for tenants (app/tenantaccess/).
+
+    Off until ``TENANT_ACCESS_REPLICA_HOST`` is set: a login is handed out only
+    with the replica's address, never the primary's.
+    """
+
+    replica_host: str | None
+    replica_port: int = 5432
+    database: str = "postgres"
+    connection_limit: int = 3
+    statement_timeout_seconds: int = 30
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.replica_host)
+
+    @classmethod
+    def from_env(cls) -> "TenantAccessSettings":
+        return cls(
+            replica_host=(os.getenv("TENANT_ACCESS_REPLICA_HOST") or "").strip() or None,
+            replica_port=_env_positive_int("TENANT_ACCESS_REPLICA_PORT", 5432),
+            database=(os.getenv("TENANT_ACCESS_DATABASE") or "").strip() or "postgres",
+            connection_limit=_env_positive_int("TENANT_ACCESS_CONNECTION_LIMIT", 3),
+            statement_timeout_seconds=_env_positive_int(
+                "TENANT_ACCESS_STATEMENT_TIMEOUT_SECONDS", 30
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class ChunkingSettings:
     """Configuration for document chunking (sizes measured in tokens)."""
 
