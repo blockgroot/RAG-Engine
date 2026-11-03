@@ -47,6 +47,7 @@ from . import attachments as attachments_router
 from . import chat as chat_router
 from . import feedback as feedback_router
 from . import slack_events as slack_events_router
+from . import connector_apps as connector_apps_router
 from . import webhooks as webhooks_router
 from . import orgs as orgs_router
 from . import insights as insights_router
@@ -225,6 +226,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(orgs_router.router)
     app.include_router(admin_router.router)
+    app.include_router(connector_apps_router.router)
     app.include_router(llm_model_router.router)
     app.include_router(updates_router.router)
     app.include_router(chat_router.router)

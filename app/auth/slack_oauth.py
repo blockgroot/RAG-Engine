@@ -41,9 +41,9 @@ class SlackOAuthProvider(OAuthProvider):
         settings = settings or SlackSettings.from_env()
         if not (settings.client_id and settings.client_secret and settings.redirect_uri):
             raise ConfigurationError(
-                "Slack OAuth requires SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and "
-                "SLACK_REDIRECT_URI to be set (create a Slack App at "
-                "api.slack.com/apps to obtain these)."
+                "Your company's Slack app isn't set up yet. An admin adds it under "
+                "Sources → Slack → Set up your Slack app (self-hosted: "
+                "SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_REDIRECT_URI in .env)."
             )
         self._settings = settings
 

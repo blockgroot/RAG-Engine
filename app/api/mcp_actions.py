@@ -114,7 +114,8 @@ def admin_add_mcp(body: AddServer, session: SessionClaims = Depends(require_admi
         raise HTTPException(status_code=409, detail="That server is already added.")
     try:
         oauth = mcp_client.discover(url, settings.mcp_redirect_uri or "",
-                                    timeout=settings.mcp_timeout_seconds, preset=preset)
+                                    timeout=settings.mcp_timeout_seconds, preset=preset,
+                                    org_id=session.org_id)
         if oauth is not None and not settings.mcp_redirect_uri:
             raise HTTPException(status_code=409, detail="Set MCP_REDIRECT_URI or FRONTEND_URL so people can sign in.")
         tools = [] if oauth else _list_tools(url, None)
@@ -242,7 +243,8 @@ def connect_mcp(server_id: str, session: SessionClaims = Depends(get_session)):
         conn.execute("UPDATE oauth_states SET code_verifier = %s WHERE state = %s",
                      (encrypt(verifier), state))
     return RedirectResponse(url=mcp_client.authorize_url(
-        server.oauth, state=state, challenge=challenge, redirect_uri=settings.mcp_redirect_uri))
+        server.oauth, state=state, challenge=challenge, redirect_uri=settings.mcp_redirect_uri,
+        org_id=session.org_id))
 
 
 def _consume(state: str) -> tuple[str, str, str, str]:
@@ -267,7 +269,8 @@ def mcp_callback(state: str = "", code: str | None = None):
         if not code or server is None or not server.oauth:
             raise OAuthError("no code or no server")
         tokens = mcp_client.exchange(server.oauth, code=code, verifier=verifier,
-                                     redirect_uri=ActionsSettings.from_env().mcp_redirect_uri or "")
+                                     redirect_uri=ActionsSettings.from_env().mcp_redirect_uri or "",
+                                     org_id=org_id)
         preset = server.preset
         if preset and preset.account_check:
             from ..auth.users import get_user

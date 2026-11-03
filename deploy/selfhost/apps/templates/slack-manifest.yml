@@ -4,6 +4,9 @@
 # https://api.slack.com/apps -> Create New App -> From an app manifest ->
 #    pick your workspace -> paste this file -> Create.
 #
+# Hosted Handbook builds the same app in app/api/connector_apps.py, and a test
+# keeps the two equal: change both together.
+#
 # Every value here is what Handbook's code expects. Change the names freely;
 # change the scopes, events or addresses only if a release note says so.
 

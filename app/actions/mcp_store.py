@@ -161,7 +161,7 @@ def _move_retired(org_id: str, servers: list[McpServer]) -> bool:
                 changed = True
                 continue
             try:
-                oauth = discover(preset.url, "", preset=preset)
+                oauth = discover(preset.url, "", preset=preset, org_id=org_id)
             except ActionError:
                 continue
             conn.execute("DELETE FROM user_connections WHERE org_id = %s::uuid AND provider = %s",

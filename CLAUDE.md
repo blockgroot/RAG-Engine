@@ -133,6 +133,12 @@ show its picker before anything is configured (`autosync.SCOPE_KEYS`; Linear's
 sign-in grants every team, so its teams are picked in Handbook). `last_sync_at` is stamped on attempt.
 `needs_reauth` rows are not retried. A host that cannot refresh must not flag the
 tenant's token (`ConfigurationError` re-raises).
+Google and Slack (sync, sign-in and Agent mode) use the company's OWN app (`auth/org_apps.py`),
+else `.env`'s; hosted leaves `.env`'s unset, so there the own app is required. Saving an app
+flags that provider's connections for reconnect: a token belongs to the app that issued it.
+A company's Slack app calls `/slack/events/<app_key>` and `/slack/interactivity/<app_key>`;
+the key only picks the signing secret, and a request is acted on only for a Slack team
+connected to that company (the company holds that secret, so it could sign anything).
 
 **SQL and jobs.** `WHERE id IN (SELECT … SKIP LOCKED LIMIT n)` does not bound an
 UPDATE; use a CTE. Cap requeue attempts. `ALTER TABLE … ADD COLUMN` follows that

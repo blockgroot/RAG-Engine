@@ -19,18 +19,25 @@ from .slack_oauth import SlackOAuthProvider
 DEFAULT_OAUTH_PROVIDER = "notion"
 
 
-def build_oauth_provider(provider: str = DEFAULT_OAUTH_PROVIDER) -> OAuthProvider:
-    """Build the configured OAuth provider (defaults to Notion)."""
+def build_oauth_provider(
+    provider: str = DEFAULT_OAUTH_PROVIDER, *, org_id: str | None = None
+) -> OAuthProvider:
+    """Build the configured OAuth provider (defaults to Notion).
+
+    Google and Slack sign in through ``org_id``'s own app when it has one
+    (``org_apps``), else ``.env``'s. Without ``org_id`` only ``.env``'s."""
+    from .org_apps import google_settings, slack_settings
+
     provider = (provider or DEFAULT_OAUTH_PROVIDER).lower()
 
     if provider == "notion":
         return NotionOAuthProvider()
     elif provider == "google":
-        return GoogleOAuthProvider()
+        return GoogleOAuthProvider(google_settings(org_id))
     elif provider == "github":
         return GitHubAppProvider()
     elif provider == "slack":
-        return SlackOAuthProvider()
+        return SlackOAuthProvider(slack_settings(org_id))
     elif provider == "linear":
         return LinearOAuthProvider()
 

@@ -9529,3 +9529,31 @@ a.people-card:hover { color: inherit; }
 .mcp-preset strong { flex: 1; min-width: 0; overflow: hidden; font-size: 0.86rem; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-preset .button { flex: none; }
 
+
+/* Setting up the company's own Google or Slack app (OwnAppSetup). */
+.own-app-steps {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.6rem;
+  line-height: 1.5;
+}
+.own-app-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+}
+.own-app-copy code {
+  flex: 1;
+  min-width: 0;
+  max-height: 8rem;
+  overflow: auto;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

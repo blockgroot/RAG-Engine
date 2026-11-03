@@ -177,6 +177,7 @@ export function ConnectionCard({
   onNeedsReauth,
   workspaceId,
   onMembersInvited,
+  setupFirst = false,
 }: {
   provider: Provider;
   connection: ConnectionRecord | undefined;
@@ -190,6 +191,8 @@ export function ConnectionCard({
   onNeedsReauth?: (needed: boolean) => void;
   workspaceId?: string;
   onMembersInvited?: () => void;
+  /** The company's own app for this provider is not set up yet (OwnAppSetup). */
+  setupFirst?: boolean;
 }) {
   const available =
     provider === "notion" ||
@@ -353,7 +356,10 @@ export function ConnectionCard({
         )}
 
         <div className="source-row-actions">
-          {available && !connection && (
+          {available && !connection && setupFirst && (
+            <span className="muted">Set up your company&apos;s app above first</span>
+          )}
+          {available && !connection && !setupFirst && (
             <a
               className="button"
               href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
