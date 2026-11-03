@@ -123,8 +123,15 @@ def _member_count(org_id: str) -> int:
     cached = _member_counts.get(org_id)
     if cached and now - cached[0] < _MEMBER_COUNT_TTL_SECONDS:
         return cached[1]
-    with get_connection() as conn:
-        row = conn.execute("SELECT count(*) FROM users WHERE org_id = %s", (org_id,)).fetchone()
-    count = int(row[0]) if row else 0
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM users WHERE org_id = %s", (org_id,)
+            ).fetchone()
+        count = int(row[0]) if row else 0
+    except Exception as exc:  # noqa: BLE001 - sizing must never refuse a question
+        # The company's minimum applies; the next question tries again.
+        logger.warning("Could not count members of org %s: %s", org_id, exc)
+        return 0
     _member_counts[org_id] = (now, count)
     return count
