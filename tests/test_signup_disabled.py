@@ -23,7 +23,7 @@ def test_signup_is_refused_when_off(monkeypatch):
 def test_an_unknown_email_is_not_offered_signup_when_off(monkeypatch):
     monkeypatch.setenv("SIGNUP_ENABLED", "false")
     monkeypatch.setattr("app.api.auth.get_user_by_email", lambda email: None)
-    monkeypatch.setattr("app.api.auth.check_rate_limit", lambda *a, **k: None)
+    monkeypatch.setattr("app.api.auth.limit_email", lambda *a, **k: None)
     response = TestClient(app).post("/auth/magic-link", json={"email": "who@example.com"})
     body = response.json()
     assert body["status"] == "no_account"

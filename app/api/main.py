@@ -27,13 +27,15 @@ import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import ApiSettings, SchedulerSettings, env_bool
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
+from ..security.rate_limit import limit_request, report_store
 from . import admin as admin_router
+from . import connector_apps as connector_apps_router
 from . import internal as internal_router
 from . import account as account_router
 from . import actions as actions_router
@@ -47,7 +49,6 @@ from . import attachments as attachments_router
 from . import chat as chat_router
 from . import feedback as feedback_router
 from . import slack_events as slack_events_router
-from . import connector_apps as connector_apps_router
 from . import webhooks as webhooks_router
 from . import orgs as orgs_router
 from . import insights as insights_router
@@ -197,6 +198,10 @@ async def lifespan(_app: FastAPI):
     stop = threading.Event()
     worker: threading.Thread | None = None
     _start_model_warmup()
+    try:
+        report_store()  # one line saying where rate limits are counted
+    except Exception:  # noqa: BLE001 - a report must never stop startup
+        logger.exception("Rate limit store report failed")
     if env_bool("INGEST_WORKER_IN_API", default=True):
         worker = _start_in_api_worker(stop)
     try:
@@ -223,23 +228,31 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(auth_router.router)
-    app.include_router(orgs_router.router)
-    app.include_router(admin_router.router)
-    app.include_router(connector_apps_router.router)
-    app.include_router(llm_model_router.router)
-    app.include_router(updates_router.router)
-    app.include_router(chat_router.router)
-    app.include_router(attachments_router.router)
-    app.include_router(feedback_router.router)
-    app.include_router(workspaces_router.router)
-    app.include_router(schedulers_router.router)
-    app.include_router(insights_router.router)
+    # Every route a person calls takes their request bucket (per IP when
+    # signed out), so a new route is limited without anyone adding it.
+    for router in (
+        auth_router,
+        orgs_router,
+        admin_router,
+        connector_apps_router,
+        llm_model_router,
+        updates_router,
+        chat_router,
+        attachments_router,
+        feedback_router,
+        workspaces_router,
+        schedulers_router,
+        insights_router,
+        notifications_router,
+        account_router,
+        actions_router,
+        mcp_actions_router,
+    ):
+        app.include_router(router.router, dependencies=[Depends(limit_request)])
+    # Not a person: the cron tick (token), Handbook's own MCP servers (called
+    # by Agent mode on a person's behalf), and Slack and vendor webhooks
+    # (signed by the sender). Limiting them per IP would drop real events.
     app.include_router(internal_router.router)
-    app.include_router(notifications_router.router)
-    app.include_router(account_router.router)
-    app.include_router(actions_router.router)
-    app.include_router(mcp_actions_router.router)
     app.include_router(mcp_host_router.router)
     app.include_router(slack_act_router.router)
     app.include_router(slack_events_router.router)

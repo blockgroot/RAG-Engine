@@ -34,12 +34,12 @@ from ..auth import (
     send_signup_rejected_email_safe,
     send_signup_request_notification_email_safe,
 )
-from ..config.settings import ApiSettings, AuthSettings, EmailSettings, RateLimitSettings
+from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
 from ..githublive import refresh_installation_scope
 from ..jobs.autosync import sync_after_connect
 from ..security.client_ip import resolve_client_ip
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import limit_email
 from ..vectorstore import build_vector_store
 from ..auth.oauth_state import LINK_GITHUB, peek_state_provider
 from ..workspaces import assert_member
@@ -147,11 +147,7 @@ def request_magic_link(
 
     # This endpoint intentionally reveals whether an account exists, so rate-limit
     # it by client IP rather than the shared proxy address.
-    client_ip = resolve_client_ip(request)
-    check_rate_limit(
-        f"magic-link:{client_ip}",
-        limit=RateLimitSettings.from_env().auth_requests_per_window,
-    )
+    limit_email(f"ip:{resolve_client_ip(request)}")
 
     user = get_user_by_email(email)
     dev_link = None

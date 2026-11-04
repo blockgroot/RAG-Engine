@@ -25,5 +25,12 @@ services:
       timeout: 5s
       retries: 10
 
+  # Rate-limit buckets (app/ratelimit/). REDIS_URL=redis://localhost:6379/0
+  redis:
+    image: redis:7.4-alpine
+    container_name: rag-redis
+    ports:
+      - "6379:6379"
+
 volumes:
   rag_pgdata:

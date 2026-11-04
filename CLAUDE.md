@@ -66,7 +66,8 @@ GitHub; employees get answers from *their* data.
   members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it.
 - A conversation is personal (`conversations.user_id`). `query_answer_cache` stays
-  keyed on the scope and the model, not the asker. Do not store an answer when any
+  keyed on the scope and the model, not the asker. With `REDIS_URL` it is in Redis
+  (`qa:<org>:<generation>:<hash>`; a sync raises the org's generation), else Postgres. Do not store an answer when any
   hit was non-public or the reply is an access notice.
 - Notion has no per-page permission API. Say so on the Sources card. A half-enforced
   guarantee that reads as whole is worse than none.
@@ -404,6 +405,16 @@ background model names the same one or none, and code keeps only a number it
 offered, else a new topic. Grouping runs in the background when they open the
 bell or the page, never on the answer path. Counts are distinct
 people, never names. Chart refusals and figure failures are ours, never shown.
+
+**Rate limits.** Token buckets (`app/ratelimit/`), in Redis when `REDIS_URL` is
+set, else per process. Which buckets a request takes is `security/rate_limit.py`
+only: every router a person calls takes `limit_request`; a question (chat, Agent,
+charts, scheduler setup, Slack) takes the person's AND the company's bucket in
+one step; sending an email takes `limit_email`. Slack, webhooks, the cron and the
+MCP host are not limited. Chat answers being written at once are places
+(`take_place`, leased so a dead server's free themselves): a person's own cap is
+refused at once, the shared cap waits. Every refusal is logged with the limit's
+name, never the question or an IP. A limiter fault lets the request through.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

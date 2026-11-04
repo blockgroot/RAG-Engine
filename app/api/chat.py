@@ -77,7 +77,7 @@ from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
 from ..agent.orchestration import INSIGHTS_KEY
 from ..insights import query
 from ..insights.resolve import spec_to_dict
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import give_back_place, limit_question, take_place
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
 from .deps import (
@@ -1000,50 +1000,72 @@ def _sse_event(event: str, data: dict | str) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
-_answer_slots: asyncio.Semaphore | None = None
+# How often a waiting answer asks again for a shared place.
+_PLACE_POLL_SECONDS = 0.25
+
+_PERSON_BUSY = (
+    "You already have {n} answers being written. Please wait for one to finish."
+)
 
 
-def _slots(size: int) -> asyncio.Semaphore:
-    global _answer_slots
-    if _answer_slots is None:  # created on the event loop; no await between check and set
-        _answer_slots = asyncio.Semaphore(size)
-    return _answer_slots
+async def _in_a_slot(
+    stream: Iterator[str], settings: RateLimitSettings, user_id: str
+) -> AsyncIterator[str]:
+    """At most ``chat_max_concurrent_per_person`` answers per person and
+    ``chat_max_concurrent`` for everyone are written at once; the rest wait.
 
+    Without the shared cap a burst started every answer together and the
+    outside APIs (embedding, rerank, model) refused most of them with 429s, so
+    a person got a failure instead of a short wait. The places live in Redis
+    (``security.rate_limit.take_place``), so the cap holds across servers.
 
-async def _in_a_slot(stream: Iterator[str], settings: RateLimitSettings) -> AsyncIterator[str]:
-    """Write at most ``chat_max_concurrent`` answers at once; the rest wait.
-
-    Without it a burst started every answer together and the outside APIs
-    (embedding, rerank, model) refused most of them with 429s, so a person got
-    a failure instead of a short wait. Acquired INSIDE the stream: a slot taken
-    before the generator starts would never be released if the client left
-    first. A waiter is told so, and one that waits past the limit is told the
-    service is busy rather than silently timing out.
+    Taken INSIDE the stream: a place taken before the generator starts would
+    never be given back if the client left first. A person over their own cap
+    is told at once (more is a script or a pile of tabs); a waiter for a shared
+    place is told so, and one that waits past the limit is told the service is
+    busy rather than silently timing out.
 
     The wait is on the event loop, not a worker thread: a blocking wait held
     one of the ~40 threads per waiter, so at 100 askers the waiters starved
     every sync endpoint (measured: 29 s before a stream's headers). The answer
     itself still runs in the threadpool, exactly as Starlette runs a sync stream.
     """
-    # ponytail: per-process slots; a shared (DB) queue when there is more than one worker.
-    slots = _slots(settings.chat_max_concurrent)
-    if slots.locked():
-        yield _sse_event("status", "Many people are asking right now, waiting for a free slot…")
-        try:
-            await asyncio.wait_for(slots.acquire(), timeout=settings.chat_queue_wait_seconds)
-        except TimeoutError:
-            yield _sse_event(
-                "error",
-                {"message": "Many people are asking right now. Please try again in a moment."},
-            )
-            return
-    else:
-        await slots.acquire()
+    mine_key = f"answers:user:{user_id}"
+    mine = await asyncio.to_thread(
+        take_place, mine_key, settings.chat_max_concurrent_per_person, settings
+    )
+    if mine is None:
+        yield _sse_event(
+            "error", {"message": _PERSON_BUSY.format(n=settings.chat_max_concurrent_per_person)}
+        )
+        return
+    shared = None
     try:
+        shared = await asyncio.to_thread(
+            take_place, "answers:all", settings.chat_max_concurrent, settings
+        )
+        if shared is None:
+            yield _sse_event("status", "Many people are asking right now, waiting for a free slot…")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + settings.chat_queue_wait_seconds
+            while shared is None:
+                if loop.time() >= deadline:
+                    yield _sse_event(
+                        "error",
+                        {"message": "Many people are asking right now. Please try again in a moment."},
+                    )
+                    return
+                await asyncio.sleep(_PLACE_POLL_SECONDS)
+                shared = await asyncio.to_thread(
+                    take_place, "answers:all", settings.chat_max_concurrent, settings
+                )
         async for event in iterate_in_threadpool(stream):
             yield event
     finally:
-        slots.release()
+        # Given back without awaiting: this also runs when the client leaves
+        # and the task is cancelled. Each is one quick call (or a no-op).
+        give_back_place("answers:all", shared, settings)
+        give_back_place(mine_key, mine, settings)
 
 
 def _shown_live(result) -> list[dict]:
@@ -1748,7 +1770,7 @@ def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
 ):
-    check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
+    limit_question(session)
 
     question = (body.get("question") or "").strip()
     if not question:
@@ -1801,7 +1823,5 @@ def chat_stream(
         deep_mode=body.get("mode") in ("deep", "deep_extra"),
         extra_effort=body.get("mode") == "deep_extra",
     )
-    limits = RateLimitSettings.from_env()
-    if limits.chat_max_concurrent > 0:
-        stream = _in_a_slot(stream, limits)
+    stream = _in_a_slot(stream, RateLimitSettings.from_env(), session.user_id)
     return StreamingResponse(stream, media_type="text/event-stream")
