@@ -347,7 +347,7 @@ function ConnectionsPageInner() {
             <div className="studio-section-head">
               <h2>Your company&apos;s apps</h2>
               <p className="muted">
-                Google Drive and Slack connect through apps your company owns. Set each one up once, then connect it below.
+                Google Drive and Slack connect through an app your company owns. Set each one up once, then connect below.
               </p>
             </div>
             <div className="source-bento">

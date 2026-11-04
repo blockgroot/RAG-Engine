@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from app.auth import OAuthTokens, save_connection
 from app.auth.factory import build_oauth_provider
-from app.auth.org_apps import app_key, google_settings, save_org_app
+from app.auth.org_apps import app_key, google_settings, missing_app_reason, save_org_app
 from app.core.exceptions import ConfigurationError, OAuthReauthRequiredError
 from app.db.connection import get_connection
 
@@ -90,6 +90,9 @@ def test_with_no_app_a_connection_asks_for_one_and_saving_an_app_asks_to_reconne
         access_token="xoxb-old", refresh_token=None, expires_at=None,
         external_workspace_id="T-OWN-1", external_workspace_name="Acme"))
 
+    # The list says so before any sync has tried the token.
+    assert "own Slack app" in missing_app_reason(org, "slack")
+    assert missing_app_reason(org, "notion") is None
     with pytest.raises(OAuthReauthRequiredError, match="own Slack app"):
         get_live_connection_token(org, "slack")
 
@@ -99,6 +102,7 @@ def test_with_no_app_a_connection_asks_for_one_and_saving_an_app_asks_to_reconne
             "SELECT needs_reauth, reauth_reason FROM oauth_connections WHERE org_id = %s",
             (org,)).fetchone()
     assert flagged and "app was changed" in reason
+    assert missing_app_reason(org, "slack") is None
 
 
 def _signed(body: dict, secret: str) -> tuple[bytes, dict]:

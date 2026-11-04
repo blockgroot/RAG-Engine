@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from ..auth.org_apps import OWN_APP_PROVIDERS, missing_app_reason
 from ..auth import (
     create_magic_link_token,
     demote_to_member,
@@ -199,6 +200,7 @@ def remove_org_member(user_id: str, session: SessionClaims = Depends(require_adm
 
 @router.get("/connections")
 def get_connections(session: SessionClaims = Depends(require_admin)):
+    missing = {p: missing_app_reason(session.org_id, p) for p in OWN_APP_PROVIDERS}
     return [
         {
             "id": c.id,
@@ -209,8 +211,8 @@ def get_connections(session: SessionClaims = Depends(require_admin)):
                 with_manage_url(session.org_id, None, c.source_config)
                 if c.provider == "github" else c.source_config
             ),
-            "needs_reauth": c.needs_reauth,
-            "reauth_reason": c.reauth_reason,
+            "needs_reauth": c.needs_reauth or bool(missing.get(c.provider)),
+            "reauth_reason": missing.get(c.provider) or c.reauth_reason,
             "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         }
         for c in list_connections(session.org_id)
