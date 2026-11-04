@@ -405,7 +405,9 @@ def prose_figures_unclear(titles: list[str], tables: list[str]) -> str:
 #: them: Claude Haiku wraps the JSON in a ```json fence over several lines and
 #: ran past 40 tokens, and a reply cut before its "}" read as no verdict -- no
 #: live read, no chart hint, silently. The model stops at the end of the JSON.
-ROUTE_MAX_TOKENS = 200
+#: 200 was cut too: Haiku sometimes reasons in prose first (119 tokens measured,
+#: "who missed their revenue target?" cut at 200, no table figures worked out).
+ROUTE_MAX_TOKENS = 600
 
 
 def with_earlier(question: str, earlier: str | None) -> str:
