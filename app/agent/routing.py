@@ -786,11 +786,16 @@ def _try_question_route(
         # instead of answering a chart request in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
     if ask == "count":
-        # "How many leads did Rohan generate in August?" is a count over rows
-        # a sheet never embeds, so the passages cannot answer it. Counted by
-        # SQL when a chart fits; when none does, Ask answers as it always did.
+        # "How many leads did Rohan Mehta generate in August?" is a count over
+        # rows a sheet never embeds, so the passages cannot answer it. Counted
+        # by SQL only when the chart is NARROWED to what the question typed (a
+        # filter or focus): an unnarrowed one answers a broader question --
+        # "leads by rohan" drew every lead, "sales in March" June's targets,
+        # a person who does not exist everyone -- and reads as the answer.
+        # Otherwise Ask answers as it always did, beside the Chart button.
         counted = _chart_mode_route(question, connected, org_id, workspace_id, viewer)
-        if getattr(counted, "chart_spec", None) is not None:
+        spec = getattr(counted, "chart_spec", None)
+        if spec is not None and (getattr(spec, "filters", None) or getattr(spec, "focus", None)):
             return replace(counted, reason="count-chart")
     if intent.kind != "github_live":
         return None
