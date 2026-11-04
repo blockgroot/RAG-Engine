@@ -757,8 +757,7 @@ def rows_naming(
     so search cannot reach the row. A cell typed verbatim in the question can.
     Exact text, never a guess: a value counts only as whole words of the
     question, and only when it names at most ``MAX_LOOKUP_ROWS`` rows (an
-    identifier, not a group). Rows matching more of the question's values come
-    first ("Kavya Nair's lead for Kesari Motors"). Same scope and document
+    identifier, not a group); ranked by ``pick_rows``. Same scope and document
     predicate as every table read; never a viewer-less read. Never raises.
     """
     if viewer is None or getattr(viewer, "is_unrestricted", False) or not providers:
@@ -766,7 +765,7 @@ def rows_naming(
     access, params = _visible(viewer)
     sql = f"""
         SELECT d.id, d.title, d.source_provider, d.source_uri, t.name, r.row_no,
-               t.columns, r.raw, d.doc_is_public
+               t.columns, r.raw, d.doc_is_public, t.id
           FROM doc_table_rows r
           JOIN doc_tables t ON t.id = r.table_id
           JOIN documents d ON d.id = t.document_id
@@ -792,6 +791,34 @@ def rows_naming(
     if len(found) >= LOOKUP_SCAN:
         logger.info("doctables: row lookup scanned its %d-row bound; said nothing", LOOKUP_SCAN)
         return []
+    return pick_rows(question, found)
+
+
+#: A word of a question or a cell, as the ranking compares them: letters and
+#: digits with inner hyphens ("L-1008"), three characters or more. Format, not
+#: intent: no word is listed anywhere.
+_TOKEN = re.compile(r"[^\W_][\w-]{2,}", re.UNICODE)
+
+
+def _tokens(text: str) -> set[str]:
+    return {t.strip("-").lower() for t in _TOKEN.findall(text or "")}
+
+
+def pick_rows(question: str, found: list[tuple]) -> list[RowHit]:
+    """The rows asked about, from rows holding a cell typed in the question.
+
+    ``found`` rows are ``(document id, title, provider, uri, table name, row no,
+    columns, raw cells, is public, table id)``. A row qualifies only through a
+    value that names at most ``MAX_LOOKUP_ROWS`` rows of ITS table: "Rohan
+    Mehta" is one row of a team sheet and thirty-six of a leads sheet, a name
+    in the first and a group in the second.
+
+    Qualifying rows are ranked by the question's words their cells hold, each
+    word weighted by how few of the found rows hold it. "L-1008" (one row)
+    outweighs "Field Officer" (three), and "October" lifts the October target
+    row above other rows that only share the person's name: a follow-up's row
+    was cut at the cap before. The question's own words, never a list.
+    """
     asked = (question or "").lower()
 
     def named(cell: str) -> bool:
@@ -799,23 +826,24 @@ def rows_naming(
         return len(cell) >= _MIN_LOOKUP_CHARS and re.search(
             rf"(?<!\w){re.escape(cell)}(?!\w)", asked) is not None
 
-    # Counted per TABLE: "Rohan Mehta" is one row of the team sheet and
-    # thirty-six of the leads sheet -- a name in the first, a group in the second.
     per_row = [(r, {c.strip().lower() for c in (r[7] or []) if named(str(c))}) for r in found]
-    seen: dict[tuple[str, str], int] = {}
+    seen: dict[tuple, int] = {}
     for r, values in per_row:
         for value in values:
-            seen[(r[4], value)] = seen.get((r[4], value), 0) + 1
+            seen[(r[9], value)] = seen.get((r[9], value), 0) + 1
+    words = _tokens(question)
+    held = [(r, words & _tokens(" ".join(str(c) for c in (r[7] or [])))) for r, _v in per_row]
+    rows_with: dict[str, int] = {}
+    for _r, shared in held:
+        for word in shared:
+            rows_with[word] = rows_with.get(word, 0) + 1
     hits = []
-    for r, values in per_row:
-        rare = [seen[(r[4], v)] for v in values if seen[(r[4], v)] <= MAX_LOOKUP_ROWS]
-        if not rare:
+    for (r, values), (_r, shared) in zip(per_row, held):
+        if not any(seen[(r[9], v)] <= MAX_LOOKUP_ROWS for v in values):
             continue
         names = [c.get("name", "") for c in (r[6] or [])]
         cells = "; ".join(f"{n}: {v}" for n, v in zip(names, r[7] or []) if str(v).strip())
-        # The rarer the values a row shares with the question, the more it is
-        # the row asked about: L-1008 (one row) before "Field Officer" (three).
-        hits.append((sum(1 / n for n in rare), RowHit(
+        hits.append((sum(1 / rows_with[w] for w in shared), RowHit(
             document_id=str(r[0]), document_title=r[1], provider=r[2], source_uri=r[3],
             table_name=r[4], row_no=r[5], text=f'Row of "{r[4]}": {cells}', is_public=bool(r[8]),
         )))
