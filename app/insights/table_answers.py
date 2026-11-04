@@ -78,7 +78,8 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         '"group_by": "<column header, or null>", '
         '"filters": {"<column header>": "<value>" or ["<value>", ...]}, '
         '"of_these": {"<column header>": "<value>" or ["<value>", ...]}, '
-        '"label": "<a few words saying what this query works out>"}]}\n\n'
+        '"label": "<a few words saying what this query works out>", '
+        '"is_the_figure_asked": true|false}]}\n\n'
         "Rules:\n"
         "- Use only the tables, column headers and values listed above, spelled exactly "
         "as listed. Never invent a column or a value.\n"
@@ -87,8 +88,11 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         "- group_by is the column whose values the question compares or ranks (which "
         "one, by each, per). filters keep a subset of rows; never list every value of a "
         "column as a filter. A list means any of those values.\n"
-        "- Never answer a different question as a stand-in: if no listed table holds "
-        "the figure asked about, leave that query out.\n"
+        "- Never answer a different question as a stand-in (a headcount for "
+        "revenue): if no listed table holds the figure asked about, leave that query "
+        "out. A number column whose meaning fits counts (revenue earned is the deal "
+        "value of the deals won), with the filter that makes it so. "
+        "is_the_figure_asked is false for any query that works out something else.\n"
         "- ratio: the share of the filtered rows that ALSO match of_these (with value, "
         "the share of its sum). Without of_these it is not a ratio.\n"
         "- top: the rows with the highest value; group_by is not used. Use it when "
@@ -275,7 +279,9 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
     per_table: dict[str, tuple[TableRef, list[str]]] = {}
     for query in _queries(reply):
         table = handles.get(str(query.get("table") or "").strip().upper())
-        if table is None:
+        if table is None or query.get("is_the_figure_asked") is False:
+            # A stand-in the model itself says is not the figure ("headcount,
+            # not revenue") would be read as the answer.
             continue
         try:
             line = _run(table, query)

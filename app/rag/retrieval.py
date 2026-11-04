@@ -449,9 +449,12 @@ class HybridRetriever:
 
         A sheet embeds only its columns, so "who was the field officer on
         L-1008?" could never reach the row. ``doctables.store.rows_naming``
-        finds it by the exact text typed, as this viewer. Each row carries its
-        DOCUMENT's own cosine to the question (a real cosine, measured here):
-        the gate is never earned by a row, only by the document it sits in.
+        finds it by the exact text typed, as this viewer. A figure carries its
+        DOCUMENT's own cosine to the question; a row the better of that and
+        its OWN text's cosine, embedded here with the question's model. Both
+        are real cosines of what the model is shown, so the gate still means
+        what it says: a sheet's column description scored 0.342 against "who
+        closed L-1076?" and refused the row that answers it.
         Never raises: a lookup may only ever add.
         """
         try:
@@ -478,6 +481,8 @@ class HybridRetriever:
         # Re-checked at run time: the cosine query is filtered by this viewer, so
         # a sheet they cannot open has no hit and its figures are not shown.
         figures = [f for f in figures if f.document_id in cosine]
+        rows = [r for r in rows if r.document_id in cosine]
+        own = self._row_cosines(q_vec, [r.text for r in rows])
         return [
             RetrievedChunk(
                 content=figure.text, score=cosine.get(figure.document_id, 0.0),
@@ -490,14 +495,34 @@ class HybridRetriever:
             for i, figure in enumerate(figures)
         ] + [
             RetrievedChunk(
-                content=row.text, score=cosine.get(row.document_id, 0.0),
+                content=row.text, score=max(cosine[row.document_id], own[i]),
                 document_id=row.document_id, chunk_index=_ROW_INDEX + row.row_no,
                 org_id=org_id, document_title=row.document_title,
                 source_provider=row.provider, doc_is_public=row.is_public,
                 source_uri=row.source_uri,
             )
-            for row in rows
+            for i, row in enumerate(rows)
         ]
+
+    @staticmethod
+    def _row_cosines(q_vec: list[float], texts: list[str]) -> list[float]:
+        """Cosine of each row's text to the question, one batched embed call;
+        zeros (the document's score stands) when it cannot be measured."""
+        if not texts:
+            return []
+        try:
+            from ..agent.routing import _probe_embedder
+
+            vectors = _probe_embedder().embed(texts)
+        except Exception:  # noqa: BLE001 - the document's cosine still stands
+            logger.warning("retrieval: could not embed named rows", exc_info=True)
+            return [0.0] * len(texts)
+        qn = sum(x * x for x in q_vec) ** 0.5
+        out = []
+        for v in vectors:
+            vn = sum(x * x for x in v) ** 0.5
+            out.append(sum(a * b for a, b in zip(q_vec, v)) / (qn * vn) if qn and vn else 0.0)
+        return out
 
     @staticmethod
     def _rrf_fuse(

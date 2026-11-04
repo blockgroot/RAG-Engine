@@ -108,9 +108,14 @@ def _picked(question: str, reply: str, table: TableRef) -> ChartSpec:
     created = _col(table, "Created")
     spec = ChartSpec(metric=TABLE_METRIC, group_by=created, period="month", chart="bar",
                      measure="count", table_id=table.id)
+    return _checked(question, reply, table, spec)
+
+
+def _checked(question: str, reply: str, table: TableRef, spec: ChartSpec) -> ChartSpec:
+    """The two table checks, in ``classify_question``'s order."""
     handles = {"T1": table}
-    intent = resolve._table_period_axis(AskIntent("chart", spec=spec), question, reply, handles)
-    return resolve._typed_values(intent, question, handles).spec
+    intent = resolve._typed_values(AskIntent("chart", spec=spec), question, handles)
+    return resolve._table_period_axis(intent, question, reply, handles).spec
 
 
 def test_the_named_column_is_the_breakdown_not_a_default_date():
@@ -127,11 +132,28 @@ def test_a_period_the_asker_typed_stays_the_axis():
 
 def test_one_typed_value_is_a_filter_and_two_are_a_comparison():
     leads = _leads()
-    owner = _col(leads, "Owner")
+    owner, region = _col(leads, "Owner"), _col(leads, "Region")
     one = _picked("Lead count by region for Rohan Mehta", '{"group_by": "Region"}', leads)
     assert (owner, "Rohan Mehta") in one.filters
-    two = _picked("Kavya Nair vs Rohan Mehta by region", '{"group_by": "Region"}', leads)
-    assert all(key != owner for key, _ in two.filters)
+    two = _checked("Kavya Nair vs Rohan Mehta by region", '{"group_by": "Region"}', leads,
+                   ChartSpec(metric=TABLE_METRIC, group_by=region, period="month", chart="bar",
+                             measure="count", table_id=leads.id))
+    assert (owner, ("Kavya Nair", "Rohan Mehta")) in two.filters
+    assert (two.group_by, two.split_by) == (region, owner)
+
+
+def test_a_comparison_the_model_narrowed_to_one_person_keeps_both():
+    """Staging, Claude Haiku: "Compare Kavya Nair and Rohan Mehta won revenue by
+    month" came back filtered on Kavya Nair alone."""
+    leads = _leads()
+    owner, created = _col(leads, "Owner"), _col(leads, "Created")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=created, period="month", chart="bar",
+                     measure="sum", value=_col(leads, "Deal Value"), table_id=leads.id,
+                     filters=((owner, "Kavya Nair"),))
+    spec = _checked("Compare Kavya Nair and Rohan Mehta won revenue by month",
+                    '{"period": "month", "period_words": "by month"}', leads, spec)
+    assert (owner, ("Kavya Nair", "Rohan Mehta")) in spec.filters
+    assert (spec.group_by, spec.split_by) == (created, owner)
 
 
 TARGETS = ("Employee,Month,Revenue Target\n"
@@ -437,6 +459,12 @@ def test_a_value_the_rows_do_not_hold_is_dropped_not_zero(org):
 
 
 @requires_db
+def test_a_stand_in_the_model_marks_as_not_the_figure_is_dropped(org):
+    assert _worked(org, {"table": "T1", "operation": "count", "group_by": "Region",
+                         "is_the_figure_asked": False}) == ""
+
+
+@requires_db
 def test_a_column_the_table_does_not_have_is_dropped(org):
     assert _worked(org, {"table": "T1", "operation": "sum", "value": "Salary"}) == ""
 
@@ -517,3 +545,27 @@ def test_a_figure_the_asker_may_read_is_a_passage_of_its_sheet(monkeypatch):
     # The document's own cosine, never a made-up score; private stays private.
     assert (hit.content, hit.score, hit.document_id, hit.doc_is_public) == (
         "25 of 164", 0.41, "d1", False)
+
+
+def test_a_named_row_scores_the_better_of_its_document_and_its_own_text(monkeypatch):
+    """Staging: "Who closed L-1076?" found the row, but the sheet's column
+    description scored 0.342 and the gate refused before the model saw it."""
+    row = table_store.RowHit(document_id="d1", document_title="Leads", provider="google",
+                             source_uri=None, table_name="Leads", row_no=75,
+                             text="Lead ID: L-1076; Owner: Kavya Nair", is_public=False)
+
+    class _Sheet:
+        def query(self, *a, **k):
+            return [RetrievedChunk(content="cols", score=0.342, document_id="d1",
+                                   chunk_index=0, org_id="org", doc_is_public=False)]
+
+    class _Embedder:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr("app.doctables.store.rows_naming", lambda *a, **k: [row])
+    monkeypatch.setattr("app.agent.routing._probe_embedder", lambda: _Embedder())
+    retriever = HybridRetriever(store=_Sheet(), reranker=None)
+    [hit] = retriever._table_rows("org", "Who closed L-1076?", [0.6, 0.8], workspace_id=None,
+                                  viewer=Viewer(email="x@acme.test"), tools=["google"])
+    assert hit.score == pytest.approx(0.6)  # the row's own cosine, above its sheet's 0.342
