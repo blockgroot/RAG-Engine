@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from ..auth.org_apps import OWN_APP_PROVIDERS, has_app, missing_app_reason
 from ..auth import (
     create_magic_link_token,
     get_connection_config,
@@ -351,6 +352,7 @@ def _owned_workspace_connection(org_id: str, workspace_id: str, connection_id: s
 
 @router.get("/{workspace_id}/connections")
 def get_connections(workspace_id: str, session: SessionClaims = Depends(get_session), _role: str = Depends(get_workspace_role)):
+    missing = {p: missing_app_reason(session.org_id, p) for p in OWN_APP_PROVIDERS}
     return [
         {
             "id": c.id,
@@ -361,12 +363,19 @@ def get_connections(workspace_id: str, session: SessionClaims = Depends(get_sess
                 with_manage_url(session.org_id, workspace_id, c.source_config)
                 if c.provider == "github" else c.source_config
             ),
-            "needs_reauth": c.needs_reauth,
-            "reauth_reason": c.reauth_reason,
+            "needs_reauth": c.needs_reauth or bool(missing.get(c.provider)),
+            "reauth_reason": missing.get(c.provider) or c.reauth_reason,
             "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         }
         for c in list_connections(session.org_id, workspace_id=workspace_id)
     ]
+
+
+@router.get("/{workspace_id}/connector-apps")
+def get_connector_apps_ready(workspace_id: str, session: SessionClaims = Depends(get_session), _role: str = Depends(get_workspace_role)):
+    """Whether the company's Google and Slack apps exist. A space connects
+    through them, and only a company admin can set them up (``connector_apps``)."""
+    return {p: has_app(session.org_id, p) for p in OWN_APP_PROVIDERS}
 
 
 @router.get("/{workspace_id}/connections/{connection_id}/drive-folders")

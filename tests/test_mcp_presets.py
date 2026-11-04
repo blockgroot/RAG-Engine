@@ -53,7 +53,7 @@ def test_slack_and_google_are_handbooks_own_servers():
 def test_google_signs_in_with_handbooks_client_and_no_restricted_scope():
     from dataclasses import replace
 
-    preset = replace(mcp_presets.GOOGLE_WORKSPACE, client=lambda: ("gid", "gsecret"))
+    preset = replace(mcp_presets.GOOGLE_WORKSPACE, client=lambda org_id=None: ("gid", "gsecret"))
     oauth = mcp_client.discover(preset.url, "https://hb.example/api/act/mcp/callback", preset=preset)
     assert oauth["client_id"] == "gid" and oauth["client_secret"] is None and oauth["resource"] is None
     assert oauth["scope"].split() == ["openid", "email", "https://www.googleapis.com/auth/drive.file",
@@ -64,7 +64,7 @@ def test_google_signs_in_with_handbooks_client_and_no_restricted_scope():
 def test_slack_signs_in_as_the_person_never_the_bot():
     from dataclasses import replace
 
-    preset = replace(mcp_presets.SLACK, client=lambda: ("sid", "ssecret"))
+    preset = replace(mcp_presets.SLACK, client=lambda org_id=None: ("sid", "ssecret"))
     oauth = mcp_client.discover(preset.url, "https://hb.example/cb", preset=preset)
     assert oauth["authorization_endpoint"].endswith("/oauth/v2_user/authorize")
     assert "chat:write" in oauth["scope"].split() and "im:write" in oauth["scope"].split()
@@ -72,7 +72,7 @@ def test_slack_signs_in_as_the_person_never_the_bot():
 
 def test_a_preset_client_secret_comes_from_settings_never_stored(monkeypatch):
     preset = mcp_presets.Preset(key="gh", name="GitHub", url="https://example.invalid/mcp",
-                                client=lambda: ("cid", "from-settings"))
+                                client=lambda org_id=None: ("cid", "from-settings"))
     monkeypatch.setitem(mcp_presets.PRESETS, "gh", preset)
     oauth = {"authorization_endpoint": "https://github.com/login/oauth/authorize",
              "token_endpoint": "https://github.com/login/oauth/access_token", "client_id": "cid",

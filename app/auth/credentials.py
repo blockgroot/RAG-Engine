@@ -213,6 +213,20 @@ def get_live_connection_token(
         )
 
     access_encrypted, refresh_encrypted, expires_at = row
+
+    from .org_apps import OWN_APP_PROVIDERS, has_app
+
+    if provider in OWN_APP_PROVIDERS and not has_app(org_id, provider):
+        # Hosted Handbook has no shared Google or Slack app: a connection made
+        # through the old shared one stops here with a step the admin can take,
+        # instead of failing on every sync with nothing on its card.
+        reason = (
+            f"Set up your company's own {'Google' if provider == 'google' else 'Slack'} "
+            "app under Sources, then reconnect."
+        )
+        mark_needs_reauth(org_id, provider, workspace_id, reason)
+        raise OAuthReauthRequiredError(reason)
+
     access_token = decrypt(access_encrypted)
 
     if expires_at is None:
@@ -233,7 +247,7 @@ def get_live_connection_token(
     refresh_token = decrypt(refresh_encrypted)
 
     try:
-        new_tokens = build_oauth_provider(provider).refresh(refresh_token)
+        new_tokens = build_oauth_provider(provider, org_id=org_id).refresh(refresh_token)
     except NotImplementedError:
         # Provider doesn't support/need refresh (e.g. Notion) — stored token
         # stands unchanged.

@@ -948,7 +948,7 @@ def test_a_missing_client_secret_does_not_mark_reauth(monkeypatch):
             expired = datetime.now(timezone.utc) - timedelta(hours=1)
             return SimpleNamespace(fetchone=lambda: ("enc-access", "enc-refresh", expired))
 
-    def no_secret(provider):
+    def no_secret(provider, **_kw):
         raise ConfigurationError("LINEAR_CLIENT_SECRET is not set")
 
     monkeypatch.setattr(credentials, "get_connection", lambda: _Conn())

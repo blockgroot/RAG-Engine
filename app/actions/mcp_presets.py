@@ -44,9 +44,10 @@ class Preset:
     name: str
     url: str
     note: str = ""
-    #: ``() -> (client_id, client_secret)`` of Handbook's own app there, when
-    #: the server cannot register Handbook itself.
-    client: Callable[[], tuple[str | None, str | None]] | None = None
+    #: ``(org_id) -> (client_id, client_secret)`` of Handbook's app there, when
+    #: the server cannot register Handbook itself: the company's own app for
+    #: Google and Slack (``org_apps``), else the one in settings.
+    client: Callable[[str | None], tuple[str | None, str | None]] | None = None
     #: Sign-in endpoints and scope, when the server advertises none.
     oauth: dict | None = None
     reads: re.Pattern | None = None
@@ -109,7 +110,7 @@ NOTION = Preset(
 # -- GitHub ---------------------------------------------------------------------------
 
 
-def _github_client() -> tuple[str | None, str | None]:
+def _github_client(org_id: str | None = None) -> tuple[str | None, str | None]:
     from ..config.settings import GitHubSettings
 
     s = GitHubSettings.from_env()
@@ -166,10 +167,10 @@ GITHUB = Preset(
 # -- Slack ----------------------------------------------------------------------------
 
 
-def _slack_client() -> tuple[str | None, str | None]:
-    from ..config.settings import SlackSettings
+def _slack_client(org_id: str | None = None) -> tuple[str | None, str | None]:
+    from ..auth.org_apps import slack_settings
 
-    s = SlackSettings.from_env()
+    s = slack_settings(org_id)
     return s.client_id, s.client_secret
 
 
@@ -214,10 +215,10 @@ SLACK = Preset(
 # -- Google ---------------------------------------------------------------------------
 
 
-def _google_client() -> tuple[str | None, str | None]:
-    from ..config.settings import GoogleSettings
+def _google_client(org_id: str | None = None) -> tuple[str | None, str | None]:
+    from ..auth.org_apps import google_settings
 
-    s = GoogleSettings.from_env()
+    s = google_settings(org_id)
     return s.client_id, s.client_secret
 
 

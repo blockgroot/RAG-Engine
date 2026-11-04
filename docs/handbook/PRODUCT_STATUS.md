@@ -294,6 +294,14 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
+**Each company's own Google and Slack app** (`feat/own-connector-apps`, 3 Nov 2026). An admin sets
+up the company's Google app (Internal: no test users, no Google review) and Slack app (full-speed
+history, no Marketplace) under **Sources → Your company's apps**, with every value to paste shown
+there; sync, sign-in and Agent mode then use it. Hosted Handbook leaves the shared app's keys unset,
+so existing Google and Slack connections show "Set up your company's own app, then reconnect".
+Self-hosted installs keep using `.env`. Guide: `docs/handbook/connect-google-and-slack.md`. Built,
+covered by `tests/test_own_connector_apps.py`; not yet walked through with real Google and Slack apps.
+
 **Embeddings stored as `halfvec`** (`feat/deployment-setup`, 2 Nov 2026). `chunks.embedding` and
 `gap_topics.embedding` move from `vector(1024)` to `halfvec(1024)`; existing rows are converted in
 place by `apply_schema()` (a cast, nothing re-embedded; marked `embeddings_halfvec`) and the HNSW

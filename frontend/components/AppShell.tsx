@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { BrandMark } from "@/components/BrandMark";
+import { NamePrompt } from "@/components/NamePrompt";
 import { NotificationBell } from "@/components/NotificationBell";
 import { RailChats } from "@/components/RailChats";
 import { api, Me } from "@/lib/api";
@@ -171,11 +172,16 @@ export function AppShell({
   const showAdmin = me ? canAccessAdminPortal(me) : false;
   const homeHref = setupDone || me?.role === "member" ? "/chat" : "/onboarding";
   const showMainNav = Boolean(me && variant !== "onboarding");
-  const firstName = (() => {
+  // Saved in this page view before /me is fetched again.
+  const [savedName, setSavedName] = useState<string | null>(null);
+  const guessedName = (() => {
     const local = me?.email?.split("@")[0] || "";
     const name = local.split(/[.\-_]/)[0];
     return name ? name.charAt(0).toUpperCase() + name.slice(1) : null;
   })();
+  const chosenName = savedName ?? me?.name ?? null;
+  // Shown as the person wrote it; the guess only until they have said.
+  const firstName = chosenName ?? guessedName;
   const initial = (firstName || me?.org_name || "F").trim().charAt(0).toUpperCase();
 
   return (
@@ -434,21 +440,31 @@ export function AppShell({
 
       <div className="app-main">
         {variant === "onboarding" && me && (
-          <div className="onboarding-progress" aria-label="Setup progress">
-            <Step n={1} label="Connect" done={me.has_connection} active={!me.has_connection} />
-            <Step
-              n={2}
-              label="Bring in documents"
-              done={me.ready_to_ask}
-              active={me.has_connection && !me.ready_to_ask}
-            />
-            <Step
-              n={3}
-              label="Invite people"
-              done={false}
-              active={me.has_connection && me.ready_to_ask}
-            />
-          </div>
+          // Onboarding has no sidebar, so this bar carries the brand and Sign out.
+          <header className="onboarding-top">
+            <span className="onboarding-brand">
+              <BrandMark />
+              <span>Handbook</span>
+            </span>
+            <div className="onboarding-progress" aria-label="Setup progress">
+              <Step n={1} label="Connect" done={me.has_connection} active={!me.has_connection} />
+              <Step
+                n={2}
+                label="Bring in documents"
+                done={me.ready_to_ask}
+                active={me.has_connection && !me.ready_to_ask}
+              />
+              <Step
+                n={3}
+                label="Invite people"
+                done={false}
+                active={me.has_connection && me.ready_to_ask}
+              />
+            </div>
+            <button type="button" className="button button-secondary button-sm" onClick={handleSignOut}>
+              Sign out
+            </button>
+          </header>
         )}
         <div
           id="main-content"
@@ -458,6 +474,15 @@ export function AppShell({
           {children}
         </div>
       </div>
+      {me && me.name === null && savedName === null && (
+        <NamePrompt
+          guess={guessedName ?? ""}
+          onSaved={(name) => {
+            setSavedName(name);
+            clearMeCache();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -263,6 +263,9 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
+-- What the person asked to be called. NULL until they say: a name guessed from
+-- the email ("sana.asiwal" -> "Sana") was wrong for many addresses.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 -- `owner_email_whitelist` (pre-approved-list gate on POST /auth/signup) was
 -- REPLACED by the signup-approval queue below — see CLAUDE.md §2/§4. A
@@ -1640,6 +1643,23 @@ BEGIN
             ON CONFLICT DO NOTHING;
     END IF;
 END $$;
+
+-- A company's own Google or Slack app (`app/auth/org_apps.py`). Our shared app
+-- puts Google sign-in behind a test-user list and Slack history behind the
+-- rate limits for non-Marketplace apps; the company's own app has neither.
+-- `app_key` is created before the keys exist (it goes into the Slack app
+-- template the admin pastes), so client_id NULL means "not set up yet".
+-- It only picks which signing secret checks a Slack request.
+CREATE TABLE IF NOT EXISTS org_connector_apps (
+    org_id                   UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    provider                 TEXT NOT NULL CHECK (provider IN ('google', 'slack')),
+    app_key                  TEXT NOT NULL UNIQUE,
+    client_id                TEXT,
+    client_secret_encrypted  TEXT,
+    signing_secret_encrypted TEXT,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, provider)
+);
 
 -- Row-level security on chunks. The app's pooled connections act as
 -- `handbook_app` (app/db/connection.py), which does not bypass row security,

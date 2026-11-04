@@ -49,9 +49,9 @@ class GoogleOAuthProvider(OAuthProvider):
         settings = settings or GoogleSettings.from_env()
         if not (settings.client_id and settings.client_secret and settings.redirect_uri):
             raise ConfigurationError(
-                "Google OAuth requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and "
-                "GOOGLE_REDIRECT_URI to be set (create an internal-use OAuth client "
-                "in Google Cloud Console to obtain these)."
+                "Your company's Google app isn't set up yet. An admin adds it under "
+                "Sources → Google Drive → Set up your Google app (self-hosted: "
+                "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI in .env)."
             )
         self._settings = settings
 

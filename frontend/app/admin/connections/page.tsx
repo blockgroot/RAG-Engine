@@ -6,8 +6,9 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { FormsCard } from "@/components/FormsCard";
+import { OwnAppSetup } from "@/components/OwnAppSetup";
 import { useMe } from "@/lib/useMe";
-import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { api, ApiError, ConnectionRecord, ConnectorApp, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline, updateCompleteMessage } from "@/lib/syncProgress";
@@ -52,6 +53,7 @@ function ConnectionsPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  const [apps, setApps] = useState<{ google: ConnectorApp; slack: ConnectorApp } | null>(null);
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
@@ -193,6 +195,12 @@ function ConnectionsPageInner() {
         /* useMe owns the auth redirect; leave the cards in their unknown state */
       })
       .finally(() => setLoadingConnections(false));
+    api
+      .listConnectorApps()
+      .then(setApps)
+      .catch(() => {
+        /* the setup cards stay hidden; Connect explains what is missing */
+      });
     void adoptJobs();
   }, [adoptJobs]);
 
@@ -334,6 +342,30 @@ function ConnectionsPageInner() {
           </div>
         )}
         {error && <div className="banner banner-warn">{error}</div>}
+        {apps && (
+          <section className="studio-section" aria-label="Your company's apps">
+            <div className="studio-section-head">
+              <h2>Your company&apos;s apps</h2>
+              <p className="muted">
+                Google Drive and Slack connect through an app your company owns. Set each one up once, then connect below.
+              </p>
+            </div>
+            <div className="source-bento">
+              {(["google", "slack"] as const).map((provider) => (
+                <OwnAppSetup
+                  key={provider}
+                  provider={provider}
+                  app={apps[provider]}
+                  onSaved={(updated) => {
+                    setApps((prev) => (prev ? { ...prev, [provider]: updated } : prev));
+                    // Saving asks existing connections to reconnect.
+                    void api.listConnections().then(setConnections).catch(() => {});
+                  }}
+                />
+              ))}
+            </div>
+          </section>
+        )}
         <section className="studio-section" aria-label="Source connections">
           <div className="studio-section-head">
             <h2>Your connections</h2>
@@ -350,6 +382,12 @@ function ConnectionsPageInner() {
                 <ConnectionCard
                   key={provider}
                   provider={provider}
+                  setupFirst={
+                    (provider === "google" || provider === "slack") &&
+                    Boolean(apps) &&
+                    !apps![provider].configured &&
+                    !apps![provider].server_app
+                  }
                   connection={connection}
                   lastJob={connection ? lastJobs[connection.id] : undefined}
                   changes={connection ? changesById[connection.id] : null}

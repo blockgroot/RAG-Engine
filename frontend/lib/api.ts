@@ -185,6 +185,8 @@ export interface Me {
   org_id: string;
   org_name: string | null;
   email: string | null;
+  /** What the person asked to be called; null until they have said. */
+  name: string | null;
   role: "admin" | "member";
   has_connection: boolean;
   has_documents: boolean;
@@ -414,6 +416,19 @@ export interface ConnectionRecord {
   reauth_reason?: string | null;
   /** When the background sync last looked at this connection. */
   last_sync_at?: string | null;
+}
+
+/** The company's own Google or Slack app (Sources → Set up). */
+export interface ConnectorApp {
+  provider: "google" | "slack";
+  configured: boolean;
+  client_id: string | null;
+  /** A self-hosted install's app from its settings; hosted Handbook has none. */
+  server_app: boolean;
+  redirect_uris: string[];
+  /** Slack only: the app template, and a link that opens Slack with it filled in. */
+  manifest?: string;
+  create_url?: string;
 }
 
 export interface GoogleForm {
@@ -873,6 +888,16 @@ export const api = {
     }),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
+  listConnectorApps: () =>
+    request<{ google: ConnectorApp; slack: ConnectorApp }>("/admin/connector-apps"),
+  saveConnectorApp: (
+    provider: "google" | "slack",
+    keys: { client_id: string; client_secret: string; signing_secret: string | null }
+  ) =>
+    request<ConnectorApp>(`/admin/connector-apps/${provider}`, {
+      method: "PUT",
+      body: JSON.stringify(keys),
+    }),
   getConnectionConfig: (connectionId: string) =>
     request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`),
   searchConnectionDriveFolders: (connectionId: string, q: string) =>
@@ -1114,6 +1139,12 @@ export const api = {
 
   personalMemory: () => request<PersonalMemory>("/account/memory"),
 
+  setName: (name: string) =>
+    request<{ name: string }>("/account/name", {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
+
   setMemoryEnabled: (enabled: boolean) =>
     request<{ enabled: boolean }>("/account/memory/settings", {
       method: "PUT",
@@ -1347,6 +1378,9 @@ export const api = {
     request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),
   getWorkspaceJob: (workspaceId: string, jobId: string) =>
     request<JobRecord>(`/workspaces/${workspaceId}/jobs/${jobId}`),
+  workspaceConnectorApps: (workspaceId: string) =>
+    request<{ google: boolean; slack: boolean }>(`/workspaces/${workspaceId}/connector-apps`),
+
   connectWorkspaceUrl: (workspaceId: string, provider: string) =>
     `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
 

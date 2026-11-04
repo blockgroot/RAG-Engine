@@ -659,9 +659,43 @@ async def slack_interactivity(
     Verified with the signing secret like ``/slack/events``, acknowledged at
     once (Slack allows three seconds), and decided in the background.
     """
-    from .slack_events import _verify
+    return await _interact(
+        request, background, x_slack_request_timestamp, x_slack_signature,
+        SlackSettings.from_env().signing_secret,
+    )
 
-    secret = SlackSettings.from_env().signing_secret
+
+@router.post("/interactivity/{app_key}")
+async def slack_interactivity_own_app(
+    app_key: str,
+    request: Request,
+    background: BackgroundTasks,
+    x_slack_request_timestamp: str | None = Header(default=None),
+    x_slack_signature: str | None = Header(default=None),
+):
+    """The same, from a company's own Slack app (``org_apps``)."""
+    from ..auth.org_apps import org_for_app_key
+
+    found = org_for_app_key("slack", app_key)
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return await _interact(
+        request, background, x_slack_request_timestamp, x_slack_signature, found[1],
+        org_id=found[0],
+    )
+
+
+async def _interact(
+    request: Request,
+    background: BackgroundTasks,
+    x_slack_request_timestamp: str | None,
+    x_slack_signature: str | None,
+    secret: str | None,
+    *,
+    org_id: str | None = None,
+):
+    from .slack_events import _org_for_team, _verify
+
     if not secret:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     body = await request.body()
@@ -671,6 +705,14 @@ async def slack_interactivity(
         payload = json.loads((parse_qs(body.decode()).get("payload") or ["{}"])[0])
     except ValueError:
         return {}
+    if org_id is not None:
+        # A company's app holds its own signing secret, so its requests are
+        # trusted only for a Slack workspace connected to that company.
+        team_id = ((payload.get("team") or {}).get("id")
+                   or (payload.get("user") or {}).get("team_id") or "")
+        scope = _org_for_team(team_id)
+        if scope is None or scope[0] != org_id:
+            return {}
     if payload.get("type") == "view_submission" and (payload.get("view") or {}).get(
             "callback_id") in ("act_edit", "act_revise"):
         background.add_task(apply_change, payload)

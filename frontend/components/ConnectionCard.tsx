@@ -177,6 +177,7 @@ export function ConnectionCard({
   onNeedsReauth,
   workspaceId,
   onMembersInvited,
+  setupFirst = false,
 }: {
   provider: Provider;
   connection: ConnectionRecord | undefined;
@@ -190,6 +191,8 @@ export function ConnectionCard({
   onNeedsReauth?: (needed: boolean) => void;
   workspaceId?: string;
   onMembersInvited?: () => void;
+  /** The company's own app for this provider is not set up yet (OwnAppSetup). */
+  setupFirst?: boolean;
 }) {
   const available =
     provider === "notion" ||
@@ -353,7 +356,14 @@ export function ConnectionCard({
         )}
 
         <div className="source-row-actions">
-          {available && !connection && (
+          {available && !connection && setupFirst && (
+            <span className="muted">
+              {workspaceId
+                ? "A company admin sets up the company's app in Sources first"
+                : "Set up your company's app above first"}
+            </span>
+          )}
+          {available && !connection && !setupFirst && (
             <a
               className="button"
               href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
@@ -469,7 +479,7 @@ export function ConnectionCard({
               {syncInProgress ? "Updating…" : "Update"}
             </button>
           )}
-          {connection && needsReauth && (
+          {connection && needsReauth && !setupFirst && (
             <a
               className="button"
               href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
@@ -798,7 +808,9 @@ export function ConnectionCard({
             </svg>
           </span>
           <div className="connection-reauth-body">
-            <span className="connection-reauth-title">Access expired</span>
+            <span className="connection-reauth-title">
+              {setupFirst ? "Set up your company's app first" : "Access expired"}
+            </span>
             <p className="connection-reauth-desc">
               {formatReauthReason(provider, connection.reauth_reason)}
             </p>

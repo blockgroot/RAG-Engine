@@ -1,11 +1,15 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { BrandGlyph } from "@/components/BrandGlyph";
 import { DriveFolderPicker } from "@/components/DriveFolderPicker";
+import { LinearTeamPicker } from "@/components/LinearTeamPicker";
+import { OwnAppSetup } from "@/components/OwnAppSetup";
+import { SlackChannelPicker } from "@/components/SlackChannelPicker";
 import { useMe } from "@/lib/useMe";
-import { api, ConnectionRecord, JobRecord, MemberRecord, Me } from "@/lib/api";
+import { api, ConnectionRecord, ConnectorApp, JobRecord, MemberRecord, Me } from "@/lib/api";
 import { isSetupComplete } from "@/lib/routing";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 
@@ -14,7 +18,18 @@ const ACTIVE = ACTIVE_JOB_STATUSES;
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
   google: "Google Drive",
+  slack: "Slack",
+  linear: "Linear",
 };
+
+// The sources onboarding brings documents in from. GitHub is read live, with
+// nothing to bring in, so it is added from Sources once setup is done.
+const SOURCES: { provider: "notion" | "google" | "slack" | "linear"; blurb: string }[] = [
+  { provider: "notion", blurb: "Pages and databases your workspace shares with Handbook." },
+  { provider: "google", blurb: "Docs, Sheets and files in a folder you choose." },
+  { provider: "slack", blurb: "Conversations in the channels you pick." },
+  { provider: "linear", blurb: "Issues and projects of the teams you pick." },
+];
 
 function pickDisplayJob(
   jobs: JobRecord[],
@@ -84,6 +99,10 @@ function OnboardingInner() {
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
   const [localMe, setLocalMe] = useState<Me | null>(null);
+  const [apps, setApps] = useState<{ google: ConnectorApp; slack: ConnectorApp } | null>(null);
+  // Apps saved on this page: their setup stays open (Slack has a step after
+  // the keys), with the Connect row under it.
+  const [appsSaved, setAppsSaved] = useState<string[]>([]);
   const prevJobStatus = useRef<string | null>(null);
   const announcedSuccess = useRef(false);
   const bootstrapped = useRef(false);
@@ -96,10 +115,7 @@ function OnboardingInner() {
       const match = connections.find((c) => c.provider === connectedProvider);
       if (match) return match;
     }
-    return (
-      connections.find((c) => c.provider === "notion" || c.provider === "google") ??
-      connections[0]
-    );
+    return connections.find((c) => c.provider in PROVIDER_LABELS) ?? connections[0];
   }, [connections, searchParams]);
 
   const providerLabel = primary
@@ -107,7 +123,11 @@ function OnboardingInner() {
     : "source";
   const needsFolder =
     primary?.provider === "google" && !primary.source_config?.folder_id;
-  const canSync = Boolean(primary) && !needsFolder;
+  // Slack and Linear read only what the admin picks (autosync.SCOPE_KEYS).
+  const needsChannels = primary?.provider === "slack" && !primary.source_config?.channel_ids?.length;
+  const needsTeams = primary?.provider === "linear" && !primary.source_config?.team_ids?.length;
+  const needsScope = needsFolder || needsChannels || needsTeams;
+  const canSync = Boolean(primary) && !needsScope;
 
   const displayJob = useMemo(() => {
     if (!primary) return undefined;
@@ -145,8 +165,12 @@ function OnboardingInner() {
     const label = PROVIDER_LABELS[connected] || connected;
     setMessage(
       connected === "google"
-        ? `${label} connected. Next: choose a Drive folder, then sync.`
-        : `${label} connected. Next: sync your documents.`
+        ? `${label} connected. Next: choose a Drive folder.`
+        : connected === "slack"
+          ? `${label} connected. Next: pick the channels to read.`
+          : connected === "linear"
+            ? `${label} connected. Next: pick the teams to read.`
+            : `${label} connected. Next: sync your documents.`
     );
   }, [searchParams, effectiveMe]);
 
@@ -155,6 +179,7 @@ function OnboardingInner() {
     bootstrapped.current = true;
     api.listConnections().then(setConnections).catch(() => undefined);
     api.listMembers().then(setMembers).catch(() => undefined);
+    api.listConnectorApps().then(setApps).catch(() => undefined);
     api.listJobs().then((list) => {
       setJobs(list);
       const active = list.find((j) => ACTIVE.has(j.status));
@@ -234,6 +259,22 @@ function OnboardingInner() {
     prevJobStatus.current = curr;
   }, [displayJob, applyMeSnapshot, announceReady]);
 
+  function scopeSaved(config: ConnectionRecord["source_config"], what: string) {
+    if (!primary) return;
+    setConnections((prev) => prev.map((c) => (c.id === primary.id ? { ...c, source_config: config } : c)));
+    setError(null);
+    setMessage(`${what} saved. Bringing your documents in now.`);
+    // Saving the scope queues the first sync server-side; follow that job.
+    api.listJobs().then((list) => {
+      setJobs(list);
+      const queued = list.find((j) => j.connection_id === primary.id && ACTIVE.has(j.status));
+      if (queued) {
+        setWatchedJobId(queued.id);
+        setPollToken((n) => n + 1);
+      }
+    }).catch(() => undefined);
+  }
+
   async function handleIngest() {
     if (!primary || !canSync || syncInProgress) return;
     setBusy(true);
@@ -297,17 +338,18 @@ function OnboardingInner() {
   return (
     <AppShell me={effectiveMe} variant="onboarding">
       <main className="page stack onboarding-main">
-        <div>
-          <p className="eyebrow">
-            Welcome{effectiveMe.org_name ? ` to ${effectiveMe.org_name}` : ""}
-          </p>
-          <h1>Welcome — let’s get you set up</h1>
+        <div className="onboarding-hero">
+          {effectiveMe.org_name && <p className="eyebrow">{effectiveMe.org_name}</p>}
+          <h1>Set up Handbook</h1>
           <p className="muted">
             Connect where your documents live, bring them in, then invite your team.
           </p>
-          <p className="muted" style={{ marginTop: "0.35rem" }}>
-            Your content is stored privately for your organization only — never
-            used to train any AI model, and never shared with other companies.
+          <p className="onboarding-privacy">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" strokeWidth="1.8" />
+              <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            Private to your company. Never used to train AI models or shared with anyone else.
           </p>
         </div>
 
@@ -316,31 +358,76 @@ function OnboardingInner() {
 
         {step === 1 && (
           <section className="card stack">
-            <h2>1. Connect your documents</h2>
-            <p className="muted">
-              Choose Notion or Google Drive — whichever already holds your company documents.
-            </p>
-            <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
-              <a className="button" href={api.connectUrl("notion")}>
-                Connect Notion
-              </a>
-              <a className="button button-secondary" href={api.connectUrl("google")}>
-                Connect Google Drive
-              </a>
+            <div className="onboarding-step-head">
+              <span className="onboarding-step-label">Step 1 of 3</span>
+              <h2>Connect your first source</h2>
+              <p className="muted">
+                Start with the one that holds most of your company&apos;s knowledge. You can add the
+                others, and GitHub, from Sources later.
+              </p>
+            </div>
+            <div className="source-bento">
+              {SOURCES.map(({ provider, blurb }) => {
+                const ownApp = provider === "google" || provider === "slack" ? apps?.[provider] : undefined;
+                // Google Drive and Slack connect through the company's own app.
+                const appMissing = Boolean(ownApp && !ownApp.configured && !ownApp.server_app);
+                return (
+                  <Fragment key={provider}>
+                    {ownApp && (appMissing || appsSaved.includes(provider)) && (
+                      <OwnAppSetup
+                        provider={provider as "google" | "slack"}
+                        app={ownApp}
+                        asSource
+                        onSaved={(updated) => {
+                          setApps((prev) => (prev ? { ...prev, [provider]: updated } : prev));
+                          setAppsSaved((prev) => [...prev, provider]);
+                        }}
+                      />
+                    )}
+                    {!appMissing && (
+                      <div className="card source-row">
+                        <div className="source-row-head">
+                          <div className="source-row-main">
+                            <span className="source-row-mark">
+                              <BrandGlyph name={provider} size={28} />
+                            </span>
+                            <div className="source-row-copy">
+                              <h3>{PROVIDER_LABELS[provider]}</h3>
+                              <p className="source-row-kind">{blurb}</p>
+                            </div>
+                          </div>
+                          <div className="source-row-actions">
+                            <a className="button" href={api.connectUrl(provider)}>
+                              Connect
+                            </a>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              })}
             </div>
           </section>
         )}
 
         {step === 2 && (
           <section className="card stack">
-            <h2>2. Bring your documents in</h2>
+            <div className="onboarding-step-head">
+              <span className="onboarding-step-label">Step 2 of 3</span>
+              <h2>Bring your documents in</h2>
+            </div>
             <p className="muted">
               {primary?.external_workspace_name
                 ? `Connected to “${primary.external_workspace_name}” (${providerLabel}). `
                 : `${providerLabel} is connected. `}
               {needsFolder
                 ? "Choose a Drive folder before continuing."
-                : "Bring in the shared pages, then wait here until it finishes."}
+                : needsChannels
+                  ? "Pick the channels Handbook should read."
+                  : needsTeams
+                    ? "Pick the teams whose issues Handbook should read."
+                    : "Bring in the shared pages, then wait here until it finishes."}
             </p>
 
             {needsFolder && primary && (
@@ -359,6 +446,22 @@ function OnboardingInner() {
                 onError={(message) => {
                   if (message) setError(message);
                 }}
+              />
+            )}
+
+            {needsChannels && primary && (
+              <SlackChannelPicker
+                connectionId={primary.id}
+                onSaved={(config) => scopeSaved(config, "Channels")}
+                onError={(message) => setError(message || null)}
+              />
+            )}
+
+            {needsTeams && primary && (
+              <LinearTeamPicker
+                connectionId={primary.id}
+                onSaved={(config) => scopeSaved(config, "Teams")}
+                onError={(message) => setError(message || null)}
               />
             )}
 
@@ -394,7 +497,7 @@ function OnboardingInner() {
               <p className="muted">{displayJob.error || "Sync failed. Please try again."}</p>
             )}
 
-            {!needsFolder && (
+            {!needsScope && (
               <button
                 className="button"
                 type="button"
