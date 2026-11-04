@@ -593,3 +593,31 @@ def test_a_date_breakdown_stays_the_axis_wherever_its_column_sits():
     pick = doc_tables.parse_pick({"table": "T1", "value": "Value", "group_by": "Closed",
                                   "split_by": "Region"}, {"T1": ref})
     assert (pick.group_by, pick.split_by) == (_col(ref, "Closed"), _col(ref, "Region"))
+
+
+@requires_db
+def test_a_table_stored_with_five_samples_is_resampled_from_its_rows(org):
+    """Tables indexed before 2026-11 kept five values per category column, and
+    "Won" was not among a Stage column's. The one-time fix in schema.sql
+    re-reads them from the stored rows; this runs that exact statement."""
+    from pathlib import Path
+
+    sql = Path(__file__).resolve().parents[1].joinpath("app/db/schema.sql").read_text()
+    statement = sql.split("-- category_samples_twelve:begin")[1].split(
+        "-- category_samples_twelve:end")[0]
+    _sheet(org, ["sana@acme.test"])
+    with get_connection() as conn:
+        (table_id, columns), = conn.execute(
+            "SELECT id, columns FROM doc_tables WHERE org_id = %s", (org,)).fetchall()
+        stage = next(c for c in columns if c["name"] == "Stage")
+        assert stage["samples"] == ["Lost", "New", "Won"]
+        stage["samples"] = ["Lost", "New"]  # what an old ingest kept
+        conn.execute("UPDATE doc_tables SET columns = %s::jsonb WHERE id = %s",
+                     (json.dumps(columns), table_id))
+        conn.execute(statement)
+        (after,), = conn.execute("SELECT columns FROM doc_tables WHERE id = %s",
+                                 (table_id,)).fetchall()
+        conn.commit()
+    assert next(c for c in after if c["name"] == "Stage")["samples"] == ["Lost", "New", "Won"]
+    # Every other column is as it was, in order.
+    assert [c["key"] for c in after] == [c["key"] for c in columns]

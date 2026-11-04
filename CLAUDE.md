@@ -201,7 +201,9 @@ table is drawn, and the retry, the live read and the paragraph read all stay on
 that connector. A table pick is never swapped for an activity metric, and is
 drawn across connectors when the question has a word of that table's labels or names
 its page; a pick nothing in the question supports is refused, naming the documents.
-The model is shown every value of a small category column. With no column
+The model is shown every value of a small category column (up to
+`extract.CATEGORY_SAMPLES`; tables stored with five are re-sampled from their rows once,
+`schema_marks` `category_samples_twelve`). With no column
 from the model, a column the question names by its header is the breakdown, not the
 date column; a column of which the question types exactly ONE value, undrawn and
 unfiltered, is filtered on it (`resolve._typed_values`); two values are a comparison.

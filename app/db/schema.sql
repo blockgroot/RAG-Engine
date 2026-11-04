@@ -1048,6 +1048,44 @@ BEGIN
     END IF;
 END $$;
 
+-- A category column kept five sample values until 2026-11, and the chart and
+-- table-answer models are shown those as the column's values: a Stage column's
+-- "Won" fell off the end, so "conversion ratio" was worked out on "Contacted".
+-- New tables keep up to twelve (`extract.CATEGORY_SAMPLES`); a sync skips an
+-- unchanged sheet, so stored tables are re-sampled here from their own rows,
+-- sorted as Python's sorted() does (codepoint order).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'category_samples_twelve') THEN
+        -- category_samples_twelve:begin
+        UPDATE doc_tables t
+           SET columns = (
+               SELECT jsonb_agg(
+                        CASE WHEN e.col->>'type' = 'category'
+                              AND jsonb_array_length(COALESCE(e.col->'samples', '[]'::jsonb))
+                                  < LEAST(COALESCE((e.col->>'distinct')::int, 0), 12)
+                        THEN jsonb_set(e.col, '{samples}', COALESCE((
+                               SELECT jsonb_agg(v ORDER BY v COLLATE "C")
+                                 FROM (SELECT d.v FROM (
+                                         SELECT DISTINCT r.cells->>(e.col->>'key') AS v
+                                           FROM doc_table_rows r
+                                          WHERE r.table_id = t.id
+                                            AND r.cells ? (e.col->>'key')) d
+                                        ORDER BY d.v COLLATE "C"
+                                        LIMIT 12) s), e.col->'samples'))
+                        ELSE e.col END
+                      ORDER BY e.ord)
+                 FROM jsonb_array_elements(t.columns) WITH ORDINALITY AS e(col, ord))
+         WHERE EXISTS (
+               SELECT 1 FROM jsonb_array_elements(t.columns) c
+                WHERE c->>'type' = 'category'
+                  AND jsonb_array_length(COALESCE(c->'samples', '[]'::jsonb))
+                      < LEAST(COALESCE((c->>'distinct')::int, 0), 12));
+        -- category_samples_twelve:end
+        INSERT INTO schema_marks (name) VALUES ('category_samples_twelve');
+    END IF;
+END $$;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has
