@@ -65,6 +65,7 @@ function WorkspaceDetailPageInner() {
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
   const [members, setMembers] = useState<WorkspaceMemberRecord[]>([]);
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  const [appsReady, setAppsReady] = useState<{ google: boolean; slack: boolean } | null>(null);
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
@@ -228,6 +229,7 @@ function WorkspaceDetailPageInner() {
       })
       .catch(() => {})
       .finally(() => setLoadingConnections(false));
+    api.workspaceConnectorApps(workspaceId).then(setAppsReady).catch(() => {});
     void adoptJobs();
   }, [me, workspaceId, refreshChanges, refreshWorkspace, adoptJobs]);
 
@@ -712,6 +714,11 @@ function WorkspaceDetailPageInner() {
                       <ConnectionCard
                         key={provider}
                         provider={provider}
+                        setupFirst={
+                          (provider === "google" || provider === "slack") &&
+                          appsReady !== null &&
+                          !appsReady[provider]
+                        }
                         connection={connection}
                         lastJob={connection ? lastJobs[connection.id] : undefined}
                         changes={connection ? changesById[connection.id] : null}

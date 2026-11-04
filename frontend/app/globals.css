@@ -9531,94 +9531,181 @@ a.people-card:hover { color: inherit; }
 
 
 /* Setting up the company's own Google or Slack app (OwnAppSetup). */
+.own-app .source-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
 .own-app-panel {
-  margin-top: 1.1rem;
+  margin: 0.6rem 0 0;
   padding: 1.25rem 1.4rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
+}
+.own-app-steps {
+  list-style: none;
   display: grid;
-  gap: 0.9rem;
+  gap: 0;
 }
-.own-app-progress {
-  display: flex;
+.own-app-steps > li {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  column-gap: 0.9rem;
+  position: relative;
+  padding-bottom: 1rem;
+}
+.own-app-steps > li:last-child { padding-bottom: 0; }
+/* The line joining one step's number to the next. */
+.own-app-steps > li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: calc(0.875rem - 1px);
+  top: 1.95rem;
+  bottom: 0.2rem;
+  width: 2px;
+  background: var(--border);
+}
+.own-app-marker {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  justify-content: center;
   font-size: 0.82rem;
+  font-weight: 700;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface-elevated);
+  color: var(--ink-muted);
 }
-.own-app-progress > span:not(.muted) {
-  width: 1.6rem;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border-strong);
+.own-app-steps > li.is-current .own-app-marker {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
-.own-app-progress > span.is-done { background: var(--accent-soft); }
-.own-app-progress > span.is-current { background: var(--accent); }
-.own-app-progress .muted { margin-left: 0.5rem; }
+.own-app-steps > li.is-done .own-app-marker {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.own-app-step { min-width: 0; }
 .own-app-step-title {
-  margin: 0;
-  font-size: 1.05rem;
+  display: block;
+  min-height: 1.75rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.75rem;
+  text-align: left;
+  color: var(--ink);
 }
+.own-app-steps > li.is-next .own-app-step-title { color: var(--ink-muted); font-weight: 550; }
+.own-app-steps > li.is-done .own-app-step-title { cursor: pointer; }
+.own-app-steps > li.is-done .own-app-step-title:hover { color: var(--accent); }
+.own-app-step-title:disabled { cursor: default; }
 .own-app-step-body {
   display: grid;
-  gap: 0.6rem;
+  gap: 0.85rem;
+  margin-top: 0.4rem;
+  font-size: 0.93rem;
   line-height: 1.55;
+  color: var(--ink);
 }
 .own-app-step-body p { margin: 0; }
-.own-app-links {
+.own-app-note {
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+}
+.own-app-links,
+.own-app-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.6rem;
+}
+.own-app-nav { padding-top: 0.25rem; }
+/* One size for every button inside a step, links and Next alike. */
+.own-app-step-body .button {
+  padding: 0.6rem 1.15rem;
+  font-size: 0.9rem;
+  line-height: 1.2;
 }
 .own-app-form {
   display: grid;
-  gap: 0.8rem;
-  max-width: 32rem;
+  gap: 0.95rem;
+  max-width: 30rem;
 }
-.own-app-nav {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 0.4rem;
+.own-app-form .field { gap: 0.35rem; }
+.own-app-form .input {
+  font-size: 0.93rem;
+  padding: 0.65rem 0.85rem;
 }
-.own-app-copy {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-.own-app-copy-label {
-  flex: none;
-  width: 4.6rem;
-  font-size: 0.82rem;
+.own-app-hint {
+  font-size: 0.78rem;
   color: var(--ink-muted);
 }
-.own-app-copy code {
+.own-app-copy {
+  display: grid;
+  gap: 0.3rem;
+}
+.own-app-copy-label {
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: var(--ink-muted);
+}
+.own-app-copy-box {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  overflow: hidden;
+}
+.own-app-copy-box code {
   flex: 1;
   min-width: 0;
-  max-height: 8rem;
+  max-height: 9rem;
   overflow: auto;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-elevated);
+  padding: 0.6rem 0.8rem;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-all;
 }
-.own-app-fallback { display: grid; gap: 0.5rem; }
-.own-app-link-button {
+.own-app-copy-box button {
+  flex: none;
+  min-width: 4.75rem;
+  padding: 0 0.9rem;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+.own-app-copy-box button:hover { background: var(--accent-soft); }
+.own-app-fallback { display: grid; gap: 0.6rem; }
+.own-app-text-button {
   justify-self: start;
   padding: 0;
   border: 0;
   background: none;
-  color: var(--accent);
   font: inherit;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent-strong);
   text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
 }
 @media (max-width: 640px) {
   .own-app-panel { padding: 1rem; }
-  .own-app-copy { flex-wrap: wrap; }
-  .own-app-copy-label { width: 100%; }
+  .own-app .source-row-actions { flex: 1 1 100%; justify-content: space-between; }
+  .own-app-steps > li { column-gap: 0.7rem; }
 }

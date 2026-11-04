@@ -1370,6 +1370,9 @@ export const api = {
     request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),
   getWorkspaceJob: (workspaceId: string, jobId: string) =>
     request<JobRecord>(`/workspaces/${workspaceId}/jobs/${jobId}`),
+  workspaceConnectorApps: (workspaceId: string) =>
+    request<{ google: boolean; slack: boolean }>(`/workspaces/${workspaceId}/connector-apps`),
+
   connectWorkspaceUrl: (workspaceId: string, provider: string) =>
     `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
 
