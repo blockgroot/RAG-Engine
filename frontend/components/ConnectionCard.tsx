@@ -357,7 +357,11 @@ export function ConnectionCard({
 
         <div className="source-row-actions">
           {available && !connection && setupFirst && (
-            <span className="muted">Set up your company&apos;s app above first</span>
+            <span className="muted">
+              {workspaceId
+                ? "A company admin sets up the company's app in Sources first"
+                : "Set up your company's app above first"}
+            </span>
           )}
           {available && !connection && !setupFirst && (
             <a

@@ -103,6 +103,14 @@ Google Drive or Slack connected before your company's app was set up shows **Set
 
 You can paste new keys at any time with **Change keys** on the app's card. After saving, Google Drive or Slack shows **Reconnect**: press it once so the new app is used.
 
+## Spaces
+
+Spaces use the same company app: a space owner connects Google Drive or Slack as usual, with no app of their own. Until a company admin has set the app up, the space's card says so instead of showing **Connect**.
+
+Two limits follow from the app belonging to your company:
+- **Google:** an Internal app signs in only accounts from your company's Google Workspace.
+- **Slack:** the app installs only in the Slack workspace it was created in.
+
 ## Agent mode
 
 Agent mode, which writes to Google Docs, Sheets and Slack for you, signs in through the same apps. There's nothing extra to set up: the addresses and permissions above already include it.

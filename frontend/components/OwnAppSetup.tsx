@@ -6,9 +6,9 @@
  * Handbook has no shared Google or Slack app: ours would put Google sign-in
  * behind a test-user list and slow Slack history to a crawl. The admin doing
  * this is often not technical, and every step on screen at once read as a
- * wall, so each step is shown alone, with its link as a button and every value
- * to type into Google or Slack behind a Copy button. The full guide is
- * docs/handbook/connect-google-and-slack.md.
+ * wall, so the steps are a numbered list with only the current one open, its
+ * link as a button, and every value to type into Google or Slack behind a
+ * Copy button. The full guide is docs/handbook/connect-google-and-slack.md.
  */
 
 import { ReactNode, useState } from "react";
@@ -16,26 +16,34 @@ import { ReactNode, useState } from "react";
 import { BrandGlyph } from "./BrandGlyph";
 import { api, ApiError, ConnectorApp } from "@/lib/api";
 
-type Step = { title: string; body: ReactNode; links?: { href: string; label: string }[]; form?: boolean };
+// ``extra`` follows the step's link: what to copy once that page is open.
+type Step = {
+  title: string;
+  body: ReactNode;
+  links?: { href: string; label: string }[];
+  extra?: ReactNode;
+  form?: boolean;
+};
 
-function CopyLine({ value, label }: { value: string; label?: string }) {
+function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="own-app-copy">
-      {label && <span className="own-app-copy-label">{label}</span>}
-      <code>{value}</code>
-      <button
-        className="button button-secondary button-sm"
-        type="button"
-        onClick={() => {
-          void navigator.clipboard.writeText(value).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          });
-        }}
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
+      <span className="own-app-copy-label">{label}</span>
+      <div className="own-app-copy-box">
+        <code>{value}</code>
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard.writeText(value).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -66,7 +74,7 @@ function googleSteps(app: ConnectorApp): Step[] {
       ],
     },
     {
-      title: "Name the app and keep it inside your company",
+      title: "Keep the app inside your company",
       body: (
         <p>
           Press <b>Get started</b>. Name it <b>Handbook</b> and use your email for support. Under{" "}
@@ -78,58 +86,47 @@ function googleSteps(app: ConnectorApp): Step[] {
     {
       title: "Create the sign-in key",
       body: (
-        <>
-          <p>
-            Press <b>Create client</b>. Choose <b>Web application</b> and name it <b>Handbook</b>. Under{" "}
-            <b>Authorized redirect URIs</b>, add both of these:
-          </p>
-          {app.redirect_uris.map((uri, i) => (
-            <CopyLine key={uri} value={uri} label={`Address ${i + 1}`} />
-          ))}
-          <p>
-            Then press <b>Create</b>.
-          </p>
-        </>
-      ),
-      links: [{ href: "https://console.cloud.google.com/auth/clients", label: "Open Clients" }],
-    },
-    {
-      title: "Paste the keys here",
-      body: (
         <p>
-          Google now shows a <b>Client ID</b> and a <b>Client secret</b>. Copy them into the boxes below.
+          Press <b>Create client</b>, choose <b>Web application</b>, and name it <b>Handbook</b>. Under{" "}
+          <b>Authorized redirect URIs</b>, add both addresses below, then press <b>Create</b>.
         </p>
       ),
+      links: [{ href: "https://console.cloud.google.com/auth/clients", label: "Open Clients" }],
+      extra: app.redirect_uris.map((uri, i) => <CopyField key={uri} label={`Address ${i + 1}`} value={uri} />),
+    },
+    {
+      title: "Paste the keys into Handbook",
+      body: <p>Google now shows a Client ID and a Client secret. Copy them here.</p>,
       form: true,
     },
   ];
 }
 
-function slackSteps(app: ConnectorApp, manifest: ReactNode): Step[] {
+function slackSteps(app: ConnectorApp, fallback: ReactNode): Step[] {
   return [
     {
       title: "Create the app in Slack",
       body: (
-        <>
-          <p>
-            Slack opens with everything filled in. Pick your workspace, then press <b>Next</b> and{" "}
-            <b>Create</b>.
-          </p>
-          <p className="muted">
-            If Slack warns that the Request URL did not answer, that is expected. Press{" "}
-            <b>Go to App Settings</b> and come back here.
-          </p>
-          {manifest}
-        </>
+        <p>
+          Slack opens with everything filled in. Pick your workspace, then press <b>Next</b> and <b>Create</b>.
+        </p>
       ),
       links: app.create_url ? [{ href: app.create_url, label: "Create the Slack app" }] : [],
+      extra: (
+        <>
+          <p className="own-app-note">
+            Slack may say the Request URL did not answer. That is expected until step 3.
+          </p>
+          {fallback}
+        </>
+      ),
     },
     {
-      title: "Paste the keys here",
+      title: "Paste the keys into Handbook",
       body: (
         <p>
           In Slack, open <b>Basic Information</b> and scroll to <b>App Credentials</b>. Copy the three
-          values into the boxes below.
+          values here.
         </p>
       ),
       form: true,
@@ -138,13 +135,21 @@ function slackSteps(app: ConnectorApp, manifest: ReactNode): Step[] {
       title: "Let Slack check it can reach Handbook",
       body: (
         <p>
-          In Slack, open <b>Event Subscriptions</b> and press <b>Retry</b> next to the Request URL. It should
-          say <b>Verified</b>.
+          In Slack, open <b>Event Subscriptions</b> and press <b>Retry</b> next to the Request URL. It
+          should say <b>Verified</b>.
         </p>
       ),
     },
   ];
 }
+
+const HINTS: Record<string, string> = {
+  "google-client_id": "Ends in .apps.googleusercontent.com",
+  "google-client_secret": "Starts with GOCSPX-",
+  "slack-client_id": "Two numbers with a dot, like 1234.5678",
+  "slack-client_secret": "32 letters and numbers",
+  "slack-signing_secret": "The third value, also 32 letters and numbers",
+};
 
 export function OwnAppSetup({
   provider,
@@ -158,9 +163,7 @@ export function OwnAppSetup({
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [showManifest, setShowManifest] = useState(false);
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [signingSecret, setSigningSecret] = useState("");
+  const [values, setValues] = useState({ client_id: "", client_secret: "", signing_secret: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -169,38 +172,41 @@ export function OwnAppSetup({
   const source = provider === "google" ? "Google Drive" : "Slack";
   const ready = app.configured || app.server_app;
 
-  const manifest = (
+  const fallback = (
     <div className="own-app-fallback">
-      <button className="own-app-link-button" type="button" onClick={() => setShowManifest((v) => !v)}>
+      <button className="own-app-text-button" type="button" onClick={() => setShowManifest((v) => !v)}>
         {showManifest ? "Hide the template" : "Slack shows an empty box instead?"}
       </button>
       {showManifest && app.manifest && (
         <>
-          <p className="muted">
-            Choose <b>From a manifest</b>, pick your workspace, switch to <b>JSON</b>, and paste this:
+          <p className="own-app-note">
+            Choose <b>From a manifest</b>, pick your workspace, switch to <b>JSON</b>, and paste this.
           </p>
-          <CopyLine value={app.manifest} />
+          <CopyField label="Template" value={app.manifest} />
         </>
       )}
     </div>
   );
-  const steps = provider === "google" ? googleSteps(app) : slackSteps(app, manifest);
-  const current = steps[step];
+  const steps = provider === "google" ? googleSteps(app) : slackSteps(app, fallback);
   const last = step === steps.length - 1;
-  const canSave = clientId.trim() && clientSecret.trim() && (provider === "google" || signingSecret.trim());
+  const fields: [keyof typeof values, string, boolean][] = [
+    ["client_id", "Client ID", false],
+    ["client_secret", "Client Secret", true],
+    ...(provider === "slack" ? [["signing_secret", "Signing Secret", true] as [keyof typeof values, string, boolean]] : []),
+  ];
+  const canSave = fields.every(([k]) => values[k].trim());
 
   const save = () => {
     setBusy(true);
     setError(null);
     api
       .saveConnectorApp(provider, {
-        client_id: clientId,
-        client_secret: clientSecret,
-        signing_secret: provider === "slack" ? signingSecret : null,
+        client_id: values.client_id,
+        client_secret: values.client_secret,
+        signing_secret: provider === "slack" ? values.signing_secret : null,
       })
       .then((updated) => {
-        setClientSecret("");
-        setSigningSecret("");
+        setValues((v) => ({ ...v, client_secret: "", signing_secret: "" }));
         onSaved(updated);
         if (last) setDone(true);
         else setStep(step + 1);
@@ -208,6 +214,17 @@ export function OwnAppSetup({
       .catch((err) => setError(err instanceof ApiError ? err.message : "Could not save. Try again."))
       .finally(() => setBusy(false));
   };
+
+  const nav = (primary: ReactNode) => (
+    <div className="own-app-nav">
+      {primary}
+      {step > 0 && (
+        <button className="button button-secondary" type="button" onClick={() => setStep(step - 1)}>
+          Back
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <div className={`card source-row own-app${ready ? " is-linked" : ""}`}>
@@ -217,12 +234,7 @@ export function OwnAppSetup({
             <BrandGlyph name={provider} size={28} />
           </span>
           <div className="source-row-copy">
-            <h3>
-              {name} app{" "}
-              <span className={`badge ${ready ? "badge-verified" : "badge-pending"}`}>
-                {app.configured ? "Ready" : app.server_app ? "Ready (this server's app)" : "Not set up"}
-              </span>
-            </h3>
+            <h3>{name} app</h3>
             <p className="source-row-kind">
               {ready
                 ? `${source} connects through this app.`
@@ -231,12 +243,16 @@ export function OwnAppSetup({
           </div>
         </div>
         <div className="source-row-actions">
+          <span className={`badge ${ready ? "badge-verified" : "badge-pending"}`}>
+            {app.configured ? "Ready" : app.server_app ? "Ready · this server's app" : "Not set up"}
+          </span>
           <button
             className={`button${open || ready ? " button-secondary" : ""}`}
             type="button"
             onClick={() => {
               setOpen((v) => !v);
               setDone(false);
+              setError(null);
               // Changing keys starts at the boxes; the app itself already exists.
               setStep(app.configured ? steps.findIndex((s) => s.form) : 0);
             }}
@@ -249,92 +265,101 @@ export function OwnAppSetup({
       {open && done && (
         <div className="own-app-panel">
           <div className="banner banner-ok" role="status">
-            {name} app saved. Now press <b>{app.configured ? "Connect or Reconnect" : "Connect"}</b> on the{" "}
-            {source} card below.
+            {name} app saved. Now press <b>Connect</b> (or <b>Reconnect</b>) on the {source} card below.
           </div>
         </div>
       )}
 
       {open && !done && (
-        <div className="own-app-panel">
-          <div className="own-app-progress" aria-label={`Step ${step + 1} of ${steps.length}`}>
-            {steps.map((s, i) => (
-              <span key={s.title} className={i === step ? "is-current" : i < step ? "is-done" : ""} />
-            ))}
-            <span className="muted">
-              Step {step + 1} of {steps.length}
-            </span>
-          </div>
-
-          <h4 className="own-app-step-title">{current.title}</h4>
-          <div className="own-app-step-body">{current.body}</div>
-
-          {current.links && current.links.length > 0 && (
-            <div className="own-app-links">
-              {current.links.map((l) => (
-                <a key={l.href} className="button button-secondary" href={l.href} target="_blank" rel="noreferrer">
-                  {l.label} ↗
-                </a>
-              ))}
-            </div>
-          )}
-
-          {current.form && (
-            <form
-              className="own-app-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                save();
-              }}
-            >
-              <div className="field">
-                <label htmlFor={`${provider}-client-id`}>Client ID</label>
-                <input id={`${provider}-client-id`} className="input" value={clientId}
-                  onChange={(e) => setClientId(e.target.value)} autoComplete="off" />
-              </div>
-              <div className="field">
-                <label htmlFor={`${provider}-client-secret`}>Client Secret</label>
-                <input id={`${provider}-client-secret`} className="input" type="password" value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)} autoComplete="off" />
-              </div>
-              {provider === "slack" && (
-                <div className="field">
-                  <label htmlFor="slack-signing-secret">Signing Secret</label>
-                  <input id="slack-signing-secret" className="input" type="password" value={signingSecret}
-                    onChange={(e) => setSigningSecret(e.target.value)} autoComplete="off" />
-                </div>
-              )}
-              {error && <div className="banner banner-warn">{error}</div>}
-              <div className="own-app-nav">
-                {step > 0 ? (
-                  <button className="button button-secondary" type="button" onClick={() => setStep(step - 1)}>
-                    Back
+        <ol className="own-app-panel own-app-steps">
+          {steps.map((s, i) => {
+            const state = i < step ? "is-done" : i === step ? "is-current" : "is-next";
+            return (
+              <li key={s.title} className={state} aria-current={i === step ? "step" : undefined}>
+                <span className="own-app-marker" aria-hidden>
+                  {i < step ? "✓" : i + 1}
+                </span>
+                <div className="own-app-step">
+                  <button
+                    className="own-app-step-title"
+                    type="button"
+                    disabled={i >= step}
+                    onClick={() => setStep(i)}
+                    title={i < step ? "Go back to this step" : undefined}
+                  >
+                    {s.title}
                   </button>
-                ) : <span />}
-                <button className="button" type="submit" disabled={busy || !canSave}>
-                  {busy ? "Saving…" : "Save"}
-                </button>
-              </div>
-            </form>
-          )}
 
-          {!current.form && (
-            <div className="own-app-nav">
-              {step > 0 ? (
-                <button className="button button-secondary" type="button" onClick={() => setStep(step - 1)}>
-                  Back
-                </button>
-              ) : <span />}
-              <button
-                className="button"
-                type="button"
-                onClick={() => (last ? setDone(true) : setStep(step + 1))}
-              >
-                {last ? "Done" : "Next"}
-              </button>
-            </div>
-          )}
-        </div>
+                  {i === step && (
+                    <div className="own-app-step-body">
+                      {s.body}
+
+                      {s.links && s.links.length > 0 && (
+                        <div className="own-app-links">
+                          {s.links.map((l) => (
+                            <a
+                              key={l.href}
+                              className="button button-secondary"
+                              href={l.href}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {l.label} ↗
+                            </a>
+                          ))}
+                        </div>
+                      )}
+
+                      {s.extra}
+
+                      {s.form ? (
+                        <form
+                          className="own-app-form"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            save();
+                          }}
+                        >
+                          {fields.map(([key, label, secret]) => (
+                            <div className="field" key={key}>
+                              <label htmlFor={`${provider}-${key}`}>{label}</label>
+                              <input
+                                id={`${provider}-${key}`}
+                                className="input"
+                                type={secret ? "password" : "text"}
+                                value={values[key]}
+                                onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+                                autoComplete="off"
+                                spellCheck={false}
+                              />
+                              <span className="own-app-hint">{HINTS[`${provider}-${key}`]}</span>
+                            </div>
+                          ))}
+                          {error && <div className="banner banner-warn">{error}</div>}
+                          {nav(
+                            <button className="button" type="submit" disabled={busy || !canSave}>
+                              {busy ? "Saving…" : "Save keys"}
+                            </button>,
+                          )}
+                        </form>
+                      ) : (
+                        nav(
+                          <button
+                            className="button"
+                            type="button"
+                            onClick={() => (last ? setDone(true) : setStep(step + 1))}
+                          >
+                            {last ? "Done" : "Next"}
+                          </button>,
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
       )}
     </div>
   );
