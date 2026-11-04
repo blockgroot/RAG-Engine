@@ -218,7 +218,9 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
     for key, _ in spec.filters:
         _need(key, ("category",), "filter")
     filters = tuple(
-        (key, _match_table_value(table, key, raw)) for key, raw in spec.filters
+        (key, tuple(dict.fromkeys(_match_table_value(table, key, r) for r in raw))
+         if isinstance(raw, tuple) else _match_table_value(table, key, raw))
+        for key, raw in spec.filters
     )
     # A column of bare years ("2024", "FY2025") is a yearly axis: drawn by
     # month it read "Jan 2024". Format, not intent.
@@ -248,7 +250,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         name(spec.split_by) if spec.split_by else None,
     )
     for key, value in filters:
-        title += f" — {name(key)}: {value}"
+        title += f" — {name(key)}: {_shown(value)}"
     title += f" — {table.name}"
     if table.origin == "text":
         # In the title, not only the caveat: figures an AI read from prose
@@ -285,7 +287,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
     panel = {
         "id": f"table:{table.id}:{spec.group_by or '-'}:{spec.split_by or '-'}:"
               f"{measure}:{spec.value or '-'}:"
-              + ",".join(f"{k}={v}" for k, v in filters),
+              + ",".join(f"{k}={_shown(v)}" for k, v in filters),
         "provider": table.provider,
         "title": title,
         "focus": None,
@@ -294,7 +296,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         # any) is the category; otherwise the breakdown is the category axis.
         "group_by": (spec.split_by if by_date else spec.group_by),
         "split_by": (None if by_date else spec.split_by),
-        "filters": [list(f) for f in filters],
+        "filters": [[k, _shown(v)] for k, v in filters],
         "unit": unit,
         "explain": explain,
         "caveat": " ".join(notes),
@@ -309,6 +311,11 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
                   "origin": table.origin, "upload": table.is_upload},
     }
     return panel, period
+
+
+def _shown(value) -> str:
+    """A filter value as written: several kept values joined."""
+    return ", ".join(value) if isinstance(value, tuple) else str(value)
 
 
 def _match_table_value(table, key, raw) -> str:

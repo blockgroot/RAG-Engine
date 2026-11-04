@@ -106,7 +106,8 @@ def spec_to_dict(spec: ChartSpec) -> dict:
         "focus": spec.focus,
         "split_by": spec.split_by,
         "measure": spec.measure,
-        "filters": [list(f) for f in spec.filters],
+        "filters": [[dim, list(value) if isinstance(value, tuple) else value]
+                    for dim, value in spec.filters],
         "table_id": spec.table_id,
         "value": spec.value,
         "left_out": spec.left_out,
@@ -118,7 +119,8 @@ def spec_from_dict(data: dict) -> ChartSpec:
     """Inverse of ``spec_to_dict``. Raises ``KeyError``/``TypeError`` on a
     malformed dict; tolerates the older four-key shape."""
     filters = tuple(
-        (str(dim), str(value)) for dim, value in (data.get("filters") or ())
+        (str(dim), tuple(str(v) for v in value) if isinstance(value, (list, tuple)) else str(value))
+        for dim, value in (data.get("filters") or ())
     )
     return ChartSpec(
         metric=data["metric"],
@@ -405,6 +407,11 @@ def prose_figures_unclear(titles: list[str], tables: list[str]) -> str:
 ROUTE_MAX_TOKENS = 200
 
 
+def with_earlier(question: str, earlier: str | None) -> str:
+    """A follow-up with the question it continues, for a check that reads both."""
+    return f"(earlier question in this chat: {earlier[:300]})\n{question}" if earlier else question
+
+
 def _route_prompt(question: str, *, github: bool, table: bool = False) -> str:
     """Ask's question check, now that charts have their own mode.
 
@@ -430,10 +437,14 @@ def _route_prompt(question: str, *, github: bool, table: bool = False) -> str:
         "\"count\" when they ask how many or how much of some activity; "
         "otherwise null.\n"
         + (
-            "table: true when it asks for a figure worked out over many records "
+            "table: true when it asks for figures worked out over many records "
             "of a list or spreadsheet: a total, a count, an average, a share or "
-            "ratio, or which one is highest or lowest. false for a fact stated "
-            "in a document, or one record looked up.\n"
+            "ratio, which one is highest or lowest, named people or items "
+            "compared on their figures, or an overview of such data. false for a "
+            "fact stated in a document, or one record looked up. When the text "
+            "starts with an earlier question in brackets, the last line may "
+            "continue it (\"and only for one region?\"): judge table on both "
+            "together, everything else on the last line.\n"
             if table else ""
         )
         + "live: true when it asks about the CURRENT state of a specific item "
@@ -597,7 +608,14 @@ def _prompt(
             "table's COLUMN NAMES exactly as listed. measure = count (rows), "
             "sum, average, min or max; value = the number column to add up. "
             "In a TABLE, a time scale (per month, weekly, over time) IS a "
-            "breakdown: group_by = the table's date column, with that period. "
+            "breakdown: group_by = the table's date column, with that period; "
+            "a breakdown's words need not be a header: \"by employee\" is the "
+            "column holding people's names (Owner, Rep), by its values; "
+            "with several date columns, the one whose meaning fits the measure "
+            "(when a deal closed, not when its lead was created, for revenue "
+            "won). A figure qualified by a state (won revenue, open leads) is a "
+            "filter on the column holding that state. A filter may list several "
+            "values to keep each of them (two people compared). "
             "Prefer a table when they ask about figures IN a document (sales, "
             "budget, revenue, headcount); prefer a metric for activity in the "
             "apps (edits, pull requests, tasks).\n\n"
@@ -623,6 +641,7 @@ def _prompt(
         + ('"table": "<T handle or null>", "value": "<number column or null>", '
            if tables else "") +
         '"period": "<period>", '
+        '"period_words": "<their exact words asking for that period, or null>", '
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
         '"document": "<the page, file or sheet they named, copied exactly, or null>", '
         '"source": "<connector tag they named or plainly meant, or null>", '
@@ -640,7 +659,9 @@ def _prompt(
         "(a policy, a how-to, who wrote a document, what a page says).\n"
         "- Never invent a metric key. Match the question to the list "
         "above, even if the wording differs from the label.\n"
-        "- group_by must be one of that metric's options, or null.\n"
+        "- group_by must be one of that metric's options, or null. For a TABLE, "
+        "group_by, split_by and every filter key are that table's own column "
+        "names, never a metric's options (actor, state, subject).\n"
         "- For a metric (not a table), a time scale (per week, weekly, per "
         "month) is the PERIOD, not a breakdown: \"files edited per week\" is "
         "group_by null, period week. "
@@ -987,11 +1008,21 @@ def _align_connector(
         )
 
     # Nothing in the question picks a connector. A TABLE pick is one document's
-    # own rows, not a kind two connectors share, so it is drawn: refusing it
-    # whenever the offered tables came from two connectors refused "leads by
-    # stage" on the only leads table there was.
+    # own rows, not a kind two connectors share, so it is drawn when the
+    # question has a word of that table's own labels or names its page:
+    # refusing every pick across two connectors refused "leads by stage" on
+    # the only leads table there was. A pick nothing in the question supports
+    # ("chart the totals") is the model's guess between documents.
     if spec.table_id:
-        return intent
+        from .tables import label_hits
+
+        picked = next((t for t in handles.values() if t.id == spec.table_id), None)
+        if picked is None or len({t.provider for t in handles.values() if t.provider}) < 2 \
+                or label_hits(question, picked) or title_mentioned(picked.document_title or "", question):
+            return intent
+        listed = ", ".join(f'"{table.document_title}"' for table in list(handles.values())[:6])
+        return AskIntent("refuse", message=(
+            "**Which document should the chart use?**\n\n" f"I can chart {listed}."))
     current = registry.METRICS.get(spec.metric)
     if current is None:
         return intent
@@ -1200,10 +1231,16 @@ def title_match(title: str, question: str) -> int:
     """Letters in the longest run of the title the question contains. Callers
     choosing among pages keep the longest: "Annual Manufacturing Performance
     Report" over "Customer Support Performance Update", which shares only
-    "Performance" with the question."""
+    "Performance" with the question.
+
+    The run is at least two words unless the title has only one word besides
+    numbers ("Onboarding 2025"): one word of a longer title is a topic, not a
+    name. "Won revenue by employee" named "Employee Referral Policy" and
+    charted its bonus table."""
     words = _squashed(title).split()
     asked = f" {_squashed(question)} "
-    for length in range(len(words), 0, -1):
+    shortest = 2 if sum(not w.isdigit() for w in words) > 1 else 1
+    for length in range(len(words), shortest - 1, -1):
         found = [len(" ".join(words[start:start + length]).replace(" ", ""))
                  for start in range(len(words) - length + 1)
                  if f" {' '.join(words[start:start + length])} " in asked]
@@ -1401,14 +1438,25 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     filtered = {k for k, _ in spec.filters}
     keys = [c["key"] for c in table.columns
             if c.get("type") in ("category", "date") and c["key"] not in filtered]
+    dates = [k for k in keys if (table.column(k) or {}).get("type") == "date"]
     group, split = spec.group_by, None
     data = _json_object(reply) or {}
     # The shape they asked for, before a one-breakdown pick narrowed it to bar.
     requested = data.get("chart") if isinstance(data.get("chart"), str) else spec.chart
+    asked_text = f" {_squashed(question)}"
     word = _squashed(str(data.get("period") or ""))
-    period_asked = bool(word) and f" {word}" in f" {_squashed(question)}"
-    if keys and period_asked and keys[0] != group:
-        group, split = keys[0], group
+    quote = _squashed(str(data.get("period_words") or ""))
+    period_asked = (bool(word) and f" {word}" in asked_text) or (
+        bool(quote) and f" {quote}" in asked_text)
+    # A period they never asked for is not theirs: "leads by rohan in august"
+    # came back per DAY. The default grain stands (and steps finer when sparse).
+    period = spec.period if period_asked else DEFAULT_PERIOD
+    # The time axis is a DATE column (the one the model chose, else the first),
+    # and a read page's period column when it has none. The first category
+    # was taken before, and the month then drawn as a series and refused.
+    axis = group if group in dates else (dates[0] if dates else (keys[0] if keys else None))
+    if axis and period_asked and axis != group:
+        group, split = axis, group
     if split is None:
         # A column the question names by its OWN header ("each plant" -> Plant)
         # that is not drawn yet is the series. EVERY word of the header: a
@@ -1422,14 +1470,34 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
             # column), not asked for: "leads by stage" drew Created x Stage.
             # The column the question names IS the breakdown.
             group, split = named[0], None
-        elif len(named) == 1:
+        elif len(named) == 1 and named[0] not in dates:
             split = named[0]
-    if (group, split) == (spec.group_by, spec.split_by):
+    if split in dates and group not in dates:
+        # A date is a time axis, never a series.
+        group, split = split, group
+    kept = [k for k, v in spec.filters if isinstance(v, tuple) and k not in (group, split)]
+    if split is None and group is not None and len(kept) == 1:
+        # A filter keeping several values ("Kavya Nair and Rohan Mehta") keeps
+        # each of them: one series per value, never their sum as one.
+        split = kept[0]
+    words = _squashed(_breakdown_words(reply) or "")
+    if (not data.get("group_by") and not period_asked and split is None
+            and group == spec.group_by and group in dates
+            and words and f" {words} " in f"{asked_text} "):
+        # They asked for a breakdown ("by employee") the model matched to no
+        # column, and the axis left is a default date nobody asked for: that
+        # chart answers another question. Say which columns can be the breakdown.
+        from .tables import _options
+
+        return AskIntent("refuse", message=(
+            f"I couldn't tell which column of \"{table.name}\" \"{_breakdown_words(reply)}\" "
+            f"means. {_options(table, ('category',), 'breakdown')}"))
+    if (group, split, period) == (spec.group_by, spec.split_by, spec.period):
         return intent
     if group is None:
         group, split = split, None
     return replace(intent, spec=replace(
-        spec, group_by=group, split_by=split,
+        spec, group_by=group, split_by=split, period=period,
         chart=table_shape(table, group, split, requested)))
 
 

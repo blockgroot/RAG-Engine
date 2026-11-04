@@ -116,7 +116,12 @@ A tool the question NAMES decides routing: one named tool is routed there;
 several are probed among themselves and the connected answer reads exactly those,
 never a tool the asker did not mention. The probe's own pick that refuses is asked
 once more on the best OTHER tool that cleared the gate, the rest searched beside it,
-never the refusing tool again (`routing.refusal_retry`; chat and Slack). Adjacent markers citing one document
+never the refusing tool again (`routing.refusal_retry`; chat and Slack). A question that
+types a cell of ONE tool's sheet rows (`rows_naming`) is routed to that tool when it
+cleared the gate ("rows-named", run beside the probe; retried like a probe pick): a
+sheet embeds only its columns, so a person's name lost to Slack by 0.03. One word of a
+longer title (numbers aside) does not NAME a page ("by employee" is not "Employee
+Referral Policy"; `resolve.title_match`). Adjacent markers citing one document
 collapse to one. A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
 traffic is not indexed. Query-norm max edit distance is 1, and the normalized
 string is never the web-search query.
@@ -194,11 +199,20 @@ A connector the question NAMES ("the Google doc") is `AskIntent.source`, kept on
 when its `source_words` quote is in the question; then no other connector's
 table is drawn, and the retry, the live read and the paragraph read all stay on
 that connector. A table pick is never swapped for an activity metric, and is
-drawn even when the offered tables span connectors (one document is not a shared
-kind). The model is shown every value of a small category column. With no column
+drawn across connectors when the question has a word of that table's labels or names
+its page; a pick nothing in the question supports is refused, naming the documents.
+The model is shown every value of a small category column. With no column
 from the model, a column the question names by its header is the breakdown, not the
 date column; a column of which the question types exactly ONE value, undrawn and
 unfiltered, is filtered on it (`resolve._typed_values`); two values are a comparison.
+A breakdown asked for in words the model matched to no column is refused with the
+columns, never drawn on a default date axis. A table's time axis is a DATE column, never
+a series; a period the asker did not ask for (`period`/`period_words` not in the
+question) is the default grain. A table filter may keep several values (a tuple,
+`= ANY`, each value matched to real rows); kept values are drawn one series each. A
+filter header the table lacks is the ONE column whose complete samples hold every value
+(`tables._holding`); "A, B" written as one string is split only when the whole is no
+value and every part is.
 Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
 The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
@@ -320,7 +334,8 @@ only when the question types one of its cells (`doctables.store.rows_naming`: wh
 words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,
 the document predicate), as a passage scored by its document's cosine, never its own.
 With `DOCTABLES_ANSWERS_ENABLED` (off by default), a question Ask's check flags as
-`table` (a total, share, highest) is worked out by `insights/table_answers.py`: the
+`table` (a total, share, highest, named people compared, an overview; a follow-up is
+checked with the question it continues, `resolve.with_earlier`) is worked out by `insights/table_answers.py`: the
 model fills a FORM (table, operation, columns, values), code checks every name and
 value against the real table, SQL computes, and the result is a passage of the
 sheet that retrieval never ranks out (re-checked for the viewer). A form that does

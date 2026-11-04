@@ -10,7 +10,9 @@ Pinned here, one per root cause:
   for; one typed value of a column is a filter, two are a comparison;
 - a refused answer is asked once more on the next tool that cleared the gate,
   never on the tool that refused, and never when the asker chose the tool;
-- a table row the question names by a cell is found, as that viewer only.
+- a table row the question names by a cell is found, as that viewer only,
+  and routes Ask to that sheet's tool;
+- one word of a longer title does not name a page.
 """
 
 from __future__ import annotations
@@ -132,6 +134,93 @@ def test_one_typed_value_is_a_filter_and_two_are_a_comparison():
     assert all(key != owner for key, _ in two.filters)
 
 
+TARGETS = ("Employee,Month,Revenue Target\n"
+           "Kavya Nair,2026-06-01,900000\nRohan Mehta,2026-06-01,770000\n")
+
+
+def _targets() -> TableRef:
+    table = extract.profile(extract.parse_csv(TARGETS, name="Targets"))
+    return TableRef(
+        id=uuid.uuid4().hex, name="Targets", columns=tuple(c.as_dict() for c in table.columns),
+        row_count=len(table.cells), truncated=False, notes=(), document_title="Targets",
+        provider="google", source_uri=None, document_id=uuid.uuid4().hex,
+    )
+
+
+def test_a_period_asked_puts_the_date_column_on_the_axis_never_in_the_series():
+    """Staging: "... by month" on a table whose first column is a category drew
+    Employee along the axis and the Month as a series, then refused it."""
+    targets = _targets()
+    employee, month = _col(targets, "Employee"), _col(targets, "Month")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=employee, period="month", chart="bar",
+                     measure="sum", value=_col(targets, "Revenue Target"), table_id=targets.id)
+    intent = resolve._table_period_axis(AskIntent("chart", spec=spec), "Revenue target by month",
+                                        '{"group_by": null, "period": "month"}', {"T1": targets})
+    assert (intent.spec.group_by, intent.spec.split_by) == (month, employee)
+
+
+@pytest.mark.parametrize("reply, period", [
+    ('{"period": "day"}', "month"),                        # never asked: the default grain
+    ('{"period": "day", "period_words": "daily"}', "day"),  # their own word for it
+])
+def test_a_period_is_kept_only_when_the_asker_asked_for_it(reply, period):
+    leads = _leads()
+    question = "leads by rohan in august" if "daily" not in reply else "daily leads by rohan"
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(leads, "Created"), period="day",
+                     chart="bar", measure="count", table_id=leads.id)
+    intent = resolve._table_period_axis(AskIntent("chart", spec=spec), question, reply,
+                                        {"T1": leads})
+    assert intent.spec.period == period
+
+
+def test_several_kept_values_are_drawn_as_one_series_each():
+    leads = _leads()
+    owner, created = _col(leads, "Owner"), _col(leads, "Created")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=created, period="month", chart="bar",
+                     measure="sum", value=_col(leads, "Deal Value"), table_id=leads.id,
+                     filters=((owner, ("Kavya Nair", "Rohan Mehta")),))
+    intent = resolve._table_period_axis(
+        AskIntent("chart", spec=spec), "Compare Kavya Nair and Rohan Mehta revenue by month",
+        '{"period": "month"}', {"T1": leads})
+    assert (intent.spec.group_by, intent.spec.split_by) == (created, owner)
+
+
+def test_a_breakdown_matched_to_no_column_is_refused_not_drawn_by_date():
+    """Staging, Claude Haiku: "won revenue by employee" came back with no
+    column and was drawn by Created month."""
+    leads = _leads()
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(leads, "Created"), period="month",
+                     chart="bar", measure="sum", value=_col(leads, "Deal Value"),
+                     table_id=leads.id)
+    intent = resolve._table_period_axis(
+        AskIntent("chart", spec=spec), "Show won revenue by employee",
+        '{"group_by": null, "breakdown_words": "by employee"}', {"T1": leads})
+    assert intent.kind == "refuse" and "Owner" in intent.message
+
+
+def test_a_filter_may_keep_several_values_and_survives_the_round_trip():
+    leads = _leads()
+    pick = doc_tables.parse_pick({"table": "T1", "value": "Deal Value", "group_by": "Created",
+                                  "filters": {"Owner": ["Kavya Nair", "Rohan Mehta"]}},
+                                 {"T1": leads})
+    assert pick.filters == ((_col(leads, "Owner"), ("Kavya Nair", "Rohan Mehta")),)
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=pick.group_by, period="month", chart="bar",
+                     measure="sum", value=pick.value, filters=pick.filters, table_id=leads.id)
+    assert resolve.spec_from_dict(resolve.spec_to_dict(spec)) == spec
+    # A header the table lacks, with values only one column holds.
+    pick = doc_tables.parse_pick({"table": "T1", "value": "Deal Value",
+                                  "filters": {"Employee": ["Kavya Nair", "Rohan Mehta"]}},
+                                 {"T1": leads})
+    assert pick.filters == ((_col(leads, "Owner"), ("Kavya Nair", "Rohan Mehta")),)
+    # The same list written as one string.
+    pick = doc_tables.parse_pick({"table": "T1", "filters": {"Owner": "Kavya Nair, Rohan Mehta"}},
+                                 {"T1": leads})
+    assert pick.filters == ((_col(leads, "Owner"), ("Kavya Nair", "Rohan Mehta")),)
+    with pytest.raises(doc_tables.TableRefusal):
+        doc_tables.parse_pick({"table": "T1", "filters": {"Employee": "Priya Sharma"}},
+                              {"T1": leads})
+
+
 # ---------------------------------------------------------------------------
 # A refusal is asked once more, elsewhere
 # ---------------------------------------------------------------------------
@@ -151,6 +240,32 @@ def test_a_tool_the_asker_chose_is_never_second_guessed(reason):
 
 def test_nothing_else_cleared_the_gate_so_the_refusal_stands():
     assert refusal_retry(RoutingDecision("notion", "best-match", {"notion": 0.5, "google": 0.2})) is None
+
+
+def _routed(monkeypatch, rows_tool, scores):
+    from app.agent import routing
+
+    monkeypatch.setattr(routing, "_connected_providers", lambda *a, **k: set(scores))
+    monkeypatch.setattr(routing, "_probe_scores", lambda *a, **k: scores)
+    monkeypatch.setattr(routing, "_try_question_route", lambda *a, **k: None)
+    monkeypatch.setattr(routing, "_rows_named_provider", lambda *a, **k: rows_tool)
+    return routing.choose_agent("Compare Kavya Nair and Rohan Mehta", "org",
+                                viewer=Viewer(email="a@x.com"))
+
+
+def test_a_question_naming_a_sheet_s_cells_is_routed_to_that_sheet(monkeypatch):
+    """Staging: Slack 0.489, Notion 0.486, Drive 0.459 -- the sheet's rows
+    name both people, but a sheet embeds only its columns."""
+    decision = _routed(monkeypatch, "google", {"slack": 0.489, "notion": 0.486, "google": 0.459})
+    assert (decision.agent_key, decision.reason) == ("google", "rows-named")
+    # A refusal there is still asked again elsewhere.
+    assert refusal_retry(decision) == ("slack", {"notion"})
+
+
+@pytest.mark.parametrize("rows_tool", [None, "linear"])
+def test_no_single_sheet_or_one_below_the_gate_leaves_the_probe_s_pick(monkeypatch, rows_tool):
+    decision = _routed(monkeypatch, rows_tool, {"slack": 0.489, "google": 0.459, "linear": 0.2})
+    assert (decision.agent_key, decision.reason) == ("slack", "best-match")
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +439,22 @@ def test_a_value_the_rows_do_not_hold_is_dropped_not_zero(org):
 @requires_db
 def test_a_column_the_table_does_not_have_is_dropped(org):
     assert _worked(org, {"table": "T1", "operation": "sum", "value": "Salary"}) == ""
+
+
+@requires_db
+def test_a_chart_filtered_to_two_people_counts_only_their_rows(org):
+    from app.agent.insights_agent import run_table_spec
+
+    [leads] = _sales_tables(org)
+    owner, value = _col(leads, "Owner"), _col(leads, "Deal Value")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=owner, period="month", chart="bar",
+                     measure="sum", value=value, table_id=leads.id,
+                     filters=((owner, ("kavya nair", "Rohan Mehta")),))
+    panel, _ = run_table_spec(spec, org_id=org, workspace_id=None,
+                              viewer=Viewer(email="sana@acme.test"))
+    assert {p["group"]: p["value"] for p in panel["points"]} == {
+        "Kavya Nair": 3672000.0, "Rohan Mehta": 511000.0}
+    assert "Owner: Kavya Nair, Rohan Mehta" in panel["title"]
 
 
 @requires_db

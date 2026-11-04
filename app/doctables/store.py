@@ -719,10 +719,8 @@ def list_rows(
 ) -> list[tuple[dict, list[str], str | None]]:
     """The first rows behind a chart, ``(cells, raw, quote)``, in document
     order. ``quote`` is the sentence a text-adapter row was read from."""
-    where, params = "", {"table_id": table.id, "limit": max(1, min(limit, MAX_DETAILS))}
-    for dim, value in filters:
-        where += f" AND {_col(dim)} = %(f_{dim})s"
-        params[f"f_{dim}"] = value
+    where, params = _filter_sql(table.id, filters)
+    params["limit"] = max(1, min(limit, MAX_DETAILS))
     try:
         with get_connection() as conn:
             rows = conn.execute(
