@@ -569,3 +569,27 @@ def test_a_named_row_scores_the_better_of_its_document_and_its_own_text(monkeypa
     [hit] = retriever._table_rows("org", "Who closed L-1076?", [0.6, 0.8], workspace_id=None,
                                   viewer=Viewer(email="x@acme.test"), tools=["google"])
     assert hit.score == pytest.approx(0.6)  # the row's own cosine, above its sheet's 0.342
+
+
+def test_a_copy_of_a_sheet_is_offered_once_but_a_template_s_months_stay():
+    """Staging: "Sales Targets 2026" and "Sales Targets 2026.csv" took two of
+    the six chart slots and pushed the leads sheet out."""
+    from dataclasses import replace as _replace
+
+    leads = _leads()
+    copy = _replace(leads, id="t2", document_title="Leads.csv", name="Leads.csv")
+    june = _replace(leads, id="t3", document_title="Leads June", name="Leads June")
+    assert [t.id for t in doc_tables.distinct([leads, copy, june])] == [leads.id, "t3"]
+
+
+def test_a_date_breakdown_stays_the_axis_wherever_its_column_sits():
+    """Staging, Sonnet: "revenue by region by month" picked Closed x Region; Region
+    sits before Closed, so it was swapped to Region x Closed and refused."""
+    table = extract.profile(extract.parse_csv(
+        "Region,Closed,Value\nSouth,2026-06-01,5\nWest,2026-07-01,6\n", name="Deals"))
+    ref = TableRef(id="t", name="Deals", columns=tuple(c.as_dict() for c in table.columns),
+                   row_count=2, truncated=False, notes=(), document_title="Deals",
+                   provider="google", source_uri=None, document_id="d")
+    pick = doc_tables.parse_pick({"table": "T1", "value": "Value", "group_by": "Closed",
+                                  "split_by": "Region"}, {"T1": ref})
+    assert (pick.group_by, pick.split_by) == (_col(ref, "Closed"), _col(ref, "Region"))

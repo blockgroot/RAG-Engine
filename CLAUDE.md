@@ -206,7 +206,11 @@ from the model, a column the question names by its header is the breakdown, not 
 date column; a column of which the question types exactly ONE value, undrawn and
 unfiltered, is filtered on it (`resolve._typed_values`); two values are a comparison.
 A breakdown asked for in words the model matched to no column is refused with the
-columns, never drawn on a default date axis. A table's time axis is a DATE column, never
+columns, never drawn on a default date axis. A date breakdown stays the axis wherever its
+column sits (`parse_pick` swapped Closed x Region and refused). Copies of one sheet (title
+equal but for a file extension, same columns and rows) are offered once
+(`tables.distinct`); two copies pushed the leads sheet out of the six. The chart reply cap
+(`resolve.MAX_TOKENS`) fits the whole JSON object: at 200 it was cut off and refused. A table's time axis is a DATE column, never
 a series; a period the asker did not ask for (`period`/`period_words` not in the
 question) is the default grain. A table filter may keep several values (a tuple,
 `= ANY`, each value matched to real rows); kept values are drawn one series each. A
