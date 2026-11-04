@@ -245,7 +245,7 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
             )
 
     try:
-        oauth_provider = build_oauth_provider(provider)
+        oauth_provider = build_oauth_provider(provider, org_id=session.org_id)
     except ConfigurationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -459,11 +459,15 @@ def callback(
     """Finish a connect flow, including GitHub's install-redirect variant."""
     from ..auth.github_pending import create_github_install_pending
 
-    try:
-        oauth_provider = build_oauth_provider(provider)
-    except (OAuthError, ConfigurationError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    is_github = isinstance(oauth_provider, GitHubAppProvider)
+    # Google and Slack sign in through the company's own app, and which
+    # company this is comes from the state, so those are built after it.
+    is_github = provider.lower() == "github"
+    oauth_provider = None
+    if is_github:
+        try:
+            oauth_provider = build_oauth_provider(provider)
+        except (OAuthError, ConfigurationError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not code:
         if not is_github:
@@ -534,6 +538,7 @@ def callback(
                     settings, f"/connect/github/choose?pending={pending}"
                 )
         else:
+            oauth_provider = build_oauth_provider(provider, org_id=org_id)
             tokens = oauth_provider.exchange_code(code)
             connection_id = save_connection(
                 org_id, provider, tokens, workspace_id=workspace_id

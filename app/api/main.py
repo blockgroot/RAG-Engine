@@ -35,6 +35,7 @@ from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from ..security.rate_limit import limit_request, report_store
 from . import admin as admin_router
+from . import connector_apps as connector_apps_router
 from . import internal as internal_router
 from . import account as account_router
 from . import actions as actions_router
@@ -233,6 +234,7 @@ def create_app() -> FastAPI:
         auth_router,
         orgs_router,
         admin_router,
+        connector_apps_router,
         llm_model_router,
         updates_router,
         chat_router,

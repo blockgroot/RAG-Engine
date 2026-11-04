@@ -62,8 +62,10 @@ def _register_fake_provider(monkeypatch, provider_instance):
     # lazy import re-resolves it fresh on every call.
     monkeypatch.setattr(
         "app.auth.factory.build_oauth_provider",
-        lambda provider: provider_instance,
+        lambda provider, **_kw: provider_instance,
     )
+    # These tests are about refreshing, not about which Google app is set up.
+    monkeypatch.setattr("app.auth.org_apps.has_app", lambda org_id, provider: True)
 
 
 @requires_db

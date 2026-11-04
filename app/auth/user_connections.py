@@ -174,7 +174,7 @@ def _refresher(org_id: str, provider: str):
     server = get_server(org_id, provider.split(":", 1)[1]) if provider.startswith("mcp:") else None
     if server is None or not server.oauth:
         raise NotImplementedError("no sign-in to refresh")
-    return McpOAuth(server.oauth)
+    return McpOAuth(server.oauth, org_id)
 
 
 def mark_user_needs_reauth(org_id: str, user_id: str, provider: str) -> None:

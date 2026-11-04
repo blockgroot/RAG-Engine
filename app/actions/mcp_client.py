@@ -226,7 +226,8 @@ def _well_known(base: str, name: str) -> list[str]:
         f"{root}/.well-known/{name}"]
 
 
-def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None) -> dict | None:
+def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None,
+             org_id: str | None = None) -> dict | None:
     """How people sign in to this server, registered for Handbook; ``None``
     when it needs no sign-in. Raises ``ActionRejected`` with the reason.
 
@@ -234,9 +235,9 @@ def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None)
     own app there when it cannot register Handbook (GitHub, Slack), or the
     whole sign-in when it advertises none (Google)."""
     if preset is not None and preset.oauth:
-        client_id, _secret = preset.client() if preset.client else (None, None)
+        client_id, _secret = preset.client(org_id) if preset.client else (None, None)
         if not client_id:
-            raise ActionRejected(f"{preset.name} needs Handbook's {preset.name} app configured first.")
+            raise ActionRejected(_no_app(preset))
         return {**preset.oauth, "client_id": client_id, "client_secret": None, "preset": preset.key,
                 "resource": None}
     try:
@@ -273,9 +274,9 @@ def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None)
     if preset is not None:
         scopes = preset.pick_scopes(scopes)
     if preset is not None and preset.client and not meta.get("registration_endpoint"):
-        client_id, _secret = preset.client()
+        client_id, _secret = preset.client(org_id)
         if not client_id:
-            raise ActionRejected(f"{preset.name} needs Handbook's {preset.name} app configured first.")
+            raise ActionRejected(_no_app(preset))
         # Handbook's own app there; its secret stays in settings, never copied here.
         return {"authorization_endpoint": meta["authorization_endpoint"],
                 "token_endpoint": meta["token_endpoint"], "client_id": client_id,
@@ -306,6 +307,23 @@ def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None)
     }
 
 
+def _no_app(preset) -> str:
+    if preset.key in ("slack", "google_workspace"):
+        where = "Slack" if preset.key == "slack" else "Google Drive"
+        return f"{preset.name} needs your company's own app: an admin sets it up under Sources → {where}."
+    return f"{preset.name} needs Handbook's {preset.name} app configured first."
+
+
+def _preset_client(oauth: dict, org_id: str | None) -> tuple[str, str | None]:
+    """The client to sign in with: a preset's is read now, never the copy stored
+    when the server was added, so a company that sets up its own app later
+    signs in through it."""
+    from .mcp_presets import PRESETS
+
+    client_id, secret = PRESETS[oauth["preset"]].client(org_id)
+    return client_id or oauth["client_id"], secret
+
+
 def pkce() -> tuple[str, str]:
     """``(verifier, S256 challenge)``."""
     verifier = secrets.token_urlsafe(48)
@@ -313,8 +331,10 @@ def pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def authorize_url(oauth: dict, *, state: str, challenge: str, redirect_uri: str) -> str:
-    params = {"response_type": "code", "client_id": oauth["client_id"], "redirect_uri": redirect_uri,
+def authorize_url(oauth: dict, *, state: str, challenge: str, redirect_uri: str,
+                  org_id: str | None = None) -> str:
+    client_id = _preset_client(oauth, org_id)[0] if oauth.get("preset") else oauth["client_id"]
+    params = {"response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri,
               "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
     if oauth.get("resource"):
         params["resource"] = oauth["resource"]
@@ -327,16 +347,15 @@ def authorize_url(oauth: dict, *, state: str, challenge: str, redirect_uri: str)
     return f"{oauth['authorization_endpoint']}?{urlencode(params)}"
 
 
-def _token(oauth: dict, form: dict, *, timeout: float = 20.0) -> OAuthTokens:
+def _token(oauth: dict, form: dict, *, org_id: str | None = None,
+           timeout: float = 20.0) -> OAuthTokens:
     from ..security import decrypt
 
     form = {**form, "client_id": oauth["client_id"]}
     if oauth.get("resource"):
         form["resource"] = oauth["resource"]
     if oauth.get("preset"):
-        from .mcp_presets import PRESETS
-
-        _id, secret = PRESETS[oauth["preset"]].client()
+        form["client_id"], secret = _preset_client(oauth, org_id)
         if secret:
             form["client_secret"] = secret
     elif oauth.get("client_secret"):
@@ -356,16 +375,19 @@ def _token(oauth: dict, form: dict, *, timeout: float = 20.0) -> OAuthTokens:
                        external_workspace_id="", external_workspace_name=None)
 
 
-def exchange(oauth: dict, *, code: str, verifier: str, redirect_uri: str) -> OAuthTokens:
+def exchange(oauth: dict, *, code: str, verifier: str, redirect_uri: str,
+             org_id: str | None = None) -> OAuthTokens:
     return _token(oauth, {"grant_type": "authorization_code", "code": code,
-                          "code_verifier": verifier, "redirect_uri": redirect_uri})
+                          "code_verifier": verifier, "redirect_uri": redirect_uri}, org_id=org_id)
 
 
 class McpOAuth:
     """Refresh for ``user_connections.fresh_user_token``: one server's sign-in."""
 
-    def __init__(self, oauth: dict) -> None:
+    def __init__(self, oauth: dict, org_id: str | None = None) -> None:
         self.oauth = oauth
+        self.org_id = org_id
 
     def refresh(self, refresh_token: str) -> OAuthTokens:
-        return _token(self.oauth, {"grant_type": "refresh_token", "refresh_token": refresh_token})
+        return _token(self.oauth, {"grant_type": "refresh_token", "refresh_token": refresh_token},
+                      org_id=self.org_id)

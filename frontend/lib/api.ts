@@ -416,6 +416,19 @@ export interface ConnectionRecord {
   last_sync_at?: string | null;
 }
 
+/** The company's own Google or Slack app (Sources → Set up). */
+export interface ConnectorApp {
+  provider: "google" | "slack";
+  configured: boolean;
+  client_id: string | null;
+  /** A self-hosted install's app from its settings; hosted Handbook has none. */
+  server_app: boolean;
+  redirect_uris: string[];
+  /** Slack only: the app template, and a link that opens Slack with it filled in. */
+  manifest?: string;
+  create_url?: string;
+}
+
 export interface GoogleForm {
   id: string;
   title: string;
@@ -873,6 +886,16 @@ export const api = {
     }),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
+  listConnectorApps: () =>
+    request<{ google: ConnectorApp; slack: ConnectorApp }>("/admin/connector-apps"),
+  saveConnectorApp: (
+    provider: "google" | "slack",
+    keys: { client_id: string; client_secret: string; signing_secret: string | null }
+  ) =>
+    request<ConnectorApp>(`/admin/connector-apps/${provider}`, {
+      method: "PUT",
+      body: JSON.stringify(keys),
+    }),
   getConnectionConfig: (connectionId: string) =>
     request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`),
   searchConnectionDriveFolders: (connectionId: string, q: string) =>
