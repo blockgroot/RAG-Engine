@@ -116,16 +116,34 @@ DEFAULT_QUERY_CACHE_ENABLED = True
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 
 DEFAULT_RATE_LIMIT_ENABLED = True
-DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
-DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
-DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
-# Answers written at once per process; the rest wait for a slot, then are told
-# "busy". Measured locally with the outside APIs replayed: 20 slots on the
+# Token buckets (docs/plans/2026-11-03-rate-limiting.md): BURST requests at
+# once, refilled at PER_MINUTE. Starting numbers; tuned once real use is seen.
+# A question (chat, Agent, charts, scheduler setup, Slack) costs the model.
+DEFAULT_RATE_LIMIT_QUESTIONS_PER_MINUTE = 10.0
+DEFAULT_RATE_LIMIT_QUESTION_BURST = 5
+# The company's bucket is sized by its members, so one large company cannot
+# use the AI account every company shares, and a small one is not starved.
+DEFAULT_RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER = 3.0
+DEFAULT_RATE_LIMIT_ORG_QUESTIONS_MIN = 30
+# Anything that sends an email (login link, email change), per IP or person.
+# Per IP, a whole office behind one address shares it: room for a team
+# signing in together, not for sweeping an address book.
+DEFAULT_RATE_LIMIT_EMAILS_PER_MINUTE = 20.0
+DEFAULT_RATE_LIMIT_EMAIL_BURST = 10
+# Every API call, per person (per IP when signed out). Loose on purpose: a
+# page load sends many calls at once, and this exists only to stop scripts.
+DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE = 120.0
+DEFAULT_RATE_LIMIT_REQUEST_BURST = 40
+# Answers written at once, across every server when REDIS_URL is set (per
+# process otherwise); the rest wait for a slot, then are told "busy". Measured locally with the outside APIs replayed: 20 slots on the
 # 10-connection pool answered 50 askers with no one turned away and no pool
 # errors. The outside APIs cap it lower on free keys (one Jina key and Ollama
 # Cloud already failed 15% at 10 at once): lower it to match the plans.
 DEFAULT_CHAT_MAX_CONCURRENT = 20
 DEFAULT_CHAT_QUEUE_WAIT_SECONDS = 30
+# Answers one person may have being written at once: more is a script or a
+# pile of tabs, and each holds model calls and a server slot.
+DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON = 2
 
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
@@ -1588,34 +1606,74 @@ class QueryCacheSettings:
 
 @dataclass(frozen=True)
 class RateLimitSettings:
-    """Postgres-backed rate limits for HTTP endpoints (Phase 21)."""
+    """Token-bucket rate limits (``app/ratelimit``), and the answers-at-once cap.
+
+    ``redis_url`` empty keeps the buckets in this process's memory: right for
+    development and a single-process install, wrong for several instances,
+    each of which would then allow the full limit on its own.
+    """
 
     enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
-    chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
-    auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
-    window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
-    # 0 turns the cap off (every answer starts at once, as before).
+    redis_url: str | None = None
+    questions_per_minute: float = DEFAULT_RATE_LIMIT_QUESTIONS_PER_MINUTE
+    question_burst: int = DEFAULT_RATE_LIMIT_QUESTION_BURST
+    org_questions_per_member: float = DEFAULT_RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER
+    org_questions_min: int = DEFAULT_RATE_LIMIT_ORG_QUESTIONS_MIN
+    emails_per_minute: float = DEFAULT_RATE_LIMIT_EMAILS_PER_MINUTE
+    email_burst: int = DEFAULT_RATE_LIMIT_EMAIL_BURST
+    requests_per_minute: float = DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE
+    request_burst: int = DEFAULT_RATE_LIMIT_REQUEST_BURST
+    # 0 turns a cap off.
     chat_max_concurrent: int = DEFAULT_CHAT_MAX_CONCURRENT
     chat_queue_wait_seconds: float = DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+    chat_max_concurrent_per_person: int = DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
+        def rate(name: str, default: float) -> float:
+            try:
+                value = float(os.getenv(name) or default)
+            except ValueError:
+                return default
+            return value if value > 0 else default
+
         return cls(
+            enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
+            redis_url=(os.getenv("REDIS_URL") or "").strip() or None,
+            questions_per_minute=rate(
+                "RATE_LIMIT_QUESTIONS_PER_MINUTE", DEFAULT_RATE_LIMIT_QUESTIONS_PER_MINUTE
+            ),
+            question_burst=_env_positive_int(
+                "RATE_LIMIT_QUESTION_BURST", DEFAULT_RATE_LIMIT_QUESTION_BURST
+            ),
+            org_questions_per_member=rate(
+                "RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER",
+                DEFAULT_RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER,
+            ),
+            org_questions_min=_env_positive_int(
+                "RATE_LIMIT_ORG_QUESTIONS_MIN", DEFAULT_RATE_LIMIT_ORG_QUESTIONS_MIN
+            ),
+            emails_per_minute=rate(
+                "RATE_LIMIT_EMAILS_PER_MINUTE", DEFAULT_RATE_LIMIT_EMAILS_PER_MINUTE
+            ),
+            email_burst=_env_positive_int(
+                "RATE_LIMIT_EMAIL_BURST", DEFAULT_RATE_LIMIT_EMAIL_BURST
+            ),
+            requests_per_minute=rate(
+                "RATE_LIMIT_REQUESTS_PER_MINUTE", DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE
+            ),
+            request_burst=_env_positive_int(
+                "RATE_LIMIT_REQUEST_BURST", DEFAULT_RATE_LIMIT_REQUEST_BURST
+            ),
             chat_max_concurrent=int(
                 os.getenv("CHAT_MAX_CONCURRENT") or DEFAULT_CHAT_MAX_CONCURRENT
             ),
             chat_queue_wait_seconds=float(
                 os.getenv("CHAT_QUEUE_WAIT_SECONDS") or DEFAULT_CHAT_QUEUE_WAIT_SECONDS
             ),
-            enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
-            chat_requests_per_window=int(
-                os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
-            ),
-            auth_requests_per_window=int(
-                os.getenv("RATE_LIMIT_AUTH_REQUESTS") or DEFAULT_RATE_LIMIT_AUTH_REQUESTS
-            ),
-            window_seconds=int(
-                os.getenv("RATE_LIMIT_WINDOW_SECONDS") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+            chat_max_concurrent_per_person=int(
+                os.getenv("CHAT_MAX_CONCURRENT_PER_PERSON")
+                or DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
             ),
         )
 

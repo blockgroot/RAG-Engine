@@ -37,7 +37,7 @@ from ..core.exceptions import (
     NotFoundError,
     OAuthReauthRequiredError,
 )
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import limit_question
 from ..workspaces import assert_member
 from .deps import (
     SessionClaims,
@@ -342,7 +342,7 @@ def _act_args(body: ActRequest, session: SessionClaims) -> dict:
     """Every check before drafting, raised as HTTP errors BEFORE any stream
     starts; then what ``service.propose`` takes."""
     settings = _require_on(session.org_id)
-    check_rate_limit(f"act:{session.user_id}")
+    limit_question(session)
     user = get_user(session.user_id)
     viewer = viewer_for(session)
     if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
@@ -515,7 +515,7 @@ class ReviseRequest(BaseModel):
 def revise(action_id: str, body: ReviseRequest, session: SessionClaims = Depends(get_session)):
     """Rework a pending draft's words as the person asks; returns the new card."""
     _require_on(session.org_id)
-    check_rate_limit(f"act:{session.user_id}")
+    limit_question(session)
     if body.model and not _selectable_model(session.org_id, body.model):
         raise HTTPException(status_code=400, detail="Unknown model")
     try:

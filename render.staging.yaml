@@ -68,6 +68,9 @@ services:
         sync: false
       - key: RATE_LIMIT_ENABLED
         value: "true"
+      # No REDIS_URL on staging: Redis is production only. Rate limits are
+      # then counted per process (app/ratelimit/), exact for one instance.
+      # Never point it at production's Redis: the two would share limits.
       # Real client IP for the rate limiter when the frontend is on Vercel.
       - key: CLIENT_IP_HEADER
         value: x-vercel-forwarded-for

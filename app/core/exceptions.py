@@ -122,3 +122,11 @@ class ActionConflict(ActionError):
 
 class ActionOutcomeUnknown(ActionError):
     """The write was sent and no answer came back: it may or may not exist."""
+
+
+class RateLimiterError(ProviderError):
+    """The rate-limit store (Redis) could not be reached or answered badly.
+
+    Callers let the request through on this: a limiter fault must never take
+    the product down (``app/security/rate_limit.py``).
+    """

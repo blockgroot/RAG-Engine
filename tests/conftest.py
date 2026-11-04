@@ -199,6 +199,25 @@ def signup_email_cleanup():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_rate_limits(monkeypatch):
+    """Each test starts with full rate-limit buckets, in memory.
+
+    The buckets are process-global, and TestClient calls all come from one
+    address: without this, a late test inherits every earlier test's login
+    links and calls and is refused. No REDIS_URL, so a test never counts in a
+    real Redis the developer's .env points at.
+    """
+    from app.ratelimit import clear_rate_limiter_cache
+    from app.security import rate_limit
+
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    clear_rate_limiter_cache()
+    rate_limit._member_counts.clear()
+    yield
+    clear_rate_limiter_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_llm_pacing():
     """Clear the LLM rate-limit window between tests.
 

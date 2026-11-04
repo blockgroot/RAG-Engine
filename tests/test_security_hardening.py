@@ -5,13 +5,11 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.config.settings import IngestSanitizeSettings, RateLimitSettings
+from app.config.settings import IngestSanitizeSettings
 from app.core.exceptions import ProviderError
 from app.ingestion.sanitize import sanitize_ingest_text
-from app.security.rate_limit import check_rate_limit
 
 from .conftest import requires_db
 
@@ -44,17 +42,6 @@ def test_sanitize_rejects_mostly_control_chars():
     bad = "\x01" * 50 + "ok"
     with pytest.raises(ProviderError, match="malformed"):
         sanitize_ingest_text(bad, settings=settings)
-
-
-@requires_db
-def test_rate_limit_blocks_after_threshold(store):
-    settings = RateLimitSettings(enabled=True, chat_requests_per_window=2, window_seconds=60)
-    scope = f"test:{uuid.uuid4()}"
-    check_rate_limit(scope, settings=settings)
-    check_rate_limit(scope, settings=settings)
-    with pytest.raises(HTTPException) as exc:
-        check_rate_limit(scope, settings=settings)
-    assert exc.value.status_code == 429
 
 
 @pytest.fixture
@@ -98,8 +85,8 @@ def test_chat_rate_limit_returns_429(store, org_cleanup, monkeypatch):
     from tests.test_api_chat import _fake_agent
 
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
-    monkeypatch.setenv("RATE_LIMIT_CHAT_REQUESTS", "2")
-    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("RATE_LIMIT_QUESTION_BURST", "2")
+    monkeypatch.setenv("RATE_LIMIT_QUESTIONS_PER_MINUTE", "1")
     monkeypatch.setenv("CHAT_STREAM_WORD_DELAY_MS", "0")
 
     org_id = store.create_organization(f"RateLimitOrg-{uuid.uuid4().hex[:8]}")
@@ -125,3 +112,5 @@ def test_chat_rate_limit_returns_429(store, org_cleanup, monkeypatch):
         cookies=cookies,
     )
     assert r.status_code == 429
+    assert int(r.headers["Retry-After"]) > 0
+    assert "try again in" in r.json()["detail"]

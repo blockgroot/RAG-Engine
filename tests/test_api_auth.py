@@ -656,20 +656,13 @@ def test_magic_link_is_rate_limited_per_ip(client, monkeypatch):
     fix — an attacker with many IPs still gets through, which is the accepted
     cost of the explicit message.
 
-    Deliberately uses its OWN budget rather than the chat one: this endpoint is
-    anonymous and keyed per IP, so an office behind a single NAT shares one
-    bucket and needs more headroom than a single user's chat session.
+    Deliberately uses its OWN bucket rather than the question one: this
+    endpoint is anonymous and keyed per IP, so an office behind a single NAT
+    shares one bucket and needs more headroom than a single user's chat session.
     """
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
-    monkeypatch.setenv("RATE_LIMIT_AUTH_REQUESTS", "3")
-
-    # Every test in this file shares one scope key (TestClient always reports
-    # the same host), and the window is fixed-length rather than per-test — so
-    # without clearing it, earlier magic-link tests have already spent the
-    # budget and even the first request here would 429. That shared-bucket
-    # behaviour is correct in production; it just has to be reset to assert on.
-    with get_connection() as conn:
-        conn.execute("DELETE FROM api_rate_counters WHERE scope_key LIKE %s", ("magic-link:%",))
+    monkeypatch.setenv("RATE_LIMIT_EMAIL_BURST", "3")
+    monkeypatch.setenv("RATE_LIMIT_EMAILS_PER_MINUTE", "1")
 
     email = f"probe-{uuid.uuid4().hex[:8]}@nowhere.example"
 
@@ -680,14 +673,3 @@ def test_magic_link_is_rate_limited_per_ip(client, monkeypatch):
 
     assert codes[0] == 200, "the first request must always be served"
     assert 429 in codes, f"bulk probing was never throttled: {codes}"
-
-
-@requires_db
-def test_rate_limit_uses_a_separate_budget_from_chat():
-    """Reusing the chat limit here would couple two unrelated risk profiles."""
-    from app.config.settings import RateLimitSettings
-
-    settings = RateLimitSettings.from_env()
-
-    assert hasattr(settings, "auth_requests_per_window")
-    assert settings.auth_requests_per_window != settings.chat_requests_per_window

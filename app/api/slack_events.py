@@ -625,6 +625,15 @@ def _handle(event: dict, team_id: str) -> None:
         post_message(token, channel, _NO_DM_ACCESS, thread_ts)
         return
 
+    # The same person and company limits as a question in the web app, so
+    # Slack is not a way around them.
+    from ..security.rate_limit import question_decision, refusal_message
+
+    allowance = question_decision(user.id, org_id)
+    if not allowance.allowed:
+        post_message(token, channel, refusal_message(allowance.retry_after), thread_ts)
+        return
+
     # Act: a message that ASKS for something to be done (plain words, checked
     # by `slack_request`) gets a draft to approve; anything else is answered
     # exactly as before. Off unless the company's admins allowed Act.

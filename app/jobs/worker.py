@@ -326,15 +326,6 @@ def run_maintenance() -> None:
     except Exception:  # noqa: BLE001 - housekeeping must never break the worker
         logger.debug("Slack channel-name refresh failed", exc_info=True)
 
-    try:
-        from ..security.rate_limit import prune_old_windows
-
-        removed = prune_old_windows()
-        if removed:
-            logger.info("Pruned %s closed rate-limit window(s)", removed)
-    except Exception:  # noqa: BLE001
-        logger.debug("Rate-counter prune failed", exc_info=True)
-
 
 def run_sync_tick() -> int:
     """Enqueue any due connection syncs. Never raises. Returns how many.

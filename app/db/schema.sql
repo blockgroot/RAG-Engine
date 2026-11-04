@@ -717,7 +717,9 @@ CREATE TABLE IF NOT EXISTS query_answer_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_query_answer_cache_expires ON query_answer_cache (expires_at);
 
--- Fixed-window HTTP rate counters (Phase 21).
+-- UNUSED since rate limits moved to token buckets in Redis (app/ratelimit).
+-- Kept because a server still on the previous release writes to it on every
+-- question while a deploy rolls out; drop it in the release after this one.
 CREATE TABLE IF NOT EXISTS api_rate_counters (
     scope_key      TEXT NOT NULL,
     window_start   TIMESTAMPTZ NOT NULL,
