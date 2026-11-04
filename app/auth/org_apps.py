@@ -180,6 +180,16 @@ def has_app(org_id: str, provider: str) -> bool:
     return bool(settings.client_id and settings.client_secret)
 
 
+def missing_app_reason(org_id: str, provider: str) -> str | None:
+    """Why a connection of ``provider`` cannot work: its company has no app.
+
+    Such a row is only flagged when its token is next used, and a Slack bot
+    token is used only by a sync, so a list showed it as healthy for weeks."""
+    if provider not in OWN_APP_PROVIDERS or has_app(org_id, provider):
+        return None
+    return f"Set up your company's own {_NAMES[provider]} app under Sources, then reconnect."
+
+
 def org_for_app_key(provider: str, key: str) -> tuple[str, str | None] | None:
     """``(org_id, signing_secret)`` for a Slack request's app key."""
     with get_connection() as conn:

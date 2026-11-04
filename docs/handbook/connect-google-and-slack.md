@@ -17,7 +17,7 @@ Handbook reads your Google Drive and Slack through **apps that belong to your co
 
 **You need:** a Google Workspace account (an email at your company's domain, not @gmail.com).
 
-1. **Open the setup in Handbook.** Go to **Sources**. Under **Your company's apps**, press **Set up your Google app**. Keep this page open; you'll come back to it.
+1. **Open the setup in Handbook.** Go to **Sources**. Under **Your company's apps**, press **Set up** on the **Google app** card. Handbook shows one step at a time, with a button that opens the right Google page. Keep Handbook open; you'll come back to it.
 
 2. **Create a project in Google Cloud.**
    - Open [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate), signed in with your company Google account.
@@ -63,11 +63,11 @@ Handbook reads your Google Drive and Slack through **apps that belong to your co
 
 **You need:** permission to install apps in your Slack workspace. Slack admins and owners have it.
 
-1. **Open the setup in Handbook.** Go to **Sources**. Under **Your company's apps**, press **Set up your Slack app**.
+1. **Open the setup in Handbook.** Go to **Sources**. Under **Your company's apps**, press **Set up** on the **Slack app** card.
 
 2. **Create the app.** Press **Create the Slack app**. Slack opens with everything already filled in.
    - Pick your workspace and press **Next**, then **Create**.
-   - If Slack shows an empty box instead, press **Slack shows an empty box?** in Handbook, copy the template, and paste it into Slack (choose **JSON** above the box).
+   - If Slack shows an empty box instead, press **Slack shows an empty box instead?** in Handbook, copy the template, and paste it into Slack (choose **JSON** above the box).
 
 3. **Ignore the first warning.** Slack may say the Request URL did not answer. That's expected: Handbook doesn't have the app's keys yet. If Slack offers commands to "run your app locally", ignore them and press **Go to App Settings**.
 
@@ -89,15 +89,19 @@ Handbook reads your Google Drive and Slack through **apps that belong to your co
 | What you see | What to do |
 | --- | --- |
 | "That isn't a Slack Signing Secret" when saving | You pasted the Client Secret or a token. The Signing Secret is the third value under **App Credentials**. |
-| **Retry** in step 5 still fails | Check the keys were saved in Handbook (the card says **Set up**), then press Retry again. |
+| **Retry** in step 5 still fails | Check the keys were saved in Handbook (the card says **Ready**), then press Retry again. |
 | Slack asks which workspace to install to, and yours isn't listed | The app can only be installed in the workspace you created it in. Create it again from step 2 in the right workspace. |
 | The bot doesn't answer in a channel | Invite it to that channel (step 7). The bot answers only people whose Slack email belongs to a Handbook account. |
 
 ---
 
+## Connections made before the app
+
+Google Drive or Slack connected before your company's app was set up shows **Set up your company's app first**. Set the app up, then press **Reconnect** on that card. Nothing already indexed is lost.
+
 ## Changing or replacing an app
 
-You can paste new keys at any time with **Change** on the app's card. After saving, Google Drive or Slack shows **Reconnect**: press it once so the new app is used.
+You can paste new keys at any time with **Change keys** on the app's card. After saving, Google Drive or Slack shows **Reconnect**: press it once so the new app is used.
 
 ## Agent mode
 

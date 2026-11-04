@@ -475,7 +475,7 @@ export function ConnectionCard({
               {syncInProgress ? "Updating…" : "Update"}
             </button>
           )}
-          {connection && needsReauth && (
+          {connection && needsReauth && !setupFirst && (
             <a
               className="button"
               href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
@@ -804,7 +804,9 @@ export function ConnectionCard({
             </svg>
           </span>
           <div className="connection-reauth-body">
-            <span className="connection-reauth-title">Access expired</span>
+            <span className="connection-reauth-title">
+              {setupFirst ? "Set up your company's app first" : "Access expired"}
+            </span>
             <p className="connection-reauth-desc">
               {formatReauthReason(provider, connection.reauth_reason)}
             </p>
