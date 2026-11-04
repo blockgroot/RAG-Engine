@@ -332,14 +332,19 @@ title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
 A Sheet embeds a description of its columns, never its figures. Ask reads a ROW
 only when the question types one of its cells (`doctables.store.rows_naming`: whole
 words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,
-the document predicate), as a passage scored by its document's cosine, never its own.
+the document predicate), as a passage scored by the better of its document's cosine and
+its own text's (embedded then, with the question's model): both real cosines, so the gate
+holds (a sheet's column description scored 0.342 against "who closed L-1076?"). A sheet's
+description says its category values are a SAMPLE of how many, or a missing name reads
+as absent. A worked figure keeps its document's cosine.
 With `DOCTABLES_ANSWERS_ENABLED` (off by default), a question Ask's check flags as
 `table` (a total, share, highest, named people compared, an overview; a follow-up is
 checked with the question it continues, `resolve.with_earlier`) is worked out by `insights/table_answers.py`: the
 model fills a FORM (table, operation, columns, values), code checks every name and
 value against the real table, SQL computes, and the result is a passage of the
 sheet that retrieval never ranks out (re-checked for the viewer). A form that does
-not fit is dropped and Ask answers as before; a ratio that narrows nothing is
+not fit is dropped and Ask answers as before, and so is a query the model itself marks
+as not the figure asked (`is_the_figure_asked`: a headcount for revenue); a ratio that narrows nothing is
 dropped, never 100%. Off, the question check's prompt is unchanged. An unparseable
 cell is absent from a sum, never zero. A trend draws every period from "measured since"
 (or the window, if later) to now, a quiet one at zero; never a period before the

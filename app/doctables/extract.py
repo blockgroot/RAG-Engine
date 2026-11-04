@@ -403,8 +403,12 @@ def describe(table: Table) -> str:
     parts = [f"Spreadsheet table \"{table.name}\" with {len(table.cells)} rows."]
     for c in table.columns:
         if c.type == "category":
-            parts.append(f"Column {c.name}: categories such as "
-                         f"{', '.join(c.samples[:DESCRIBED_SAMPLES])}.")
+            shown = c.samples[:DESCRIBED_SAMPLES]
+            # Said as a sample: "Rohan Mehta isn't among the names listed" was
+            # read off five of ten employees as if they were all of them.
+            rest = (f" (a few of its {c.distinct} values; the rows hold the rest)"
+                    if c.distinct > len(shown) else "")
+            parts.append(f"Column {c.name}: categories such as {', '.join(shown)}{rest}.")
         elif c.type == "number":
             unit = f" ({c.unit})" if c.unit else ""
             parts.append(f"Column {c.name}: numbers{unit}.")

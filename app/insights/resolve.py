@@ -1123,8 +1123,8 @@ def classify_question(
     # connector's rows. The question's connector wins.
     intent = _align_connector(replace(intent, source=source), question, metrics,
                               handles, fields, names)
-    intent = _table_period_axis(intent, question, reply, handles)
     intent = _typed_values(intent, question, handles)
+    intent = _table_period_axis(intent, question, reply, handles)
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
@@ -1508,10 +1508,11 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     back from Claude Haiku with no filter, so the chart counted everyone and
     every stage. When the question holds, as whole words, exactly ONE of a
     column's values (all of them are known: the column lists every value) and
-    that column is neither drawn nor filtered, it is the filter. Two values of
-    one column ("Kavya and Rohan") are a comparison, not a filter, and are left
-    alone. The data's own words, never a list; the filter is then resolved
-    against the real rows like every other one.
+    that column is not drawn, it is the filter. Two or more values of one
+    column ("Kavya Nair and Rohan Mehta") keep each of them, also when the model
+    kept only one: a comparison of those, drawn one series each
+    (``_table_period_axis``). The data's own words, never a list; the filter is
+    then resolved against the real rows like every other one.
     """
     spec = intent.spec
     if intent.kind != "chart" or spec is None or not spec.table_id:
@@ -1520,20 +1521,26 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     if table is None:
         return intent
     asked = f" {_squashed(question)} "
-    used = {spec.group_by, spec.split_by, *(k for k, _ in spec.filters)}
-    added = []
+    drawn = {spec.group_by, spec.split_by}
+    filters = dict(spec.filters)
+    changed = False
     for column in table.columns:
         values = [str(v) for v in column.get("samples") or []]
-        if (column.get("type") != "category" or column["key"] in used
+        key = column["key"]
+        if (column.get("type") != "category" or key in drawn
                 or column.get("distinct") != len(values)):
             continue
         typed = [v for v in values if _squashed(v) and f" {_squashed(v)} " in asked]
-        if len(typed) == 1:
-            added.append((column["key"], typed[0]))
-    if not added:
+        kept = filters.get(key)
+        kept = {_squashed(v) for v in (kept if isinstance(kept, tuple) else [kept])} if kept else set()
+        if len(typed) > 1 and kept <= {_squashed(v) for v in typed}:
+            filters[key], changed = tuple(typed), filters.get(key) != tuple(typed)
+        elif len(typed) == 1 and not kept:
+            filters[key], changed = typed[0], True
+    if not changed:
         return intent
-    logger.info("insights: %r typed %s; filtered on it", question[:60], added)
-    return replace(intent, spec=replace(spec, filters=tuple(sorted((*spec.filters, *added)))))
+    logger.info("insights: %r typed values; filters now %s", question[:60], filters)
+    return replace(intent, spec=replace(spec, filters=tuple(sorted(filters.items()))))
 
 
 def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> AskIntent:
