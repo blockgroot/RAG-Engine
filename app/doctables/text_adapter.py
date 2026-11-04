@@ -750,19 +750,6 @@ def _other_units_word(fact: dict, units: set[str]) -> bool:
         w in units and not (w.startswith(unit) or unit.startswith(w)) for w in words)
 
 
-def _all_scaled(group: list[dict]) -> bool:
-    """True when every figure is written with a scale the parser applies
-    ("₹32.26 lakh" -> 3,226,000). Its unit ("lakh") must then stay off the
-    column name, or the chart says "3,226,000 lakh": the scale counted twice."""
-    def scaled(value: str) -> bool:
-        parsed = extract.parse_number(value)[0]
-        digits = re.search(r"\d[\d,\s]*(?:\.\d+)?", value)
-        if parsed is None or digits is None:
-            return False
-        return abs(parsed) != float(re.sub(r"[,\s]", "", digits.group(0)))
-    return bool(group) and all(scaled(_text(f.get("value"))) for f in group)
-
-
 def facts_to_tables(prose: str, facts: list[dict], *, extra_notes=()) -> list[extract.Table]:
     """Tables built by code, never by the model: one per measure and unit, per
     what it is broken down by (Plant, Product) and per period grain (years,
@@ -811,7 +798,7 @@ def facts_to_tables(prose: str, facts: list[dict], *, extra_notes=()) -> list[ex
             for kind, (written, _name) in _items(fact).items():
                 shown.setdefault(kind, written)
         figure = measure[:1].upper() + measure[1:]
-        if unit and _norm(unit) not in _norm(measure) and not _all_scaled(group):
+        if unit and _norm(unit) not in _norm(measure):
             figure = f"{figure} ({unit})"
         period_name = {"year": "Year", "total": "Span"}.get(grain, "Period")
         header = ([period_name] if grain else []) + \

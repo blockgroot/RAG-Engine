@@ -971,11 +971,21 @@ def _align_connector(
             ),
         )
 
-    # Nothing in the question picks a connector. A TABLE pick is one document's
-    # own rows, not a kind two connectors share, so it is drawn: refusing it
-    # whenever the offered tables came from two connectors refused "leads by
-    # stage" on the only leads table there was.
+    # Nothing in the question picks a connector. A kind two connectors share
+    # would draw whichever the model guessed.
     if spec.table_id:
+        table_providers = {table.provider for table in handles.values() if table.provider}
+        if len(table_providers) > 1:
+            listed = ", ".join(
+                f'"{table.document_title}"' for table in list(handles.values())[:6]
+            )
+            return AskIntent(
+                "refuse",
+                message=(
+                    "**Which document should the chart use?**\n\n"
+                    f"I can chart {listed}."
+                ),
+            )
         return intent
     current = registry.METRICS.get(spec.metric)
     if current is None:
@@ -1078,7 +1088,6 @@ def classify_question(
     intent = _align_connector(replace(intent, source=source), question, metrics,
                               handles, fields, names)
     intent = _table_period_axis(intent, question, reply, handles)
-    intent = _typed_values(intent, question, handles)
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
@@ -1391,8 +1400,7 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     # The shape they asked for, before a one-breakdown pick narrowed it to bar.
     requested = data.get("chart") if isinstance(data.get("chart"), str) else spec.chart
     word = _squashed(str(data.get("period") or ""))
-    period_asked = bool(word) and f" {word}" in f" {_squashed(question)}"
-    if keys and period_asked and keys[0] != group:
+    if keys and word and f" {word}" in f" {_squashed(question)}" and keys[0] != group:
         group, split = keys[0], group
     if split is None:
         # A column the question names by its OWN header ("each plant" -> Plant)
@@ -1402,12 +1410,7 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
         named = [k for k in keys if k != group
                  and (header := _words(str((table.column(k) or {}).get("name", ""))))
                  and header <= asked]
-        if len(named) == 1 and not data.get("group_by") and not period_asked:
-            # The model named no column, so the axis was a default (the date
-            # column), not asked for: "leads by stage" drew Created x Stage.
-            # The column the question names IS the breakdown.
-            group, split = named[0], None
-        elif len(named) == 1:
+        if len(named) == 1:
             split = named[0]
     if (group, split) == (spec.group_by, spec.split_by):
         return intent
@@ -1416,41 +1419,6 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     return replace(intent, spec=replace(
         spec, group_by=group, split_by=split,
         chart=table_shape(table, group, split, requested)))
-
-
-def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
-    """A value the asker TYPED that the model left out of a table chart.
-
-    "Lead count by source for Rohan Mehta" and "won revenue by employee" came
-    back from Claude Haiku with no filter, so the chart counted everyone and
-    every stage. When the question holds, as whole words, exactly ONE of a
-    column's values (all of them are known: the column lists every value) and
-    that column is neither drawn nor filtered, it is the filter. Two values of
-    one column ("Kavya and Rohan") are a comparison, not a filter, and are left
-    alone. The data's own words, never a list; the filter is then resolved
-    against the real rows like every other one.
-    """
-    spec = intent.spec
-    if intent.kind != "chart" or spec is None or not spec.table_id:
-        return intent
-    table = next((t for t in (handles or {}).values() if t.id == spec.table_id), None)
-    if table is None:
-        return intent
-    asked = f" {_squashed(question)} "
-    used = {spec.group_by, spec.split_by, *(k for k, _ in spec.filters)}
-    added = []
-    for column in table.columns:
-        values = [str(v) for v in column.get("samples") or []]
-        if (column.get("type") != "category" or column["key"] in used
-                or column.get("distinct") != len(values)):
-            continue
-        typed = [v for v in values if _squashed(v) and f" {_squashed(v)} " in asked]
-        if len(typed) == 1:
-            added.append((column["key"], typed[0]))
-    if not added:
-        return intent
-    logger.info("insights: %r typed %s; filtered on it", question[:60], added)
-    return replace(intent, spec=replace(spec, filters=tuple(sorted((*spec.filters, *added)))))
 
 
 def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> AskIntent:

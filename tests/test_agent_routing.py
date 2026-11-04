@@ -1123,34 +1123,14 @@ def test_in_slack_a_chart_ask_is_answered_in_chart_mode(monkeypatch):
 
 
 def test_a_count_ask_is_carried_for_the_chart_button(monkeypatch):
-    """No chart fits the count: Ask answers it, and the button is offered."""
     from app.insights.resolve import AskIntent
 
     _stub(monkeypatch, connected={"linear", "notion"}, scores={"notion": 0.8})
     monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
     monkeypatch.setattr("app.insights.resolve.classify_route",
                         lambda q, **k: AskIntent("qa", chart_ask="count"))
-    monkeypatch.setattr(routing, "_chart_mode_route", lambda *a, **k: routing.RoutingDecision(
-        INSIGHTS_KEY, "chart-refuse", chart_refusal="no"))
     decision = routing.choose_agent("how many issues did we close?", ORG)
     assert (decision.agent_key, decision.chart_ask) == ("notion", "count")
-
-
-def test_a_count_ask_is_counted_when_a_chart_fits(monkeypatch):
-    """"How many leads did Rohan generate in August?": the rows are never
-    embedded, so the count is SQL over them, in Ask as in Slack."""
-    from app.insights.resolve import AskIntent
-
-    spec = object()
-    _stub(monkeypatch, connected={"google", "notion"}, scores={"notion": 0.8})
-    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
-    monkeypatch.setattr("app.insights.resolve.classify_route",
-                        lambda q, **k: AskIntent("qa", chart_ask="count"))
-    monkeypatch.setattr(routing, "_chart_mode_route", lambda *a, **k: routing.RoutingDecision(
-        INSIGHTS_KEY, "chart", chart_spec=spec))
-    decision = routing.choose_agent("how many leads did Rohan generate in August?", ORG)
-    assert (decision.agent_key, decision.reason, decision.chart_spec) == (
-        INSIGHTS_KEY, "count-chart", spec)
 
 
 # --------------------------------------------------------------------------

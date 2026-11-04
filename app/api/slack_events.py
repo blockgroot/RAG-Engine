@@ -412,43 +412,30 @@ def _answer(
     spec = getattr(decision, "chart_spec", None)
     chart_spec = spec_to_dict(spec) if spec is not None else None
 
-    graph_input = {
-        "question": question,
-        "org_id": org_id,
-        "conversation_id": None,
-        "workspace_id": workspace_id,
-        "requested_agent": decision.agent_key,
-        "stream": False,
-        "chart_spec": chart_spec,
-        "chart_refusal": getattr(decision, "chart_refusal", None),
-        # Deliberately NOT the asker's real role: Slack has no owner-only
-        # surface, and the gated metrics (Forms sentiment) exist precisely
-        # so the people they are collected on cannot read them. Answering
-        # "member" keeps the floor here and can only ever omit a panel.
-        "role": "member",
-        # The asker was already resolved to a Handbook account above (we
-        # refuse outright without one), so document-level access applies
-        # here exactly as it does in the app -- a bot that answered from
-        # documents the asker cannot open would be the widest hole of all,
-        # since a channel reply is read by everyone in the room.
-        "viewer": viewer,
-    }
-    response = build_agent_graph(_agent_getters()).invoke(graph_input)["response"]
-    if not getattr(response, "grounded", True) and not getattr(response, "access_restricted", False):
-        # The web chat's one retry of a refusal across every tool that cleared
-        # the gate (`chat._refusal_retry`), so Slack answers what the app does.
-        from ..graph import plan as graph_plan
-        from .chat import _refusal_retry
-
-        elsewhere = _refusal_retry(decision, None, org_id, workspace_id)
-        if elsewhere is not None:
-            decision, retry_plan, _tools = elsewhere
-            token = graph_plan.use_plan(retry_plan)
-            try:
-                response = build_agent_graph(_agent_getters()).invoke(
-                    {**graph_input, "requested_agent": decision.agent_key})["response"]
-            finally:
-                graph_plan.reset_plan(token)
+    state = build_agent_graph(_agent_getters()).invoke(
+        {
+            "question": question,
+            "org_id": org_id,
+            "conversation_id": None,
+            "workspace_id": workspace_id,
+            "requested_agent": decision.agent_key,
+            "stream": False,
+            "chart_spec": chart_spec,
+            "chart_refusal": getattr(decision, "chart_refusal", None),
+            # Deliberately NOT the asker's real role: Slack has no owner-only
+            # surface, and the gated metrics (Forms sentiment) exist precisely
+            # so the people they are collected on cannot read them. Answering
+            # "member" keeps the floor here and can only ever omit a panel.
+            "role": "member",
+            # The asker was already resolved to a Handbook account above (we
+            # refuse outright without one), so document-level access applies
+            # here exactly as it does in the app -- a bot that answered from
+            # documents the asker cannot open would be the widest hole of all,
+            # since a channel reply is read by everyone in the room.
+            "viewer": viewer,
+        }
+    )
+    response = state["response"]
     # Same gap log as the web chat, for the same reason and at the same edge:
     # a question asked in Slack that nothing could answer is the same missing
     # document as one asked in the app, and an admin reading the gap list must

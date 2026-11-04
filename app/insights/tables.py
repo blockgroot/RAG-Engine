@@ -148,13 +148,8 @@ def catalogue(tables: list[TableRef]) -> str:
         for c in table.columns:
             kind = c.get("type")
             if kind == "category":
-                values = [str(s) for s in c.get("samples", []) or []]
-                if values and c.get("distinct") == len(values):
-                    # Every value: a filter on one the model was never shown
-                    # ("Won") is a filter it will not write.
-                    cols.append(f"{c['name']} (category, values: {', '.join(values)})")
-                else:
-                    cols.append(f"{c['name']} (category: {', '.join(values[:3])})")
+                samples = ", ".join(str(s) for s in c.get("samples", [])[:3])
+                cols.append(f"{c['name']} (category: {samples})")
             elif kind == "number":
                 unit = f", {c['unit']}" if c.get("unit") else ""
                 cols.append(f"{c['name']} (number{unit})")

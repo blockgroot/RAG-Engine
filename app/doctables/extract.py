@@ -36,12 +36,6 @@ MIN_COLUMNS = 2
 TYPE_SHARE = 0.8
 #: A category column groups; a free-text column (notes, descriptions) does not.
 MAX_CATEGORY_DISTINCT = 50
-#: Values kept per category column. All of a small column's values: with five,
-#: a Stage column's "Won" fell off the end and no model would filter on a value
-#: it was never shown.
-CATEGORY_SAMPLES = 12
-#: Of those, how many the embedded description names.
-DESCRIBED_SAMPLES = 5
 
 COLUMN_TYPES = ("number", "date", "category", "text")
 #: A cell that names a period (Q1, H2, FY26, 2026). Format, not intent: it
@@ -376,7 +370,7 @@ def profile(raw: RawTable) -> Table | None:
             if r[i]:
                 cells[row_i][key] = r[i][:200]
         columns.append(Column(key, names[i], kind, distinct=len(distinct),
-                              samples=tuple(distinct[:CATEGORY_SAMPLES])))
+                              samples=tuple(distinct[:5])))
 
     if len(columns) < MIN_COLUMNS:
         return None
@@ -403,8 +397,7 @@ def describe(table: Table) -> str:
     parts = [f"Spreadsheet table \"{table.name}\" with {len(table.cells)} rows."]
     for c in table.columns:
         if c.type == "category":
-            parts.append(f"Column {c.name}: categories such as "
-                         f"{', '.join(c.samples[:DESCRIBED_SAMPLES])}.")
+            parts.append(f"Column {c.name}: categories such as {', '.join(c.samples)}.")
         elif c.type == "number":
             unit = f" ({c.unit})" if c.unit else ""
             parts.append(f"Column {c.name}: numbers{unit}.")
