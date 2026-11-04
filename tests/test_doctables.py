@@ -415,8 +415,11 @@ def test_the_offered_tables_are_the_named_page_ordered_by_their_own_labels():
     from app.insights.resolve import title_match
 
     q = "Chart units produced by each plant per month from the Annual Manufacturing Performance Report"
-    assert title_match("Annual Manufacturing Performance Report — 2025", q) > \
-        title_match("Customer Support Performance Update — 2026", q) >= 8
+    assert title_match("Annual Manufacturing Performance Report — 2025", q) >= 8
+    # One shared word of a longer title is a topic, not a name.
+    assert title_match("Customer Support Performance Update — 2026", q) == 0
+    assert title_match("Employee Referral Policy", "Show won revenue by employee") == 0
+    assert title_match("Onboarding 2025", "chart the onboarding page") >= 8
     plant = _ref(name="Production (units) by Plant", columns=(
         {"key": "c0", "name": "Period", "type": "category", "samples": ["January"]},
         {"key": "c1", "name": "Plant", "type": "category", "samples": ["Plant A"]},

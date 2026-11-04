@@ -27,6 +27,9 @@ from ..doctables.store import AGGREGATES, TableRef
 MAX_OFFERED = 6
 
 MEASURES = ("count",) + tuple(AGGREGATES)
+#: Values one table filter may keep: things compared side by side, not a list
+#: of everything (that is no filter at all).
+MAX_FILTER_VALUES = 6
 
 def document_similarity(
     question: str, tables: list[TableRef], *, org_id: str, workspace_id: str | None,
@@ -209,6 +212,34 @@ def _find(table: TableRef, name, *, types: tuple[str, ...], role: str) -> str | 
                        + _options(table, types, role))
 
 
+def _holding(table: TableRef, values: list[str]) -> str | None:
+    """The one category column whose listed values hold every one of ``values``.
+
+    Only a column whose samples are complete can say a value is absent; two
+    columns holding them all name neither."""
+    found = []
+    for c in table.columns:
+        known = {str(x).lower() for x in c.get("samples") or ()}
+        if c.get("type") == "category" and {v.lower() for v in _listed(values, known)} <= known:
+            found.append(c["key"])
+    return found[0] if len(found) == 1 else None
+
+
+def _listed(values: list[str], samples) -> list[str]:
+    """``"Kavya Nair, Rohan Mehta"`` -> both, when the whole is not one of the
+    column's values and every part is. A list written as text (format); a
+    cell that itself holds a comma stays whole."""
+    known = {str(x).lower() for x in samples or ()}
+    out = []
+    for value in values:
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        if value.lower() not in known and len(parts) > 1 and all(p.lower() in known for p in parts):
+            out.extend(parts)
+        else:
+            out.append(value)
+    return out
+
+
 def _options(table: TableRef, types: tuple[str, ...], role: str) -> str:
     names = [c["name"] for c in table.columns if c.get("type") in types]
     return (f"Columns that work for the {role}: {', '.join(names)}."
@@ -389,11 +420,23 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     raw_filters = data.get("filters")
     if isinstance(raw_filters, dict):
         for name, wanted in raw_filters.items():
-            if not isinstance(wanted, str) or not wanted.strip():
+            # A list keeps each of its values: "Kavya Nair and Rohan Mehta".
+            values = [w.strip()[:120] for w in (wanted if isinstance(wanted, list) else [wanted])
+                      if isinstance(w, str) and w.strip()][:MAX_FILTER_VALUES]
+            if not values:
                 continue
-            key = _find(table, name, types=("category",), role="filter")
+            try:
+                key = _find(table, name, types=("category",), role="filter")
+            except TableRefusal:
+                # A header the table does not have ("Employee") with values it
+                # does ("Kavya Nair"): the one column holding every value is
+                # meant. Real cells decide, never the header's wording.
+                key = _holding(table, values)
+                if key is None:
+                    raise
             if key:
-                filters.append((key, wanted.strip()[:120]))
+                values = _listed(values, (table.column(key) or {}).get("samples"))[:MAX_FILTER_VALUES]
+                filters.append((key, tuple(values) if len(values) > 1 else values[0]))
 
     requested = data.get("chart") if isinstance(data.get("chart"), str) else None
     if group_by is None:

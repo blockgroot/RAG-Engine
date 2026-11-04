@@ -770,6 +770,7 @@ def _try_question_route(
     chart_out: list | None = None,
     chart_from_words: bool = False,
     viewer=None,
+    context: str | None = None,
 ) -> RoutingDecision | None:
     """Ask's small check: a live code question, and the live-data verdict.
 
@@ -779,11 +780,14 @@ def _try_question_route(
     still runs. Never raises: a dead check is a document question.
     ``live_out`` receives the ``needs_live`` answer.
     """
-    from ..insights.resolve import CHART_MODE_HINT, classify_route
+    from ..insights.resolve import CHART_MODE_HINT, classify_route, with_earlier
 
     tables_on = viewer is not None and _table_answers_on()
+    # A follow-up is read with the question it continues, for the table check
+    # only: "and only for the South region?" alone asks for nothing.
+    checked = with_earlier(question, context) if tables_on else question
     try:
-        intent = classify_route(question, github="github" in connected, table=tables_on)
+        intent = classify_route(checked, github="github" in connected, table=tables_on)
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: question check failed", exc_info=True)
         return None
@@ -807,8 +811,8 @@ def _try_question_route(
         # the answer as a passage of the sheet; nothing fits, Ask goes on as before.
         from ..insights.table_answers import ANSWER_OFFERED, answer
 
-        worked = answer(question, _document_tables(org_id, workspace_id, viewer, question,
-                                                   limit=ANSWER_OFFERED))
+        worked = answer(checked, _document_tables(org_id, workspace_id, viewer, checked,
+                                                  limit=ANSWER_OFFERED))
         if worked:
             return RoutingDecision(worked[0].provider, "table-answer",
                                    table_answers=tuple(worked))
@@ -1276,10 +1280,11 @@ def refusal_retry(decision: RoutingDecision) -> tuple[str, set[str]] | None:
     0.449, answer in Drive). The tool that refused was read and did not
     answer, so it is left out: re-reading it only crowds the others out of the
     passages. The best of the rest that cleared the gate answers, with the
-    remaining ones searched beside it. Only for a probe's own pick: a tool the
-    question named, the graph placed, or the asker requested stays the only one.
+    remaining ones searched beside it. Only for a probe's own pick or a sheet
+    row the question named: a tool the question named, the graph placed, or
+    the asker requested stays the only one.
     """
-    if decision.reason not in ("best-match", "follow-up") or not decision.scores:
+    if decision.reason not in ("best-match", "follow-up", "rows-named") or not decision.scores:
         return None
     gate = RagSettings.from_env().similarity_threshold
     others = sorted((tool for tool, score in decision.scores.items()
@@ -1292,6 +1297,26 @@ def _no_clear_winner(scores: dict[str, float]) -> bool:
     """True when the best source leads the runner-up by less than the margin."""
     top = sorted(scores.values(), reverse=True)
     return not top or (len(top) > 1 and top[0] - top[1] < _FOLLOW_UP_MARGIN)
+
+
+def _rows_named_provider(question: str, org_id: str, workspace_id: str | None,
+                         viewer, embedded: set[str]) -> str | None:
+    """The one tool whose sheet rows the question names by a cell, or None.
+
+    The same exact-text lookup Ask's rows leg uses (``doctables.store.
+    rows_naming``), as this viewer. Rows in two tools name neither, the
+    ``_graph_named_provider`` rule. Never raises.
+    """
+    try:
+        from ..doctables.store import rows_naming
+
+        hits = rows_naming(question, org_id=org_id, workspace_id=workspace_id,
+                           viewer=viewer, providers=sorted(embedded))
+    except Exception:  # noqa: BLE001 - routing must never fail a question
+        logger.warning("Agent routing: row lookup failed", exc_info=True)
+        return None
+    tools = {hit.provider for hit in hits}
+    return next(iter(tools)) if len(tools) == 1 else None
 
 
 def _graph_named_provider(graph_plan, embedded: set[str]) -> str | None:
@@ -1464,10 +1489,18 @@ def _choose_agent(
             contextvars.copy_context().run,
             _probe_scores, question, org_id, workspace_id, connected,
         )
+    # Beside the probe, not after it: a SQL lookup, no model call.
+    rows = None
+    if probe is not None and viewer is not None:
+        rows = _ROUTING_POOL.submit(
+            contextvars.copy_context().run,
+            _rows_named_provider, question, org_id, workspace_id, viewer, embedded,
+        )
 
     classified = _try_question_route(
         question, connected, org_id, workspace_id, live_out=live_out,
         chart_out=chart_out, chart_from_words=chart_from_words, viewer=viewer,
+        context=context,
     )
     if classified is not None:
         return classified
@@ -1510,6 +1543,15 @@ def _choose_agent(
     )
     threshold = RagSettings.from_env().similarity_threshold
     best = max(scores, key=scores.get) if scores else None
+
+    # The question names a cell of one tool's sheet ("Kavya Nair", "L-1008"):
+    # that tool holds the rows, which a sheet never embeds, so the probe saw
+    # only its column description and Slack won by 0.03. A refusal there is
+    # still asked again elsewhere (`refusal_retry`).
+    rows_tool = rows.result() if rows is not None else None
+    if rows_tool is not None and rows_tool != best and scores.get(rows_tool, 0.0) >= threshold:
+        logger.info("Agent routing: %r names rows of a %s sheet", question[:60], rows_tool)
+        return RoutingDecision(rows_tool, "rows-named", scores)
 
     if context and _no_clear_winner(scores):
         follow = _probe_scores(f"{context}\n{question}", org_id, workspace_id, connected)
