@@ -120,6 +120,49 @@ hold across two servers; Redis down lets requests through.
 
 Rough effort: **4–5 days**, including the Redis setup.
 
+## Going live: Redis
+
+Without `REDIS_URL`, each server counts on its own, so N servers allow N times every limit.
+Requests are never refused because Redis is missing or down; it only makes the limits
+looser.
+
+### Staging
+
+Done in `render.staging.yaml`: a free Key Value instance (`handbook-staging-redis`,
+Singapore, private network only), and `REDIS_URL` filled in from it automatically.
+
+1. Merge this change into the `staging` branch (the Blueprint reads that branch).
+2. Render → the staging Blueprint → **Sync**. Render creates the Key Value instance and
+   redeploys `handbook-staging` with `REDIS_URL` set.
+
+Render allows only **one free** Key Value instance per workspace, and staging uses it.
+
+### Production (Hand-Book, set by hand in the Render dashboard)
+
+`render.yaml` does not manage production, so these steps are manual:
+
+1. Render → **New → Key Value**.
+   - Name: `handbook-redis`.
+   - Region: **the same region as Hand-Book**. The private address only works within one
+     region.
+   - Plan: the smallest paid plan. The free one is taken by staging, and rate-limit
+     entries are tiny.
+   - Maxmemory policy: `allkeys-lru`.
+   - Allowed IPs: **none** (private network only).
+2. Copy the instance's **Internal Key Value URL** (`redis://red-…:6379`).
+3. Hand-Book → **Environment** → add `REDIS_URL` with that URL → **Save**. This redeploys.
+4. Check it:
+   - the log no longer shows "REDIS_URL is not set";
+   - asking 6 questions quickly gets the 6th refused with "Please try again in N
+     seconds".
+
+### Self-hosted
+
+- **New installs** get a Redis container from `docker-compose.yml`, already connected.
+- **Existing installs** keep their own compose file on upgrade, so they run without Redis.
+  Limits are then counted inside the API server, which is exact for a single server. No
+  action is needed.
+
 ## Decisions needed
 
 1. Approve the **token bucket in Redis**, per person **and** per company.
