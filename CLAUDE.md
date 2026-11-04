@@ -38,6 +38,12 @@ GitHub; employees get answers from *their* data.
 - `org_id` is on every tenant table. Every read and write filters on it in the
   query, before ranking. The vector index is not the isolation boundary
   (`tests/test_isolation.py`).
+- `chunks` has one partition per organization (made and dropped by triggers on
+  `organizations`) and row-level security: pooled connections act as
+  `handbook_app` and see only the rows of `get_connection(org_id=...)`, and
+  none without it. Every `chunks` query passes the org (`all_orgs=True` only for
+  cross-tenant background jobs) and still filters on `org_id`, which is also
+  what prunes to the partition (`tests/test_chunk_partitions.py`).
 - `workspace_id` nests inside `org_id` and is never used alone. `NULL` is org-wide.
   A workspace sees only its own rows, never also the org-wide ones.
   `workspaces/store.py::assert_member` is the membership check. A non-member gets
@@ -55,10 +61,13 @@ GitHub; employees get answers from *their* data.
   the next listing; it does not union.
 - Slack: a public channel is scope-public; a private channel's members are its ACL,
   plus `channel:<id>`. A channel reply is public-only and carries exactly that
-  channel. Linear: a team's membership is its issues' ACL. GitHub: a private repo
+  channel. A Slack DM (question or Agent) is open to the whole company only with a
+  company-wide Slack connection; with only spaces' connections, only those spaces'
+  members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it.
 - A conversation is personal (`conversations.user_id`). `query_answer_cache` stays
-  keyed on the scope and the model, not the asker. Do not store an answer when any
+  keyed on the scope and the model, not the asker. With `REDIS_URL` it is in Redis
+  (`qa:<org>:<generation>:<hash>`; a sync raises the org's generation), else Postgres. Do not store an answer when any
   hit was non-public or the reply is an access notice.
 - Notion has no per-page permission API. Say so on the Sources card. A half-enforced
   guarantee that reads as whole is worse than none.
@@ -120,8 +129,9 @@ docstring; a test reads that source.
 **Sync.** Every sync path takes an explicit provider. Disconnect uses
 `sources.factory.INDEXED_PROVIDERS`, not a hand-kept list. A Slack listing deletes
 only what it could have listed. Drive and GitHub 404 means "not found or not
-accessible", never "deleted". A connector that needs a folder or channel list must
-show its picker before anything is configured. `last_sync_at` is stamped on attempt.
+accessible", never "deleted". A connector that needs a folder, channel or team list must
+show its picker before anything is configured (`autosync.SCOPE_KEYS`; Linear's
+sign-in grants every team, so its teams are picked in Handbook). `last_sync_at` is stamped on attempt.
 `needs_reauth` rows are not retried. A host that cannot refresh must not flag the
 tenant's token (`ConfigurationError` re-raises).
 
@@ -130,6 +140,10 @@ UPDATE; use a CTE. Cap requeue attempts. `ALTER TABLE … ADD COLUMN` follows th
 table's `CREATE TABLE` in `schema.sql`. Partial unique indexes where `NULL` means
 org-wide. `python -m app.db.migrate` does nothing; call `apply_schema()`.
 `register_vector` runs once per physical connection. Every process calls `close_pool()`.
+Embeddings are `halfvec(1024)`: bind a query vector with `_to_db_vector` or cast it
+`::halfvec`, never `::vector` (the HNSW index is skipped). Every pooled connection sets
+`hnsw.iterative_scan = strict_order`: tenants share one index, and without it a tenant's
+search returned 3.9 of 10 rows at 1.1M vectors.
 
 **Charts.** Numbers come from SQL over stored rows (`activity_facts`, or a
 document table in `doc_tables`/`doc_table_rows`). The model never emits a number,
@@ -216,7 +230,10 @@ A refused chart is recorded with `agent = insights` for us and never grouped
 into a gap topic an admin sees; a reply in
 `routing.NOT_CHART_GAPS` (wanted words, model can't chart, Chart mode off) is
 neither. Chart-mode starters come from the scope's metrics and discovered fields
-(`GET /chat/chart-starters`), never page copy.
+and its document tables (columns + page title), never page copy
+(`GET /chat/chart-starters`): only a metric with recorded facts, every source
+before any repeats, each naming a chart type (never "donut") that its form allows
+and no earlier starter used, so the list shows what Chart mode draws.
 "Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
 `query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
 "Finished" is the SOURCE's own state type (`attrs.state_type`, `store.state_types`),
@@ -295,50 +312,83 @@ origin at `/api`; Next rewrites to FastAPI. Do not point `NEXT_PUBLIC_API_BASE_U
 at Render. `render.yaml` does not configure production Hand-Book. Supabase uses the
 session pooler (5432).
 
-**Act (writes).** `app/actions/` and its own routes (UI: the chat's Act mode,
-Account → Act, Admin › Actions); Ask, Chart, sync and
-the Slack bot import nothing from it. The model only fills in one action's form:
-a write runs only from `confirm`, by the person who proposed it, before
-`expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
-the one conditional UPDATE), and every outcome is recorded in `actions`. A write
-uses the asker's own `user_connections` token, never `oauth_connections`. The
-asker may edit a pending draft's words, never its target (`Action.edit`): the
-edit replaces the stored payload under the same guards as `claim`, counts as
-their own words, and keeps the sources and exposure (the tick is asked again). "Ask for
-changes" (`service.revise`) is the same edit written by the model from their
-instruction: the draft is fenced as data, and a link or @-mention survives only
-if the draft they saw or their instruction had it. What the
-person may do there is checked with THEIR token before any card, where the tool
-can say (GitHub: their access level, a locked issue; Linear: only teams their
-token lists); Notion cannot be asked, so its card says the access a write needs
-and its refusal names it (view only, can't edit). A
-target is taken only from the asker's own words (`draft.require_named`), never
-from a passage; written links and @-mentions only if the asker wrote them.
-Passages are shown only when the request asks to draft from company content
-(`document_words`, quoted from the request); otherwise the model sees the
-request alone. Asked inside a Slack channel thread, that thread is read live
-(`slack.thread_context`), never a search of the channel. Every
+**Act (writes).** Users see it as **Agent mode** (chat chip "Agent", Account → Agent,
+Admin › Actions; Slack `agent …`, old `act …` still works); code, routes and tables
+keep `act`. `app/actions/` and its own routes; Ask, Chart, sync and
+the Slack bot import nothing from it. **Every write goes through an MCP server an
+admin added** (`actions/mcp*.py`; the five connectors are presets in
+`mcp_presets.py`); there are no hand-written per-tool actions. Every tool starts
+off; the admin sets each to off, read ("lookup": runs while drafting, no card) or
+write (a card). Nothing is blocked by Handbook: the admin decides ("Turn all on"
+turns on everything). A destructive tool is decided by its NAME (`mcp_store.destructive`;
+MCP's `destructiveHint` also marks ordinary saves such as Linear's `save_issue`): it is
+labelled, and its card says it cannot be undone.
+A read must be marked read-only by the server or the preset, and a tool whose
+schema changed is off again (hash). Each person signs in to each server with their
+own account (`user_connections`, provider `mcp:<id>`), never a shared or admin key
+for writes; a server that cannot register Handbook signs in through Handbook's own
+app there (`Preset.client`: GitHub App, Slack app, Google OAuth client), whose
+secret stays in settings. GitHub signs in through the GitHub App, which holds
+Issues: write only, so GitHub itself refuses code, pulls and merges; every
+installation token for READING stays minted read-only (`mint_installation_token`).
+An account must be the company's: checked after sign-in (`account_check`: Linear's
+workspace id is a connected one, Google's email is the person's) or on each write's
+target (`target_check`: a GitHub repo in a company installation), or company content
+leaves the company. Slack's and Google's HOSTED MCP servers are gated (internal or
+Marketplace apps; a Developer Preview), so those two are Handbook's own MCP servers
+(`app/mcphost`, `POST /mcp/<name>`, address `ActionsSettings.mcp_host_url`) over the
+vendors' REGULAR APIs, as Onyx does: no credentials of their own, the person's token
+is the bearer and is only forwarded. Slack posts with the person's USER token (never
+the bot's); Google uses `drive.file` + `documents` + `spreadsheets` (no restricted
+scope) and writes cells RAW, never formulas. Names ("#general", a Sheet's title) are
+resolved there, so a target stays the asker's words. The model only fills in tool forms (at most
+`loop.MAX_ACTIONS` per request, each its own card, checked and approved on its
+own; a refused one never stops the rest and is said): a write runs only from
+`confirm`, by the person who proposed it, before `expires_at`, with the STORED
+payload (`payload_hash` compared, `store.claim` is the one conditional UPDATE), and
+every outcome is recorded in `actions`. Only a request asked INSIDE Slack is answered
+by the bot there. The asker may edit a pending draft's words, never its target
+(`Action.edit`): the edit replaces the stored payload under the same guards as
+`claim`, counts as their own words, and keeps the sources and exposure (the tick is
+asked again). "Ask for changes" (`service.revise`) is the same edit written by the
+model from their instruction: the draft is fenced as data, and a link or @-mention
+survives only if the draft they saw or their instruction had it. Every value that is
+not drafted text (a target, an id, an assignee) must be in the asker's own words, in
+what a read returned in this request, or one of the schema's own allowed values;
+never from a passage. Drafted text keeps links and @-mentions only if the asker or a
+source wrote them. What a tool returns is untrusted text and a private source. The
+audience of an MCP write is unknown, so private content always needs the tick.
+Drafting is one tool loop, paused at each write (`loop._agent_loop`): a drafted
+call stays unanswered until its card is decided, then is answered with what really
+happened (the link, the tool's error, "the user cancelled") and the same conversation
+goes on (`continue_run`, `act_runs`). No field the model must remember to fill
+decides what happens next; cancelling every card ends the request. Company content
+is read only through the loop's read tool (`prompts.SEARCH`), for words quoted
+from the request (`content_words`); a request in the asker's own words reads
+nothing. It is found by Ask's own reading (`api.actions.ask_search`:
+Ask's routing on the words naming the content, then that agent's
+`retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
+can open), never a search of Act's own. Several tools the words name are each
+read, interleaved so each gets its share; the graph plan, when on, is built
+once and used as the chat uses it. Asked inside a Slack channel thread, that thread
+is read live (`slack_thread.thread_context`), never a search of the channel. Every
 passage shown to the model is a source for `exposure.assess`: private content
 never goes somewhere public (refused in code and by a CHECK), and a wider or
 unknown audience needs the stored tick. A timeout after sending is `unknown`,
-never retried. No action touches git refs, contents, pulls or merges; the GitHub
-App gets Issues: write only (no Contents, no Pull requests write), every
-installation token is minted READ-ONLY (`mint_installation_token`), and each
-write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
-Notion writes use a SEPARATE connection from the read one: a Notion token always
-carries its connection's every capability. An Act account must be the company's
-(its Linear/Notion workspace, the person's own work address on Google, a repo in
-its GitHub installation), or company content leaves the company. From Slack only
-a message that ASKS for an action proposes: a model check whose quote of the
-asking words must be in the message, only where that surface is on, or `act …`
-(`slack_act.slack_request`); a failed check is a question; a DM drafts as the
-person, a channel drafts from that channel only as the room (like a channel
-reply), its card is ephemeral, and a Slack post from a channel is a reply in that
-thread. Each Slack surface has its own admin switch. Nothing runs unattended.
+never retried. Every address must be public https. Nothing runs unattended.
+From Slack only a message that ASKS for an action proposes: a model check whose
+quote of the asking words must be in the message, only where that surface is on,
+or `act …` (`slack_act.slack_request`); a failed check is a question; a DM drafts as
+the person, a channel drafts from that channel only as the room (like a channel
+reply), and its card is ephemeral. Each Slack surface has its own admin switch.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
-owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only
-narrows; company-wide use follows the company switch alone. Admins see switches only,
+owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. The owner
+may also switch off a tool or a whole server for their space (`policy.space_off`, rows
+`mcp:<server>[:<tool>]`); only "off" rows count, checked when offering and at confirm.
+In a space, a connector's tools exist only if that connector is connected IN that space
+(`Preset.source`, `policy.space_sources`); a server added by address has no connector.
+A space only narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
 
 **Gaps.** What people could not get answered reaches the person who can fix it,
@@ -349,6 +399,16 @@ background model names the same one or none, and code keeps only a number it
 offered, else a new topic. Grouping runs in the background when they open the
 bell or the page, never on the answer path. Counts are distinct
 people, never names. Chart refusals and figure failures are ours, never shown.
+
+**Rate limits.** Token buckets (`app/ratelimit/`), in Redis when `REDIS_URL` is
+set, else per process. Which buckets a request takes is `security/rate_limit.py`
+only: every router a person calls takes `limit_request`; a question (chat, Agent,
+charts, scheduler setup, Slack) takes the person's AND the company's bucket in
+one step; sending an email takes `limit_email`. Slack, webhooks, the cron and the
+MCP host are not limited. Chat answers being written at once are places
+(`take_place`, leased so a dead server's free themselves): a person's own cap is
+refused at once, the shared cap waits. Every refusal is logged with the limit's
+name, never the question or an IP. A limiter fault lets the request through.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
@@ -362,6 +422,16 @@ Removing an attachment is idempotent (`deleted: false` for one already gone,
 never a 404) and answers on the row delete; the object-store purge runs after
 the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty
 input stays empty.
+
+**Identifiers leaving.** Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values
+never reach an outside service in readable form (`app/privacy`): found by format and
+check digit only, replaced with `<KIND_n>`. Both LLM factories return a
+`MaskingLLMProvider`, which restores the reply and tool-call arguments before any caller
+sees them (only placeholders that call issued, exact match, also JSON-escaped as
+`\u003cPHONE_1\u003e`, which Gemini writes in tool arguments; an invented one is removed).
+A new outbound client (embedder, reranker, guard) calls `privacy.redact`. A detector
+failure blocks the send, never sends unmasked. Bank account numbers and order ids are not
+masked: no format tells them apart. `MASK_IDENTIFIERS=false` is the kill switch.
 
 ## 6. Where things live
 
@@ -378,6 +448,7 @@ app/doctables/       tables inside documents, kept as typed rows for charts
 app/graph/           knowledge graph
 app/livetools/       live re-reads
 app/actions/         Act: approved writes into connected tools
+app/privacy/         identifiers masked before text leaves (LLM, search, guard)
 app/memory/          chats and personal facts
 app/jobs/            ingest queue and automatic sync
 app/db/schema.sql    tables

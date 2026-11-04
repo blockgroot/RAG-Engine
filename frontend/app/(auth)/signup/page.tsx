@@ -49,7 +49,7 @@ export default function SignupPage() {
         <>
           {/* The data promise belongs where someone reads it before handing
               over their company's tools, which is here. */}
-          <p>We never train on your data and never share it.</p>
+          <p className="auth-promise">We never train on your data and never share it.</p>
           <p>
             Already have an account? <Link href="/login">Sign in</Link>
           </p>

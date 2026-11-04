@@ -55,17 +55,17 @@ export function SignInEmailPanel() {
   }
 
   return (
-    <section className="studio-panel stack" aria-labelledby="email-title">
+    <section className="studio-panel account-setting-card email-setting-card" aria-labelledby="email-title">
       <div className="studio-section-head">
+        <span className="account-setting-kicker">Identity</span>
         <h2 id="email-title">Sign-in email</h2>
         <p className="muted">
-          You sign in as <strong>{data?.email ?? "…"}</strong>. If you change it, we’ll send a
-          link to the new address and switch once you click it. Documents shared with your old
-          address stay visible to you.
+          Current address: <strong>{data?.email ?? "…"}</strong>. Changing it requires
+          confirmation, and your earlier shared documents stay visible.
         </p>
       </div>
 
-      <form className="stack" onSubmit={submit}>
+      <form className="account-email-form" onSubmit={submit}>
         <div className="field">
           <label htmlFor="new-email">New email</label>
           <input
@@ -78,8 +78,8 @@ export function SignInEmailPanel() {
             onChange={(e) => setEmail(e.target.value)}
           />
         </div>
-        <div>
-          <button className="button" type="submit" disabled={busy || !email.trim()}>
+        <div className="account-email-submit">
+          <button className="button button-sm" type="submit" disabled={busy || !email.trim()}>
             {busy ? "Sending…" : "Send confirmation link"}
           </button>
         </div>
@@ -98,12 +98,12 @@ export function SignInEmailPanel() {
       )}
 
       {data && data.prior.length > 0 && (
-        <div className="stack">
+        <div className="account-prior-emails">
           <p className="muted">
             Earlier addresses. Documents shared with these still show up for you. Remove one if
             it’s no longer yours.
           </p>
-          <ul className="stack">
+          <ul>
             {data.prior.map((address) => (
               <li key={address}>
                 {address}{" "}

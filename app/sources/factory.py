@@ -114,7 +114,13 @@ def build_source_adapter(
             # worker's get_live_connection_token) — Linear sends the header
             # differently for an OAuth token vs. a personal API key, so this
             # is what tells LinearAdapter which one it holds.
-            return LinearAdapter(settings=settings, token=token, oauth=True)
+            team_ids = (config or {}).get("team_ids")
+            if not team_ids:
+                raise ConfigurationError(
+                    "Linear connection has no teams configured. Pick at least "
+                    "one team on the Sources page before syncing."
+                )
+            return LinearAdapter(settings=settings, token=token, oauth=True, team_ids=team_ids)
         resolved = settings.resolve_token(token_name)
         return LinearAdapter(settings=settings, token=resolved, oauth=False)
 

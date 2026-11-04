@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
-from pgvector import Vector
+from pgvector import HalfVector
 
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
@@ -29,12 +29,16 @@ def _jsonb(value: dict | None) -> str | None:
     return json.dumps(value) if value is not None else None
 
 
-def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
-    """Bind an embedding as a pgvector ``Vector`` value."""
+def _to_db_vector(embedding: list[float] | np.ndarray) -> HalfVector:
+    """Bind an embedding as ``halfvec``, the type of every embedding column.
+
+    A full ``vector`` compared against a ``halfvec`` column cannot use the HNSW
+    index, so the query side must be halfvec too.
+    """
     arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
     if arr.size == 0:
         raise EmbeddingProviderError("embedding is empty")
-    return Vector(arr.tolist())
+    return HalfVector(arr.tolist())
 
 
 # The access predicate and its two helpers live in `security/visibility.py`,
@@ -97,7 +101,7 @@ class PgVectorStore(VectorStore):
         if not chunks:
             raise ProviderError("Cannot add a document with no chunks")
 
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             doc_row = conn.execute(
                 """
                 INSERT INTO documents (org_id, title, source_uri, workspace_id, tags)
@@ -148,7 +152,7 @@ class PgVectorStore(VectorStore):
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
         viewer_sql, viewer_params = _viewer_clause(viewer)
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.content,
@@ -216,7 +220,7 @@ class PgVectorStore(VectorStore):
 
     def list_chunk_texts(self, org_id: str) -> list[str]:
         """All chunk texts for ``org_id`` — corpus vocabulary for query spelling."""
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             rows = conn.execute(
                 "SELECT content FROM chunks WHERE org_id = %s::uuid",
                 (org_id,),
@@ -252,7 +256,7 @@ class PgVectorStore(VectorStore):
             source_provider, source_provider, after, after, before, before, tags, tags,
             *viewer_params,
         ]
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             rows = conn.execute(
                 f"""
                 WITH matched AS (
@@ -341,7 +345,7 @@ class PgVectorStore(VectorStore):
         if not positions:
             return []
         viewer_sql, viewer_params = _viewer_clause(viewer)
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.content, c.document_id::text, c.chunk_index,
@@ -397,7 +401,7 @@ class PgVectorStore(VectorStore):
         shuffled fragments.
         """
         viewer_sql, viewer_params = _viewer_clause(viewer)
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.content, c.document_id::text, c.chunk_index,
@@ -458,7 +462,7 @@ class PgVectorStore(VectorStore):
 
         vector = _to_db_vector(query_embedding)
         acl = viewer.acl()
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             row = conn.execute(
                 f"""
                 SELECT 1 - (c.embedding <=> %s) AS score, d.source_provider
@@ -548,7 +552,7 @@ class PgVectorStore(VectorStore):
         if not external_id:
             raise ProviderError("external_id is required for upsert_source_document")
 
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             if source_uri:
                 conn.execute(
                     """
@@ -630,7 +634,7 @@ class PgVectorStore(VectorStore):
         rows = [(score, model, document_id, i) for i, score in scores.items() if score is not None]
         if not rows:
             return
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, all_orgs=True) as conn:
             conn.cursor().executemany(
                 """
                 UPDATE chunks SET injection_score = %s, injection_model = %s
@@ -644,7 +648,7 @@ class PgVectorStore(VectorStore):
         # window) would otherwise sit at the head and starve the rest.
         # ponytail: full scan + sort of chunks per tick; add a partial index
         # WHERE injection_score IS NULL if the table gets large.
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, all_orgs=True) as conn:
             rows = conn.execute(
                 """
                 SELECT document_id, chunk_index, content FROM chunks
@@ -747,7 +751,7 @@ class PgVectorStore(VectorStore):
             )
         if not chunks:
             raise ProviderError("Cannot replace a document's chunks with none")
-        with get_connection(self._settings) as conn:
+        with get_connection(self._settings, org_id=org_id) as conn:
             row = conn.execute(
                 """
                 SELECT id FROM documents
@@ -762,7 +766,10 @@ class PgVectorStore(VectorStore):
             if row is None:
                 return None
             document_id = row[0]
-            conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            conn.execute(
+                "DELETE FROM chunks WHERE org_id = %s::uuid AND document_id = %s",
+                (org_id, document_id),
+            )
             conn.cursor().executemany(
                 """
                 INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding, workspace_id)

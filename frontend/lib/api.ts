@@ -202,6 +202,14 @@ export interface Me {
   drive_ready: boolean;
 }
 
+/** What a chain drafts next, once the cards it waited on are decided:
+ *  "open a GitHub issue, then comment its link on Linear" drafts the comment
+ *  after the issue exists. Each new card is approved on its own. */
+export interface ActNext {
+  reply: string;
+  actions: ActCard[];
+}
+
 /** One proposed (or finished) write, as the Act page shows it. The payload
  *  is exactly what will be sent; approving sends back its hash. */
 export interface ActCard {
@@ -213,7 +221,7 @@ export interface ActCard {
    *  where the tool records its own bot (Notion pages). */
   attribution: string | null;
   target: { kind: string; external_id: string; name: string; url: string | null };
-  payload: { title?: string; body?: string; text?: string };
+  payload: { title?: string; body?: string; text?: string; details?: [string, string][] };
   /** The drafted words as shown and edited (a Slack post without the line
    *  naming who asked). Only these can be edited, never where it goes. */
   draft: { title?: string; body?: string };
@@ -235,22 +243,10 @@ export interface ActCard {
   user_email?: string | null;
 }
 
-export interface ActProvider {
-  provider: string;
-  needed: boolean;
-  connected: boolean;
-  needs_reauth: boolean;
-  account: string | null;
-  /** False when this Handbook isn't set up to connect it (e.g. no Notion Act client). */
-  available: boolean;
-  /** Slack: nothing to connect; the Handbook bot posts, naming the person. */
-  bot?: boolean;
-}
-
+/** What this person can draft now: the MCP tools turned on for servers they signed in to. */
 export interface ActStatus {
   enabled: boolean;
   actions: { name: string; label: string; provider: string }[];
-  providers: ActProvider[];
   recent?: ActCard[];
 }
 
@@ -260,12 +256,72 @@ export interface SpaceAct {
   can_change: boolean;
 }
 
+/** A tool the admin switched on, as a space's owner sees it: on unless they switched it off here. */
+export interface SpaceTool {
+  name: string;
+  title: string;
+  description: string;
+  read_only: boolean;
+  destructive: boolean;
+  on: boolean;
+}
+
+export interface SpaceToolServer {
+  id: string;
+  name: string;
+  group: string | null;
+  group_name: string | null;
+  brand: string | null;
+  on: boolean;
+  tools: SpaceTool[];
+}
+
 export interface AdminActions {
   enabled: boolean;
   block_wider: boolean;
-  catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
   /** Slack DMs / Slack channels, each switched on apart. */
   surfaces: { name: string; label: string; enabled: boolean }[];
+}
+
+/** A tool of an MCP server an admin added. "lookup" runs while drafting, without a card. */
+export interface McpTool {
+  name: string;
+  title: string;
+  description: string;
+  read_only: boolean;
+  /** Deletes or can't be undone: never turned on by "Turn all on". */
+  destructive: boolean;
+  mode: "off" | "lookup" | "write";
+}
+
+export interface McpServerAdmin {
+  id: string;
+  name: string;
+  url: string;
+  auth: "none" | "oauth";
+  enabled: boolean;
+  /** Servers of one product (Google Workspace) share a row and a sign-in. */
+  group: string | null;
+  tools: McpTool[];
+}
+
+/** A connector's own MCP server, added in one click. */
+export interface McpPreset {
+  key: string;
+  name: string;
+  url: string | null;
+  note: string;
+  added: boolean;
+  group?: string;
+}
+
+export interface McpServerMine {
+  id: string;
+  name: string;
+  auth: "none" | "oauth";
+  tools_on: number;
+  connected: boolean;
+  needs_reauth: boolean;
 }
 
 export interface MemberRecord {
@@ -309,6 +365,9 @@ export interface ConnectionSourceConfig {
   repos?: GitHubRepoRef[];
   channel_ids?: string[];
   channel_names?: Record<string, string>;
+  /** Linear: the teams this connection reads. */
+  team_ids?: string[];
+  team_names?: Record<string, string>;
   /** Google Forms allow-list for survey sentiment. Empty = read nothing. */
   form_ids?: string[];
   form_titles?: Record<string, string>;
@@ -319,6 +378,13 @@ export interface SlackChannel {
   name: string;
   is_private: boolean;
   is_member: boolean;
+}
+
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
+  private: boolean;
 }
 
 export interface SlackChannelMember {
@@ -382,6 +448,7 @@ export interface ConnectionConfigResponse {
   config: ConnectionSourceConfig;
   folder_changed?: boolean;
   channels_changed?: boolean;
+  teams_changed?: boolean;
   documents_purged?: number;
   sharing?: SharingWarning | null;
 }
@@ -411,6 +478,8 @@ export interface JobRecord {
 export interface MagicLinkResponse {
   status: "sent" | "no_account";
   message: string;
+  /** False on a self-hosted copy: its one company exists, others join by invite. */
+  signup_enabled?: boolean;
   dev_link: string | null;
 }
 
@@ -575,6 +644,8 @@ export interface OrgModel {
   key_tail: string | null;
   checked_at: string | null;
   saved_at: string | null;
+  /** Agent mode's tool-calling test at save; null for a model saved before it. */
+  agent: "native" | "text" | "none" | "unknown" | null;
 }
 
 export interface ModelPreset {
@@ -690,8 +761,35 @@ export type ConnectorFreshness = {
   chartable: boolean;
 };
 
+export type Release = {
+  version: string;
+  date: string;
+  security: boolean;
+  manual_steps: boolean;
+  notes: string[];
+  notes_url: string | null;
+};
+
+export type UpdateInfo = {
+  deployment: "cloud" | "selfhosted";
+  current: string | null;
+  latest: string | null;
+  /** Newer releases, newest first. */
+  newer: Release[];
+  whats_new: Release | null;
+  can_update: boolean;
+  blocked_reason: string | null;
+};
+
+export type UpdateProgress = {
+  state: "idle" | "running" | "done" | "failed" | "rolled_back";
+  version: string | null;
+  step: string | null;
+  error: string | null;
+};
+
 export type Notification = {
-  kind: "reauth" | "scope" | "injection" | "gap";
+  kind: "reauth" | "scope" | "injection" | "gap" | "update";
   severity: "high" | "medium";
   provider: string;
   scope: string;
@@ -795,6 +893,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ channel_ids: channelIds }),
     }),
+  /** Linear teams for the picker; `workspaceId` reads that space's connection. */
+  listLinearTeams: (connectionId: string, workspaceId?: string) =>
+    request<{ teams: LinearTeam[] }>(
+      workspaceId
+        ? `/workspaces/${workspaceId}/connections/${connectionId}/linear-teams`
+        : `/admin/connections/${connectionId}/linear-teams`
+    ),
+  setLinearTeams: (connectionId: string, teamIds: string[], workspaceId?: string) =>
+    request<ConnectionConfigResponse>(
+      workspaceId
+        ? `/workspaces/${workspaceId}/connections/${connectionId}/config`
+        : `/admin/connections/${connectionId}/config`,
+      { method: "PUT", body: JSON.stringify({ team_ids: teamIds }) }
+    ),
   // Google Forms survey sentiment. `enabled` is the deployment flag
   // (GOOGLE_FORMS_ENABLED), reported rather than 404'd so the picker can say
   // "your deployment has not switched this on" instead of looking broken.
@@ -819,20 +931,11 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
   actStatus: () => request<ActStatus>("/act/status"),
-  /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
-  act: (question: string, workspaceId?: string | null, model?: string | null) =>
-    request<{ reply: string; action: ActCard | null }>("/act", {
-      method: "POST",
-      body: JSON.stringify({
-        question,
-        workspace_id: workspaceId ?? null,
-        model: model && model !== "auto" ? model : null,
-      }),
-    }),
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
-    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
       method: "POST",
-      body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
+      // What comes next is streamed (``streamContinue``): it can outlast the proxy.
+      body: JSON.stringify({ payload_hash: payloadHash, acknowledged, wait_for_next: false }),
     }),
   /** Ask the model to rework a pending draft's words; where it goes never changes. */
   reviseAction: (id: string, payloadHash: string, instruction: string, model?: string | null) =>
@@ -858,20 +961,61 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+  spaceTools: (workspaceId: string) =>
+    request<{ servers: SpaceToolServer[] }>(`/act/spaces/${encodeURIComponent(workspaceId)}/tools`),
+  /** ``tool`` null switches the whole server off or back on for this space. */
+  setSpaceTool: (workspaceId: string, serverId: string, tool: string | null, enabled: boolean) =>
+    request<{ servers: SpaceToolServer[] }>(`/act/spaces/${encodeURIComponent(workspaceId)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ server_id: serverId, tool, enabled }),
+    }),
   rejectAction: (id: string) =>
-    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
+    request<{ action: ActCard; next?: ActNext | null }>(`/act/actions/${encodeURIComponent(id)}/reject?wait_for_next=false`, {
       method: "POST",
     }),
-  actConnectUrl: (provider: string) => `${API_BASE_URL}/act/connect/${provider}`,
-  disconnectActProvider: (provider: string) =>
-    request<{ deleted: boolean }>(`/act/connections/${provider}`, { method: "DELETE" }),
   adminActions: () => request<AdminActions>("/admin/actions"),
   setAdminAction: (name: string, enabled: boolean) =>
     request<{ name: string; enabled: boolean }>(`/admin/actions/${encodeURIComponent(name)}`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+  adminMcp: () =>
+    request<{ servers: McpServerAdmin[]; presets: McpPreset[]; sign_in_ready: boolean }>("/admin/mcp"),
+  /** Add a connector by its preset key, or any server by name and address. */
+  addMcpServer: (server: { preset: string } | { name: string; url: string }) =>
+    request<McpServerAdmin>("/admin/mcp", { method: "POST", body: JSON.stringify(server) }),
+  /** "all": reads as lookups, every write as a write (each approved on a card). */
+  setMcpModes: (id: string, choice: "all" | "off") =>
+    request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ choice }),
+    }),
+  refreshMcpServer: (id: string) =>
+    request<McpServerAdmin>(`/admin/mcp/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
+  setMcpToolMode: (id: string, tool: string, mode: McpTool["mode"]) =>
+    request<McpTool>(`/admin/mcp/${encodeURIComponent(id)}/tools/${encodeURIComponent(tool)}`, {
+      method: "PUT",
+      body: JSON.stringify({ mode }),
+    }),
+  setMcpServerEnabled: (id: string, enabled: boolean) =>
+    request<{ id: string; enabled: boolean }>(`/admin/mcp/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  deleteMcpServer: (id: string) =>
+    request<{ deleted: boolean }>(`/admin/mcp/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  myMcp: () => request<{ servers: McpServerMine[] }>("/act/mcp"),
+  mcpConnectUrl: (id: string) => `${API_BASE_URL}/act/mcp/${encodeURIComponent(id)}/connect`,
+  disconnectMcp: (id: string) =>
+    request<{ deleted: boolean }>(`/act/mcp/${encodeURIComponent(id)}/connection`, { method: "DELETE" }),
   getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
+  getUpdates: () => request<UpdateInfo>("/admin/updates"),
+  startUpdate: (version: string) =>
+    request<UpdateProgress>("/admin/updates", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+  getUpdateProgress: () => request<UpdateProgress>("/admin/updates/progress"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),
   saveOrgModel: (preset: string, model: string, apiKey: string) =>

@@ -229,12 +229,12 @@ The full column list lives in `schema.sql` and in CLAUDE.md §6. The groups that
 | Tenant | `organizations`, `users`, `user_email_aliases`, `workspaces`, `workspace_members` |
 | Sign-in | `magic_link_tokens`, `oauth_states`, `email_change_requests`, `org_signup_requests` |
 | Connectors | `oauth_connections` (encrypted tokens, `source_config`), `drive_watch_channels`, `github_install_pending` |
-| Corpus | `documents` (`doc_is_public`, `doc_viewers`, `source_meta`), `chunks` (`vector(1024)`, generated `content_tsv`, injection score) |
+| Corpus | `documents` (`doc_is_public`, `doc_viewers`, `source_meta`), `chunks` (`halfvec(1024)`, generated `content_tsv`, injection score) |
 | Ask | `conversations` (personal: `user_id`), `conversation_turns`, `conversation_last_retrieval`, `conversation_attachments` (metadata only), `query_answer_cache`, `user_memory` |
 | Charts & graph | `activity_facts`, `insight_pins`, `doc_tables`, `doc_table_rows`, `doc_text_queue` (read marker), `kg_entities`, `kg_edges`, `kg_evidence`, `person_identities` |
-| Ops | `ingestion_jobs`, `schedulers`, `scheduler_reports`, `feedback_and_gaps`, `live_tool_calls`, `api_rate_counters` |
+| Ops | `ingestion_jobs`, `schedulers`, `scheduler_reports`, `feedback_and_gaps`, `live_tool_calls` (rate limits are in Redis, `app/ratelimit/`) |
 
-`chunks.embedding` is `vector(1024)` to match BGE-M3. Changing the model means changing `EMBEDDING_DIM` and re-ingesting. Deletes cascade from `organizations` and `workspaces`. A workspace id is nullable: `NULL` means org-wide, and a space query never also returns org-wide rows.
+`chunks.embedding` is `halfvec(1024)` (2 bytes a dimension) to match BGE-M3. Query vectors are bound as halfvec too, or the HNSW index is skipped, and every pooled connection sets `hnsw.iterative_scan = strict_order` because all tenants share one index. Changing the model means changing `EMBEDDING_DIM` and re-ingesting. Deletes cascade from `organizations` and `workspaces`. A workspace id is nullable: `NULL` means org-wide, and a space query never also returns org-wide rows.
 
 ---
 

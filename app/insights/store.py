@@ -564,6 +564,24 @@ def scope_names(
     return out
 
 
+def recorded_kinds(
+    *, org_id: str, workspace_id: str | None, viewer: "Viewer | None" = None,
+) -> set[tuple[str, str]]:
+    """``(provider, kind)`` pairs this viewer has at least one fact for here,
+    so a starter is never offered for a metric with nothing to draw."""
+    where = _scoped(" WHERE org_id = %(org_id)s", workspace_id)
+    access, access_params = _viewer_filter(viewer)
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT provider, kind FROM activity_facts {where}{access}",
+                {"org_id": org_id, "workspace_id": workspace_id, **access_params},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("insights: recorded_kinds failed", cause=exc) from exc
+    return {(r[0], r[1]) for r in rows}
+
+
 def first_fact_at(
     provider: str, *, org_id: str, workspace_id: str | None,
     viewer: "Viewer | None" = None,

@@ -112,7 +112,7 @@ def test_github_writes_facts_but_no_documents_and_no_chunks(org):
     reader = FakeReader([_pr(1, merged_by="grace", merged_days=8)])
     github_facts.record_github_facts(org, workspace_id=None, reader=reader)
 
-    with get_connection() as conn:
+    with get_connection(org_id=org) as conn:
         facts = conn.execute(
             "SELECT count(*) FROM activity_facts WHERE org_id = %s AND provider = 'github'",
             (org,),

@@ -30,7 +30,9 @@ from ..feedback import assign_topics_soon, list_topics
 from ..feedback.topics import WINDOW_DAYS
 from ..guard.flagged import MAX_LISTED, flagged_documents
 from ..auth.session import SessionClaims
+from ..auth.user_connections import list_user_connections
 from ..jobs.autosync import SCOPE_KEYS
+from ..updates import update_status
 from ..workspaces.store import list_my_workspaces
 from .deps import get_session
 
@@ -94,11 +96,10 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
                     "provider": conn.provider,
                     "scope": scope,
                     "title": f"{name} is connected but indexing nothing",
-                    "detail": (
-                        "Pick a folder so its documents can answer questions."
-                        if conn.provider == "google"
-                        else "Pick the channels Handbook may read."
-                    ),
+                    "detail": {
+                        "google": "Pick a folder so its documents can answer questions.",
+                        "linear": "Pick the teams Handbook may read.",
+                    }.get(conn.provider, "Pick the channels Handbook may read."),
                     "action": "Choose what to read",
                     "href": href,
                 }
@@ -106,6 +107,74 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
     return items + _flagged_items(org_id, workspace_id, scope, href) + _gap_items(
         org_id, workspace_id, scope, feedback_href
     )
+
+
+def _update_items() -> list[dict]:
+    """A newer version (self-hosted) or what the last update changed. Admins
+    only, and never fails the bell: an unreachable feed is no item."""
+    try:
+        status = update_status()
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    latest = status.latest
+    if latest and status.deployment == "selfhosted":
+        security = any(r.security for r in status.newer)
+        return [{
+            "kind": "update",
+            "severity": "high" if security else "medium",
+            "provider": "",
+            "scope": "Company",
+            "title": f"Handbook {latest.version} is available",
+            "detail": (
+                "It includes a security fix. Update soon."
+                if security else
+                (latest.notes[0] if latest.notes else f"You are on {status.current}.")
+            ),
+            "action": "Update" if status.can_update else "See how to update",
+            "href": "/admin/updates",
+        }]
+    if status.whats_new:
+        release = status.whats_new
+        return [{
+            "kind": "update",
+            "severity": "medium",
+            "provider": "",
+            "scope": "Company",
+            # Not "updated to": a fresh install is on its first version.
+            "title": f"What's new in Handbook {release.version}",
+            "detail": release.notes[0] if release.notes else "See what changed.",
+            "action": "See what's new",
+            "href": "/admin/updates",
+        }]
+    return []
+
+
+def _act_items(org_id: str, user_id: str) -> list[dict]:
+    """The caller's OWN Act sign-ins that need reconnecting. Only they can fix
+    one, so everyone sees theirs, admin or not. Never fails the bell."""
+    try:
+        broken = [c for c in list_user_connections(org_id, user_id) if c.needs_reauth]
+        if not broken:
+            return []
+        from ..actions.mcp_store import list_servers
+
+        # A sign-in is to an MCP server; it is named by the server, not its id.
+        names = {s.provider: s.name for s in list_servers(org_id)}
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    return [
+        {
+            "kind": "reauth",
+            "severity": "high",
+            "provider": c.provider,
+            "scope": "Agent",
+            "title": f"Your {names[c.provider]} sign-in needs renewing",
+            "detail": f"Agent mode can't draft or send anything in {names[c.provider]} for you until you sign in again.",
+            "action": "Sign in",
+            "href": "/account#act",
+        }
+        for c in broken if c.provider in names
+    ]
 
 
 def _gap_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
@@ -175,16 +244,17 @@ def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str)
 @router.get("")
 def list_notifications(session: SessionClaims = Depends(get_session)):
     """Everything wrong that this caller can fix, highest severity first."""
-    items: list[dict] = []
-    owned = [s for s in list_my_workspaces(session.org_id, session.user_id) if s.role == "owner"]
+    items: list[dict] = _act_items(session.org_id, session.user_id)
+    owned =[s for s in list_my_workspaces(session.org_id, session.user_id) if s.role == "owner"]
     if session.role == "admin" or owned:
         assign_topics_soon(session.org_id)
     if session.role == "admin":
+        items += _update_items()
         items += _items_in(session.org_id, None, "Company", "/admin/connections", "/admin/feedback")
     # A member cannot reconnect a space's sources (the space page disables
     # every control for them), so telling them one is broken is noise.
     for space in owned:
         href = f"/workspaces/{space.id}"
-        items += _items_in(session.org_id, space.id, space.name, href, href)
+        items += _items_in(session.org_id, space.id, space.name, href, f"{href}/feedback")
     items.sort(key=lambda i: 0 if i["severity"] == "high" else 1)
     return {"items": items, "count": len(items)}

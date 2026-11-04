@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 
 import json
@@ -9,14 +10,16 @@ import logging
 import os
 import dataclasses
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 
 def _stream_word_delay_seconds() -> float:
     raw = os.getenv("CHAT_STREAM_WORD_DELAY_MS")
@@ -57,7 +60,7 @@ from ..agent.routing import (
     named_providers,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import AttachmentSettings, GraphSettings, RagSettings
+from ..config.settings import AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings
 from ..rag import progress
 from ..rag.deep import reset_deep_read, use_deep_read
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
@@ -74,7 +77,7 @@ from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
 from ..agent.orchestration import INSIGHTS_KEY
 from ..insights import query
 from ..insights.resolve import spec_to_dict
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import give_back_place, limit_question, take_place
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
 from .deps import (
@@ -371,37 +374,155 @@ def _combined_suggestions(
     return {"agent": None, "sources": sorted(per_provider), "questions": questions}
 
 
-#: Chart-mode starters shown at once; more would push the box off a phone.
-MAX_CHART_STARTERS = 4
+#: Chart-mode starters shown at once: two columns of three on a wide screen.
+MAX_CHART_STARTERS = 6
+
+#: Order sources take turns in, documents first: their tables are the data a
+#: person is least likely to know can be charted.
+_STARTER_SOURCES = ("notion", "google", "slack", "linear", "github", "forms")
 
 
-def chart_starters(metrics, fields: dict | None) -> list[str]:
+def _starter_label(label: str) -> str:
+    """A metric label mid-sentence: "Where the work sits" -> "where the work
+    sits", while "PRs" or "GitHub" keep their capitals."""
+    return label[:1].lower() + label[1:] if label[1:2].islower() else label
+
+
+#: How each shape is asked for. Every starter names its chart type, so the
+#: list shows what Chart mode can draw; "donut" is never offered (a pie).
+_SHAPE_WORDS = {
+    "line": "Line chart", "area": "Area chart", "bar": "Bar chart",
+    "horizontal_bar": "Horizontal bar chart", "stacked_bar": "Stacked bar chart",
+    "stacked_area": "Stacked area chart", "heatmap": "Heatmap", "pie": "Pie chart",
+}
+
+
+#: Which chart types the list shows first, so six starters cover the common
+#: ones before the rarer stacked area and heatmap.
+_SHOWCASE = ("bar", "line", "pie", "stacked_bar", "area", "horizontal_bar",
+             "heatmap", "stacked_area")
+
+
+def _metric_forms(metric, attrs) -> list[tuple[str, str]]:
+    """Every ``(shape, question)`` this metric can be drawn as, natural shape
+    first. Built from the metric's own label, dimensions and discovered
+    fields, never written per metric; each shape is one ``registry.shapes_for``
+    allows for that form. A median is never added up, so it gets no pie and
+    no stack."""
+    from ..rag.prompts import _TOOL_NAMES
+
+    tool = _TOOL_NAMES.get(metric.provider, metric.provider.title())
+    label = _starter_label(metric.label)
+    if metric.chart not in _SHAPE_WORDS:
+        return [(metric.chart, f"Chart {label} in {tool}")]
+    dims = [query.dim_label(metric, d) for d in metric.dims]
+    by = attrs[0].label if attrs else (dims[0] if dims else None)
+    adds = metric.select.lower().startswith("count")
+    trend = [
+        ("line", f"per week in {tool} over the last 3 months"),
+        ("area", f"per month in {tool}"),
+    ]
+    split = [
+        ("stacked_bar", f"per month in {tool}, split by {by}"),
+        ("stacked_area", f"per week in {tool}, split by {by}"),
+        ("heatmap", f"per month by {by} in {tool}"),
+    ] if by and adds else []
+    breakdown = [
+        ("bar", f"by {by} in {tool}"),
+        ("horizontal_bar", f"by {by} in {tool}"),
+    ] + ([("pie", f"by {by} in {tool}")] if adds else []) if by else []
+    if metric.chart in ("line", "area"):
+        forms = trend + split + breakdown
+    elif metric.chart == "stacked_bar":
+        forms = split + breakdown + trend
+    else:
+        forms = breakdown + trend + split
+    if metric.dims and metric.dims[0] == "state":
+        # Where work sits NOW: a breakdown, never a trend; its stack is by a
+        # second real column, split by state.
+        from ..insights import registry
+
+        forms = [f for f in breakdown]
+        other = next((query.dim_label(metric, d) for d in metric.dims[1:]
+                      if d in registry.DIMENSIONS), None)
+        if other and adds:
+            forms.append(("stacked_bar", f"by {other} in {tool}, split by {dims[0]}"))
+    return [(shape, f"{_SHAPE_WORDS[shape]} of {label} {rest}") for shape, rest in forms]
+
+
+def _table_forms(table) -> list[tuple[str, str]]:
+    """A document table asked for by its own column names and its page's
+    title, which is what picks that page. Empty for a table with nothing to
+    plot (one row, or no number column). A pie only for a few rows of a
+    measure that adds up (not a percentage)."""
+    if table.row_count < 2 or not table.columns:
+        return []
+    axis = table.columns[0]
+    number = next((c for c in table.columns[1:] if c.get("type") == "number"), None)
+    if not number or not axis.get("name"):
+        return []
+    measure = _starter_label(
+        re.sub(r"\s*\([^)]*\)\s*$", "", number["name"])[:_STARTER_NAME_CHARS])
+    axis_name = _starter_label(axis["name"][:_STARTER_NAME_CHARS])
+    title = table.document_title
+    if len(title) > 50:
+        title = title[:50].rsplit(" ", 1)[0] + "…"
+    source = f"from \u201c{title}\u201d"
+    if axis.get("type") == "date":
+        forms = [("line", f"over time {source}"), ("area", f"over time {source}"),
+                 ("bar", f"over time {source}")]
+    else:
+        forms = [("bar", f"by {axis_name} {source}"),
+                 ("horizontal_bar", f"by {axis_name} {source}")]
+        if table.row_count >= 3:
+            forms.append(("line", f"by {axis_name} {source}"))
+        if table.row_count <= 8 and "%" not in number["name"] and number.get("unit") != "%":
+            forms.append(("pie", f"by {axis_name} {source}"))
+        second = next((c for c in table.columns[1:] if c.get("type") == "category"
+                       and c.get("name")), None)
+        if second:
+            split = _starter_label(second["name"][:_STARTER_NAME_CHARS])
+            forms.insert(1, ("stacked_bar", f"by {axis_name}, split by {split} {source}"))
+    return [(shape, f"{_SHAPE_WORDS[shape]} of {measure} {rest}") for shape, rest in forms]
+
+
+def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> list[str]:
     """Starter questions built from what THIS scope can chart.
 
-    No product copy: each one is a metric this scope has, phrased from its
-    own label, either over time (a trend metric) or by a field the data
-    actually holds (discovered by ``attr_catalog``) -- so every starter can be
-    drawn, and a new field becomes a starter without anyone writing one.
-    One per metric, interleaved across tools.
+    No product copy: each one is a metric this scope has data for (``recorded``
+    pairs of provider and kind; ``None`` = not known, keep all), phrased from
+    its own label and the fields the data holds, or a document table phrased
+    from its own columns and title -- so every starter can be drawn. Sources
+    take turns, so every connected one is shown before any repeats, and each
+    starter takes a chart type no earlier one used, so the list shows what
+    Chart mode can draw.
     """
-    by_provider: dict[str, list[str]] = {}
+    by_provider: dict[str, list] = {}
+    for table in tables:
+        forms = _table_forms(table)
+        items = by_provider.setdefault(table.provider, [])
+        if forms and forms not in items and len(items) < 2:
+            items.append(forms)
     for metric in metrics:
+        if recorded is not None and (metric.provider, metric.kind) not in recorded:
+            continue
         attrs = [a for a in ((fields or {}).get(metric.key) or ())
                  if a.type in ("category", "tags")]
-        if attrs:
-            text = f"{metric.label} by {attrs[0].label}"
-        elif metric.chart == "line":
-            text = f"{metric.label} per week"
-        else:
-            dim = metric.dims[0] if metric.dims else None
-            text = (f"{metric.label} by {query.dim_label(metric, dim)}" if dim
-                    else metric.label)
-        by_provider.setdefault(metric.provider, []).append(text)
+        by_provider.setdefault(metric.provider, []).append(_metric_forms(metric, attrs))
+    order = sorted(by_provider, key=lambda p: (
+        _STARTER_SOURCES.index(p) if p in _STARTER_SOURCES else len(_STARTER_SOURCES), p))
     out: list[str] = []
+    used: set[str] = set()
     while len(out) < MAX_CHART_STARTERS and any(by_provider.values()):
-        for items in by_provider.values():
+        for provider in order:
+            items = by_provider[provider]
             if items and len(out) < MAX_CHART_STARTERS:
-                out.append(items.pop(0))
+                forms = items.pop(0)
+                fresh = [f for f in forms if f[0] not in used]
+                shape, text = min(fresh, key=lambda f: _SHOWCASE.index(f[0])
+                                  if f[0] in _SHOWCASE else len(_SHOWCASE)) if fresh else forms[0]
+                used.add(shape)
+                out.append(text)
     return out
 
 
@@ -446,6 +567,7 @@ def list_chart_starters(
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
     from ..insights import attr_catalog, registry, scopes
+    from ..insights import store as insights_store
 
     try:
         connected = _connected_providers(session.org_id, workspace_id)
@@ -473,7 +595,20 @@ def list_chart_starters(
                 list_upload_tables(org_id=session.org_id, uploads=uploads))
         except Exception:  # noqa: BLE001 - starters are a convenience
             logger.warning("chart starters: could not list uploaded tables", exc_info=True)
-    questions = (from_files + chart_starters(metrics, fields))[:MAX_CHART_STARTERS]
+    viewer = viewer_for(session)
+    try:
+        recorded = insights_store.recorded_kinds(
+            org_id=session.org_id, workspace_id=workspace_id, viewer=viewer)
+    except Exception:  # noqa: BLE001 - starters are a convenience
+        recorded = None
+    try:
+        from ..doctables.store import list_tables
+
+        tables = list_tables(org_id=session.org_id, workspace_id=workspace_id,
+                             viewer=viewer, limit=50)
+    except Exception:  # noqa: BLE001
+        tables = []
+    questions = (from_files + chart_starters(metrics, fields, tables, recorded))[:MAX_CHART_STARTERS]
     return {"questions": questions}
 
 
@@ -865,6 +1000,74 @@ def _sse_event(event: str, data: dict | str) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+# How often a waiting answer asks again for a shared place.
+_PLACE_POLL_SECONDS = 0.25
+
+_PERSON_BUSY = (
+    "You already have {n} answers being written. Please wait for one to finish."
+)
+
+
+async def _in_a_slot(
+    stream: Iterator[str], settings: RateLimitSettings, user_id: str
+) -> AsyncIterator[str]:
+    """At most ``chat_max_concurrent_per_person`` answers per person and
+    ``chat_max_concurrent`` for everyone are written at once; the rest wait.
+
+    Without the shared cap a burst started every answer together and the
+    outside APIs (embedding, rerank, model) refused most of them with 429s, so
+    a person got a failure instead of a short wait. The places live in Redis
+    (``security.rate_limit.take_place``), so the cap holds across servers.
+
+    Taken INSIDE the stream: a place taken before the generator starts would
+    never be given back if the client left first. A person over their own cap
+    is told at once (more is a script or a pile of tabs); a waiter for a shared
+    place is told so, and one that waits past the limit is told the service is
+    busy rather than silently timing out.
+
+    The wait is on the event loop, not a worker thread: a blocking wait held
+    one of the ~40 threads per waiter, so at 100 askers the waiters starved
+    every sync endpoint (measured: 29 s before a stream's headers). The answer
+    itself still runs in the threadpool, exactly as Starlette runs a sync stream.
+    """
+    mine_key = f"answers:user:{user_id}"
+    mine = await asyncio.to_thread(
+        take_place, mine_key, settings.chat_max_concurrent_per_person, settings
+    )
+    if mine is None:
+        yield _sse_event(
+            "error", {"message": _PERSON_BUSY.format(n=settings.chat_max_concurrent_per_person)}
+        )
+        return
+    shared = None
+    try:
+        shared = await asyncio.to_thread(
+            take_place, "answers:all", settings.chat_max_concurrent, settings
+        )
+        if shared is None:
+            yield _sse_event("status", "Many people are asking right now, waiting for a free slot…")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + settings.chat_queue_wait_seconds
+            while shared is None:
+                if loop.time() >= deadline:
+                    yield _sse_event(
+                        "error",
+                        {"message": "Many people are asking right now. Please try again in a moment."},
+                    )
+                    return
+                await asyncio.sleep(_PLACE_POLL_SECONDS)
+                shared = await asyncio.to_thread(
+                    take_place, "answers:all", settings.chat_max_concurrent, settings
+                )
+        async for event in iterate_in_threadpool(stream):
+            yield event
+    finally:
+        # Given back without awaiting: this also runs when the client leaves
+        # and the task is cancelled. Each is one quick call (or a no-op).
+        give_back_place("answers:all", shared, settings)
+        give_back_place(mine_key, mine, settings)
+
+
 def _shown_live(result) -> list[dict]:
     """The live reads the ANSWER uses: those whose document it cites.
 
@@ -1226,6 +1429,7 @@ def _stream_answer(
     session: SessionClaims | None = None,
     chart_mode: bool = False,
     deep_mode: bool = False,
+    extra_effort: bool = False,
 ) -> Iterator[str]:
     # Who is asking, for the Second Brain's live reads (app/livetools). Whether
     # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
@@ -1243,7 +1447,7 @@ def _stream_answer(
     # read for new ones, alongside the answer rather than in front of it.
     facts, memory_turn = _start_personal_memory(question, org_id, conversation_id, session)
     facts_token = personal_memory.use_asker_facts(tuple((f.kind, f.text) for f in facts))
-    deep_token = use_deep_read(deep_mode)
+    deep_token = use_deep_read(deep_mode, extra=extra_effort)
     try:
         yield from _with_progress(lambda: _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
@@ -1566,7 +1770,7 @@ def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
 ):
-    check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
+    limit_question(session)
 
     question = (body.get("question") or "").strip()
     if not question:
@@ -1606,18 +1810,18 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
-    return StreamingResponse(
-        _stream_answer(
-            question,
-            session.org_id,
-            conversation_id,
-            workspace_id=workspace_id,
-            requested_agent=requested_agent,
-            model=model,
-            session=session,
-            # Chat's Chart and Deep analysis toggles. Anything else is normal Ask.
-            chart_mode=body.get("mode") == "chart",
-            deep_mode=body.get("mode") == "deep",
-        ),
-        media_type="text/event-stream",
+    stream = _stream_answer(
+        question,
+        session.org_id,
+        conversation_id,
+        workspace_id=workspace_id,
+        requested_agent=requested_agent,
+        model=model,
+        session=session,
+        # Chat's Chart and Deep analysis toggles. Anything else is normal Ask.
+        chart_mode=body.get("mode") == "chart",
+        deep_mode=body.get("mode") in ("deep", "deep_extra"),
+        extra_effort=body.get("mode") == "deep_extra",
     )
+    stream = _in_a_slot(stream, RateLimitSettings.from_env(), session.user_id)
+    return StreamingResponse(stream, media_type="text/event-stream")

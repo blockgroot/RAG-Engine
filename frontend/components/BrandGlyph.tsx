@@ -4,6 +4,7 @@ export type BrandName =
   | "github"
   | "slack"
   | "linear"
+  | "google"
   | "sendgrid"
   | "workspace"
   | "secure"
@@ -20,6 +21,7 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   notion: "/brands/notion.png",
   slack: "/brands/slack.png",
   drive: "/brands/drive.png",
+  google: "/brands/google.png",
   workspace: "/brands/workspace.png",
   secure: "/brands/secure.png",
   github: null,

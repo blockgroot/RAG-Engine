@@ -17,6 +17,14 @@ import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type ModelPreset, type OrgModel } from "@/lib/api";
 
+/** Agent mode's tool-calling test, said in the admin's terms. */
+const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
+  native: "Agent mode: works (calls tools)",
+  text: "Agent mode: works with a fallback (writes tool calls as text)",
+  none: "Agent mode: not available (this model doesn't call tools)",
+  unknown: "Agent mode: couldn't be tested — save again to retry",
+};
+
 export default function AdminModelPage() {
   const { me, loading } = useMe({ requireAdmin: true });
 
@@ -136,6 +144,7 @@ export default function AdminModelPage() {
               <span className="model-current-checked">
                 Last tested {saved.checked_at ? new Date(saved.checked_at).toLocaleDateString() : "—"}
               </span>
+              {saved.agent && <span className="model-current-checked">{AGENT_RESULT[saved.agent]}</span>}
               <button className="button button-secondary" onClick={remove} disabled={busy}>
                 Remove model
               </button>

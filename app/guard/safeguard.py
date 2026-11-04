@@ -21,6 +21,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
+from ..core.exceptions import PrivacyError
+from ..privacy import redact
 from ..security.untrusted import normalize_untrusted
 from .base import InjectionGuard
 
@@ -40,6 +42,10 @@ def groq_label(
     *, api_key: str, base_url: str, system: str, text: str, timeout: float
 ) -> str | None:
     """One safeguard call; the upper-cased first word of its reply, or ``None``."""
+    try:
+        text = redact([text])[0]
+    except PrivacyError:
+        return None  # unchecked text is not sent
     try:
         response = httpx.post(
             base_url.rstrip("/") + "/chat/completions",

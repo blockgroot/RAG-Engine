@@ -10,6 +10,9 @@ const apiProxyTarget = (
 
 const nextConfig = {
   reactStrictMode: true,
+  // The Docker image (frontend/Dockerfile) needs a self-contained server;
+  // Vercel builds without it, so production there is unchanged.
+  ...(process.env.NEXT_STANDALONE === "1" ? { output: "standalone" } : {}),
   async rewrites() {
     return [
       {

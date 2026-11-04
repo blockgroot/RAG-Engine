@@ -347,3 +347,55 @@ def set_google_form_ids(
     }
     set_connection_config(org_id, "google", config, workspace_id=workspace_id)
     return config
+
+
+# -- Linear: the teams a connection reads -------------------------------------
+#
+# Linear's sign-in grants every team the account can see and has no picker of
+# its own, so, like Slack's channels, the teams are chosen here after
+# connecting, and nothing is indexed until they are.
+
+
+def list_linear_teams(org_id: str, *, workspace_id: str | None = None) -> list[dict]:
+    """Teams this connection's token can see, for the picker."""
+    from ..auth.credentials import get_live_connection_token
+    from ..sources.linear import LinearAdapter
+
+    token = get_live_connection_token(org_id, "linear", workspace_id)
+    return LinearAdapter(token=token, oauth=True).list_teams()
+
+
+def set_linear_teams(
+    org_id: str, connection_id: str, team_ids, *, workspace_id: str | None = None,
+) -> dict:
+    """Save the picked teams and queue the sync. A dropped team's issues are
+    purged first, so they stop answering at once (the Slack channel rule).
+
+    So is a FIRST pick: a connection from before the picker indexed every
+    team, and the sync's mass-removal guard would keep the unpicked teams'
+    issues (it cannot tell most of a listing vanishing from a flaky read)."""
+    from ..auth.credentials import get_live_connection_token, set_connection_config
+    from ..jobs.autosync import sync_now
+    from ..sources.linear import validate_linear_teams
+
+    if not isinstance(team_ids, list) or not all(isinstance(t, str) for t in team_ids):
+        raise HTTPException(status_code=400, detail="team_ids must be a list of team id strings")
+    try:
+        token = get_live_connection_token(org_id, "linear", workspace_id)
+        config = validate_linear_teams(token, team_ids)
+        old = set((get_connection_config(org_id, "linear", workspace_id=workspace_id) or {})
+                  .get("team_ids") or [])
+        dropped = not old or not old.issubset(config["team_ids"])
+        set_connection_config(org_id, "linear", config, workspace_id=workspace_id)
+        note_live_success(org_id, "linear", workspace_id=workspace_id)
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc, org_id=org_id, provider="linear", workspace_id=workspace_id)
+    purged = purge_provider_documents(org_id, "linear", workspace_id=workspace_id) if dropped else 0
+    sync_now(org_id, connection_id, provider="linear", workspace_id=workspace_id)
+    return {
+        "connection_id": connection_id,
+        "provider": "linear",
+        "config": config,
+        "teams_changed": dropped,
+        "documents_purged": purged,
+    }

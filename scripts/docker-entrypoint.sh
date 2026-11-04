@@ -13,5 +13,8 @@ python scripts/init_db.py
 echo "Checking LLM config..."
 python scripts/check_llm_config.py
 
+echo "Checking embedding config..."
+python scripts/check_embedding_config.py
+
 echo "Starting API on port ${PORT:-8000}..."
 exec uvicorn app.api.main:app --host 0.0.0.0 --port "${PORT:-8000}"

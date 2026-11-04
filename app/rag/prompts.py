@@ -1000,7 +1000,7 @@ def build_slack_recap_prompt(
         "was discussed, summarize recent conversation, what did I miss — then "
         "these threads ARE the answer: summarize them.\n"
         "3. Each thread below is labeled with its real channel, like "
-        "\"(#hand-book-testing)\". If the question names that same channel, "
+        "\"(#general)\". If the question names that same channel, "
         "treat it as CONFIRMED — that label is your proof, do not also search "
         "for the channel name written inside the message text itself.\n"
         "4. Only when the question asks about a SPECIFIC topic or fact — not "

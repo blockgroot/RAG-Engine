@@ -563,6 +563,20 @@ def get_connection_config(
     return row[0]
 
 
+def connected_anywhere(org_id: str, provider: str) -> list[tuple[str | None, dict]]:
+    """Every connection of ``provider`` in this org, company-wide or in any
+    space, as ``(external_workspace_id, source_config)``, company-wide first.
+    Act's "is this account the company's?" checks read this: a person may
+    connect a tool their company connected in only one space."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT external_workspace_id, source_config FROM oauth_connections "
+            "WHERE org_id = %s AND provider = %s ORDER BY workspace_id NULLS FIRST",
+            (org_id, provider),
+        ).fetchall()
+    return [(r[0], r[1] or {}) for r in rows]
+
+
 def clear_installation_token_cache(
     org_id: str, workspace_id: str | None = None
 ) -> None:

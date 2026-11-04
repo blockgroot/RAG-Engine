@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 
-import { ApiError, api, type ActCard } from "@/lib/api";
+import { ApiError, api, type ActCard, type ActNext } from "@/lib/api";
+import { streamContinue } from "@/lib/sse";
+import { DraftText } from "./AnswerText";
 
 /**
  * The approval card for one proposed write.
@@ -20,14 +22,6 @@ import { ApiError, api, type ActCard } from "@/lib/api";
  * the instruction survive. Where it goes is never editable: cancel and ask
  * again for that.
  */
-
-const PROVIDER_LABEL: Record<string, string> = {
-  linear: "Linear",
-  github: "GitHub",
-  notion: "Notion",
-  google: "Google Drive",
-  slack: "Slack",
-};
 
 const STATUS_LINE: Record<ActCard["status"], string> = {
   proposed: "Waiting for your approval",
@@ -51,10 +45,13 @@ function shortLabel(title: string): string {
 export function ActionCard({
   card,
   onChange,
+  onNext,
   model,
 }: {
   card: ActCard;
   onChange: (next: ActCard) => void;
+  /** A chain's next drafts, once this card (and any it waited with) is decided. */
+  onNext?: (next: ActNext) => void;
   /** The chat's model pick, used for "Ask for changes". */
   model?: string | null;
 }) {
@@ -62,6 +59,8 @@ export function ActionCard({
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What the request is doing next, after this card was decided. */
+  const [step, setStep] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ title?: string; body?: string } | null>(null);
   const [asking, setAsking] = useState<string | null>(null);
 
@@ -75,10 +74,11 @@ export function ActionCard({
   const secondsLeft = remaining(card.expires_at, now);
   const expired = pending && secondsLeft === 0;
   const needsAck = card.exposure === "wider" || card.exposure === "unknown";
-  const provider = PROVIDER_LABEL[card.provider ?? ""] ?? card.provider ?? "the tool";
+  // Every tool is an MCP server's; its label names the server ("Linear: save_issue").
+  const provider = card.label.split(":")[0] || "the tool";
+  const openIn = provider;
   const draft = card.draft ?? card.payload;
-  const bodyLabel =
-    draft.title !== undefined ? "Description" : card.provider === "slack" ? "Message" : "Comment";
+  const bodyLabel = draft.title !== undefined ? "Description" : "Text";
 
   async function approve() {
     setBusy(true);
@@ -86,11 +86,19 @@ export function ActionCard({
     try {
       const { action } = await api.confirmAction(card.id, card.payload_hash, ack);
       onChange(action);
+      await continueAfter();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send it. Nothing was sent.");
     } finally {
       setBusy(false);
     }
+  }
+
+  /** The request's next step, if it has one, once this card is decided. */
+  async function continueAfter() {
+    if (!onNext) return;
+    const next = await streamContinue(card.id, setStep).finally(() => setStep(null));
+    if (next) onNext({ reply: next.reply, actions: next.actions ?? [] });
   }
 
   async function saveEdit() {
@@ -139,6 +147,7 @@ export function ActionCard({
     try {
       const { action } = await api.rejectAction(card.id);
       onChange(action);
+      await continueAfter();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not cancel it.");
     } finally {
@@ -151,7 +160,7 @@ export function ActionCard({
       <header className="act-card-head">
         <span className="act-card-label">{card.label}</span>
         <span className="act-card-as">
-          {card.attribution ?? "as you"}, in {provider}
+          {card.attribution ?? "as you"}, in {openIn}
         </span>
       </header>
 
@@ -172,6 +181,14 @@ export function ActionCard({
             card.target.name
           )}
         </dd>
+        {/* Settings the write carries (assignee, labels, due date...): shown,
+            never editable. To change one, cancel and ask again. */}
+        {card.payload.details?.map(([label, value]) => (
+          <div key={label} style={{ display: "contents" }}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
         {draft.title !== undefined && (
           <>
             <dt>
@@ -208,21 +225,13 @@ export function ActionCard({
                   onChange={(e) => setEditing({ ...editing, body: e.target.value })}
                 />
               ) : (
-                draft.body || <span className="muted">(empty)</span>
+                draft.body ? <DraftText text={draft.body} /> : <span className="muted">(empty)</span>
               )}
             </dd>
           </>
         )}
       </dl>
       {card.edited && !editing && <p className="muted act-card-edited">Edited by you</p>}
-      {card.provider === "notion" && pending && (
-        // Notion can't be asked in advance what someone may do on a page, so
-        // the card says what the write needs; Notion refuses it otherwise.
-        <p className="muted act-card-note">
-          Notion doesn&rsquo;t let apps check your access first. This works only if you can{" "}
-          {card.action === "notion.comment" ? "comment on" : "edit"} this page in Notion.
-        </p>
-      )}
 
       {needsAck && pending && (
         <div className="act-card-exposure" role="alert">
@@ -300,22 +309,27 @@ export function ActionCard({
           >
             {busy ? "Sending…" : "Approve"}
           </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => setEditing({ ...draft })}
-            disabled={busy}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => setAsking("")}
-            disabled={busy}
-          >
-            Ask for changes
-          </button>
+          {/* A change with no drafted words (a status, a label) has nothing to edit. */}
+          {Object.keys(draft).length > 0 && (
+            <>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setEditing({ ...draft })}
+                disabled={busy}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setAsking("")}
+                disabled={busy}
+              >
+                Ask for changes
+              </button>
+            </>
+          )}
           <button type="button" className="button button-secondary" onClick={cancel} disabled={busy}>
             Cancel
           </button>
@@ -328,12 +342,18 @@ export function ActionCard({
           <span className="studio-chip">{expired ? STATUS_LINE.expired : STATUS_LINE[card.status]}</span>
           {card.status === "succeeded" && card.result?.url && (
             <a className="act-card-result-link" href={card.result.url} target="_blank" rel="noreferrer">
-              Open in {provider}
+              Open in {openIn}
             </a>
           )}
           {(card.status === "failed" || card.status === "unknown") && card.result?.error && (
             <span className="muted"> {card.result.error}</span>
           )}
+        </p>
+      )}
+
+      {step && (
+        <p className="muted" role="status">
+          {step}…
         </p>
       )}
 

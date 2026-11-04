@@ -126,7 +126,8 @@ def _log(row: dict) -> None:
 
 def _log_body(call_id: str, body: dict, content: str | None) -> None:
     with BODIES.open("a") as f:
-        f.write(json.dumps({"call_id": call_id, "messages": body.get("messages"), "response": content}) + "\n")
+        f.write(json.dumps({"call_id": call_id, "messages": body.get("messages"), "response": content,
+                            "tools": [(t.get("function") or {}).get("name") for t in body.get("tools") or []]}) + "\n")
 
 
 async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:

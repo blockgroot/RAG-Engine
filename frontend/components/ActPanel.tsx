@@ -1,36 +1,26 @@
 "use client";
 
 /**
- * Act on the Account page: the accounts Handbook writes with for this person,
- * and what they asked it to do.
+ * Agent on the Account page: the person's own sign-in to each tool an admin
+ * added (an MCP server), and what they asked Handbook to do.
  *
- * A write runs as the person's OWN account, so it has their rights and shows
- * them as its author; this is where they connect and disconnect those
- * accounts. Requests are made in the chat (+ then Act). Drafts still waiting
- * can be approved, edited or cancelled from the history here.
+ * A write runs with the person's OWN sign-in, so it has their rights and shows
+ * them as its author; this is where they sign in and out. Requests are made in
+ * the chat (Agent mode). Drafts still waiting can be approved, edited or
+ * cancelled from the history here.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import { ActionCard } from "@/components/ActionCard";
-import { ApiError, api, type ActCard, type ActStatus } from "@/lib/api";
+import { ApiError, api, type ActCard, type ActStatus, type McpServerMine } from "@/lib/api";
 
-const PROVIDER_LABEL: Record<string, string> = {
-  linear: "Linear",
-  github: "GitHub",
-  notion: "Notion",
-  google: "Google Drive",
-  slack: "Slack",
-};
-
-/** Why a connect was refused. Each is about keeping company content inside
- *  the company: Handbook only writes into the company's own workspace. */
+/** Why a sign-in was refused: Handbook only writes into the company's own
+ *  workspace, with the person's work account, so company content stays inside. */
 const CONNECT_ERROR: Record<string, string> = {
   workspace:
-    "That account is in a different workspace from your company's. Connect the account you use for work.",
-  account:
-    "That Google account isn't your work account. Connect the one you sign in to Handbook with.",
+    "That account isn't your company's workspace or your work account. Sign in with the one you use for work.",
 };
 
 const HISTORY_STATUS: Record<ActCard["status"], string> = {
@@ -44,8 +34,9 @@ const HISTORY_STATUS: Record<ActCard["status"], string> = {
 };
 
 function ActionHistoryRow({ action }: { action: ActCard }) {
-  const provider =
-    PROVIDER_LABEL[action.provider ?? ""] ?? action.provider ?? "tool";
+  // The label names the app ("Google Sheets: create a new sheet"): a Doc or
+  // Sheet is stored in Drive but opens in its own app.
+  const provider = action.label.split(":")[0] || "the tool";
   const actionName = action.label.replace(/^.*?:\s*/, "");
   return (
     <article className="account-action-row">
@@ -85,17 +76,19 @@ function ActionHistoryRow({ action }: { action: ActCard }) {
 
 export function ActPanel() {
   const [status, setStatus] = useState<ActStatus | null>(null);
+  const [mcp, setMcp] = useState<McpServerMine[]>([]);
   const [recent, setRecent] = useState<ActCard[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const next = await api.actStatus();
+      const [next, other] = await Promise.all([api.actStatus(), api.myMcp().catch(() => ({ servers: [] }))]);
       setStatus(next);
+      setMcp(other.servers);
       setRecent(next.recent ?? []);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not load Act.");
+      setError(err instanceof ApiError ? err.message : "Could not load Agent settings.");
     }
   }, []);
 
@@ -108,24 +101,16 @@ export function ActPanel() {
     const params = new URLSearchParams(window.location.search);
     const connected = params.get("connected");
     const failed = params.get("connect_error");
-    if (connected)
-      setNotice(
-        `${PROVIDER_LABEL[connected] ?? connected} is connected. Handbook can now act for you there, after you approve.`,
-      );
-    if (failed) {
-      setError(
-        CONNECT_ERROR[params.get("reason") ?? ""] ??
-          `Couldn’t connect ${PROVIDER_LABEL[failed] ?? failed}. Try again.`,
-      );
-    }
+    if (connected) setNotice("Signed in. Handbook can now act for you there, after you approve each draft.");
+    if (failed) setError(CONNECT_ERROR[params.get("reason") ?? ""] ?? "Couldn’t sign you in. Try again.");
     if (connected || failed)
       window.history.replaceState(null, "", "/account#act");
   }, []);
 
-  async function disconnect(provider: string) {
+  async function disconnectMcp(id: string) {
     setError(null);
     try {
-      await api.disconnectActProvider(provider);
+      await api.disconnectMcp(id);
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not disconnect.");
@@ -135,10 +120,6 @@ export function ActPanel() {
   function updated(next: ActCard) {
     setRecent((all) => [next, ...all.filter((a) => a.id !== next.id)]);
   }
-
-  const shownProviders = (status?.providers ?? []).filter(
-    (p) => p.needed || p.connected || p.needs_reauth,
-  );
 
   if (status && !status.enabled) return null;
 
@@ -150,17 +131,17 @@ export function ActPanel() {
     >
       <div className="act-panel-head">
         <div className="studio-section-head">
-          <h2 id="act-title">Act</h2>
+          <h2 id="act-title">Agent</h2>
           <p className="muted">
-            The accounts Handbook writes with for you, after you approve each
-            draft. Ask in the chat.
+            Sign in to each tool Handbook may write to for you. Every draft waits for your
+            approval. Ask in the chat.
           </p>
         </div>
         <Link
           className="button button-secondary button-sm"
           href="/chat?mode=act"
         >
-          Open Act in chat
+          Open Agent mode in chat
         </Link>
       </div>
 
@@ -175,64 +156,42 @@ export function ActPanel() {
         </div>
       )}
 
-      {status && status.actions.length === 0 ? (
+      {status && mcp.length === 0 ? (
         <p className="muted">
-          Your admin hasn&rsquo;t switched on any actions yet.
+          Your admin hasn&rsquo;t added any tools for Agent mode yet.
         </p>
       ) : status ? (
         <>
           <div className="account-act-accounts">
             <div className="account-act-section-head">
-              <h3>Connected accounts</h3>
-              <p>Actions are sent using your identity in each tool.</p>
+              <h3>Your sign-ins</h3>
+              <p>Drafts are sent with your own account in each tool.</p>
             </div>
             <ul className="act-providers">
-              {shownProviders.map((p) => (
-                <li key={p.provider} className="act-provider">
+              {/* Each tool an admin added (an MCP server), signed in to apart. */}
+              {mcp.map((m) => (
+                <li key={m.id} className="act-provider">
                   <div className="act-provider-copy">
-                    <span className="act-provider-name">
-                      {PROVIDER_LABEL[p.provider] ?? p.provider}
-                    </span>
-                    {p.bot ? (
-                      <span
-                        className={
-                          p.connected ? "act-status-ready" : "act-status-note"
-                        }
-                      >
-                        {p.connected
-                          ? "Ready through the Handbook bot"
-                          : "Use Act in Slack once to link"}
-                      </span>
-                    ) : !p.available && !p.connected ? (
-                      <span className="act-status-note">
-                        Admin setup required
-                      </span>
-                    ) : p.connected ? (
+                    <span className="act-provider-name">{m.name}</span>
+                    {m.connected ? (
                       <span className="act-status-ready">
-                        Connected as {p.account}
+                        {m.auth === "none" ? "No sign-in needed" : "Signed in"}
                       </span>
                     ) : (
                       <span className="act-status-note">
-                        {p.needs_reauth ? "Connection expired" : "Not connected"}
+                        {m.needs_reauth ? "Sign-in expired" : "Not signed in"}
                       </span>
                     )}
                   </div>
-                  {p.connected && !p.bot ? (
-                    <button
-                      type="button"
-                      className="act-text-button"
-                      onClick={() => disconnect(p.provider)}
-                    >
+                  {m.auth === "none" ? null : m.connected ? (
+                    <button type="button" className="act-text-button" onClick={() => disconnectMcp(m.id)}>
                       Disconnect
                     </button>
-                  ) : !p.bot && p.available ? (
-                    <a
-                      className="button button-secondary button-sm"
-                      href={api.actConnectUrl(p.provider)}
-                    >
-                      {p.needs_reauth ? "Reconnect" : "Connect"}
+                  ) : (
+                    <a className="button button-secondary button-sm" href={api.mcpConnectUrl(m.id)}>
+                      {m.needs_reauth ? "Sign in again" : "Sign in"}
                     </a>
-                  ) : null}
+                  )}
                 </li>
               ))}
             </ul>
@@ -247,7 +206,12 @@ export function ActPanel() {
               <div className="account-actions-list">
                 {recent.map((r) =>
                   r.status === "proposed" || r.status === "executing" ? (
-                    <ActionCard key={r.id} card={r} onChange={updated} />
+                    <ActionCard
+                      key={r.id}
+                      card={r}
+                      onChange={updated}
+                      onNext={(next) => setRecent((all) => [...next.actions, ...all])}
+                    />
                   ) : (
                     <ActionHistoryRow key={r.id} action={r} />
                   ),

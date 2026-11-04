@@ -326,15 +326,6 @@ def run_maintenance() -> None:
     except Exception:  # noqa: BLE001 - housekeeping must never break the worker
         logger.debug("Slack channel-name refresh failed", exc_info=True)
 
-    try:
-        from ..security.rate_limit import prune_old_windows
-
-        removed = prune_old_windows()
-        if removed:
-            logger.info("Pruned %s closed rate-limit window(s)", removed)
-    except Exception:  # noqa: BLE001
-        logger.debug("Rate-counter prune failed", exc_info=True)
-
 
 def run_sync_tick() -> int:
     """Enqueue any due connection syncs. Never raises. Returns how many.
@@ -509,6 +500,7 @@ def run_forever(
     reap_interval: int = 60,
     maintenance_interval: int = 3600,
     sync_interval: int = 300,
+    tick_interval: int = 600,
 ) -> None:
     """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically.
 
@@ -517,6 +509,11 @@ def run_forever(
     in-API worker behave identically (see ``app/api/main.py``). Running
     schedulers in only one of the two would mean reports silently stop
     whenever ``INGEST_WORKER_IN_API`` is flipped.
+
+    And it runs ``run_external_tick`` itself: Drive watch renewal, backfills
+    and expiry purges live only there, and a self-hosted install has no cron
+    calling ``/internal/tick``. Its other steps repeat the timers above,
+    which is safe — each is guarded against running twice.
     """
     import time
 
@@ -546,9 +543,13 @@ def run_forever(
     last_maintenance = 0.0
     last_sync = 0.0
     last_push = 0.0
+    last_tick = 0.0
     last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
+        if now - last_tick >= tick_interval:
+            run_external_tick()
+            last_tick = now
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
             last_reap = now

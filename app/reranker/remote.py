@@ -16,6 +16,7 @@ from dataclasses import replace
 import httpx
 
 from ..core.exceptions import ConfigurationError, ProviderError
+from ..privacy import redact
 from ..vectorstore.base import RetrievedChunk
 from .base import Reranker
 
@@ -64,10 +65,13 @@ class RemoteReranker(Reranker):
         if top_k <= 0:
             return []
 
+        # Masked in one batch, so a number in the query and in a passage share
+        # a placeholder; a PrivacyError (a ProviderError) stops the send.
+        masked_query, *masked_docs = redact([query, *(c.content for c in candidates)])
         payload = {
             "model": self.model,
-            "query": query,
-            "documents": [c.content for c in candidates],
+            "query": masked_query,
+            "documents": masked_docs,
             "top_n": min(top_k, len(candidates)),
         }
         try:

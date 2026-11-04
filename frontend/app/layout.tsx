@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans } from "next/font/google";
+import { IBM_Plex_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
 /* Friendly SaaS pairing from ui-ux-pro-max — modern alternative to Inter. */
@@ -7,6 +7,13 @@ const plusJakarta = Plus_Jakarta_Sans({
   subsets: ["latin"],
   variable: "--font-brand",
   weight: ["400", "500", "600", "700"],
+});
+
+/* Small uppercase labels on the marketing page (app/site.css). */
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  variable: "--font-label",
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -29,7 +36,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="light" className={plusJakarta.variable}>
+    <html lang="en" data-theme="light" className={`${plusJakarta.variable} ${plexMono.variable}`}>
       <body className={plusJakarta.className}>{children}</body>
     </html>
   );

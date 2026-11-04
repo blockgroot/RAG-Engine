@@ -10,6 +10,7 @@ import {
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { formatReauthReason } from "@/lib/reauthReason";
 import { DriveFolderPicker } from "./DriveFolderPicker";
+import { LinearTeamPicker } from "./LinearTeamPicker";
 import { SlackChannelPicker } from "./SlackChannelPicker";
 import { SlackMemberInvitePicker } from "./SlackMemberInvitePicker";
 import { JobStatusBadge } from "./JobStatusBadge";
@@ -204,8 +205,12 @@ export function ConnectionCard({
   const channelIds = connection?.source_config?.channel_ids ?? [];
   const channelsConfigured = channelIds.length > 0;
   const needsChannels = provider === "slack" && connection && !channelsConfigured;
+  const teamIds = connection?.source_config?.team_ids ?? [];
+  const teamsConfigured = teamIds.length > 0;
+  const needsTeams = provider === "linear" && connection && !teamsConfigured;
   const [changingFolder, setChangingFolder] = useState(false);
   const [changingChannels, setChangingChannels] = useState(false);
+  const [changingTeams, setChangingTeams] = useState(false);
   const [invitingMembers, setInvitingMembers] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
   // Files in the saved folder Handbook cannot index because Google will not
@@ -260,6 +265,7 @@ export function ConnectionCard({
     Boolean(connection) &&
     !needsFolder &&
     !needsChannels &&
+    !needsTeams &&
     !syncInProgress &&
     !checkingChanges &&
     !needsUpdate &&
@@ -331,6 +337,9 @@ export function ConnectionCard({
                   {provider === "slack" && channelsConfigured
                     ? ` · ${channelIds.length} channel${channelIds.length === 1 ? "" : "s"}`
                     : ""}
+                  {provider === "linear" && teamsConfigured
+                    ? ` · ${teamIds.length} team${teamIds.length === 1 ? "" : "s"}`
+                    : ""}
                 </>
               )}
             </p>
@@ -385,6 +394,24 @@ export function ConnectionCard({
                 Change folder
               </button>
             )}
+          {provider === "linear" &&
+            connection &&
+            teamsConfigured &&
+            !changingTeams &&
+            !syncInProgress && (
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => {
+                  setChangingTeams(true);
+                  setFolderHint(null);
+                  setConfigError(null);
+                }}
+                title="Add or remove the Linear teams this connection reads"
+              >
+                Change teams
+              </button>
+            )}
           {provider === "slack" &&
             connection &&
             channelsConfigured &&
@@ -432,7 +459,7 @@ export function ConnectionCard({
               {refreshingScope ? "Refreshing…" : "Refresh list"}
             </button>
           )}
-          {connection && !isLive && !needsFolder && !needsChannels && needsUpdate && (
+          {connection && !isLive && !needsFolder && !needsChannels && !needsTeams && needsUpdate && (
             <button
               className="button"
               type="button"
@@ -567,6 +594,45 @@ export function ConnectionCard({
         </div>
       )}
 
+      {/* Linear's sign-in grants every team the account can see, so, like
+          Slack's channels, the teams are picked here before anything syncs. */}
+      {connection && (needsTeams || (provider === "linear" && changingTeams)) && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          {needsTeams && (
+            <p className="muted" style={{ margin: 0 }}>
+              Pick the teams Handbook may read. Nothing is indexed until you choose.
+            </p>
+          )}
+          <LinearTeamPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            currentTeamIds={teamIds}
+            onSaved={(config, meta) => {
+              setConfigError(null);
+              setChangingTeams(false);
+              onNeedsReauth?.(false);
+              const purged = meta?.documents_purged ?? 0;
+              setFolderHint(
+                meta?.teams_changed && purged > 0
+                  ? `Teams updated · ${purged} issue${purged === 1 ? "" : "s"} from removed teams taken out. Indexing has been queued.`
+                  : "Teams saved. Indexing has been queued."
+              );
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+            onCancel={
+              needsTeams
+                ? undefined
+                : () => {
+                    setChangingTeams(false);
+                    setConfigError(null);
+                  }
+            }
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
       {provider === "slack" && connection && channelsConfigured && changingChannels && (
         <div className="stack" style={{ marginTop: "0.9rem" }}>
           <SlackChannelPicker
@@ -672,7 +738,7 @@ export function ConnectionCard({
         </div>
       )}
 
-      {connection && !needsReauth && !needsFolder && !needsChannels && !syncInProgress && !needsUpdate && (
+      {connection && !needsReauth && !needsFolder && !needsChannels && !needsTeams && !syncInProgress && !needsUpdate && (
         <p className="muted" style={{ marginTop: "0.55rem" }}>
           {connection.last_sync_at
             ? `Syncs automatically · last checked ${checkedAgo(connection.last_sync_at)}`
@@ -700,7 +766,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && !needsFolder && !needsChannels && needsUpdate && !syncInProgress && (
+      {connection && !needsFolder && !needsChannels && !needsTeams && needsUpdate && !syncInProgress && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           {[
             changes!.new_count > 0 ? `${changes!.new_count} new` : null,
@@ -712,7 +778,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && checkingChanges && !isLive && !needsFolder && !needsChannels && (
+      {connection && checkingChanges && !isLive && !needsFolder && !needsChannels && !needsTeams && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           Checking…
         </p>

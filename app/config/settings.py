@@ -116,9 +116,34 @@ DEFAULT_QUERY_CACHE_ENABLED = True
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 
 DEFAULT_RATE_LIMIT_ENABLED = True
-DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
-DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
-DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+# Token buckets (docs/plans/2026-11-03-rate-limiting.md): BURST requests at
+# once, refilled at PER_MINUTE. Starting numbers; tuned once real use is seen.
+# A question (chat, Agent, charts, scheduler setup, Slack) costs the model.
+DEFAULT_RATE_LIMIT_QUESTIONS_PER_MINUTE = 10.0
+DEFAULT_RATE_LIMIT_QUESTION_BURST = 5
+# The company's bucket is sized by its members, so one large company cannot
+# use the AI account every company shares, and a small one is not starved.
+DEFAULT_RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER = 3.0
+DEFAULT_RATE_LIMIT_ORG_QUESTIONS_MIN = 30
+# Anything that sends an email (login link, email change), per IP or person.
+# Per IP, a whole office behind one address shares it: room for a team
+# signing in together, not for sweeping an address book.
+DEFAULT_RATE_LIMIT_EMAILS_PER_MINUTE = 20.0
+DEFAULT_RATE_LIMIT_EMAIL_BURST = 10
+# Every API call, per person (per IP when signed out). Loose on purpose: a
+# page load sends many calls at once, and this exists only to stop scripts.
+DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE = 120.0
+DEFAULT_RATE_LIMIT_REQUEST_BURST = 40
+# Answers written at once, across every server when REDIS_URL is set (per
+# process otherwise); the rest wait for a slot, then are told "busy". Measured locally with the outside APIs replayed: 20 slots on the
+# 10-connection pool answered 50 askers with no one turned away and no pool
+# errors. The outside APIs cap it lower on free keys (one Jina key and Ollama
+# Cloud already failed 15% at 10 at once): lower it to match the plans.
+DEFAULT_CHAT_MAX_CONCURRENT = 20
+DEFAULT_CHAT_QUEUE_WAIT_SECONDS = 30
+# Answers one person may have being written at once: more is a script or a
+# pile of tabs, and each holds model calls and a server slot.
+DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON = 2
 
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
@@ -168,9 +193,22 @@ def _env_positive_int(name: str, default: int) -> int:
 
 def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
-    if raw is None:
+    # Empty is unset: the self-hosted .env lists optional switches with no
+    # value, and an empty RETRIEVAL_RERANK_ENABLED= must not turn ranking off.
+    if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _oauth_redirect(name: str, provider: str) -> str | None:
+    """``name`` if set, else the address the browser returns to after signing
+    in to ``provider``: the frontend origin plus ``/api`` (the rewrite to this
+    API), as ``MCP_REDIRECT_URI`` already does. An install then sets one
+    address, ``FRONTEND_URL``, instead of one per tool."""
+    frontend = os.getenv("FRONTEND_URL")
+    return os.getenv(name) or (
+        f"{frontend.rstrip('/')}/api/auth/{provider}/callback" if frontend else None
+    )
 
 
 @dataclass(frozen=True)
@@ -205,6 +243,11 @@ class LLMSettings:
     #: adapter, a model the provider does not list), ``warn`` only logs,
     #: ``off`` skips it. An unreachable model list is never a failure.
     config_check: str = "strict"
+    #: Sent as ``reasoning_effort`` to the configured models (``low``,
+    #: ``none``, ...). A reasoning model such as GPT-OSS otherwise spends a
+    #: short call's whole token cap thinking and returns an empty message.
+    #: Dropped for an endpoint that refuses it.
+    reasoning_effort: str | None = None
 
     @property
     def aux_has_own_endpoint(self) -> bool:
@@ -233,6 +276,7 @@ class LLMSettings:
             adapter=(os.getenv("LLM_ADAPTER") or "").strip().lower() or None,
             aux_adapter=(os.getenv("LLM_AUX_ADAPTER") or "").strip().lower() or None,
             config_check=check if check in ("strict", "warn", "off") else "strict",
+            reasoning_effort=(os.getenv("LLM_REASONING_EFFORT") or "").strip().lower() or None,
         )
 
 
@@ -360,10 +404,20 @@ class EmbeddingSettings:
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
     batch_size: int = DEFAULT_EMBED_BATCH_SIZE
+    #: Size to ask a remote model for (EMBEDDING_SEND_DIMENSIONS=true). Many
+    #: newer models can shorten their vectors on request, which lets a model
+    #: whose natural size is not the database's still fit. Off by default:
+    #: a provider that does not support it rejects the request.
+    dimensions: int | None = None
 
     @classmethod
     def from_env(cls) -> "EmbeddingSettings":
         return cls(
+            dimensions=(
+                int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM)
+                if env_bool("EMBEDDING_SEND_DIMENSIONS", False)
+                else None
+            ),
             backend=(os.getenv("EMBEDDING_BACKEND") or DEFAULT_EMBEDDING_BACKEND).lower(),
             model=os.getenv("EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL,
             device=os.getenv("EMBEDDING_DEVICE") or None,
@@ -468,6 +522,8 @@ class RagSettings:
     # add documents down to this share of the best score. 0 = same as
     # ``wide_doc_ratio``. 0.15 from calibrate_wide on the fixed search (RCA, 9 Oct).
     wide_include_ratio: float = 0.0
+    # Read wide even when only one document is strong (Deep's extra effort).
+    wide_always: bool = False
     # 0 = scale ``max_context_chars`` by wide_max_hits / top_k.
     wide_max_context_chars: int = 0
     # Answer the part CONTEXT covers and say what is missing, instead of the
@@ -483,28 +539,40 @@ class RagSettings:
     deep_top_docs: int = 3
     deep_neighbor_chunks: int = 8
     deep_max_context_chars: int = 30000
-    # How many passages a Deep read may take when the evidence is spread over
-    # several documents. A company-wide question ("what are our revenue
+    # Deep's "extra effort" only (the two below): how many passages it may take
+    # when the evidence is spread over several documents. A company-wide question ("what are our revenue
     # streams?") is answered by a sentence in each of many documents; ten
     # passages, three of them read in depth, held half its facts.
     deep_wide_max_hits: int = 20
     # Deep's answer may run longer than normal Ask's cap: a complete list of 30-40
     # items does not fit 700 tokens, and a cut-off list reads as the whole list.
     deep_max_answer_tokens: int = 2000
+    # Extra effort reads wide on EVERY question and adds documents down to this
+    # x the best score: Benchmark 4 (Sonnet) read 2-3 documents on 28 of 61 broad
+    # questions, because one strong match kept the read narrow, and a document
+    # answering one part of a question scores under the usual 0.15.
+    deep_wide_include_ratio: float = 0.05
 
-    def deep(self) -> "RagSettings":
+    def deep(self, *, extra: bool = False) -> "RagSettings":
         """These settings with the deep read on, one budget for ranked and wide reads.
 
         A bigger pool (80) was tried for breadth and found no more of the
         right documents on the Benchmark 2 retest, so Deep keeps the normal
-        search. A spread-out question may take ``deep_wide_max_hits``
-        passages from it, one per document first (`retrieval._spread`).
+        search. With ``extra`` (Deep's extra effort) a spread-out question may
+        take ``deep_wide_max_hits`` passages from it, one per document first
+        (`retrieval._spread`), and the answer may run to ``deep_max_answer_tokens``.
         """
+        if extra:
+            self = replace(
+                self,
+                wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
+                wide_always=True,
+                wide_include_ratio=self.deep_wide_include_ratio,
+                max_answer_tokens=(None if self.max_answer_tokens is None
+                                   else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
+            )
         return replace(
             self,
-            wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
-            max_answer_tokens=(None if self.max_answer_tokens is None
-                               else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
             neighbor_top_docs=self.deep_top_docs,
             neighbor_chunks=self.deep_neighbor_chunks,
             max_context_chars=self.deep_max_context_chars,
@@ -566,6 +634,7 @@ class RagSettings:
             deep_max_context_chars=int(os.getenv("RAG_DEEP_MAX_CONTEXT_CHARS") or 30000),
             deep_wide_max_hits=int(os.getenv("RAG_DEEP_WIDE_MAX_HITS") or 20),
             deep_max_answer_tokens=int(os.getenv("RAG_DEEP_MAX_ANSWER_TOKENS") or 2000),
+            deep_wide_include_ratio=float(os.getenv("RAG_DEEP_WIDE_INCLUDE_RATIO") or 0.05),
         )
 
 
@@ -684,7 +753,7 @@ class NotionSettings:
             tokens=tokens,
             client_id=os.getenv("NOTION_CLIENT_ID"),
             client_secret=os.getenv("NOTION_CLIENT_SECRET"),
-            redirect_uri=os.getenv("NOTION_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("NOTION_REDIRECT_URI", "notion"),
         )
 
     def resolve_token(self, name: str | None = None) -> str:
@@ -764,7 +833,7 @@ class LinearSettings:
             tokens=tokens,
             client_id=os.getenv("LINEAR_CLIENT_ID"),
             client_secret=os.getenv("LINEAR_CLIENT_SECRET"),
-            redirect_uri=os.getenv("LINEAR_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("LINEAR_REDIRECT_URI", "linear"),
             scopes=os.getenv("LINEAR_OAUTH_SCOPES", DEFAULT_LINEAR_OAUTH_SCOPES),
         )
 
@@ -874,7 +943,7 @@ class GoogleSettings:
         return cls(
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-            redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("GOOGLE_REDIRECT_URI", "google"),
             scopes=scopes,
             forms_enabled=forms_enabled,
             groups_enabled=groups_enabled,
@@ -909,7 +978,9 @@ DEFAULT_SLACK_BOT_SCOPES = (
     # Slack charts as images: uploading a PNG of a chart into the reply
     # thread needs `files:write`. Existing connections keep getting the
     # numbers as text until an admin reconnects.
-    "files:write"
+    "files:write,"
+    # Act from Slack: the bot DMs a person the asker named (`conversations.open`).
+    "im:write"
 )
 
 # Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as
@@ -958,7 +1029,7 @@ class SlackSettings:
         return cls(
             client_id=os.getenv("SLACK_CLIENT_ID"),
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
-            redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
+            redirect_uri=_oauth_redirect("SLACK_REDIRECT_URI", "slack"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
             signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
             backfill_days=int(
@@ -1240,6 +1311,23 @@ class GuardSettings:
 
 
 @dataclass(frozen=True)
+class PrivacySettings:
+    """Masking personal identifiers before text leaves for an outside service.
+
+    On by default: Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values
+    are replaced with placeholders in everything sent to the AI models, the
+    remote embedder and reranker, and the Groq guard (``app/privacy``).
+    ``MASK_IDENTIFIERS=false`` is the kill switch if masking ever misbehaves.
+    """
+
+    mask_identifiers: bool = True
+
+    @classmethod
+    def from_env(cls) -> "PrivacySettings":
+        return cls(mask_identifiers=env_bool("MASK_IDENTIFIERS", True))
+
+
+@dataclass(frozen=True)
 class DocTablesSettings:
     """Charts from figures INSIDE documents (``app/doctables``).
 
@@ -1503,40 +1591,97 @@ class RequestBudgetSettings:
 
 @dataclass(frozen=True)
 class QueryCacheSettings:
-    """Postgres-backed cache for repeated standalone questions (Phase 19)."""
+    """Cache for repeated standalone questions (Phase 19).
+
+    In Redis when ``REDIS_URL`` is set (the same instance as the rate limits),
+    in Postgres otherwise, so an install without Redis keeps its cache. The
+    process that runs ingest must see the same ``REDIS_URL`` as the API, or a
+    sync clears the wrong store and the old answer is served until it expires.
+    """
 
     enabled: bool = DEFAULT_QUERY_CACHE_ENABLED
     ttl_seconds: int = DEFAULT_QUERY_CACHE_TTL_SECONDS
+    redis_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "QueryCacheSettings":
         return cls(
             enabled=env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
             ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
+            redis_url=(os.getenv("REDIS_URL") or "").strip() or None,
         )
 
 
 @dataclass(frozen=True)
 class RateLimitSettings:
-    """Postgres-backed rate limits for HTTP endpoints (Phase 21)."""
+    """Token-bucket rate limits (``app/ratelimit``), and the answers-at-once cap.
+
+    ``redis_url`` empty keeps the buckets in this process's memory: right for
+    development and a single-process install, wrong for several instances,
+    each of which would then allow the full limit on its own.
+    """
 
     enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
-    chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
-    auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
-    window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+    redis_url: str | None = None
+    questions_per_minute: float = DEFAULT_RATE_LIMIT_QUESTIONS_PER_MINUTE
+    question_burst: int = DEFAULT_RATE_LIMIT_QUESTION_BURST
+    org_questions_per_member: float = DEFAULT_RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER
+    org_questions_min: int = DEFAULT_RATE_LIMIT_ORG_QUESTIONS_MIN
+    emails_per_minute: float = DEFAULT_RATE_LIMIT_EMAILS_PER_MINUTE
+    email_burst: int = DEFAULT_RATE_LIMIT_EMAIL_BURST
+    requests_per_minute: float = DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE
+    request_burst: int = DEFAULT_RATE_LIMIT_REQUEST_BURST
+    # 0 turns a cap off.
+    chat_max_concurrent: int = DEFAULT_CHAT_MAX_CONCURRENT
+    chat_queue_wait_seconds: float = DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+    chat_max_concurrent_per_person: int = DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
+        def rate(name: str, default: float) -> float:
+            try:
+                value = float(os.getenv(name) or default)
+            except ValueError:
+                return default
+            return value if value > 0 else default
+
         return cls(
             enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
-            chat_requests_per_window=int(
-                os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+            redis_url=(os.getenv("REDIS_URL") or "").strip() or None,
+            questions_per_minute=rate(
+                "RATE_LIMIT_QUESTIONS_PER_MINUTE", DEFAULT_RATE_LIMIT_QUESTIONS_PER_MINUTE
             ),
-            auth_requests_per_window=int(
-                os.getenv("RATE_LIMIT_AUTH_REQUESTS") or DEFAULT_RATE_LIMIT_AUTH_REQUESTS
+            question_burst=_env_positive_int(
+                "RATE_LIMIT_QUESTION_BURST", DEFAULT_RATE_LIMIT_QUESTION_BURST
             ),
-            window_seconds=int(
-                os.getenv("RATE_LIMIT_WINDOW_SECONDS") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+            org_questions_per_member=rate(
+                "RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER",
+                DEFAULT_RATE_LIMIT_ORG_QUESTIONS_PER_MEMBER,
+            ),
+            org_questions_min=_env_positive_int(
+                "RATE_LIMIT_ORG_QUESTIONS_MIN", DEFAULT_RATE_LIMIT_ORG_QUESTIONS_MIN
+            ),
+            emails_per_minute=rate(
+                "RATE_LIMIT_EMAILS_PER_MINUTE", DEFAULT_RATE_LIMIT_EMAILS_PER_MINUTE
+            ),
+            email_burst=_env_positive_int(
+                "RATE_LIMIT_EMAIL_BURST", DEFAULT_RATE_LIMIT_EMAIL_BURST
+            ),
+            requests_per_minute=rate(
+                "RATE_LIMIT_REQUESTS_PER_MINUTE", DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE
+            ),
+            request_burst=_env_positive_int(
+                "RATE_LIMIT_REQUEST_BURST", DEFAULT_RATE_LIMIT_REQUEST_BURST
+            ),
+            chat_max_concurrent=int(
+                os.getenv("CHAT_MAX_CONCURRENT") or DEFAULT_CHAT_MAX_CONCURRENT
+            ),
+            chat_queue_wait_seconds=float(
+                os.getenv("CHAT_QUEUE_WAIT_SECONDS") or DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+            ),
+            chat_max_concurrent_per_person=int(
+                os.getenv("CHAT_MAX_CONCURRENT_PER_PERSON")
+                or DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
             ),
         )
 
@@ -1775,6 +1920,10 @@ class AuthSettings:
     session_ttl_minutes: int = DEFAULT_SESSION_TTL_MINUTES
     magic_link_ttl_minutes: int = DEFAULT_MAGIC_LINK_TTL_MINUTES
     signup_action_ttl_hours: int = DEFAULT_SIGNUP_ACTION_TTL_HOURS
+    #: Off in a self-hosted copy: its one company is created at install
+    #: (``scripts/create_company.py``), and a public sign-up form would let
+    #: anyone who finds the address queue a second one.
+    signup_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
@@ -1792,6 +1941,51 @@ class AuthSettings:
             signup_action_ttl_hours=int(
                 os.getenv("AUTH_SIGNUP_ACTION_TTL_HOURS") or DEFAULT_SIGNUP_ACTION_TTL_HOURS
             ),
+            signup_enabled=env_bool("SIGNUP_ENABLED", True),
+        )
+
+
+#: Every install reads the same public list of releases: the main repo and
+#: the images can stay private while the version check needs no credentials.
+DEFAULT_UPDATE_FEED_URL = (
+    "https://raw.githubusercontent.com/blockgroot/handbook-releases/main/releases.json"
+)
+
+
+@dataclass(frozen=True)
+class UpdateSettings:
+    """Which version this copy runs, and how it hears about newer ones.
+
+    - ``deployment``  ``cloud`` (we update it; admins are told what changed) or
+      ``selfhosted`` (the company updates it; admins are offered the update).
+    - ``current_version``  ``HANDBOOK_VERSION``: the self-hosted ``.env`` sets
+      it for the images it runs; Cloud sets it when a release is deployed.
+      Unset means no version is known and nothing is shown.
+    - ``check_enabled``  off for a server that must not contact anyone.
+    - ``updater_url`` / ``updater_token``  the self-hosted updater container.
+      Both or neither: without them the page shows the upgrade command.
+    """
+
+    deployment: str = "cloud"
+    current_version: str | None = None
+    feed_url: str = DEFAULT_UPDATE_FEED_URL
+    check_enabled: bool = True
+    updater_url: str | None = None
+    updater_token: str | None = None
+
+    @property
+    def updater_configured(self) -> bool:
+        return bool(self.updater_url and self.updater_token)
+
+    @classmethod
+    def from_env(cls) -> "UpdateSettings":
+        return cls(
+            deployment=(os.getenv("HANDBOOK_DEPLOYMENT") or "cloud").strip().lower(),
+            current_version=(os.getenv("HANDBOOK_VERSION") or "").strip().lstrip("v") or None,
+            feed_url=os.getenv("UPDATE_FEED_URL") or DEFAULT_UPDATE_FEED_URL,
+            check_enabled=env_bool("UPDATE_CHECK_ENABLED", True),
+            updater_url=os.getenv("UPDATER_URL") or None,
+            updater_token=os.getenv("UPDATER_TOKEN") or None,
         )
 
 
@@ -2131,7 +2325,7 @@ class LiveToolsSettings:
 
 @dataclass(frozen=True)
 class ActionsSettings:
-    """Act mode: writes into connected tools (docs/plans/2026-10-13-write-actions.md).
+    """Agent mode: writes into tools through MCP (docs/plans/2026-10-22-mcp-only-actions.md).
 
     Whether a company uses Act at all is its admins' decision, stored as the
     ``act`` row in ``action_policies`` (``actions.policy.act_on``), not here.
@@ -2143,24 +2337,37 @@ class ActionsSettings:
     """
 
     ttl_seconds: int = 900
-    rate_per_hour: int = 20
+    rate_per_hour: int = 100
     block_wider: bool = False
-    # The SEPARATE "Handbook Actions" Notion connection. A Notion token always
-    # carries every capability of its connection, so writes cannot share the
-    # read connection without making the indexing token write-capable too.
-    notion_client_id: str | None = None
-    notion_client_secret: str | None = None
-    notion_redirect_uri: str | None = None
+    # Agent mode writes only through MCP servers an admin adds (docs/plans/2026-10-22-mcp-only-actions.md).
+    # Where a person's MCP sign-in returns: the browser-facing /api proxy, so
+    # it is registered once and survives a backend move.
+    mcp_redirect_uri: str | None = None
+    mcp_timeout_seconds: float = 20.0
+    #: Lookup calls (admin-marked read tools) one request may make before drafting.
+    mcp_max_lookups: int = 8
+    #: Tools one drafting call is offered, each connector's nearest the request
+    #: in turn (``service._fit_tools``). Fewer is faster and cheaper; every
+    #: connector keeps its best few. Never above 128, which models refuse.
+    mcp_max_tools: int = 40
+    #: Where Handbook's own MCP servers answer (``app/mcphost``: Slack, Google),
+    #: through the same /api proxy; ``HANDBOOK_MCP_URL`` when they move out.
+    mcp_host_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "ActionsSettings":
         return cls(
             ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
-            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
+            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "100"))),
             block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),
-            notion_client_id=os.getenv("NOTION_ACT_CLIENT_ID") or None,
-            notion_client_secret=os.getenv("NOTION_ACT_CLIENT_SECRET") or None,
-            notion_redirect_uri=os.getenv("NOTION_ACT_REDIRECT_URI") or None,
+            mcp_redirect_uri=os.getenv("MCP_REDIRECT_URI") or (
+                f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/act/mcp/callback"
+                if os.getenv("FRONTEND_URL") else None),
+            mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "20")),
+            mcp_max_lookups=max(0, int(os.getenv("MCP_MAX_LOOKUPS", "8"))),
+            mcp_max_tools=min(128, max(1, int(os.getenv("MCP_MAX_TOOLS", "40")))),
+            mcp_host_url=(os.getenv("HANDBOOK_MCP_URL") or (
+                f"{os.getenv('FRONTEND_URL').rstrip('/')}/api/mcp" if os.getenv("FRONTEND_URL") else None)),
         )
 
 

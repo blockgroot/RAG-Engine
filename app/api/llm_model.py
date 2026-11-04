@@ -112,6 +112,42 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+#: Agent mode's own test, after the plain one: one tool offered, one call asked
+#: for. Agent mode is a tool loop; a model that never calls a tool drafts
+#: nothing however good its answers are, and an admin should know that when
+#: they add it, not when a person's request fails.
+AGENT_TOOL = {"type": "function", "function": {
+    "name": "save_note", "description": "Save a short note.",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}}
+AGENT_PROMPT = 'Save a note that says "ready" with the save_note tool.'
+
+
+def _agent_probe(preset: org_model.Preset, model: str, api_key: str) -> str:
+    """How the model calls tools: ``"native"`` (a real tool call), ``"text"``
+    (only written as JSON text, which Agent mode reads as a call), ``"none"``,
+    or ``"unknown"`` when the test itself failed. Never blocks saving: the
+    model may still answer questions well."""
+    from ..actions.loop import _calls_in_text
+
+    extra_body, extra_optional = preset_extra_body(preset.id)
+    client = OpenAICompatProvider(model=model, api_key=api_key, base_url=preset.base_url,
+                                  timeout=PROBE_TIMEOUT, max_retries=0, extra_body=extra_body,
+                                  extra_body_optional=extra_optional)
+    try:
+        result = client.generate_with_tools([{"role": "user", "content": AGENT_PROMPT}],
+                                            tools=[AGENT_TOOL], tool_choice="auto")
+    except ProviderError as exc:
+        # A provider that refuses the tools field outright cannot run Agent mode.
+        said = str(exc).lower()
+        if "tool" in said and ("support" in said or "not allowed" in said or "unknown" in said):
+            return "none"
+        logger.warning("Agent test of %s failed: %s", model, exc)
+        return "unknown"
+    if any(c.name == "save_note" for c in result.tool_calls or []):
+        return "native"
+    return "text" if _calls_in_text(result.text, [AGENT_TOOL]) else "none"
+
+
 @router.get("")
 def get_model(session: SessionClaims = Depends(require_admin)):
     """The saved model, or ``{"model": null}``. Never includes the key."""
@@ -147,6 +183,7 @@ def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
     # Probe BEFORE saving, so a typo never becomes a broken option in every
     # member's dropdown.
     _probe(preset, model, api_key)
+    agent = _agent_probe(preset, model, api_key)
 
     from datetime import datetime, timezone
 
@@ -171,6 +208,7 @@ def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
             # place; useless to anyone who reads it.
             "key_tail": api_key[-4:],
             "checked_at": datetime.now(timezone.utc).isoformat(),
+            "agent": agent,
         },
     )
     return {"model": org_model.get_org_model_summary(session.org_id)}

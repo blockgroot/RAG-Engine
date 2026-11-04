@@ -96,3 +96,23 @@ def test_a_channel_reply_is_not_told_its_asker_lacks_access():
     text = restricted_notice("slack", org_id="o", workspace_id=None, in_channel=True)
     assert "shared with you" not in text
     assert "direct message" in text
+
+
+def test_a_channel_that_lists_nothing_says_why(monkeypatch, caplog):
+    # Prod logged "listed=0 stored=22" with nothing to tell an empty channel
+    # from one whose every message was skipped.
+    recent = _now_ts(1)
+    bot_post = {**_msg(recent, "A summary the bot posted earlier", reply_count=1), "bot_id": "B1"}
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if url.endswith("conversations.list"):
+            return FakeResponse({"ok": True, "channels": [{"id": "C1", "name": "a", "is_private": False}]})
+        return FakeResponse({"ok": True, "messages": [
+            bot_post, _msg(recent, "joined", subtype="channel_join"), _msg(recent, "ok"),
+        ]})
+
+    monkeypatch.setattr("app.sources.slack.httpx.get", fake_get)
+    with caplog.at_level("WARNING", logger="app.sources.slack"):
+        assert SlackAdapter(token="xoxb", channel_ids=["C1"]).list_documents() == []
+    assert "C1 listed no threads: Slack returned 3 messages" in caplog.text
+    assert "(1 system, 1 from or to the bot, 1 too short)" in caplog.text

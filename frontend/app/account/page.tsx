@@ -9,6 +9,7 @@ import { LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
 import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
+import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 
 const TOOL_NAMES: Record<string, string> = {
   github: "GitHub",
@@ -16,6 +17,14 @@ const TOOL_NAMES: Record<string, string> = {
   google: "Google Drive",
   notion: "Notion",
   linear: "Linear",
+};
+
+const TOOL_BRANDS: Record<string, BrandName> = {
+  github: "github",
+  slack: "slack",
+  google: "drive",
+  notion: "notion",
+  linear: "linear",
 };
 
 function toolName(provider: string) {
@@ -80,7 +89,7 @@ function AccountContent() {
 
   return (
     <AppShell me={me}>
-      <main className="page-wide studio-page stack">
+      <main className="page-wide studio-page stack account-page">
         <PageHeader
           eyebrow="You"
           title="Linked accounts"
@@ -104,13 +113,20 @@ function AccountContent() {
           </div>
         )}
 
-        <section className="studio-panel stack" aria-labelledby="linked-title">
-          <div className="studio-section-head">
-            <h2 id="linked-title">Your accounts</h2>
-            <p className="muted">
-              Slack, Google Drive, Notion and Linear link on their own when they report the
-              email you sign in with. They show up here after your company’s next sync.
-            </p>
+        <section className="studio-panel stack account-identities" aria-labelledby="linked-title">
+          <div className="account-identities-head">
+            <div className="studio-section-head">
+              <h2 id="linked-title">Your accounts</h2>
+              <p className="muted">
+                Slack, Google Drive, Notion and Linear link automatically when they use your
+                sign-in email.
+              </p>
+            </div>
+            {data?.github_link_available && (
+              <a className="button button-secondary button-sm account-github-link" href={api.githubLinkUrl()}>
+                {hasGitHub ? "Link another GitHub" : "Link GitHub"}
+              </a>
+            )}
           </div>
 
           {!data ? (
@@ -121,65 +137,41 @@ function AccountContent() {
               in with, they won’t link on their own.
             </p>
           ) : (
-            <table className="gap-table">
-              <thead>
-                <tr>
-                  <th>Tool</th>
-                  <th>Account</th>
-                  <th>Linked by</th>
-                  <th aria-label="Actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {data.identities.map((identity) => (
-                  <tr key={identity.id}>
-                    <td>{toolName(identity.provider)}</td>
-                    <td>{accountLabel(identity)}</td>
-                    <td className="muted">
-                      {identity.verified_by === "oauth" ? "You signed in" : "Matching email"}
-                    </td>
-                    <td>
-                      {identity.can_unlink && (
-                        <button
-                          type="button"
-                          className="button button-secondary button-sm"
-                          disabled={busy === identity.id}
-                          onClick={() => unlink(identity)}
-                        >
-                          {busy === identity.id ? "Unlinking…" : "Unlink"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="account-identity-list">
+              {data.identities.map((identity) => (
+                <li key={identity.id} className="account-identity-row">
+                  <span className="account-identity-mark" aria-hidden="true">
+                    <BrandGlyph name={TOOL_BRANDS[identity.provider] ?? "document"} size={26} />
+                  </span>
+                  <div className="account-identity-copy">
+                    <strong>{toolName(identity.provider)}</strong>
+                    <span>{accountLabel(identity)}</span>
+                  </div>
+                  <span className="account-identity-method">
+                    {identity.verified_by === "oauth" ? "Signed in by you" : "Matched by email"}
+                  </span>
+                  {identity.can_unlink && (
+                    <button
+                      type="button"
+                      className="account-identity-unlink"
+                      disabled={busy === identity.id}
+                      onClick={() => unlink(identity)}
+                    >
+                      {busy === identity.id ? "Unlinking…" : "Unlink"}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </section>
 
-        {data?.github_link_available && (
-          <section className="studio-panel stack" aria-labelledby="github-title">
-            <div className="studio-section-head">
-              <h2 id="github-title">GitHub</h2>
-              <p className="muted">
-                GitHub gives out usernames rather than emails, so Handbook can’t match it on its
-                own. Sign in to GitHub once to show which account is yours. Handbook reads your
-                username and keeps no access to your account.
-              </p>
-            </div>
-            <div>
-              <a className="button" href={api.githubLinkUrl()}>
-                {hasGitHub ? "Link another GitHub account" : "Link your GitHub account"}
-              </a>
-            </div>
-          </section>
-        )}
-
         {me.act_enabled && <ActPanel />}
 
-        <SignInEmailPanel />
-
-        <MemoryPanel />
+        <div className="account-settings-grid">
+          <SignInEmailPanel />
+          <MemoryPanel />
+        </div>
       </main>
     </AppShell>
   );

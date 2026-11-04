@@ -198,6 +198,57 @@ def signup_email_cleanup():
             )
 
 
+@pytest.fixture(scope="session")
+def redis_url():
+    """A real, throwaway Redis on a free port; skipped without redis-server."""
+    import shutil
+    import socket
+    import subprocess
+    import time
+
+    binary = shutil.which("redis-server")
+    if not binary:
+        pytest.skip("redis-server not installed")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen(
+        [binary, "--port", str(port), "--save", "", "--appendonly", "no"],
+        stdout=subprocess.DEVNULL,
+    )
+    url = f"redis://127.0.0.1:{port}/0"
+    import redis
+
+    for _ in range(50):
+        try:
+            redis.Redis.from_url(url).ping()
+            break
+        except redis.ConnectionError:
+            time.sleep(0.05)
+    yield url
+    proc.terminate()
+    proc.wait()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits(monkeypatch):
+    """Each test starts with full rate-limit buckets, in memory.
+
+    The buckets are process-global, and TestClient calls all come from one
+    address: without this, a late test inherits every earlier test's login
+    links and calls and is refused. No REDIS_URL, so a test never counts in a
+    real Redis the developer's .env points at.
+    """
+    from app.ratelimit import clear_rate_limiter_cache
+    from app.security import rate_limit
+
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    clear_rate_limiter_cache()
+    rate_limit._member_counts.clear()
+    yield
+    clear_rate_limiter_cache()
+
+
 @pytest.fixture(autouse=True)
 def _reset_llm_pacing():
     """Clear the LLM rate-limit window between tests.

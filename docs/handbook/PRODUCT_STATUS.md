@@ -78,8 +78,8 @@ rights, §11) or on an open pull request (§12).
 | Spaces | Private sub-workspaces; members see only their space's content | Live | `tests/test_workspaces.py`, `tests/test_isolation.py` | — |
 | Ask in Slack | Channel answers in a thread from that channel only; DMs answer as the person; charts as PNG images | Live | `tests/test_slack_bot.py`, `tests/test_slack_chart_upload.py` | No thumbs in Slack (gaps are still logged); Slack charts are static images |
 | Scheduled reports | Daily/weekly/monthly, saved in-app, email notification | Live | `tests/test_scheduler_*.py`; emails verified live (30 Sep) | Reports describe current content, not diffs |
-| Feedback and gaps | Thumbs with reasons; refusals logged automatically; grouped by meaning into topics; company topics open from a bell alert (`/admin/feedback`, not in the sidebar), a space's on its page for its owner | On staging 15 Oct | `tests/test_feedback.py`, `tests/test_gap_topics.py` | Grouping: embeddings pick candidates (similarity 0.40+), the background model decides; checked on a made-up set, not yet on real questions |
-| Needs-attention bell | Expired or unscoped connections, and topics 3+ people couldn't get answered (or 2+ marked wrong) in 14 days, shown to whoever can fix them | Live (gap alerts: staging 15 Oct) | `tests/test_notifications.py`, `tests/test_gap_topics.py` | — |
+| Feedback and gaps | Thumbs with reasons; refusals logged automatically; grouped by meaning into topics; company topics open from a bell alert (`/admin/feedback`, not in the sidebar), a space's on its page for its owner | Live 15 Oct | `tests/test_feedback.py`, `tests/test_gap_topics.py` | Grouping: embeddings pick candidates (similarity 0.40+), the background model decides; checked on a made-up set, not yet on real questions |
+| Needs-attention bell | Expired or unscoped connections, and topics 3+ people couldn't get answered (or 2+ marked wrong) in 14 days, shown to whoever can fix them | Live (gap alerts: 15 Oct) | `tests/test_notifications.py`, `tests/test_gap_topics.py` | — |
 | Knowledge graph | Who worked on what across tools; one answer can span tools | Live | `tests/test_graph_*.py` | — |
 | Live tool reads | Re-reads a Linear issue, Drive file or Notion page when the question is about current state | Live | `tests/test_live_tools.py`; Notion and Drive verified on staging | Slack reader kept off (Slack's rate tier) |
 | Personal memory | Remembers a few facts a person states; Undo; manage on `/account` | Live | `tests/test_personal_memory.py` | Web chat only; no memory-free private chat mode |
@@ -294,8 +294,27 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
-**Act mode for write actions** — plan only (`docs/plans/2026-10-13-write-actions.md`),
-nothing built yet.
+**Embeddings stored as `halfvec`** (`feat/deployment-setup`, 2 Nov 2026). `chunks.embedding` and
+`gap_topics.embedding` move from `vector(1024)` to `halfvec(1024)`; existing rows are converted in
+place by `apply_schema()` (a cast, nothing re-embedded; marked `embeddings_halfvec`) and the HNSW
+index is rebuilt. Every pooled connection sets `hnsw.iterative_scan = strict_order`, so a
+tenant's search returns the rows it asked for from the shared index. Measured: the index is a
+third of its old size (2,725 vs 8,380 bytes a vector), and at 1.1M vectors a tenant search
+returned 3.9 of 10 rows without the setting. Built, covered by `tests/test_halfvec.py`
+(local Postgres 17, pgvector 0.8.6); needs pgvector 0.8+ on staging and production
+(`docs/pgvector-sizing-final.md`).
+
+**Masking personal identifiers** (`feat/mask-personal-identifiers`, open). Aadhaar, Virtual
+ID, PAN, card, mobile, IFSC and UPI values are replaced with placeholders before any text goes
+to the AI models, the remote search (Jina) or the Groq checks, and restored in the answer the
+person sees. Bank account numbers and order ids are out of scope (no format tells them apart).
+Built, covered by `tests/test_privacy_masking.py`; not yet walked through on staging
+(`docs/plans/2026-10-21-masking-personal-identifiers-before-ai.md`).
+
+**Agent mode (write actions)** — every write goes through the tool's own MCP server
+(Linear, Notion, GitHub, Slack, Google presets or any server's address), each approved on a card
+with the person's own sign-in (`docs/plans/2026-10-22-mcp-only-actions.md`). Slack and Google
+depend on the vendor (Slack app approval, Google's Developer Preview).
 
 Charts are complete on `main`: PR #45 (open-ended charts) and PR #50–#52 (chart fixes, paragraph
 figures, Slack charts) are merged and were walked through on production data on 13 Oct 2026
@@ -316,6 +335,15 @@ same questions: high-level facts 50% -> 70%; list/count questions' facts 53% -> 
 questions 9/10 both. Four high-level answers are not in the benchmark's documents at all, so
 "I don't know" stays the right answer there. Not done: a separate search per part of a
 question (the cause of the remaining list misses), held back for its latency and cost.
+Now opt-in (`fix/small-fixes`): all of the above runs only when the asker turns on **Extra
+effort** under Deep analysis (chat `mode: "deep_extra"`). Plain Deep reads the top documents in
+depth as before, and normal Ask no longer gets the assemble rule, so neither pays for breadth
+it did not ask for.
+Extra effort also reads wide on every question (one strong match used to keep the read
+narrow: 28 of 61 broad questions read 2-3 documents) and adds documents down to
+`RAG_DEEP_WIDE_INCLUDE_RATIO` (0.05) x the best score. Benchmark 4, 16 Oct, Claude Sonnet,
+graded by Claude Opus, the 61 broad questions: 69% -> 75% correct, right documents found
+74% -> 81%, 11.7k -> 12.9k tokens per question, median time unchanged; none got worse.
 
 **Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
 Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a
@@ -379,4 +407,4 @@ one live test to see whose name Notion records.
 - **Partially supported:** Notion access is per space, not per page; GitHub charts are space-level.
 - **Blocked or waiting on an external party:** Notion per-page access (API), Google Groups (admin),
   Linear private teams (Business plan), answer fact-checker (paid host).
-- **Being worked on:** Act mode for write actions (plan only).
+- **Being worked on:** Agent mode through MCP only (local, not yet shipped).

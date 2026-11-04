@@ -23,7 +23,7 @@ from ..core.exceptions import AuthError, ProviderError
 from ..insights import panels as panel_defs
 from ..insights import pins, registry, resolve, scopes
 from ..insights import store as insight_store
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import limit_question
 from ..workspaces.store import assert_member
 from .deps import SessionClaims, get_session, viewer_for
 
@@ -282,7 +282,7 @@ def ask(
     dedicated insights path that spends a model request. Ask chat has its own
     limiter and calls ``answer_chart_question`` directly.
     """
-    check_rate_limit(f"insights-ask:{session.org_id}")
+    limit_question(session)
     workspace_id = _scope(session, body.scope)
     return answer_chart_question(
         body.question, session=session, workspace_id=workspace_id

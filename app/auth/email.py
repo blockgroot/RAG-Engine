@@ -31,6 +31,7 @@ import logging
 import smtplib
 from collections.abc import Sequence
 from email.message import EmailMessage
+from email.utils import parseaddr
 
 import httpx
 
@@ -201,9 +202,15 @@ def _send_sendgrid(
     content = [{"type": "text/plain", "value": body}]
     if html_body is not None:
         content.append({"type": "text/html", "value": html_body})
+    # SendGrid takes the display name as its own field, so
+    # "Handbook <a@b.com>" is split; a bare address is sent as before.
+    name, address = parseaddr(settings.smtp_from)
+    sender = {"email": address or settings.smtp_from.strip()}
+    if name:
+        sender["name"] = name
     payload = {
         "personalizations": [{"to": [{"email": to}]}],
-        "from": {"email": settings.smtp_from},
+        "from": sender,
         "subject": subject,
         "content": content,
     }

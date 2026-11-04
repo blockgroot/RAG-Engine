@@ -19,12 +19,12 @@ from ..auth import email_change
 from ..auth.email import send_email_change_verification_safe
 from ..auth.oauth_state import LINK_GITHUB, consume_link_state, create_state
 from ..auth.users import get_user
-from ..config.settings import ApiSettings, EmailSettings, RateLimitSettings
+from ..config.settings import ApiSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import limit_email
 from .validation import MAX_EMAIL_CHARS, bounded
 from ..graph import identities
-from .deps import get_session
+from .deps import get_session, public_api_url
 
 logger = logging.getLogger(__name__)
 
@@ -237,15 +237,12 @@ def request_email_change(
     email = bounded(
         (body.get("email") or "").strip().lower(), field="Email", limit=MAX_EMAIL_CHARS
     )
-    check_rate_limit(
-        f"email-change:{session.user_id}",
-        limit=RateLimitSettings.from_env().auth_requests_per_window,
-    )
+    limit_email(f"user:{session.user_id}")
     try:
         token = email_change.request_email_change(session.user_id, email)
     except AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    link = f"{str(request.base_url).rstrip('/')}/auth/email-change/confirm?token={token}"
+    link = f"{public_api_url(request)}/auth/email-change/confirm?token={token}"
     background_tasks.add_task(send_email_change_verification_safe, email, link)
     return {
         "status": "sent",

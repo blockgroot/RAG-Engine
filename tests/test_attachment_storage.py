@@ -27,12 +27,16 @@ pytestmark = requires_db
 class FakeBlobStore:
     """An in-memory stand-in with the four calls `store.py` makes."""
 
-    def __init__(self, fail_on: str | None = None):
+    def __init__(self, fail_on: str | None = None, *, configured: bool = True):
         self.objects: dict[str, bytes] = {}
         self.fail_on = fail_on
         self.deleted: list[str] = []
+        self._configured = configured
 
     # -- the surface store.py uses -------------------------------------
+    def configured(self) -> bool:
+        return self._configured
+
     def plaintext_key(self, key: str) -> str:
         return f"{key}__plaintext"
 
@@ -237,3 +241,23 @@ def test_the_ttl_sweep_removes_the_objects_too(scope, blob):
 
     assert attach_store.purge_expired_attachments() >= 1
     assert blob.objects == {}
+
+
+def test_with_no_object_store_the_text_stays_in_postgres(scope, monkeypatch):
+    """A self-hosted copy with no Cloudinary keeps uploads on its own server."""
+    fake = FakeBlobStore(configured=False)
+    monkeypatch.setattr(attach_store, "blobstore", fake)
+
+    saved = _save(scope, fake)
+
+    assert fake.objects == {}
+    (loaded,) = attach_store.load_attachment_texts(**scope)
+    assert loaded.id == saved.id
+    assert loaded.content == "the notice period is 30 days"
+    assert attach_store.delete_attachment(
+        attachment_id=saved.id,
+        org_id=scope["org_id"],
+        conversation_id=scope["conversation_id"],
+        user_id=scope["user_id"],
+    )
+    assert fake.deleted == []

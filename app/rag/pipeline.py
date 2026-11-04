@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import numpy as np
 
 from ..config.settings import (
+    DEFAULT_MAX_CHUNK_CHARS,
     AttachmentSettings,
     AuditSettings,
     DecomposeSettings,
@@ -88,7 +89,7 @@ from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
 from . import progress
-from .deep import deep_read_on, reset_deep_read, use_deep_read  # noqa: F401 -- re-exported
+from .deep import deep_read_on, extra_effort_on, reset_deep_read, use_deep_read  # noqa: F401 -- re-exported
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
@@ -1133,7 +1134,7 @@ class RagPipeline:
 
     def _read_settings(self) -> RagSettings:
         """How much to read: the deep read in Deep analysis mode, else as configured."""
-        return self._settings.deep() if deep_read_on() else self._settings
+        return self._settings.deep(extra=extra_effort_on()) if deep_read_on() else self._settings
 
     def _with_neighbors(
         self,
@@ -1198,15 +1199,15 @@ class RagPipeline:
         # Neighbours only fill room left after EVERY selected hit's own piece,
         # so they never push another document out of the budget (RCA, 9 Oct: a
         # short read lost a right document to the top hits' neighbours). A
-        # narrow deep read is already sized by the budget; a WIDE one is not:
-        # three documents read in depth filled it and the prefix cut every
-        # other document, so a company-wide question saw 2-3 documents and
-        # half its facts. Breadth first there, depth with what is left.
+        # narrow deep read is already sized by the budget; a WIDE one (extra
+        # effort) is not: three documents read in depth filled it and the
+        # prefix cut every other document, so a company-wide question saw 2-3
+        # documents and half its facts. Breadth first there, depth with what is left.
         hit_keys = {(h.document_id, h.chunk_index) for h in hits}
         room = (
             rag.context_chars_for(len(hits))
             - sum(len(h.content) + _PROVENANCE_CHARS for h in hits)
-            if top_docs <= 0 or len(hits) > rag.top_k else None
+            if top_docs <= 0 or (extra_effort_on() and len(hits) > rag.top_k) else None
         )
         joined: list[RetrievedChunk] = []
         for h in top:
@@ -1228,6 +1229,50 @@ class RagPipeline:
         rest = [h for h in hits if (h.document_id, h.chunk_index) not in taken
                 and (h.document_id, h.chunk_index) not in top_keys]
         return joined + rest
+
+    def retrieve_passages(
+        self,
+        question: str,
+        org_id: str,
+        *,
+        about: str | None = None,
+        workspace_id: str | None = None,
+        tags: list[str] | None = None,
+        viewer: Viewer | None = None,
+    ) -> list[RetrievedChunk]:
+        """Ask's retrieval without an answer: the corpus spelling fix, the
+        hybrid keyword + meaning search, rerank, and the same 0.35 gate on the
+        best match. ``[]`` when the gate misses.
+
+        For a caller that drafts from passages (Act). ``about`` is the part of
+        a longer request that names the content ("the Slack message about
+        mixing cases"); it is searched alongside the request and is what the
+        reranker orders by, so the action words around it ("create an issue
+        titled …") do not outrank the content. No answer, memory rewrite or
+        decomposition: those serve generating a reply, not finding sources.
+
+        With the deep read on (Act always reads deeply), the best documents
+        come with their neighbouring chunks, as Deep analysis reads them: a
+        Linear summary drafted from six scattered chunks was too short.
+        """
+        query = self._normalize_for_retrieval(question, org_id)
+        vec = self._embedder.embed([query])[0]
+        if about and self._retriever is not None:
+            about_q = self._normalize_for_retrieval(about, org_id)
+            result = self._retriever.retrieve(
+                org_id, query, vec,
+                extra_queries=[(about_q, self._embedder.embed([about_q])[0])],
+                rerank_query=about_q,
+                workspace_id=workspace_id, tags=tags, viewer=viewer,
+            )
+            hits, gate = result.hits, result.gate_score
+        else:
+            hits, gate, _ = self._retrieve_once(
+                org_id, query, vec, workspace_id=workspace_id, tags=tags, viewer=viewer)
+        if self._gate_miss(hits, gate):
+            return []
+        return self._with_neighbors(hits, org_id, workspace_id=workspace_id, viewer=viewer) \
+            if deep_read_on() else hits
 
     def _gate_miss(
         self, hits: list[RetrievedChunk], top_score: float | None
@@ -1920,9 +1965,9 @@ class RagPipeline:
             focus_rule=self._settings.focus_rule,
             partial_rule=self._settings.partial_rule,
             conflict_rule=self._settings.conflict_rule,
-            assemble_rule=self._settings.assemble_rule,
+            assemble_rule=self._settings.assemble_rule and extra_effort_on(),
         )
-        answer_cap = self._read_settings().max_answer_tokens  # Deep may answer longer
+        answer_cap = self._read_settings().max_answer_tokens  # extra effort may answer longer
         raw = self._generate_text(
             STAGE_GENERATE,
             prompt,
@@ -2347,8 +2392,17 @@ class RagPipeline:
             return None
 
         # Recompute embeddings for the handful of previous chunks (cheap, local,
-        # deterministic) rather than storing 1024-dim vectors in the DB.
-        prev_vecs = self._embedder.embed([r.content for r in prev])
+        # deterministic) rather than storing 1024-dim vectors in the DB. A
+        # remembered chunk is the block the answer read, neighbours joined, and
+        # a Deep block ran past the embedding model's 8,194-token limit: the
+        # 400 failed the whole follow-up answer. A chunk-sized slice is enough
+        # to judge similarity, and reuse is a shortcut, so any failure here
+        # retrieves fresh instead.
+        try:
+            prev_vecs = self._embedder.embed([r.content[:DEFAULT_MAX_CHUNK_CHARS] for r in prev])
+        except Exception:  # noqa: BLE001 - a shortcut must never cost an answer
+            logger.warning("reuse check skipped: could not embed the previous turn's chunks", exc_info=True)
+            return None
         sims = [self._cosine(query_vec, v) for v in prev_vecs]
         best = max(sims)
         if best < self._reuse_settings.threshold:

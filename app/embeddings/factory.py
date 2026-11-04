@@ -50,6 +50,7 @@ def build_embedding_provider(
             base_url=settings.base_url,
             timeout=settings.timeout,
             batch_size=settings.batch_size,
+            dimensions=settings.dimensions,
         )
 
     raise ConfigurationError(

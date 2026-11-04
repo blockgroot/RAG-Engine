@@ -260,6 +260,9 @@ def get_org_model_summary(org_id: str) -> dict | None:
         # model was saved, not a live health check — rendering it as a green
         # "Connected" badge would claim something nobody verified since.
         "checked_at": config.get("checked_at"),
+        # Agent mode's tool-calling test, from the same save (``_agent_probe``):
+        # "native", "text", "none", or "unknown"; None for a model saved before it.
+        "agent": config.get("agent"),
         "saved_at": created.isoformat() if created else None,
     }
 

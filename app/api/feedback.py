@@ -22,7 +22,6 @@ from ..feedback import (
     mark_handled,
     record_rating,
 )
-from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from ..auth.session import SessionClaims
 from .deps import get_session, require_admin, require_workspace_owner
@@ -49,8 +48,6 @@ def submit_feedback(
     text, so accepting an id without the owner check would let anyone write
     another member's exchange into a table their admin reads.
     """
-    check_rate_limit(f"feedback:{session.org_id}:{session.user_id}")
-
     conversation_id = (body.get("conversation_id") or "").strip()
     question = (body.get("question") or "").strip()
     if not conversation_id or not question:
@@ -114,8 +111,10 @@ def _topic(t: Topic) -> dict:
 
 
 def _topics(org_id: str, workspace_id: str | None) -> dict:
+    """Only topics past the alert threshold: the page is where the bell's
+    notification leads, so it shows what notified, never one person's miss."""
     assign_topics_soon(org_id)
-    return {"topics": [_topic(t) for t in list_topics(org_id, workspace_id)]}
+    return {"topics": [_topic(t) for t in list_topics(org_id, workspace_id) if t.alerting]}
 
 
 def _handled(org_id: str, workspace_id: str | None, topic_id: str) -> dict:

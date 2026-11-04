@@ -42,8 +42,8 @@ _PAGE_SIZE = 100
 # audience changed is "unchanged" and is never re-fetched. Both ride the query
 # already being made -- the only new calls are per TEAM (`_team_access`).
 _ISSUES_QUERY = """
-query Issues($after: String) {
-  issues(first: %d, after: $after, orderBy: updatedAt) {
+query Issues($after: String, $filter: IssueFilter) {
+  issues(first: %d, after: $after, filter: $filter, orderBy: updatedAt) {
     nodes {
       id identifier title url updatedAt
       team { id }
@@ -60,7 +60,7 @@ query Issues($after: String) {
 _TEAMS_QUERY = """
 query Teams($after: String) {
   teams(first: 100, after: $after) {
-    nodes { id visibility }
+    nodes { id key name visibility }
     pageInfo { hasNextPage endCursor }
   }
 }
@@ -291,6 +291,7 @@ class LinearAdapter(SourceAdapter):
         token: str | None = None,
         *,
         oauth: bool = False,
+        team_ids: list[str] | None = None,
     ) -> None:
         settings = settings or LinearSettings.from_env()
         resolved = token or settings.token
@@ -301,6 +302,9 @@ class LinearAdapter(SourceAdapter):
             )
         self._token = resolved
         self._oauth = oauth
+        #: The teams picked for this connection; ``None`` reads every team the
+        #: token can see (only the legacy env-key path, never a connection).
+        self._team_ids = list(team_ids) if team_ids is not None else None
         #: team id -> visibility, filled by ONE `teams` walk per adapter (i.e.
         #: per sync). `None` until first needed, so a listing with no team ids
         #: at all (a fixture, an empty workspace) costs nothing.
@@ -328,6 +332,27 @@ class LinearAdapter(SourceAdapter):
         if payload.get("errors"):
             raise SourceError(f"Linear API returned errors: {payload['errors']}")
         return payload["data"]
+
+    def _team_filter(self) -> dict:
+        return {"team": {"id": {"in": self._team_ids}}} if self._team_ids is not None else {}
+
+    def list_teams(self) -> list[dict]:
+        """Every team this token can see, for the picker:
+        ``[{"id", "key", "name", "private"}]``. Raises when the walk is cut
+        short, because a picker missing teams would look complete."""
+        teams: list[dict] = []
+        cursor: str | None = None
+        for _ in range(_MAX_TEAM_PAGES):
+            data = self._query(_TEAMS_QUERY, {"after": cursor})["teams"]
+            teams += [
+                {"id": n["id"], "key": n.get("key") or "", "name": n.get("name") or n["id"],
+                 "private": (n.get("visibility") or "public") != "public"}
+                for n in data["nodes"]
+            ]
+            if not data["pageInfo"]["hasNextPage"]:
+                return teams
+            cursor = data["pageInfo"]["endCursor"]
+        raise SourceError(f"Linear has more than {_MAX_TEAM_PAGES * 100} teams; can't list them all")
 
     # -- access --------------------------------------------------------------
 
@@ -447,7 +472,8 @@ class LinearAdapter(SourceAdapter):
         refs: list[SourceRef] = []
         cursor: str | None = None
         while len(refs) < _MAX_ISSUES:
-            data = self._query(_ISSUES_QUERY, {"after": cursor})["issues"]
+            data = self._query(_ISSUES_QUERY, {"after": cursor,
+                                               "filter": self._team_filter() or None})["issues"]
             for node in data["nodes"]:
                 refs.append(
                     SourceRef(
@@ -488,7 +514,7 @@ class LinearAdapter(SourceAdapter):
         cursor: str | None = None
         # Linear's comparators take an ISO-8601 instant; normalise to UTC "Z"
         # so a naive/offset-aware datetime from the caller behaves the same.
-        variables_filter = {"updatedAt": {"gt": since.isoformat()}}
+        variables_filter = {"updatedAt": {"gt": since.isoformat()}, **self._team_filter()}
         while len(collected) < max_issues:
             data = self._query(
                 _RECENT_ISSUES_QUERY,
@@ -568,3 +594,16 @@ class LinearAdapter(SourceAdapter):
         if issue is None:
             raise SourceError(f"Linear issue {external_id} not found or not accessible")
         return _parse_dt(issue["updatedAt"])
+
+
+def validate_linear_teams(token: str, team_ids: list[str]) -> dict:
+    """The picked teams as a connection's config: ``{team_ids, team_names}``.
+    Only teams this token can see; at least one."""
+    if not team_ids:
+        raise ConfigurationError("Pick at least one Linear team.")
+    known = {t["id"]: t for t in LinearAdapter(token=token, oauth=True).list_teams()}
+    unknown = [t for t in team_ids if t not in known]
+    if unknown:
+        raise ConfigurationError("One or more of these Linear teams isn't visible to this connection.")
+    ids = list(dict.fromkeys(team_ids))
+    return {"team_ids": ids, "team_names": {t: known[t]["name"] for t in ids}}

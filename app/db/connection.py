@@ -92,8 +92,34 @@ def _register_vector_once(conn: "psycopg.Connection") -> None:
 
 
 def _configure(conn: "psycopg.Connection") -> None:
-    """Pool hook: run once when a new physical connection is opened."""
+    """Pool hook: run once when a new physical connection is opened.
+
+    The connection acts as ``handbook_app`` from here on, so the row-level
+    policy on ``chunks`` (schema.sql) applies to everything the app runs: the
+    owner the URL logs in as bypasses it. Fails closed: a connection that could
+    not switch would read every tenant's chunks, so it never joins the pool.
+
+    ``hnsw.iterative_scan``: filters run alongside the HNSW index (workspace,
+    provider, who may open a document), so a plain scan stops after
+    ``ef_search`` (40) candidates and can return fewer rows than asked. Measured
+    on 1.1M vectors across 10 tenants, before chunks was partitioned per tenant:
+    3.9 of 10 requested rows came back. An iterative scan keeps going until the
+    LIMIT is met; ``strict_order`` keeps results in exact distance order. Needs
+    pgvector 0.8+; on an older server the setting is an inert placeholder.
+    """
+    try:
+        conn.execute("SET ROLE handbook_app")
+        conn.commit()
+    except psycopg.Error as exc:
+        conn.rollback()
+        raise DatabaseError(
+            "Could not act as handbook_app — is the schema applied "
+            "(scripts/init_db.py)?",
+            cause=exc,
+        ) from exc
     _register_vector_once(conn)
+    conn.execute("SET hnsw.iterative_scan = strict_order")
+    conn.commit()
 
 
 def get_pool(settings: DatabaseSettings | None = None) -> ConnectionPool:
@@ -135,11 +161,22 @@ def close_pool() -> None:
 
 
 @contextmanager
-def get_connection(settings: DatabaseSettings | None = None) -> Iterator["psycopg.Connection"]:
+def get_connection(
+    settings: DatabaseSettings | None = None,
+    *,
+    org_id: str | None = None,
+    all_orgs: bool = False,
+) -> Iterator["psycopg.Connection"]:
     """Yield a pooled connection with pgvector registered.
 
     The pool's context manager commits on clean exit, rolls back on exception,
     and returns the connection to the pool (it is not closed).
+
+    ``chunks`` shows a transaction only the rows of ``org_id``, and none without
+    it (the row-level policy in schema.sql). ``all_orgs`` is for background jobs
+    that work across tenants. Both last until the transaction ends, so a
+    ``commit()`` inside the block ends them too, and never reach the next
+    borrower of the connection.
     """
     pool = get_pool(settings)
     try:
@@ -150,6 +187,10 @@ def get_connection(settings: DatabaseSettings | None = None) -> Iterator["psycop
             # _register_vector_once for why paying it per checkout was ~3s of
             # latency per query on a cross-region deploy.
             _register_vector_once(conn)
+            if org_id is not None:
+                conn.execute("SELECT set_config('app.org_id', %s, true)", (str(org_id),))
+            if all_orgs:
+                conn.execute("SELECT set_config('app.all_orgs', 'on', true)")
             yield conn
     except psycopg.Error as exc:
         raise DatabaseError(f"Database operation failed: {exc}", cause=exc) from exc

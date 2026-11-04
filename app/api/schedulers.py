@@ -26,7 +26,7 @@ from ..schedulers import reports as sched_reports
 from ..schedulers import store as sched_store
 from ..schedulers.prompts import CREATE_SCHEDULER_TOOL, build_setup_system_prompt
 from ..schedulers.store import FREQUENCIES, SUPPORTED_PROVIDERS, SchedulerError
-from ..security.rate_limit import check_rate_limit
+from ..security.rate_limit import limit_question
 from .deps import SessionClaims, get_session
 from .validation import bounded
 
@@ -568,7 +568,7 @@ def setup_chat(
     everything and the scheduler was created, or ``{"done": false, "reply":
     ...}`` with a follow-up question to show the user.
     """
-    check_rate_limit(f"scheduler-setup:{session.org_id}:{session.user_id}")
+    limit_question(session)
 
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages must not be empty")

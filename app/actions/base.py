@@ -80,12 +80,21 @@ class Proposal:
     audience: Audience = field(default_factory=Audience)
 
 
+def details(*pairs: tuple[str, str | None]) -> list[list[str]]:
+    """The settings a write carries besides its words ("Assignee", "Labels"),
+    as ``[label, value]`` rows for the card. Part of the stored payload, so
+    the fingerprint covers them; never editable (cancel and ask again)."""
+    return [[label, value] for label, value in pairs if value]
+
+
 @dataclass(frozen=True)
 class ActionResult:
     """What the tool created: its id and an http(s) link from its API."""
 
     external_id: str
     url: str | None = None
+    #: What the tool calls the record ("Final E2E notes"), when it says.
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +120,9 @@ class ActionContext:
     #: "slack_channel", "slack_user", "channel", "thread_ts"}``. From the
     #: event or session, never from the model.
     surface: dict | None = None
+    #: What lookups (an admin-marked read of an MCP tool) returned while
+    #: drafting: the tool's own answer, so an id taken from it is grounded.
+    lookups: str = ""
 
 
 class Action(ABC):
@@ -126,12 +138,27 @@ class Action(ABC):
     label: ClassVar[str]
     tool: ClassVar[dict[str, Any]]
     destructive: ClassVar[bool] = False
+    #: A read run while drafting (an MCP lookup), never a card or a write.
+    lookup: ClassVar[bool] = False
     #: Whose name the tool will show on the result, said on the card. "as you"
     #: only where the tool records the person; a bot-recorded write says so.
     attribution: ClassVar[str] = "as you"
 
-    def token_for(self, org_id: str, user_id: str) -> str:
-        """The token this action writes with: the asker's own, refreshed."""
+    def attribution_for(self, payload: dict[str, Any]) -> str:
+        """Whose name the result carries, for this draft."""
+        return self.attribution
+
+    def enabled_for(self, org_id: str, workspace_id: str | None) -> bool:
+        """Switched on here right now (checked again when the write is sent)."""
+        from . import policy
+
+        return policy.is_enabled(org_id, workspace_id, self.name)
+
+    def token_for(self, org_id: str, user_id: str, surface: str = "web",
+                  payload: dict[str, Any] | None = None) -> str:
+        """The token this action writes with: the asker's own, refreshed.
+        ``surface`` is where it was asked (only Slack's bot replies differ);
+        ``payload`` is the stored draft, given at send time."""
         from ..auth.user_connections import fresh_user_token
 
         return fresh_user_token(org_id, user_id, self.provider)
