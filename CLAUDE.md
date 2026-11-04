@@ -318,7 +318,14 @@ title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
 A Sheet embeds a description of its columns, never its figures. Ask reads a ROW
 only when the question types one of its cells (`doctables.store.rows_naming`: whole
 words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,
-the document predicate), as a passage scored by its document's cosine, never its own. An unparseable
+the document predicate), as a passage scored by its document's cosine, never its own.
+With `DOCTABLES_ANSWERS_ENABLED` (off by default), a question Ask's check flags as
+`table` (a total, share, highest) is worked out by `insights/table_answers.py`: the
+model fills a FORM (table, operation, columns, values), code checks every name and
+value against the real table, SQL computes, and the result is a passage of the
+sheet that retrieval never ranks out (re-checked for the viewer). A form that does
+not fit is dropped and Ask answers as before; a ratio that narrows nothing is
+dropped, never 100%. Off, the question check's prompt is unchanged. An unparseable
 cell is absent from a sum, never zero. A trend draws every period from "measured since"
 (or the window, if later) to now, a quiet one at zero; never a period before the
 data begins, which is unknown, not zero (`insights_agent._fill_gaps`). `points: null` means the panel failed; `[]`

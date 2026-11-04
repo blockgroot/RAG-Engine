@@ -45,6 +45,8 @@ _MAX_RETRIEVAL_WORKERS = 4
 #: A table row's passage index: past any real chunk, so a row never collides
 #: with (or is mistaken for a neighbour of) the document's own chunks.
 _ROW_INDEX = 1_000_000
+#: A figure worked out over a table for this question (past every row index).
+_WORKED_INDEX = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,11 @@ class HybridRetriever:
         )
         extra_tools = self._named_tools(org_id, workspace_id)
         graph_cross = graph_cross or bool(extra_tools)
+        from ..insights.table_answers import current_answers
+
+        # Read HERE, on the request's thread: the first-stage pool does not
+        # inherit context.
+        worked = current_answers()
         graph_counter: list[int] = []
         ranked_lists = self._first_stage_all(
             org_id,
@@ -155,6 +162,7 @@ class HybridRetriever:
             graph_counter=graph_counter,
             graph_cross=graph_cross,
             extra_tools=extra_tools,
+            worked=worked,
         )
         graph_hits = sum(graph_counter)
         if graph_documents:
@@ -191,6 +199,11 @@ class HybridRetriever:
             final = pool_candidates[: keep if graph_cross else rag.ranked_max_hits]
         if graph_cross:
             final = _reserve_other_tools(final, top_k, self._source_provider)
+        # A figure worked out for THIS question is never ranked out: the rows
+        # that answer it are not text the reranker could weigh.
+        kept = {(c.document_id, c.chunk_index) for c in final}
+        final = final + [c for c in candidates if c.chunk_index >= _WORKED_INDEX
+                         and (c.document_id, c.chunk_index) not in kept]
 
         return RetrievalResult(
             hits=final, gate_score=gate_score, graph_hits=graph_hits,
@@ -299,6 +312,7 @@ class HybridRetriever:
         graph_counter: list[int] | None = None,
         graph_cross: bool = False,
         extra_tools: list[str] | None = None,
+        worked: tuple = (),
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -350,7 +364,7 @@ class HybridRetriever:
             if kind == "rows":
                 return (i, task[1]), self._table_rows(
                     org_id, q_text, q_vec, workspace_id=workspace_id, viewer=viewer,
-                    tools=[self._source_provider, *(extra_tools or [])],
+                    tools=[self._source_provider, *(extra_tools or [])], worked=worked,
                 )
             if kind == "graph":
                 # A connected answer's graph documents were already limited to
@@ -428,9 +442,10 @@ class HybridRetriever:
 
     def _table_rows(
         self, org_id: str, q_text: str, q_vec: list[float], *, workspace_id: str | None,
-        viewer: Viewer | None, tools: list[str | None],
+        viewer: Viewer | None, tools: list[str | None], worked: tuple = (),
     ) -> list[RetrievedChunk]:
-        """Table rows the question names by a cell, as passages of their document.
+        """Table rows the question names by a cell, and figures worked out over a
+        table for it (``insights.table_answers``), as passages of their document.
 
         A sheet embeds only its columns, so "who was the field officer on
         L-1008?" could never reach the row. ``doctables.store.rows_naming``
@@ -444,18 +459,36 @@ class HybridRetriever:
 
             rows = rows_naming(q_text, org_id=org_id, workspace_id=workspace_id,
                                viewer=viewer, providers=[t for t in tools if t])
-            if not rows:
+            figures = [w for w in worked if w.provider in tools]
+            if not rows and not figures:
                 return []
-            ids = sorted({r.document_id for r in rows})
+            ids = sorted({r.document_id for r in rows} | {w.document_id for w in figures})
             cosine: dict[str, float] = {}
+            # Private unless the index says otherwise: a worked figure from a
+            # restricted sheet must keep its answer out of the shared cache.
+            public: dict[str, bool] = {}
             for hit in self._store.query(org_id, q_vec, top_k=4 * len(ids),
                                          workspace_id=workspace_id, viewer=viewer,
                                          document_ids=ids):
                 cosine[hit.document_id] = max(cosine.get(hit.document_id, 0.0), hit.score)
+                public[hit.document_id] = hit.doc_is_public
         except Exception:  # noqa: BLE001
             logger.warning("retrieval: table row lookup skipped", exc_info=True)
             return []
+        # Re-checked at run time: the cosine query is filtered by this viewer, so
+        # a sheet they cannot open has no hit and its figures are not shown.
+        figures = [f for f in figures if f.document_id in cosine]
         return [
+            RetrievedChunk(
+                content=figure.text, score=cosine.get(figure.document_id, 0.0),
+                document_id=figure.document_id, chunk_index=_WORKED_INDEX + i,
+                org_id=org_id, document_title=figure.document_title,
+                source_provider=figure.provider,
+                doc_is_public=public.get(figure.document_id, False),
+                source_uri=figure.source_uri,
+            )
+            for i, figure in enumerate(figures)
+        ] + [
             RetrievedChunk(
                 content=row.text, score=cosine.get(row.document_id, 0.0),
                 document_id=row.document_id, chunk_index=_ROW_INDEX + row.row_no,

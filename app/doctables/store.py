@@ -587,6 +587,21 @@ def _col(key: str) -> str:
     return f"(r.cells->>'{key}')"
 
 
+def _filter_sql(table_id: str, filters) -> tuple[str, dict]:
+    """``AND`` clauses for ``(column key, value)`` filters, every value bound.
+    A value is one cell value, or a tuple of them meaning any of them ("open"
+    is several real stages)."""
+    where, params = "", {"table_id": table_id}
+    for i, (dim, value) in enumerate(filters):
+        if isinstance(value, (tuple, list)):
+            where += f" AND {_col(dim)} = ANY(%(f_{i})s)"
+            params[f"f_{i}"] = [str(v) for v in value]
+        else:
+            where += f" AND {_col(dim)} = %(f_{i})s"
+            params[f"f_{i}"] = value
+    return where, params
+
+
 @dataclass(frozen=True)
 class TablePoint:
     bucket: str | None
@@ -639,10 +654,7 @@ def run_table_query(
         group = _col(group_key) if group_key else "NULL"
         series = _col(split_key) if split_key else "NULL"
 
-    where, params = "", {"table_id": table.id}
-    for dim, value in filters:
-        where += f" AND {_col(dim)} = %(f_{dim})s"
-        params[f"f_{dim}"] = value
+    where, params = _filter_sql(table.id, filters)
     if value_key and measure != "count":
         # Rows with no parseable number are not zero; they are absent.
         where += f" AND {_col(value_key)} IS NOT NULL"
@@ -674,10 +686,7 @@ def count_rows(
 ) -> int:
     """How many rows a chart of this table was built from: the filters
     applied, and (for a sum or average) only rows whose value parsed."""
-    where, params = "", {"table_id": table.id}
-    for dim, value in filters:
-        where += f" AND {_col(dim)} = %(f_{dim})s"
-        params[f"f_{dim}"] = value
+    where, params = _filter_sql(table.id, filters)
     if value_key:
         where += f" AND {_col(value_key)} IS NOT NULL"
     try:
@@ -849,6 +858,28 @@ def pick_rows(question: str, found: list[tuple]) -> list[RowHit]:
         )))
     hits.sort(key=lambda h: (-h[0], h[1].row_no))
     return [hit for _n, hit in hits[:MAX_LOOKUP_ROWS]]
+
+
+def top_rows(
+    table: TableRef, *, value_key: str, filters=(), limit: int = 3, highest: bool = True,
+) -> list[list[str]]:
+    """The rows with the highest (or lowest) value in one number column, as
+    written (``raw``): "the biggest deal we won" is a row, not a sum. Only our
+    column key is spliced; every filter value is bound."""
+    where, params = _filter_sql(table.id, filters)
+    params["limit"] = max(1, min(limit, MAX_DETAILS))
+    order = "DESC" if highest else "ASC"
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT r.raw FROM doc_table_rows r WHERE r.table_id = %(table_id)s {where}"
+                f" AND {_col(value_key)} IS NOT NULL"
+                f" ORDER BY ({_col(value_key)})::numeric {order}, r.row_no LIMIT %(limit)s",
+                params,
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not rank rows", cause=exc) from exc
+    return [list(r[0] or []) for r in rows]
 
 
 def mark_checked(document_id: str) -> None:
