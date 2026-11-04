@@ -1,0 +1,11 @@
+Employee,Email,Role,Region,Reports To,Joined
+Ananya Rao,ananya.rao@acmedemo.example,Sales Manager,West,,2023-01-01
+Rohan Mehta,rohan.mehta@acmedemo.example,Sales Executive,West,Ananya Rao,2024-02-03
+Kavya Nair,kavya.nair@acmedemo.example,Sales Executive,South,Ananya Rao,2025-03-05
+Arjun Iyer,arjun.iyer@acmedemo.example,Sales Executive,South,Ananya Rao,2023-04-07
+Meera Kapoor,meera.kapoor@acmedemo.example,Sales Executive,North,Ananya Rao,2024-05-09
+Vikram Singh,vikram.singh@acmedemo.example,Sales Executive,North,Ananya Rao,2025-06-11
+Sneha Kulkarni,sneha.kulkarni@acmedemo.example,Sales Executive,West,Ananya Rao,2023-07-13
+Farhan Qureshi,farhan.qureshi@acmedemo.example,Field Officer,West,Ananya Rao,2024-08-15
+Divya Menon,divya.menon@acmedemo.example,Field Officer,South,Ananya Rao,2025-09-17
+Harpreet Gill,harpreet.gill@acmedemo.example,Field Officer,North,Ananya Rao,2023-10-19
