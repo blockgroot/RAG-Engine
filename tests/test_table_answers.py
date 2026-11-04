@@ -211,3 +211,49 @@ def test_a_value_shared_by_many_rows_names_none_of_them(org):
     # MAX_LOOKUP_ROWS rows is a group. Here it names exactly hers.
     assert {re.search(r"ID: (L-\d+)", h.text).group(1) for h in hits} == {
         "L-1007", "L-1008", "L-1011"}
+
+
+# ---------------------------------------------------------------------------
+# Which found rows are the ones asked about (no DB)
+# ---------------------------------------------------------------------------
+
+_LEAD_COLS = [{"name": n} for n in ("Lead ID", "Owner", "Field Officer", "Company")]
+_TEAM_COLS = [{"name": n} for n in ("Employee", "Role")]
+_TARGET_COLS = [{"name": n} for n in ("Employee", "Month", "Target")]
+
+
+def _found(table: str, row_no: int, cols, cells) -> tuple:
+    return ("doc", table, "google", None, table, row_no, cols, list(cells), False, table)
+
+
+def _picked_rows(question: str, found: list[tuple]) -> list[str]:
+    return [h.text for h in table_store.pick_rows(question, found)]
+
+
+def test_the_row_a_question_names_outranks_rows_sharing_common_words():
+    found = [_found("Team", i, _TEAM_COLS, (name, "Field Officer"))
+             for i, name in enumerate(("Divya Menon", "Farhan Qureshi", "Harpreet Gill"))]
+    found.append(_found("Leads", 9, _LEAD_COLS, ("L-1008", "Kavya Nair", "Divya Menon", "Kesari")))
+    assert "L-1008" in _picked_rows("Who was the field officer on L-1008?", found)[0]
+
+
+def test_a_follow_up_s_other_words_lift_its_row_above_the_cap():
+    """"What is the target for October for Kavya Nair, the owner of lead L-1076
+    (Indigo Labs)?" -- her October target row ranked ninth of nine and was cut."""
+    months = ("June 2026", "July 2026", "August 2026", "September 2026", "October 2026")
+    found = [_found("Targets", i, _TARGET_COLS, ("Kavya Nair", m, "900000"))
+             for i, m in enumerate(months)]
+    found += [_found("Leads", 1, _LEAD_COLS, ("L-1076", "Kavya Nair", "Divya Menon", "Indigo Labs")),
+              _found("Leads", 2, _LEAD_COLS, ("L-1139", "Rohan Mehta", "Farhan Qureshi", "Indigo Labs")),
+              _found("Leads", 3, _LEAD_COLS, ("L-1201", "Rohan Mehta", "Farhan Qureshi", "Indigo Labs")),
+              _found("Team", 4, _TEAM_COLS, ("Kavya Nair", "Sales Executive"))]
+    rows = _picked_rows("What is the target for October for Kavya Nair, the owner of "
+                        "lead L-1076 (Indigo Labs)?", found)
+    assert "L-1076" in rows[0]
+    assert "October 2026" in rows[1]
+
+
+def test_a_value_on_more_rows_than_the_cap_names_none_of_them():
+    found = [_found("Leads", i, _LEAD_COLS, (f"L-{i}", "Rohan Mehta", "Farhan Qureshi", "X"))
+             for i in range(table_store.MAX_LOOKUP_ROWS + 1)]
+    assert _picked_rows("How did Rohan Mehta do?", found) == []
