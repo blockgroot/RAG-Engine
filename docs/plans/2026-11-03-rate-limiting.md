@@ -138,14 +138,8 @@ looser.
 
 ### Staging
 
-Done in `render.staging.yaml`: a free Key Value instance (`handbook-staging-redis`,
-Singapore, private network only), and `REDIS_URL` filled in from it automatically.
-
-1. Merge this change into the `staging` branch (the Blueprint reads that branch).
-2. Render → the staging Blueprint → **Sync**. Render creates the Key Value instance and
-   redeploys `handbook-staging` with `REDIS_URL` set.
-
-Render allows only **one free** Key Value instance per workspace, and staging uses it.
+No Redis: production only. Staging counts limits per process, which is exact for its one
+instance. Never point staging at production's Redis, or the two would share limits.
 
 ### Production (Hand-Book, set by hand in the Render dashboard)
 
@@ -155,8 +149,8 @@ Render allows only **one free** Key Value instance per workspace, and staging us
    - Name: `handbook-redis`.
    - Region: **the same region as Hand-Book**. The private address only works within one
      region.
-   - Plan: the smallest paid plan. The free one is taken by staging, and rate-limit
-     entries are tiny.
+   - Plan: the smallest paid plan. The free one works, but Render may restart it at any
+     time, which resets everyone's allowances. Rate-limit entries are tiny.
    - Maxmemory policy: `allkeys-lru`.
    - Allowed IPs: **none** (private network only).
 2. Copy the instance's **Internal Key Value URL** (`redis://red-…:6379`).

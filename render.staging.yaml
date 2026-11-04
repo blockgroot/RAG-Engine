@@ -2,8 +2,7 @@
 #
 # Separate from `render.yaml` on purpose: that file is the from-scratch recipe
 # for prod (see its header), and prod (Hand-Book) is managed in the dashboard.
-# This one creates `handbook-staging`, which tracks `staging`, and its Key
-# Value instance `handbook-staging-redis` (rate-limit buckets).
+# This one creates ONE new service, `handbook-staging`, that tracks `staging`.
 #
 # HOW TO USE
 #   1. Render -> New -> Blueprint -> this repo, branch `staging`, and set the
@@ -24,8 +23,6 @@
 #                            frontend's address, never prod's
 #   CLOUDINARY_FOLDER     -- a staging folder, set below, so the two
 #                            environments never see each other's files
-#   REDIS_URL             -- staging's own Key Value, wired below; sharing
-#                            prod's would make the two share rate limits
 #   Slack / GitHub apps   -- one app delivers to ONE address; use separate
 #                            staging apps or leave those keys empty
 #
@@ -71,13 +68,9 @@ services:
         sync: false
       - key: RATE_LIMIT_ENABLED
         value: "true"
-      # Shared rate-limit buckets (app/ratelimit/), from the Key Value
-      # instance at the end of this file. Unset, each instance counts alone.
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: handbook-staging-redis
-          property: connectionString
+      # No REDIS_URL on staging: Redis is production only. Rate limits are
+      # then counted per process (app/ratelimit/), exact for one instance.
+      # Never point it at production's Redis: the two would share limits.
       # Real client IP for the rate limiter when the frontend is on Vercel.
       - key: CLIENT_IP_HEADER
         value: x-vercel-forwarded-for
@@ -291,15 +284,3 @@ services:
         value: "4000"
       - key: RAG_SIMILARITY_THRESHOLD
         value: "0.35"
-
-  # Rate-limit buckets only (app/ratelimit/): each a few dozen bytes that
-  # expire on their own, so the free plan's 25 MB is plenty and losing the
-  # data on a restart only resets allowances. Private network only: the empty
-  # allow list blocks every outside connection. Same region as the service,
-  # or the private address does not resolve.
-  - type: keyvalue
-    name: handbook-staging-redis
-    plan: free
-    region: singapore
-    ipAllowList: []
-    maxmemoryPolicy: allkeys-lru
