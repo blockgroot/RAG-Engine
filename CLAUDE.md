@@ -132,6 +132,13 @@ the audit never runs. Do not move CONTEXT or QUESTION earlier in that prompt.
 are never throttled; background work keeps `LLM_RESERVE_RPM` free. A 429 is the
 quota, not a blip. Do not name the routing wrapper in `build_aux_llm_provider`'s
 docstring; a test reads that source.
+Reasoning stays OFF on every call, or the lowest effort a model accepts when it
+cannot be off (`routed.py` per-vendor extras; a model that names another "off" form
+in its 400 gets that). A call's `max_tokens` is sized to its whole reply plus the
+prose a model may write before JSON, never to the bare fields: the cap is a ceiling,
+not a cost, and a reply cut at it (`llm.truncated`) is a silent wrong answer (charts
+and the question check were cut at 200). Raise the cap where it is set; no retry
+loop hides it.
 
 **Sync.** Every sync path takes an explicit provider. Disconnect uses
 `sources.factory.INDEXED_PROVIDERS`, not a hand-kept list. A Slack listing deletes
