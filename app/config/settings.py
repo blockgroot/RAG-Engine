@@ -1591,16 +1591,24 @@ class RequestBudgetSettings:
 
 @dataclass(frozen=True)
 class QueryCacheSettings:
-    """Postgres-backed cache for repeated standalone questions (Phase 19)."""
+    """Cache for repeated standalone questions (Phase 19).
+
+    In Redis when ``REDIS_URL`` is set (the same instance as the rate limits),
+    in Postgres otherwise, so an install without Redis keeps its cache. The
+    process that runs ingest must see the same ``REDIS_URL`` as the API, or a
+    sync clears the wrong store and the old answer is served until it expires.
+    """
 
     enabled: bool = DEFAULT_QUERY_CACHE_ENABLED
     ttl_seconds: int = DEFAULT_QUERY_CACHE_TTL_SECONDS
+    redis_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "QueryCacheSettings":
         return cls(
             enabled=env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
             ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
+            redis_url=(os.getenv("REDIS_URL") or "").strip() or None,
         )
 
 

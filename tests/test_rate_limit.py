@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
 import socket
-import subprocess
-import time
 
 import pytest
 from fastapi import HTTPException
@@ -62,32 +59,6 @@ def test_a_refusal_takes_from_no_bucket():
 
 
 # --- the counting, in a real Redis -------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def redis_url():
-    binary = shutil.which("redis-server")
-    if not binary:
-        pytest.skip("redis-server not installed")
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    proc = subprocess.Popen(
-        [binary, "--port", str(port), "--save", "", "--appendonly", "no"],
-        stdout=subprocess.DEVNULL,
-    )
-    url = f"redis://127.0.0.1:{port}/0"
-    import redis
-
-    for _ in range(50):
-        try:
-            redis.Redis.from_url(url).ping()
-            break
-        except redis.ConnectionError:
-            time.sleep(0.05)
-    yield url
-    proc.terminate()
-    proc.wait()
 
 
 def test_redis_burst_refusal_and_expiry(redis_url):

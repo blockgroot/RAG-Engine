@@ -66,7 +66,8 @@ GitHub; employees get answers from *their* data.
   members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it.
 - A conversation is personal (`conversations.user_id`). `query_answer_cache` stays
-  keyed on the scope and the model, not the asker. Do not store an answer when any
+  keyed on the scope and the model, not the asker. With `REDIS_URL` it is in Redis
+  (`qa:<org>:<generation>:<hash>`; a sync raises the org's generation), else Postgres. Do not store an answer when any
   hit was non-public or the reply is an access notice.
 - Notion has no per-page permission API. Say so on the Sources card. A half-enforced
   guarantee that reads as whole is worse than none.
