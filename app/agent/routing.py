@@ -785,6 +785,13 @@ def _try_question_route(
         # They asked to SEE a chart; the web chat says where charts live
         # instead of answering a chart request in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
+    if ask == "count":
+        # "How many leads did Rohan generate in August?" is a count over rows
+        # a sheet never embeds, so the passages cannot answer it. Counted by
+        # SQL when a chart fits; when none does, Ask answers as it always did.
+        counted = _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+        if getattr(counted, "chart_spec", None) is not None:
+            return replace(counted, reason="count-chart")
     if intent.kind != "github_live":
         return None
     # GitHub embeds nothing, so it can never win the cosine probe, and
@@ -1226,6 +1233,27 @@ def _single_table_chart(table):
 # ponytail: calibrated on four live pairs (follow-ups 0.01-0.03 apart, new
 # topics 0.24-0.28); log `scores` and re-fit if follow-ups start misrouting.
 _FOLLOW_UP_MARGIN = 0.1
+
+
+def refusal_retry(decision: RoutingDecision) -> tuple[str, set[str]] | None:
+    """Where a REFUSED answer is asked once more: ``(agent, also_searched)``.
+
+    The probe picks the tool holding the single closest chunk, and a short
+    focused Notion page can edge a Drive file that holds the answer inside a
+    longer chunk ("is Vikram on a PIP?": Slack 0.536, Notion 0.520, Drive
+    0.449, answer in Drive). The tool that refused was read and did not
+    answer, so it is left out: re-reading it only crowds the others out of the
+    passages. The best of the rest that cleared the gate answers, with the
+    remaining ones searched beside it. Only for a probe's own pick: a tool the
+    question named, the graph placed, or the asker requested stays the only one.
+    """
+    if decision.reason not in ("best-match", "follow-up") or not decision.scores:
+        return None
+    gate = RagSettings.from_env().similarity_threshold
+    others = sorted((tool for tool, score in decision.scores.items()
+                     if score >= gate and tool != decision.agent_key),
+                    key=lambda tool: -decision.scores[tool])
+    return (others[0], set(others[1:])) if others else None
 
 
 def _no_clear_winner(scores: dict[str, float]) -> bool:

@@ -42,6 +42,10 @@ _graph_log = logging.getLogger("rag.graph_signals")
 # the pool size the extra tasks just queue on a connection instead of a query.
 _MAX_RETRIEVAL_WORKERS = 4
 
+#: A table row's passage index: past any real chunk, so a row never collides
+#: with (or is mistaken for a neighbour of) the document's own chunks.
+_ROW_INDEX = 1_000_000
+
 
 @dataclass(frozen=True)
 class RetrievalResult:
@@ -264,11 +268,12 @@ class HybridRetriever:
     def _named_tools(self, org_id: str, workspace_id: str | None) -> list[str]:
         """Tools a connected answer searches besides this retriever's own.
 
-        Only ever the ones the question NAMED (``GraphPlan.search``); empty
-        for every normal answer, so their searches do not run at all.
+        Only ever the ones the question NAMED, or a refused answer's retry
+        across the tools that cleared the gate (``GraphPlan.search``); empty
+        for every normal answer, so their searches do not run at all. Not tied
+        to the graph flag: these are plain searches, and the retry builds its
+        plan without a graph.
         """
-        if not self._graph_settings.retrieval_enabled:
-            return []
         try:
             from ..graph.plan import current_plan
 
@@ -321,6 +326,10 @@ class HybridRetriever:
         if graph_documents and query_pairs:
             q_text, q_vec = query_pairs[0]
             tasks.append((0, "graph", q_text, q_vec))
+        if query_pairs:
+            # Rows of this tool's (and a connected answer's tools') document
+            # tables that the question names by a cell (`_table_rows`).
+            tasks.append((0, "rows", *query_pairs[0]))
         # A connected answer's NAMED tools: the same vector (+ keyword) search
         # the routed tool runs, pinned to that tool, primary query only. Run in
         # the same pool as everything else, so they add no wall-clock time.
@@ -338,6 +347,11 @@ class HybridRetriever:
             i, kind, q_text, q_vec = task
             kind, _, tool = kind.partition(":")
             provider = tool or self._source_provider
+            if kind == "rows":
+                return (i, task[1]), self._table_rows(
+                    org_id, q_text, q_vec, workspace_id=workspace_id, viewer=viewer,
+                    tools=[self._source_provider, *(extra_tools or [])],
+                )
             if kind == "graph":
                 # A connected answer's graph documents were already limited to
                 # the tools that answer may use (GraphPlan.documents_for), so
@@ -402,6 +416,8 @@ class HybridRetriever:
                 legs.append(results.get((i, "keyword"), []))
             if (i, "graph") in results:
                 legs.append(results[(i, "graph")])
+            if results.get((i, "rows")):
+                legs.append(results[(i, "rows")])
             if i == 0:
                 for tool in extra_tools or []:
                     legs.append(results.get((0, f"vector:{tool}"), []))
@@ -409,6 +425,46 @@ class HybridRetriever:
                         legs.append(results.get((0, f"keyword:{tool}"), []))
             ranked.append(legs[0] if len(legs) == 1 else self._rrf_fuse(legs, self._settings.rrf_k))
         return ranked
+
+    def _table_rows(
+        self, org_id: str, q_text: str, q_vec: list[float], *, workspace_id: str | None,
+        viewer: Viewer | None, tools: list[str | None],
+    ) -> list[RetrievedChunk]:
+        """Table rows the question names by a cell, as passages of their document.
+
+        A sheet embeds only its columns, so "who was the field officer on
+        L-1008?" could never reach the row. ``doctables.store.rows_naming``
+        finds it by the exact text typed, as this viewer. Each row carries its
+        DOCUMENT's own cosine to the question (a real cosine, measured here):
+        the gate is never earned by a row, only by the document it sits in.
+        Never raises: a lookup may only ever add.
+        """
+        try:
+            from ..doctables.store import rows_naming
+
+            rows = rows_naming(q_text, org_id=org_id, workspace_id=workspace_id,
+                               viewer=viewer, providers=[t for t in tools if t])
+            if not rows:
+                return []
+            ids = sorted({r.document_id for r in rows})
+            cosine: dict[str, float] = {}
+            for hit in self._store.query(org_id, q_vec, top_k=4 * len(ids),
+                                         workspace_id=workspace_id, viewer=viewer,
+                                         document_ids=ids):
+                cosine[hit.document_id] = max(cosine.get(hit.document_id, 0.0), hit.score)
+        except Exception:  # noqa: BLE001
+            logger.warning("retrieval: table row lookup skipped", exc_info=True)
+            return []
+        return [
+            RetrievedChunk(
+                content=row.text, score=cosine.get(row.document_id, 0.0),
+                document_id=row.document_id, chunk_index=_ROW_INDEX + row.row_no,
+                org_id=org_id, document_title=row.document_title,
+                source_provider=row.provider, doc_is_public=row.is_public,
+                source_uri=row.source_uri,
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _rrf_fuse(

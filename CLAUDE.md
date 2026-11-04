@@ -114,7 +114,9 @@ entry. `doc_viewers && '{}'` is false, which is what makes public-only work.
 `Viewer(email=None)` is unrestricted; do not conflate it with public-only.
 A tool the question NAMES decides routing: one named tool is routed there;
 several are probed among themselves and the connected answer reads exactly those,
-never a tool the asker did not mention. Adjacent markers citing one document
+never a tool the asker did not mention. The probe's own pick that refuses is asked
+once more on the best OTHER tool that cleared the gate, the rest searched beside it,
+never the refusing tool again (`routing.refusal_retry`; chat and Slack). Adjacent markers citing one document
 collapse to one. A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
 traffic is not indexed. Query-norm max edit distance is 1, and the normalized
 string is never the web-search query.
@@ -158,17 +160,20 @@ emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
 (`insights/attr_catalog.py`); `registry.ATTRS` is display hints only, never a
 list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
-Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
-the question check reads as a chart ask, "visual" or "count"). Slack passes the
+Charts are built in Chart mode (chat sends `mode: "chart"`; Slack: a question
+the question check reads as a chart ask, "visual" or "count"), and for an Ask
+question the check reads as "count" when a chart fits (`count-chart`, its values
+also written under it); no fit, Ask answers as before. Slack passes the
 asker's `Viewer` into routing. A DM charts what they can open: the probed scope
 first, then (on a chart refusal) up to `MAX_DM_CHART_SCOPES` of their other
 scopes, and the reply names the scope that answered; a chart ask in a
 CHANNEL charts that channel only (`channel_tag`: Slack metrics focused on the
 channel, tables and paragraphs from its threads, the room's public+channel
 viewer), never another connector. Chart mode answers with a chart or a
-refusal, never a document answer. Ask never runs the chart classifier: its question
-check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
-`chart_ask` ("visual" gets the Chart-mode hint, "count" the Turn on Chart button).
+refusal, never a document answer. Ask runs the chart classifier only for a "count":
+its question check (`resolve.classify_route`) decides a live GitHub read, `needs_live`
+and `chart_ask` ("visual" gets the Chart-mode hint, "count" a SQL count or, when no
+chart fits, the Turn on Chart button).
 **No word list decides intent anywhere in charts**: the model reads the question
 and code verifies what it can (a quote is in the question, a value has rows, a type
 came from the source). Which connector a chart uses is decided the same way,
@@ -181,7 +186,12 @@ a shared kind the question does not distinguish is refused rather than drawn.
 A connector the question NAMES ("the Google doc") is `AskIntent.source`, kept only
 when its `source_words` quote is in the question; then no other connector's
 table is drawn, and the retry, the live read and the paragraph read all stay on
-that connector. A table pick is never swapped for an activity metric.
+that connector. A table pick is never swapped for an activity metric, and is
+drawn even when the offered tables span connectors (one document is not a shared
+kind). The model is shown every value of a small category column. With no column
+from the model, a column the question names by its header is the breakdown, not the
+date column; a column of which the question types exactly ONE value, undrawn and
+unfiltered, is filtered on it (`resolve._typed_values`); two values are a comparison.
 Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
 The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
@@ -298,7 +308,10 @@ A Notion `table` renders as a pipe table with a header separator (first row =
 header); bare "a | b" rows were never found by the table reader. An inline
 database (`child_database`) renders as a table of its rows' properties under its
 title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
-A Sheet embeds a description of its columns, never its figures. An unparseable
+A Sheet embeds a description of its columns, never its figures. Ask reads a ROW
+only when the question types one of its cells (`doctables.store.rows_naming`: whole
+words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,
+the document predicate), as a passage scored by its document's cosine, never its own. An unparseable
 cell is absent from a sum, never zero. A trend draws every period from "measured since"
 (or the window, if later) to now, a quiet one at zero; never a period before the
 data begins, which is unknown, not zero (`insights_agent._fill_gaps`). `points: null` means the panel failed; `[]`
