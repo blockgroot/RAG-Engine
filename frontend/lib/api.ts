@@ -185,6 +185,8 @@ export interface Me {
   org_id: string;
   org_name: string | null;
   email: string | null;
+  /** What the person asked to be called; null until they have said. */
+  name: string | null;
   role: "admin" | "member";
   has_connection: boolean;
   has_documents: boolean;
@@ -1136,6 +1138,12 @@ export const api = {
     }),
 
   personalMemory: () => request<PersonalMemory>("/account/memory"),
+
+  setName: (name: string) =>
+    request<{ name: string }>("/account/name", {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
 
   setMemoryEnabled: (enabled: boolean) =>
     request<{ enabled: boolean }>("/account/memory/settings", {

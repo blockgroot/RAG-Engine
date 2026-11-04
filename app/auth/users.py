@@ -132,6 +132,26 @@ def revoke_user_sessions(user_id: str, org_id: str) -> None:
         raise ValueError("User not found in this organization")
 
 
+MAX_DISPLAY_NAME_CHARS = 60
+
+
+def set_display_name(user_id: str, org_id: str, name: str) -> str:
+    """Save what this person asked to be called, spaces tidied."""
+    name = " ".join(name.split())
+    if not name:
+        raise ValueError("Enter a name")
+    if len(name) > MAX_DISPLAY_NAME_CHARS:
+        raise ValueError(f"Keep it under {MAX_DISPLAY_NAME_CHARS} characters")
+    with get_connection() as conn:
+        row = conn.execute(
+            "UPDATE users SET display_name = %s WHERE id = %s::uuid AND org_id = %s::uuid RETURNING id",
+            (name, user_id, org_id),
+        ).fetchone()
+    if row is None:
+        raise ValueError("User not found in this organization")
+    return name
+
+
 def _admin_count(conn, org_id: str) -> int:
     return conn.execute(
         "SELECT count(*) FROM users WHERE org_id = %s::uuid AND role = %s",

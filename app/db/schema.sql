@@ -263,6 +263,9 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
+-- What the person asked to be called. NULL until they say: a name guessed from
+-- the email ("sana.asiwal" -> "Sana") was wrong for many addresses.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 -- `owner_email_whitelist` (pre-approved-list gate on POST /auth/signup) was
 -- REPLACED by the signup-approval queue below — see CLAUDE.md §2/§4. A
