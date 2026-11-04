@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -73,7 +74,7 @@ def main() -> None:
     user = get_user_by_email(sys.argv[1])
     only = {int(a) for a in sys.argv[2:]}
     client, cookies = TestClient(create_app()), {"session": create_session_token(user)}
-    out_path = HERE / "results.json"
+    out_path = HERE / os.environ.get("SALES_E2E_RESULTS", "results.json")
     results = json.loads(out_path.read_text()) if out_path.exists() else {}
     try:
         for q in questions():

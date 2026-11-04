@@ -257,3 +257,132 @@ def test_a_value_on_more_rows_than_the_cap_names_none_of_them():
     found = [_found("Leads", i, _LEAD_COLS, (f"L-{i}", "Rohan Mehta", "Farhan Qureshi", "X"))
              for i in range(table_store.MAX_LOOKUP_ROWS + 1)]
     assert _picked_rows("How did Rohan Mehta do?", found) == []
+
+
+# ---------------------------------------------------------------------------
+# A figure worked out over a sheet's rows (insights/table_answers.py)
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+from app.insights import table_answers  # noqa: E402
+from app.insights.resolve import _route_prompt, classify_route  # noqa: E402
+from app.rag.retrieval import HybridRetriever  # noqa: E402
+from app.vectorstore.base import RetrievedChunk  # noqa: E402
+
+
+class _Form:
+    """A model that fills the form with ``queries`` and records the prompt."""
+
+    model = "test-model"
+    last_usage = None
+
+    def __init__(self, queries):
+        self._reply = json.dumps({"queries": queries})
+        self.prompts: list[str] = []
+
+    def generate(self, prompt, **_k):
+        self.prompts.append(prompt)
+        return self._reply
+
+
+def _sales_tables(org):
+    _sheet(org, ["sana@acme.test"])
+    return table_store.list_tables(org_id=org, workspace_id=None,
+                                   viewer=Viewer(email="sana@acme.test"))
+
+
+def _worked(org, *queries) -> str:
+    out = table_answers.answer("q?", _sales_tables(org), llm=_Form(list(queries)))
+    return "\n".join(a.text for a in out)
+
+
+@requires_db
+def test_a_ratio_is_worked_out_by_sql_for_each_reading(org):
+    text = _worked(
+        org,
+        {"table": "T1", "operation": "ratio", "of_these": {"Stage": "Won"}, "label": "of all"},
+        {"table": "T1", "operation": "ratio", "filters": {"Stage": ["Won", "Lost"]},
+         "of_these": {"Stage": "Won"}, "label": "of closed"},
+    )
+    assert "of all" in text and "2 of 5 = 40.0%" in text
+    assert "of closed" in text and "2 of 4 = 50.0%" in text
+
+
+@requires_db
+def test_a_ratio_that_narrows_nothing_is_dropped_not_100_percent(org):
+    assert _worked(org, {"table": "T1", "operation": "ratio", "filters": {"Stage": "Won"},
+                         "of_these": {"Stage": "Won"}}) == ""
+
+
+@requires_db
+def test_a_value_the_rows_do_not_hold_is_dropped_not_zero(org):
+    assert _worked(org, {"table": "T1", "operation": "count",
+                         "filters": {"Owner": "Priya Sharma"}}) == ""
+
+
+@requires_db
+def test_a_column_the_table_does_not_have_is_dropped(org):
+    assert _worked(org, {"table": "T1", "operation": "sum", "value": "Salary"}) == ""
+
+
+@requires_db
+def test_the_top_row_and_a_grouped_total_largest_first(org):
+    text = _worked(
+        org,
+        {"table": "T1", "operation": "top", "value": "Deal Value", "label": "biggest"},
+        {"table": "T1", "operation": "sum", "value": "Deal Value", "group_by": "Owner",
+         "filters": {"Stage": "Won"}, "label": "won by owner"},
+    )
+    biggest = next(line for line in text.splitlines() if "biggest" in line)
+    assert biggest.index("L-1008") < biggest.index("L-1011")
+    assert "Kavya Nair: 2,186,000" in text  # 980,000 + 1,206,000, the Won rows only
+
+
+def test_the_question_check_is_unchanged_when_table_answers_are_off():
+    assert "table:" not in _route_prompt("q?", github=False)
+    assert '"table": true|false' in _route_prompt("q?", github=False, table=True)
+    class _Says:
+        def generate(self, prompt, **_k):
+            return '{"chart": null, "table": true}'
+
+    on = classify_route("q?", github=False, table=True, llm=_Says())
+    off = classify_route("q?", github=False, table=False, llm=_Says())
+    assert (on.table_ask, off.table_ask) == (True, False)
+
+
+class _NoHits:
+    """A store whose viewer-filtered query finds nothing: the asker cannot open the sheet."""
+
+    def query(self, *a, **k):
+        return []
+
+
+def test_a_figure_from_a_sheet_the_asker_cannot_open_is_dropped_at_run_time(monkeypatch):
+    figure = table_answers.TableAnswer(provider="google", document_id="d1",
+                                       document_title="Leads", source_uri=None, text="25 of 164")
+    monkeypatch.setattr("app.doctables.store.rows_naming", lambda *a, **k: [])
+    retriever = HybridRetriever(store=_NoHits(), reranker=None)
+    hits = retriever._table_rows("org", "q?", [0.0], workspace_id=None,
+                                 viewer=Viewer(email="x@acme.test"), tools=["google"],
+                                 worked=(figure,))
+    assert hits == []
+
+
+def test_a_figure_the_asker_may_read_is_a_passage_of_its_sheet(monkeypatch):
+    figure = table_answers.TableAnswer(provider="google", document_id="d1",
+                                       document_title="Leads", source_uri=None, text="25 of 164")
+
+    class _Sheet:
+        def query(self, *a, **k):
+            return [RetrievedChunk(content="cols", score=0.41, document_id="d1", chunk_index=0,
+                                   org_id="org", doc_is_public=False)]
+
+    monkeypatch.setattr("app.doctables.store.rows_naming", lambda *a, **k: [])
+    retriever = HybridRetriever(store=_Sheet(), reranker=None)
+    [hit] = retriever._table_rows("org", "q?", [0.0], workspace_id=None,
+                                  viewer=Viewer(email="x@acme.test"), tools=["google"],
+                                  worked=(figure,))
+    # The document's own cosine, never a made-up score; private stays private.
+    assert (hit.content, hit.score, hit.document_id, hit.doc_is_public) == (
+        "25 of 164", 0.41, "d1", False)

@@ -433,7 +433,13 @@ def _answer(
         # since a channel reply is read by everyone in the room.
         "viewer": viewer,
     }
-    response = build_agent_graph(_agent_getters()).invoke(graph_input)["response"]
+    from ..insights.table_answers import reset_answers, use_answers
+
+    figures = use_answers(getattr(decision, "table_answers", ()))
+    try:
+        response = build_agent_graph(_agent_getters()).invoke(graph_input)["response"]
+    finally:
+        reset_answers(figures)
     if not getattr(response, "grounded", True) and not getattr(response, "access_restricted", False):
         # The web chat's one retry of a refusal across every tool that cleared
         # the gate (`chat._refusal_retry`), so Slack answers what the app does.

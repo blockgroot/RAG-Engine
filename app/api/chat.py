@@ -1407,12 +1407,17 @@ def _refusal_retry(decision, plan, org_id: str, workspace_id: str | None):
             base.connected({agent} | also, search=also), {agent} | also)
 
 
-def _invoke_with_plan(graph_input: dict, plan):
-    """Run the agent graph with ``plan`` as this request's graph plan."""
+def _invoke_with_plan(graph_input: dict, plan, worked: tuple = ()):
+    """Run the agent graph with ``plan`` as this request's graph plan, and
+    ``worked`` (``insights.table_answers``) as its worked-out figures."""
+    from ..insights.table_answers import reset_answers, use_answers
+
     token = graph_plan.use_plan(plan)
+    figures = use_answers(worked)
     try:
         return _agent_graph().invoke(graph_input)["response"]
     finally:
+        reset_answers(figures)
         graph_plan.reset_plan(token)
 
 
@@ -1672,7 +1677,7 @@ def _stream_answer_body(
         "viewer": viewer_for(session),
     }
     try:
-        result = _invoke_with_plan(graph_input, plan)
+        result = _invoke_with_plan(graph_input, plan, decision.table_answers)
         # ESCALATION: the routed tool refused, and the graph already proved
         # the question connects to documents the asker can open in OTHER
         # tools. One retry, as a connected answer -- never a loop, and never

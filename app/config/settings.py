@@ -1347,11 +1347,17 @@ class DocTablesSettings:
       sync (`DOCTABLES_BACKFILL_BATCH`, 0 = off). A sync skips unchanged
       documents, so without this a sheet indexed before charts read tables
       would never be charted. One source fetch each, no re-embedding.
+    - ``answers_enabled``  `DOCTABLES_ANSWERS_ENABLED`: Ask answers a question
+      asking for a figure over a sheet's rows (a total, a ratio, the top row)
+      with a checked query (``insights/table_answers.py``). Off by default:
+      on, Ask's question check asks one more thing, and only a question it
+      flags runs the query.
     """
 
     text_enabled: bool = True
     text_max_chars: int = 12000
     backfill_batch: int = 20
+    answers_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "DocTablesSettings":
@@ -1359,6 +1365,7 @@ class DocTablesSettings:
             text_enabled=env_bool("DOCTABLES_TEXT_ENABLED", True),
             text_max_chars=max(1000, int(os.getenv("DOCTABLES_TEXT_MAX_CHARS") or 12000)),
             backfill_batch=max(0, int(os.getenv("DOCTABLES_BACKFILL_BATCH") or 20)),
+            answers_enabled=env_bool("DOCTABLES_ANSWERS_ENABLED", False),
         )
 
 

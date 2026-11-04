@@ -162,6 +162,10 @@ class RoutingDecision:
     #: The question check's ``chart_ask`` ("visual" / "count" / None), so the
     #: chat can offer Chart mode beside a written answer to a count.
     chart_ask: str | None = None
+    #: Figures worked out over a sheet's rows for this question
+    #: (``insights.table_answers``), one passage per sheet, handed to the
+    #: answer as passages of their documents. Empty for every other question.
+    table_answers: tuple = ()
 
 
 #: What a member is likely to CALL each service when they type its name.
@@ -648,7 +652,8 @@ def _upload_tables(org_id: str, uploads) -> list:
 
 
 def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str, *,
-                     providers: list[str] | None = None, tag: str | None = None) -> list:
+                     providers: list[str] | None = None, tag: str | None = None,
+                     limit: int | None = None) -> list:
     try:
         from ..doctables.store import list_tables
         from ..insights import tables as doc_tables
@@ -670,17 +675,18 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
         if signals is None:
             ranked = doc_tables.rank(
                 rest, None, floor=RagSettings.from_env().similarity_threshold,
-                question=question,
+                question=question, limit=limit or doc_tables.MAX_OFFERED,
             )
         else:
             cosine, keywords = signals
             ranked = doc_tables.rank(
                 rest, cosine, keywords=keywords,
                 floor=RagSettings.from_env().similarity_threshold, question=question,
+                limit=limit or doc_tables.MAX_OFFERED,
             )
         # The page they named has to be offered. Six closer tables used to
         # fill the cap and the named page came back as "I don't see it".
-        return (named + ranked)[: doc_tables.MAX_OFFERED]
+        return (named + ranked)[: limit or doc_tables.MAX_OFFERED]
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: could not list document tables", exc_info=True)
         return []
@@ -746,6 +752,15 @@ def _chart_unsupported_model() -> str | None:
     return unsupported_model_message(label, alternatives)
 
 
+def _table_answers_on() -> bool:
+    try:
+        from ..config.settings import DocTablesSettings
+
+        return DocTablesSettings.from_env().answers_enabled
+    except Exception:  # noqa: BLE001 - off is the safe reading
+        return False
+
+
 def _try_question_route(
     question: str,
     connected: set[str],
@@ -766,8 +781,9 @@ def _try_question_route(
     """
     from ..insights.resolve import CHART_MODE_HINT, classify_route
 
+    tables_on = viewer is not None and _table_answers_on()
     try:
-        intent = classify_route(question, github="github" in connected)
+        intent = classify_route(question, github="github" in connected, table=tables_on)
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: question check failed", exc_info=True)
         return None
@@ -785,6 +801,17 @@ def _try_question_route(
         # They asked to SEE a chart; the web chat says where charts live
         # instead of answering a chart request in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
+    if tables_on and getattr(intent, "table_ask", False):
+        # "What is our conversion ratio?": a figure over a sheet's rows, which
+        # the passages cannot hold. Worked out by a checked query and given to
+        # the answer as a passage of the sheet; nothing fits, Ask goes on as before.
+        from ..insights.table_answers import ANSWER_OFFERED, answer
+
+        worked = answer(question, _document_tables(org_id, workspace_id, viewer, question,
+                                                   limit=ANSWER_OFFERED))
+        if worked:
+            return RoutingDecision(worked[0].provider, "table-answer",
+                                   table_answers=tuple(worked))
     if ask == "count":
         # "How many leads did Rohan Mehta generate in August?" is a count over
         # rows a sheet never embeds, so the passages cannot answer it. Counted
