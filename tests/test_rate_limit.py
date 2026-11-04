@@ -252,3 +252,24 @@ def test_redis_names_the_bucket_that_refused(redis_url):
     person, org = Bucket("test:who:p", 5, 60), Bucket("test:who:o", 1, 1)
     limiter.take([person, org])
     assert limiter.take([person, org]).refused_by == "test:who:o"
+
+
+# --- the startup line saying where limits are counted -----------------------
+
+
+def test_startup_says_redis_is_connected_without_the_password(redis_url, caplog):
+    secret_url = redis_url.replace("redis://", "redis://:hunter2@")
+    with caplog.at_level("WARNING", logger="app.security.rate_limit"):
+        line = rate_limit.report_store(RateLimitSettings(redis_url=redis_url))
+    assert line.startswith("Rate limits: Redis at 127.0.0.1:") and line.endswith("connected")
+    assert line in caplog.text
+    assert "hunter2" not in rate_limit.report_store(RateLimitSettings(redis_url=secret_url))
+
+
+def test_startup_says_when_redis_is_missing_or_unreachable():
+    assert "REDIS_URL is not set" in rate_limit.report_store(RateLimitSettings())
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    line = rate_limit.report_store(RateLimitSettings(redis_url=f"redis://127.0.0.1:{port}/0"))
+    assert "NOT reachable" in line

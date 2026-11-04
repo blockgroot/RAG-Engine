@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..config.settings import ApiSettings, SchedulerSettings, env_bool
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
-from ..security.rate_limit import limit_request
+from ..security.rate_limit import limit_request, report_store
 from . import admin as admin_router
 from . import internal as internal_router
 from . import account as account_router
@@ -197,6 +197,10 @@ async def lifespan(_app: FastAPI):
     stop = threading.Event()
     worker: threading.Thread | None = None
     _start_model_warmup()
+    try:
+        report_store()  # one line saying where rate limits are counted
+    except Exception:  # noqa: BLE001 - a report must never stop startup
+        logger.exception("Rate limit store report failed")
     if env_bool("INGEST_WORKER_IN_API", default=True):
         worker = _start_in_api_worker(stop)
     try:

@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
@@ -106,6 +107,34 @@ def limit_request(request: Request) -> None:
     _raise_if_refused(
         _take([Bucket(f"req:{who}", settings.request_burst, settings.requests_per_minute)], settings)
     )
+
+
+def report_store(settings: RateLimitSettings | None = None) -> str:
+    """Log, once at startup, where rate limits are counted, and return it.
+
+    Working Redis is otherwise silent (only failures log), so a deploy could
+    not show that ``REDIS_URL`` took effect. Logged as a warning because only
+    warnings and above reach the host's log. The host only, never the URL:
+    it carries the password.
+    """
+    settings = settings or RateLimitSettings.from_env()
+    if not settings.enabled:
+        line = "Rate limits: switched off (RATE_LIMIT_ENABLED=false)"
+    elif not settings.redis_url:
+        line = "Rate limits: REDIS_URL is not set, each server is counting on its own"
+    else:
+        parts = urlsplit(settings.redis_url)
+        where = f"{parts.hostname}:{parts.port or 6379}"
+        try:
+            build_rate_limiter(settings).take([Bucket("startup-check", 1, 60)])
+            line = f"Rate limits: Redis at {where}, connected"
+        except RateLimiterError as exc:
+            line = (
+                f"Rate limits: Redis at {where} NOT reachable ({exc.cause or exc}); "
+                "requests go ahead without limits until it is"
+            )
+    logger.warning(line)
+    return line
 
 
 def take_place(key: str, limit: int, settings: RateLimitSettings) -> str | None:
