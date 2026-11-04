@@ -75,7 +75,8 @@ Starting numbers. They are settings, so we can tune them without a code change.
 |---|---|---|---|
 | Questions: chat, Agent mode, charts, questions asked in Slack | per person | 5 | 10 a minute |
 | Questions | per company | 3 × active users (minimum 30) | 3 a minute × active users (minimum 30) |
-| Answers being written at once | per person | at most 2 at a time | — |
+| Chat answers being written at once | per person | at most 2 at a time | — |
+| Chat answers being written at once | everyone, across all servers | at most 20 at a time (others wait up to 30 s) | — |
 | Login link and email change requests | per IP address (login), per person (email change) | 10 | 20 a minute |
 | Every API call (settings, lists, pages) | per person, per IP when signed out | 40 | 120 a minute |
 
@@ -109,6 +110,15 @@ is not a way around the limit.
 8. **Edge rule (Vercel/Cloudflare)** stays as an outer layer: a per-IP limit that drops large
 
    anonymous floods before they reach our servers.
+9. **Answers being written at once** are counted in Redis too, so all servers share them:
+
+   - a person already writing 2 answers is told to wait for one to finish;
+   - beyond 20 for everyone, people wait briefly instead of the AI provider refusing them.
+
+   A server that stops mid-answer frees its places after 5 minutes.
+10. **Every refusal is logged** with the limit that refused it (for example
+    `question:company org=…`), never the question or an IP address. These logs are how
+    we finalise the numbers.
 
 ## What we need to set up
 

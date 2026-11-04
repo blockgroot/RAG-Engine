@@ -134,13 +134,16 @@ DEFAULT_RATE_LIMIT_EMAIL_BURST = 10
 # page load sends many calls at once, and this exists only to stop scripts.
 DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE = 120.0
 DEFAULT_RATE_LIMIT_REQUEST_BURST = 40
-# Answers written at once per process; the rest wait for a slot, then are told
-# "busy". Measured locally with the outside APIs replayed: 20 slots on the
+# Answers written at once, across every server when REDIS_URL is set (per
+# process otherwise); the rest wait for a slot, then are told "busy". Measured locally with the outside APIs replayed: 20 slots on the
 # 10-connection pool answered 50 askers with no one turned away and no pool
 # errors. The outside APIs cap it lower on free keys (one Jina key and Ollama
 # Cloud already failed 15% at 10 at once): lower it to match the plans.
 DEFAULT_CHAT_MAX_CONCURRENT = 20
 DEFAULT_CHAT_QUEUE_WAIT_SECONDS = 30
+# Answers one person may have being written at once: more is a script or a
+# pile of tabs, and each holds model calls and a server slot.
+DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON = 2
 
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
@@ -1620,9 +1623,10 @@ class RateLimitSettings:
     email_burst: int = DEFAULT_RATE_LIMIT_EMAIL_BURST
     requests_per_minute: float = DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE
     request_burst: int = DEFAULT_RATE_LIMIT_REQUEST_BURST
-    # 0 turns the cap off (every answer starts at once, as before).
+    # 0 turns a cap off.
     chat_max_concurrent: int = DEFAULT_CHAT_MAX_CONCURRENT
     chat_queue_wait_seconds: float = DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+    chat_max_concurrent_per_person: int = DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
@@ -1666,6 +1670,10 @@ class RateLimitSettings:
             ),
             chat_queue_wait_seconds=float(
                 os.getenv("CHAT_QUEUE_WAIT_SECONDS") or DEFAULT_CHAT_QUEUE_WAIT_SECONDS
+            ),
+            chat_max_concurrent_per_person=int(
+                os.getenv("CHAT_MAX_CONCURRENT_PER_PERSON")
+                or DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
             ),
         )
 

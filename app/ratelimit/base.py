@@ -8,6 +8,10 @@ out a whole window (the comparison is docs/plans/2026-11-03-rate-limiting.md).
 Several buckets are taken in ONE step (the person's and their company's): a
 request refused by either takes from neither, so a refused person never spends
 their company's allowance.
+
+Places are the other kind of limit: how many things (answers being written)
+may be in progress at once. A place is held until released; one a dead server
+never releases frees itself when its lease runs out.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ class Decision:
     allowed: bool
     # Seconds until every bucket has room again; 0 when allowed.
     retry_after: float = 0.0
+    # The key of the bucket that refused (the longest wait); "" when allowed.
+    refused_by: str = ""
 
 
 class RateLimiter(ABC):
@@ -38,4 +44,18 @@ class RateLimiter(ABC):
 
         Raises ``core.exceptions.RateLimiterError`` when the store fails.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def acquire(self, key: str, limit: int, lease_seconds: float) -> str | None:
+        """Hold one of ``limit`` places under ``key``.
+
+        Returns a token to release it with, or None when all are held. Raises
+        ``core.exceptions.RateLimiterError`` when the store fails.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def release(self, key: str, token: str) -> None:
+        """Give the place back. Releasing one already gone is fine."""
         raise NotImplementedError

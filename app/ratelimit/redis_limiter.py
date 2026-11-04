@@ -10,6 +10,7 @@ again: an idle bucket costs nothing and needs no cleanup job.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 
 from ..core.exceptions import RateLimiterError
@@ -18,12 +19,12 @@ from .base import Bucket, Decision, RateLimiter
 _KEY_PREFIX = "rl:"
 
 # KEYS: bucket keys. ARGV: burst, per_minute for each key, in order.
-# Returns {allowed (1/0), retry_after seconds as a string} (a Lua number in a
-# reply is cut to an integer).
+# Returns {allowed (1/0), retry_after seconds as a string, index of the bucket
+# that refused (0 when allowed)} (a Lua number in a reply is cut to an integer).
 _TAKE = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
-local tokens, wait = {}, 0
+local tokens, wait, worst = {}, 0, 0
 for i = 1, #KEYS do
   local burst = tonumber(ARGV[2 * i - 1])
   local rate = tonumber(ARGV[2 * i]) / 60
@@ -32,7 +33,10 @@ for i = 1, #KEYS do
   local ts = tonumber(v[2]) or now
   tk = math.min(burst, tk + math.max(0, now - ts) * rate)
   tokens[i] = tk
-  if tk < 1 then wait = math.max(wait, (1 - tk) / rate) end
+  if tk < 1 and (1 - tk) / rate > wait then
+    wait = (1 - tk) / rate
+    worst = i
+  end
 end
 local spend = 0
 if wait == 0 then spend = 1 end
@@ -42,7 +46,19 @@ for i = 1, #KEYS do
   redis.call('HSET', KEYS[i], 'tokens', tostring(tokens[i] - spend), 'ts', tostring(now))
   redis.call('EXPIRE', KEYS[i], math.ceil(burst / rate) + 1)
 end
-return {spend, tostring(wait)}
+return {spend, tostring(wait), worst}
+"""
+
+# A place is a member of a sorted set scored by when its lease runs out.
+# KEYS: the set. ARGV: limit, lease seconds, token. Returns 1 if held.
+_ACQUIRE = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return 0 end
+redis.call('ZADD', KEYS[1], now + tonumber(ARGV[2]), ARGV[3])
+redis.call('EXPIRE', KEYS[1], math.ceil(tonumber(ARGV[2])) + 1)
+return 1
 """
 
 
@@ -56,6 +72,7 @@ class RedisRateLimiter(RateLimiter):
             url, socket_connect_timeout=0.5, socket_timeout=0.5
         )
         self._take = self._client.register_script(_TAKE)
+        self._acquire = self._client.register_script(_ACQUIRE)
 
     def take(self, buckets: Sequence[Bucket]) -> Decision:
         if not buckets:
@@ -67,7 +84,25 @@ class RedisRateLimiter(RateLimiter):
         for b in buckets:
             args += [b.burst, b.per_minute]
         try:
-            allowed, wait = self._take(keys=keys, args=args)
+            allowed, wait, worst = self._take(keys=keys, args=args)
         except Exception as exc:  # noqa: BLE001 - any client/server fault
             raise RateLimiterError("Rate limiter store unavailable", cause=exc) from exc
-        return Decision(allowed=bool(int(allowed)), retry_after=float(wait))
+        if int(allowed):
+            return Decision(allowed=True)
+        return Decision(
+            allowed=False, retry_after=float(wait), refused_by=buckets[int(worst) - 1].key
+        )
+
+    def acquire(self, key: str, limit: int, lease_seconds: float) -> str | None:
+        token = uuid.uuid4().hex
+        try:
+            held = self._acquire(keys=[_KEY_PREFIX + key], args=[limit, lease_seconds, token])
+        except Exception as exc:  # noqa: BLE001
+            raise RateLimiterError("Rate limiter store unavailable", cause=exc) from exc
+        return token if int(held) else None
+
+    def release(self, key: str, token: str) -> None:
+        try:
+            self._client.zrem(_KEY_PREFIX + key, token)
+        except Exception as exc:  # noqa: BLE001
+            raise RateLimiterError("Rate limiter store unavailable", cause=exc) from exc

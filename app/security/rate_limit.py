@@ -10,6 +10,12 @@
 * Anything that sends an email (login link, email change): its own small
   bucket, per IP or person (``limit_email``).
 
+And places, for answers being written at once (``take_place``): a person's
+own few, and everyone's shared cap. Shared across servers in Redis.
+
+Every refusal is logged with the limit that refused it (never the question,
+never an address): that log is how the numbers get tuned.
+
 A limiter fault lets the request through and logs an error: the limiter must
 never be what takes the product down.
 """
@@ -29,6 +35,10 @@ from ..ratelimit import Bucket, Decision, build_rate_limiter
 from .client_ip import resolve_client_ip
 
 logger = logging.getLogger(__name__)
+
+# A place a dead server never gives back frees itself after this. Longer than
+# any answer takes to write.
+PLACE_LEASE_SECONDS = 300
 
 # Members change rarely; counting them on every question would be a query per
 # question.
@@ -98,14 +108,72 @@ def limit_request(request: Request) -> None:
     )
 
 
+def take_place(key: str, limit: int, settings: RateLimitSettings) -> str | None:
+    """Hold one of ``limit`` places. None: all are held. "": not tracked (the
+    cap is off, or the store failed and the request goes ahead)."""
+    if limit <= 0:
+        return ""
+    try:
+        token = build_rate_limiter(settings).acquire(key, limit, PLACE_LEASE_SECONDS)
+    except RateLimiterError as exc:
+        logger.error("Rate limiter unavailable, answer let through: %s", exc.cause or exc)
+        return ""
+    if token is None:
+        logger.warning("rate limit refused: limit=%s", _describe(key))
+    return token
+
+
+def give_back_place(key: str, token: str | None, settings: RateLimitSettings) -> None:
+    if not token:
+        return
+    try:
+        build_rate_limiter(settings).release(key, token)
+    except RateLimiterError as exc:
+        # The lease frees it.
+        logger.warning("Could not release rate-limit place %s: %s", _describe(key), exc)
+
+
 def _take(buckets: list[Bucket], settings: RateLimitSettings) -> Decision:
     if not settings.enabled:
         return Decision(allowed=True)
     try:
-        return build_rate_limiter(settings).take(buckets)
+        decision = build_rate_limiter(settings).take(buckets)
     except RateLimiterError as exc:
         logger.error("Rate limiter unavailable, request let through: %s", exc.cause or exc)
         return Decision(allowed=True)
+    if not decision.allowed:
+        logger.warning(
+            "rate limit refused: limit=%s retry_after=%ss",
+            _describe(decision.refused_by),
+            max(1, math.ceil(decision.retry_after)),
+        )
+    return decision
+
+
+# Bucket key prefix -> the limit's name in the refusal log.
+_LIMIT_NAMES = {
+    "q:user": "question:person",
+    "q:org": "question:company",
+    "email:user": "email:person",
+    "email:ip": "email:ip",
+    "req:user": "request:person",
+    "req:ip": "request:ip",
+    "answers:user": "answers-at-once:person",
+}
+
+
+def _describe(key: str) -> str:
+    """The limit's name and whose it is, for the log. An IP address is left
+    out: it says nothing about the numbers and is personal data."""
+    if key == "answers:all":
+        return "answers-at-once:all"
+    # By prefix, not by splitting: an IPv6 address is full of colons.
+    for prefix, name in _LIMIT_NAMES.items():
+        if key.startswith(prefix + ":"):
+            if prefix.endswith(":ip"):
+                return name
+            return f"{name} {prefix.split(':')[1]}={key[len(prefix) + 1:]}"
+    return "unknown"
 
 
 def _raise_if_refused(decision: Decision) -> None:

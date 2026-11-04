@@ -183,3 +183,72 @@ def test_every_route_a_person_calls_is_limited():
         elif not limited:
             unlimited.append(route.path)
     assert unlimited == []
+
+
+# --- places: answers being written at once -----------------------------------
+
+
+def test_places_are_limited_and_given_back():
+    limiter = MemoryRateLimiter(clock=Clock())
+    a = limiter.acquire("answers:user:a", 2, 300)
+    b = limiter.acquire("answers:user:a", 2, 300)
+    assert a and b
+    assert limiter.acquire("answers:user:a", 2, 300) is None
+    limiter.release("answers:user:a", a)
+    assert limiter.acquire("answers:user:a", 2, 300)
+
+
+def test_a_place_never_given_back_frees_itself():
+    """A server that died mid-answer must not hold a place for ever."""
+    clock = Clock()
+    limiter = MemoryRateLimiter(clock=clock)
+    assert limiter.acquire("answers:all", 1, 300)
+    assert limiter.acquire("answers:all", 1, 300) is None
+    clock.now += 301
+    assert limiter.acquire("answers:all", 1, 300)
+
+
+def test_redis_places_are_shared_and_leased(redis_url):
+    import redis
+
+    one, two = RedisRateLimiter(redis_url), RedisRateLimiter(redis_url)  # two servers
+    held = one.acquire("test:places", 1, 1)
+    assert held
+    assert two.acquire("test:places", 1, 1) is None
+    two.release("test:places", held)
+    assert two.acquire("test:places", 1, 1)
+    assert 0 < redis.Redis.from_url(redis_url).ttl("rl:test:places") <= 2
+
+
+# --- every refusal is logged with the limit that refused it -----------------
+
+
+def test_a_refusal_names_the_limit_that_refused(caplog):
+    limiter = MemoryRateLimiter(clock=Clock())
+    person, org = Bucket("q:user:u1", 1, 10), Bucket("q:org:o1", 5, 5)
+    limiter.take([person, org])
+    decision = limiter.take([person, org])
+    assert decision.refused_by == "q:user:u1"
+
+    settings = RateLimitSettings(question_burst=1, org_questions_min=30)
+    rate_limit.question_decision("u9", "o9", settings=settings)
+    with caplog.at_level("WARNING", logger="app.security.rate_limit"):
+        assert not rate_limit.question_decision("u9", "o9", settings=settings).allowed
+    assert "rate limit refused: limit=question:person user=u9" in caplog.text
+
+
+def test_the_log_never_names_an_ip_address(caplog):
+    settings = RateLimitSettings(email_burst=1)
+    bucket = [Bucket("email:ip:2001:db8::7", 1, 1)]
+    rate_limit._take(bucket, settings)
+    with caplog.at_level("WARNING", logger="app.security.rate_limit"):
+        rate_limit._take(bucket, settings)
+    assert "limit=email:ip " in caplog.text
+    assert "2001" not in caplog.text
+
+
+def test_redis_names_the_bucket_that_refused(redis_url):
+    limiter = RedisRateLimiter(redis_url)
+    person, org = Bucket("test:who:p", 5, 60), Bucket("test:who:o", 1, 1)
+    limiter.take([person, org])
+    assert limiter.take([person, org]).refused_by == "test:who:o"

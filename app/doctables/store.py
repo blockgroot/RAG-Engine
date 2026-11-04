@@ -726,6 +726,103 @@ def list_rows(
     return [(r[0] or {}, list(r[1] or []), r[2]) for r in rows]
 
 
+#: Rows a lookup hands to an answer, and how many rows a written value may
+#: match and still name a row: "L-1008" or a company names one; "West" or an
+#: owner with thirty leads is a group, which is Chart mode's business.
+MAX_LOOKUP_ROWS = 8
+#: Rows read before that is decided. A bound: past it the lookup says nothing.
+LOOKUP_SCAN = 400
+_MIN_LOOKUP_CHARS = 3
+
+
+@dataclass(frozen=True)
+class RowHit:
+    document_id: str
+    document_title: str
+    provider: str
+    source_uri: str | None
+    table_name: str
+    row_no: int
+    text: str
+    is_public: bool
+
+
+def rows_naming(
+    question: str, *, org_id: str, workspace_id: str | None, viewer,
+    providers: list[str],
+) -> list[RowHit]:
+    """Rows of document tables whose own cell is written in the question.
+
+    "Who was the field officer on L-1008?": the sheet embeds only its columns,
+    so search cannot reach the row. A cell typed verbatim in the question can.
+    Exact text, never a guess: a value counts only as whole words of the
+    question, and only when it names at most ``MAX_LOOKUP_ROWS`` rows (an
+    identifier, not a group). Rows matching more of the question's values come
+    first ("Kavya Nair's lead for Kesari Motors"). Same scope and document
+    predicate as every table read; never a viewer-less read. Never raises.
+    """
+    if viewer is None or getattr(viewer, "is_unrestricted", False) or not providers:
+        return []
+    access, params = _visible(viewer)
+    sql = f"""
+        SELECT d.id, d.title, d.source_provider, d.source_uri, t.name, r.row_no,
+               t.columns, r.raw, d.doc_is_public
+          FROM doc_table_rows r
+          JOIN doc_tables t ON t.id = r.table_id
+          JOIN documents d ON d.id = t.document_id
+         WHERE t.org_id = %(org_id)s
+           {_scoped("t", workspace_id)}
+           AND d.source_provider = ANY(%(providers)s)
+           AND t.origin <> 'text'
+           {access}
+           AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.raw) cell
+                        WHERE length(cell) >= {_MIN_LOOKUP_CHARS}
+                          AND strpos(lower(%(question)s), lower(cell)) > 0)
+         LIMIT %(scan)s
+    """
+    try:
+        with get_connection() as conn:
+            found = conn.execute(sql, {
+                "org_id": org_id, "workspace_id": workspace_id, "providers": providers,
+                "question": question[:2000], "scan": LOOKUP_SCAN, **params,
+            }).fetchall()
+    except Exception:  # noqa: BLE001 - a lookup may only ever add
+        logger.warning("doctables: row lookup failed", exc_info=True)
+        return []
+    if len(found) >= LOOKUP_SCAN:
+        logger.info("doctables: row lookup scanned its %d-row bound; said nothing", LOOKUP_SCAN)
+        return []
+    asked = (question or "").lower()
+
+    def named(cell: str) -> bool:
+        cell = cell.strip().lower()
+        return len(cell) >= _MIN_LOOKUP_CHARS and re.search(
+            rf"(?<!\w){re.escape(cell)}(?!\w)", asked) is not None
+
+    # Counted per TABLE: "Rohan Mehta" is one row of the team sheet and
+    # thirty-six of the leads sheet -- a name in the first, a group in the second.
+    per_row = [(r, {c.strip().lower() for c in (r[7] or []) if named(str(c))}) for r in found]
+    seen: dict[tuple[str, str], int] = {}
+    for r, values in per_row:
+        for value in values:
+            seen[(r[4], value)] = seen.get((r[4], value), 0) + 1
+    hits = []
+    for r, values in per_row:
+        rare = [seen[(r[4], v)] for v in values if seen[(r[4], v)] <= MAX_LOOKUP_ROWS]
+        if not rare:
+            continue
+        names = [c.get("name", "") for c in (r[6] or [])]
+        cells = "; ".join(f"{n}: {v}" for n, v in zip(names, r[7] or []) if str(v).strip())
+        # The rarer the values a row shares with the question, the more it is
+        # the row asked about: L-1008 (one row) before "Field Officer" (three).
+        hits.append((sum(1 / n for n in rare), RowHit(
+            document_id=str(r[0]), document_title=r[1], provider=r[2], source_uri=r[3],
+            table_name=r[4], row_no=r[5], text=f'Row of "{r[4]}": {cells}', is_public=bool(r[8]),
+        )))
+    hits.sort(key=lambda h: (-h[0], h[1].row_no))
+    return [hit for _n, hit in hits[:MAX_LOOKUP_ROWS]]
+
+
 def mark_checked(document_id: str) -> None:
     """Record that the dataset adapters have looked at this document."""
     with get_connection() as conn:
