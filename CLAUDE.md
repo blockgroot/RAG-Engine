@@ -162,8 +162,9 @@ list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 Charts are built in Chart mode (chat sends `mode: "chart"`; Slack: a question
 the question check reads as a chart ask, "visual" or "count"), and for an Ask
-question the check reads as "count" when a chart fits (`count-chart`, its values
-also written under it); no fit, Ask answers as before. Slack passes the
+question the check reads as "count" when a chart fits AND is narrowed by a filter or
+focus from the question (`count-chart`, its values also written under it; an
+unnarrowed chart answers a broader question); otherwise Ask answers as before. Slack passes the
 asker's `Viewer` into routing. A DM charts what they can open: the probed scope
 first, then (on a chart refusal) up to `MAX_DM_CHART_SCOPES` of their other
 scopes, and the reply names the scope that answered; a chart ask in a
