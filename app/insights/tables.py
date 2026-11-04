@@ -31,6 +31,25 @@ MEASURES = ("count",) + tuple(AGGREGATES)
 #: of everything (that is no filter at all).
 MAX_FILTER_VALUES = 6
 
+def distinct(tables: list[TableRef]) -> list[TableRef]:
+    """One of each copy of a sheet: the same title but for a file extension
+    ("Sales Targets 2026.csv"), the same columns and the same row count. Two
+    copies took two of the six chart slots and pushed the leads sheet out. A
+    template's monthly reports differ in title, so they all stay."""
+    def stem(text: str | None) -> str:
+        return re.sub(r"\.[a-z0-9]{2,5}$", "", (text or "").strip().lower())
+
+    seen: set[tuple] = set()
+    out = []
+    for table in tables:
+        key = (stem(table.document_title), stem(table.name), table.row_count,
+               tuple(str(c.get("name", "")).lower() for c in table.columns))
+        if key not in seen:
+            seen.add(key)
+            out.append(table)
+    return out
+
+
 def document_similarity(
     question: str, tables: list[TableRef], *, org_id: str, workspace_id: str | None,
 ) -> tuple[dict[str, float], dict[str, float]] | None:
@@ -390,7 +409,11 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     if split_by and split_by == group_by:
         split_by = None
     keys = [c["key"] for c in table.columns]
-    if split_by and group_by in keys and split_by in keys and keys.index(split_by) < keys.index(group_by):
+    group_is_date = (table.column(group_by) or {}).get("type") == "date" if group_by else False
+    # A date is the time axis wherever it sits: "revenue by region by month" on
+    # Closed x Region was swapped to Region x Closed and refused.
+    if split_by and not group_is_date and group_by in keys and split_by in keys \
+            and keys.index(split_by) < keys.index(group_by):
         # The table's earlier column is the axis: a read page puts its period
         # first, a real table its row label. "Each plant per month" drew the
         # plants along the axis with the months as colours.

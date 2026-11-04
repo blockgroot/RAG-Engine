@@ -658,8 +658,8 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
         from ..doctables.store import list_tables
         from ..insights import tables as doc_tables
 
-        listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
-                             providers=providers, tag=tag)
+        listed = doc_tables.distinct(list_tables(org_id=org_id, workspace_id=workspace_id,
+                                                 viewer=viewer, providers=providers, tag=tag))
         from ..insights.resolve import title_match
 
         # The page they named: the LONGEST title run in the question, so a

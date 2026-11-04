@@ -38,10 +38,11 @@ logger = logging.getLogger(__name__)
 #: over it would be pedantry.
 DEFAULT_PERIOD = "month"
 
-#: Small: the reply is one flat JSON object. A generous cap here just buys room
-#: for a model to ramble before the JSON, which the extractor would then have
-#: to sift through.
-MAX_TOKENS = 200
+#: One flat JSON object of about twenty fields, each quote copied from the
+#: question. 200 cut a full reply off before its closing brace (logged as
+#: ``llm.truncated``), and the chart was refused as unreadable. The cap is a
+#: ceiling, not a cost: a reply stops when its object does.
+MAX_TOKENS = 600
 
 
 class CannotChart(Exception):
