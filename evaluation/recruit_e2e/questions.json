@@ -419,7 +419,10 @@
   "n": 45,
   "mode": "chart",
   "question": "Leads per month by applied via",
-  "expect": "stacked bar Oct-Dec x channel"
+  "expect": "stacked bar Oct-Dec x channel, Oct ('LinkedIn', 1202)",
+  "must": [
+   "1202"
+  ]
  },
  {
   "n": 46,
@@ -452,6 +455,9 @@
   "n": 49,
   "mode": "chart",
   "question": "Weekly leads in November",
-  "expect": "line, weeks of Nov"
+  "expect": "weeks of Nov only, first week 179",
+  "must": [
+   "179"
+  ]
  }
 ]

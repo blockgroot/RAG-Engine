@@ -158,8 +158,49 @@ def test_a_word_of_a_header_the_question_names_is_not_a_typed_value():
                      split_by=_col(leads, "Applied Via"))
     assert _checked("Leads per month by applied via", '{"period": "month"}', leads,
                     spec).filters == ()
+
     assert _checked("Applied leads per month", '{"period": "month"}', leads,
                     spec).filters == ((_col(leads, "Lead Status"), "Applied"),)
+
+
+def _dated(name: str, csv: str) -> TableRef:
+    raw = extract.profile(extract.parse_csv(csv, name=name))
+    return TableRef(id=uuid.uuid4().hex, name=name,
+                    columns=tuple(c.as_dict() for c in raw.columns), row_count=3,
+                    truncated=False, notes=(), document_title=name, provider="google",
+                    source_uri=None, document_id=uuid.uuid4().hex)
+
+
+def test_a_named_month_on_a_table_is_a_filter_on_its_date_column():
+    """Claude Haiku quoted "in November" as range_words and left filters
+    empty, so every week of the sheet was drawn."""
+    leads = _dated("Leads", "Date,Stage\n2026-10-01,New\n2026-11-03,Won\n2026-12-02,New\n")
+    date_key = _col(leads, "Date")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=date_key, period="week", chart="bar",
+                     measure="count", table_id=leads.id)
+    reply = '{"range_words": "in November", "range_period": "2026-11"}'
+    out = resolve._table_range(AskIntent("chart", spec=spec), "Weekly leads in November",
+                               reply, {"T1": leads})
+    assert out.spec.filters == ((date_key, "2026-11"),)
+    # Words the asker never wrote, or a value that is not a date, change nothing.
+    for question, bad in (("Weekly leads", reply),
+                          ("Weekly leads in November", '{"range_words": "in November", '
+                                                       '"range_period": "November"}')):
+        assert resolve._table_range(AskIntent("chart", spec=spec), question, bad,
+                                    {"T1": leads}).spec.filters == ()
+
+
+def test_a_named_month_outside_the_tables_dates_is_refused_naming_the_one_that_has_it():
+    """The sales sheet ends in October: its November chart would be empty."""
+    sales = _dated("Sales", "Created,Stage\n2026-06-01,New\n2026-10-27,Won\n")
+    recruit = _dated("Recruit", "Date,Stage\n2026-10-01,New\n2026-12-31,Won\n")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(sales, "Created"), period="week",
+                     chart="bar", measure="count", table_id=sales.id)
+    out = resolve._table_range(AskIntent("chart", spec=spec), "Weekly leads in November",
+                               '{"range_words": "in November", "range_period": "2026-11"}',
+                               {"T1": sales, "T2": recruit})
+    assert out.kind == "refuse"
+    assert "2026-06-01 to 2026-10-27" in out.message and '"Recruit"' in out.message
 
 
 def test_a_value_beyond_the_columns_samples_is_a_filter_when_the_index_found_it():

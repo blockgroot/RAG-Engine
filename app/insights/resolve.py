@@ -729,6 +729,8 @@ def _prompt(
         '"breakdown_words": "<their exact words asking for the breakdown, or null>", '
         '"left_out_words": "<their exact words for any breakdown beyond the two charted, or null>", '
         '"range_words": "<their exact words giving a time range, or null>", '
+        + ('"range_period": "<for a TABLE, the month, year or day those words name, as '
+           '\"2026-11\", \"2026\" or \"2026-11-05\", or null>", ' if tables else "") +
         '"days": <how many days back that range reaches, or null>, '
         '"live": true|false}\n\n'
         "Rules:\n"
@@ -789,6 +791,9 @@ def _prompt(
         f"({_today()}): \"over the last two months\" is 60, \"this year\" is "
         "the days since 1 January, \"since July\" the days since 1 July. Copy "
         "their exact words into range_words. Null when they named no range.\n"
+        "- For a TABLE, a named month, year or day (\"in November\") also goes "
+        "in range_period, in the year of the date column's span; pick a "
+        "table whose date column's span holds that period.\n"
         "- Do not compute or state any numbers in the answer.\n"
         "- intent=chart with metric null means they wanted a visual we cannot count.\n"
         + (
@@ -1205,6 +1210,7 @@ def classify_question(
                               handles, fields, names)
     intent = _typed_values(intent, question, handles)
     intent = _table_period_axis(intent, question, reply, handles)
+    intent = _table_range(intent, question, reply, handles)
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
@@ -1591,6 +1597,58 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     return replace(intent, spec=replace(
         spec, group_by=group, split_by=split, period=period,
         chart=table_shape(table, group, split, requested)))
+
+
+def _table_range(intent: AskIntent, question: str, reply: str, handles) -> AskIntent:
+    """"Weekly leads in November" on a table: the named month is a filter on
+    the date column. Claude Haiku quoted "in November" as range_words every
+    time and left filters empty, so every week of the sheet was drawn. Kept
+    only when the quote is the asker's and the period is a real date format;
+    a date filter the model did set stands."""
+    spec = intent.spec
+    if intent.kind != "chart" or spec is None or not spec.table_id or spec.versus is not None:
+        return intent
+    data = _json_object(reply) or {}
+    words, period = data.get("range_words"), data.get("range_period")
+    if not isinstance(words, str) or not words.strip() \
+            or _squashed(words) not in _squashed(question):
+        return intent
+    from ..doctables.store import period_span
+
+    if not isinstance(period, str) or period_span(period.strip()) is None:
+        return intent
+    table = next((t for t in (handles or {}).values() if t.id == spec.table_id), None)
+    if table is None:
+        return intent
+    dates = [c["key"] for c in table.columns if c.get("type") == "date"]
+    key = spec.group_by if spec.group_by in dates else (dates[0] if len(dates) == 1 else None)
+    if key is None or any(k == key for k, _ in spec.filters):
+        return intent
+    span = period_span(period.strip())
+    if not _covers(table.column(key) or {}, span):
+        # The sales sheet ends in October: its November chart is empty, not
+        # zero. Say its real range, and which offered table has that period.
+        column = table.column(key) or {}
+        others = [t.name for t in (handles or {}).values() if t.id != table.id and any(
+            c.get("type") == "date" and _covers(c, span) for c in t.columns)]
+        shown = ", ".join(f"\"{n}\"" for n in others[:3])
+        found = f" Rows then are in {shown}: name one to chart it." if others else ""
+        return AskIntent("refuse", message=(
+            f"\"{table.name}\" has no rows for \"{words.strip()}\": its "
+            f"{column.get('name')} runs from {column.get('first')} to {column.get('last')}.{found}"))
+    return replace(intent, spec=replace(spec, filters=(*spec.filters, (key, period.strip()))))
+
+
+def _covers(column: dict, span) -> bool:
+    """Whether a date column's stored range reaches into the span. A column
+    with no stored range is not judged."""
+    from datetime import date
+
+    try:
+        first, last = date.fromisoformat(column["first"]), date.fromisoformat(column["last"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return first < span.end and last >= span.start
 
 
 def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:

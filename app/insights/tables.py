@@ -538,6 +538,12 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
             try:
                 key = _find(table, name, types=("category",), role="filter")
             except TableRefusal:
+                if values == [str(data.get("range_period") or "").strip()] \
+                        and table_store.period_span(values[0]):
+                    # "date": "2026-11" on a sheet whose dates are Created and
+                    # Closed: the named period, which range_period carries and
+                    # `resolve._table_range` checks against the table's dates.
+                    continue
                 # A header the table does not have ("Employee") with values it
                 # does ("Kavya Nair"): the one column holding every value is
                 # meant. Real cells decide, never the header's wording.

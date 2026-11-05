@@ -260,7 +260,7 @@ A filter on `subject` (one channel/repo/team) is a focus in the wrong slot:
 moved to `focus`, never refused. Refusals name fields by `dim_label`, never keys.
 The asker's time range ("over the last year") is `spec.days`, kept only when the
 model's `range_words` quote is in the question, capped at `MAX_RANGE_DAYS`, and
-said in the title. An empty chart is never stepped to a finer period (that
+said in the title. On a TABLE the named month, year or day is `range_period` ("2026-11"), a filter on the date column under the same quote check (`resolve._table_range`); a period outside that column's stored range is refused with the range and the offered tables that hold it, never drawn empty. An empty chart is never stepped to a finer period (that
 shrank the window). An empty GitHub pull-request chart asks GitHub why
 (`_github_pull_diagnosis`: no "Pull requests: Read" vs none exist), naming no repo.
 A GitHub chart reads GitHub when it is ASKED (`github_facts.refresh_for_chart`:

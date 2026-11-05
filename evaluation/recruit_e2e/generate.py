@@ -248,12 +248,18 @@ def main() -> None:
     add("ask", "How many of Vivek Nair's November leads are on hold?", str(n), must=[str(n)])
 
     # --- charts -------------------------------------------------------------
-    add("chart", "Leads per month by applied via", "stacked bar Oct-Dec x channel")
+    oct_via = Counter(r["Applied Via"] for r in tabs["Oct 2026"]).most_common(1)[0]
+    add("chart", "Leads per month by applied via", f"stacked bar Oct-Dec x channel, Oct {oct_via}",
+        must=[str(oct_via[1])])
     add("chart", "Offers by BDE", f"bar per BDE, {top} highest ({n_top})", must=[top])
     add("chart", f"Daniel Reed's leads by lead status", "bar per stage", must=[str(stage.most_common(1)[0][1])])
     add("chart", "Leads by lead type in December", "bar 4 types",
         must=[str(Counter(r['Lead Type'] for r in tabs['Dec 2026']).most_common(1)[0][1])])
-    add("chart", "Weekly leads in November", "line, weeks of Nov")
+    # 1 Nov 2026 is a Sunday: its week holds only that day once October is
+    # filtered out, a figure the unfiltered chart never shows.
+    nov_first = sum(r["Date"] == date(2026, 11, 1) for r in allrows)
+    add("chart", "Weekly leads in November", f"weeks of Nov only, first week {nov_first}",
+        must=[str(nov_first)])
 
     (OUT / "questions.json").write_text(json.dumps(q, indent=1, default=str))
     print(f"{len(allrows)} lead rows in {len(tabs)} tabs; {len(q)} questions")
