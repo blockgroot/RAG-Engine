@@ -647,6 +647,22 @@ def test_a_value_the_question_types_is_added_to_a_query_that_left_it_out(org):
     assert "- by (from \"Leads\"), over 5 rows" in text
 
 
+def test_a_header_written_short_is_the_one_header_containing_it():
+    """Claude Haiku wrote "Applied Via (O)" for "Also Applied Via (O)"; the query
+    was refused and the question fell to a chart of something else."""
+    raw = extract.profile(extract.parse_csv(
+        "Applied Via,Also Applied Via (O),Lead Status\nDice,LinkedIn,Offer\n"
+        "LinkedIn,Dice,Applied\n", name="Leads"))
+    leads = TableRef(id="t", name="Leads", columns=tuple(c.as_dict() for c in raw.columns),
+                     row_count=2, truncated=False, notes=(), document_title="Leads",
+                     provider="google", source_uri=None, document_id="d")
+    find = lambda name: doc_tables._find(leads, name, types=("category",), role="filter")  # noqa: E731
+    assert find("Applied Via (O)") == _col(leads, "Also Applied Via (O)")
+    assert find("Applied Via") == _col(leads, "Applied Via")  # exact still wins
+    with pytest.raises(doc_tables.TableRefusal):
+        find("Via")  # two headers hold it: neither
+
+
 def test_the_one_column_a_question_names_is_the_breakdown():
     """Claude Haiku grouped "which recruiter handled the most offers?" by BDE."""
     raw = extract.profile(extract.parse_csv(

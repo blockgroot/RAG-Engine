@@ -271,8 +271,17 @@ def _find(table: TableRef, name, *, types: tuple[str, ...], role: str) -> str | 
     if not isinstance(name, str):
         raise TableRefusal(f"I couldn't tell which column to use for the {role}.")
     squash = re.sub(r"[^a-z0-9]", "", name.lower())
+    squashed = {c["key"]: re.sub(r"[^a-z0-9]", "", str(c.get("name", "")).lower())
+                for c in table.columns}
+    if squash not in squashed.values() and len(squash) >= 4:
+        # A header written short ("Applied Via (O)" for "Also Applied Via
+        # (O)"): the ONE header containing it is meant. Claude Haiku dropped
+        # a word and the query was refused; two candidates name neither.
+        holding = [k for k, h in squashed.items() if squash in h]
+        if len(holding) == 1:
+            squash = squashed[holding[0]]
     for c in table.columns:
-        if re.sub(r"[^a-z0-9]", "", str(c.get("name", "")).lower()) == squash:
+        if squashed[c["key"]] == squash:
             if c.get("type") not in types:
                 raise TableRefusal(
                     f"\"{c['name']}\" in {table.name} can't be the {role}: "
