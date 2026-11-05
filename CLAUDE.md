@@ -365,7 +365,12 @@ named column lacks moves to the ONE column holding it; a name or a period the ta
 does not hold is STATED in the passage (`_Absent`), never answered as 0 or dropped.
 A filter whose value is also a word of the table's own headers ("Applied" beside
 "Applied Via") is worked out BOTH ways, labelled (`_without_header_words`): the
-word may name what the sheet holds, not a stage. `distinct` counts different values ("how many companies") and lists them; `rows`
+word may name what the sheet holds, not a stage. The form QUOTES every person, company or item the question names (`named`, kept only
+when the quote is in the question); one that no cell of the offered tables holds as
+whole words (`store.holds_words`) drops every figure and the passage says so: a figure
+worked out without them is not about them. A typed part of ONE stored value
+("Maplepeak") filters on that value. A chart's typed filter also comes from the
+cells the index found (`TableRef.typed`), not only a column's twelve samples. `distinct` counts different values ("how many companies") and lists them; `rows`
 lists records; a date filter is a period bound in SQL (`store.DateSpan`). A row lookup
 counts each typed value per table first (`MAX_LOOKUP_ROWS`): a name that is a group in
 one tab still names its row in another. A counted Ask answer states its total.

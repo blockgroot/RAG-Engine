@@ -162,6 +162,21 @@ def test_a_word_of_a_header_the_question_names_is_not_a_typed_value():
                     spec).filters == ((_col(leads, "Lead Status"), "Applied"),)
 
 
+def test_a_value_beyond_the_columns_samples_is_a_filter_when_the_index_found_it():
+    """Staging, Claude Haiku: "Daniel Reed's leads by lead status" charted every
+    profile: a 25-name column lists twelve samples, and his was not one."""
+    leads = _leads()
+    owner = next(c for c in leads.columns if c["name"] == "Owner")
+    columns = tuple({**c, "samples": c["samples"][:1], "distinct": 9}
+                    if c is owner else c for c in leads.columns)
+    leads = replace(leads, columns=columns, typed=(("Owner", "Rohan Mehta"),))
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(leads, "Stage"), period="month",
+                     chart="bar", measure="count", table_id=leads.id)
+    spec = resolve._typed_values(AskIntent("chart", spec=spec), "Rohan Mehta's leads by stage",
+                                 {"T1": leads}).spec
+    assert (_col(leads, "Owner"), "Rohan Mehta") in spec.filters
+
+
 def test_a_comparison_the_model_narrowed_to_one_person_keeps_both():
     """Staging, Claude Haiku: "Compare Kavya Nair and Rohan Mehta won revenue by
     month" came back filtered on Kavya Nair alone."""
@@ -587,7 +602,34 @@ def test_a_filter_on_a_word_of_the_sheets_own_headers_is_answered_both_ways(org)
     assert "over every row (not only Lead Status Applied)" in text and "Acme: 3; Beta: 2" in text
     # "Offer" is no header's word: one reading.
     form = _Form([{"table": "T1", "operation": "count", "filters": {"Lead Status": "Offer"}}])
-    assert "every row" not in "".join(a.text for a in table_answers.answer("q?", tables, llm=form))
+    assert "not only" not in "".join(a.text for a in table_answers.answer("q?", tables, llm=form))
+
+
+@requires_db
+def test_a_name_the_question_types_that_no_table_holds_is_said_and_no_figure_given(org):
+    """Staging, Claude Haiku: "How many companies has Jordan Blake applied to?"
+    left him out of the form, and the answer gave him every row's 420."""
+    form = _Form([{"table": "T1", "operation": "count"}])
+    form._reply = json.dumps({"named": ["Jordan Blake"],
+                              "queries": [{"table": "T1", "operation": "count"}]})
+    [only] = table_answers.answer("How many deals has Jordan Blake closed?",
+                                  _sales_tables(org), llm=form)
+    assert 'none holds "Jordan Blake"' in only.text and "over" not in only.text
+    # A name quoted but not in the question is not the asker's: ignored.
+    form._reply = json.dumps({"named": ["Jordan Blake"],
+                              "queries": [{"table": "T1", "operation": "count"}]})
+    assert "none holds" not in "".join(
+        a.text for a in table_answers.answer("How many deals?", _sales_tables(org), llm=form))
+
+
+@requires_db
+def test_a_part_of_one_stored_value_filters_on_that_value(org):
+    form = _Form([{"table": "T1", "operation": "count", "filters": {"Owner": "Kavya"},
+                   "label": "kavya"}])
+    form._reply = json.dumps({"named": ["Kavya"], "queries": json.loads(form._reply)["queries"]})
+    text = "".join(a.text for a in table_answers.answer("How many leads has Kavya?",
+                                                        _sales_tables(org), llm=form))
+    assert "Owner is Kavya Nair" in text
 
 
 @requires_db

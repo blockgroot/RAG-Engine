@@ -1616,11 +1616,20 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     drawn = {spec.group_by, spec.split_by}
     filters = dict(spec.filters)
     changed = False
+    # Cells the question types, found through the cell index for this
+    # question (`store.typed_cells`): a column's samples are only twelve of
+    # its values, and "Daniel Reed" was not among a 25-name column's.
+    typed_by_name: dict[str, list[str]] = {}
+    for name, value in getattr(table, "typed", ()) or ():
+        typed_by_name.setdefault(name, []).append(value)
     for column in table.columns:
         values = [str(v) for v in column.get("samples") or []]
         key = column["key"]
-        if (column.get("type") != "category" or key in drawn
-                or column.get("distinct") != len(values)):
+        if key in drawn:
+            continue
+        if column.get("type") == "category" and column.get("distinct") != len(values):
+            values = typed_by_name.get(column.get("name"), [])
+        elif column.get("type") != "category":
             continue
         typed = [v for v in values if _squashed(v) and f" {_squashed(v)} " in asked]
         kept = filters.get(key)

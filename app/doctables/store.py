@@ -755,6 +755,44 @@ def match_values(table: TableRef, key: str, wanted: list[str]) -> dict[str, str]
     return {" ".join(r[0].split()).lower(): r[0] for r in rows if r[0] is not None}
 
 
+def values_containing(table: TableRef, key: str, text: str, *, limit: int = 2) -> list[str]:
+    """Stored values of one column holding ``text`` as whole words ("Maplepeak"
+    in "Maplepeak Capital"), at most ``limit``: a caller takes one only when it
+    is the only one."""
+    words = " ".join(str(text).split())
+    if len(words) < 3:
+        return []
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT {_col(key)} FROM doc_table_rows r WHERE r.table_id = %s "
+                f"AND {_col(key)} ~* %s LIMIT %s",
+                (table.id, r"\m" + re.escape(words) + r"\M", limit),
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not match a value", cause=exc) from exc
+    return [r[0] for r in rows if r[0] is not None]
+
+
+def holds_words(tables: list[TableRef], text: str) -> bool:
+    """Does any cell of these tables hold ``text`` as whole words?"""
+    words = " ".join(str(text).split())
+    ids = [t.id for t in tables if t.origin != "text"]
+    if len(words) < 3 or not ids:
+        return False
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM doc_table_rows r WHERE r.table_id = ANY(%s::uuid[]) "
+                "AND r.raw::text ~* %s LIMIT 1",
+                (ids, r"\m" + re.escape(words) + r"\M"),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - unknown is "held": never refuse on a fault
+        logger.warning("doctables: word check failed", exc_info=True)
+        return True
+    return row is not None
+
+
 def date_span(table: TableRef, key: str) -> tuple[str, str] | None:
     """The first and last day a date column holds, or None when empty."""
     try:
