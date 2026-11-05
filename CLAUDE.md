@@ -208,6 +208,13 @@ table is drawn, and the retry, the live read and the paragraph read all stay on
 that connector. A table pick is never swapped for an activity metric, and is
 drawn across connectors when the question has a word of that table's labels or names
 its page; a pick nothing in the question supports is refused, naming the documents.
+Two figures from two tables ("target vs achieved") are `ChartSpec.versus`: each side
+is SQL over its own table, joined on each side's names column, the second table
+re-fetched with the viewer at run time, never summed into one measure. The chart
+prompt offers `tables.MAX_OFFERED` tables, at most `PER_DOCUMENT` per document
+first, only the first `FULL_DETAIL` with their values (the rest headers only).
+A breakdown asked beside a period that the chart cannot draw is refused, also on
+a read page's Period column.
 The model is shown every value of a small category column (up to
 `extract.CATEGORY_SAMPLES`; tables stored with five are re-sampled from their rows once,
 `schema_marks` `category_samples_twelve`). With no column

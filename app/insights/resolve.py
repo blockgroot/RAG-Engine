@@ -55,6 +55,20 @@ class CannotChart(Exception):
 
 
 @dataclass(frozen=True)
+class Versus:
+    """The second figure of a two-table chart ("target vs achieved"): a sum,
+    count or average of another table's rows per the same people or items.
+    Validated against that table like any pick; re-checked for the viewer at
+    run time."""
+
+    table_id: str
+    group_by: str
+    measure: str
+    value: str | None = None
+    filters: tuple[tuple[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
 class ChartSpec:
     """A validated, drawable request. Every field is known-good by construction."""
 
@@ -88,6 +102,8 @@ class ChartSpec:
     #: The window the asker named ("over the last year" = 365), kept only
     #: when their words for it are in the question; None = the period's own.
     days: int | None = None
+    #: A second table's figure drawn beside this one per name (`Versus`).
+    versus: Versus | None = None
 
 
 def spec_to_dict(spec: ChartSpec) -> dict:
@@ -113,7 +129,56 @@ def spec_to_dict(spec: ChartSpec) -> dict:
         "value": spec.value,
         "left_out": spec.left_out,
         "days": spec.days,
+        "versus": None if spec.versus is None else {
+            "table_id": spec.versus.table_id, "group_by": spec.versus.group_by,
+            "measure": spec.versus.measure, "value": spec.versus.value,
+            "filters": [[k, list(v) if isinstance(v, tuple) else v]
+                        for k, v in spec.versus.filters]},
     }
+
+
+def _parse_versus(raw, pick, handles) -> tuple[str, Versus] | None:
+    """The second table of a "target vs achieved" chart, validated like a pick.
+
+    Both sides are grouped by the column naming the people or items (a
+    category, never a date: the names are what the bars are matched on).
+    Raises ``TableRefusal`` for a second side that names a real table but
+    does not fit it; anything else is no second side at all. Returns the
+    first side's names column with the second side."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("table"), str):
+        return None
+    second = doc_tables.parse_pick({**raw, "split_by": None, "chart": None}, handles)
+    if second is None:
+        return None
+    first_table = next(t for t in handles.values() if t.id == pick.table_id)
+    second_table = next(t for t in handles.values() if t.id == second.table_id)
+
+    def names_column(table, key):
+        if (table.column(key) or {}).get("type") == "category":
+            return key
+        # A date (or nothing) cannot carry the names; a table with ONE column
+        # that can is unambiguous (Haiku grouped the targets sheet by Month).
+        only = [c["key"] for c in table.columns if c.get("type") == "category"]
+        if len(only) == 1:
+            return only[0]
+        raise doc_tables.TableRefusal(
+            f"To compare two tables I need the column naming the people or items "
+            f"in \"{table.name}\". " + doc_tables._options(table, ("category",), "breakdown"))
+
+    return names_column(first_table, pick.group_by), Versus(
+        table_id=second.table_id, group_by=names_column(second_table, second.group_by),
+        measure=second.measure, value=second.value, filters=second.filters)
+
+
+def _versus_from_dict(data) -> Versus | None:
+    if not isinstance(data, dict) or not data.get("table_id") or not data.get("group_by"):
+        return None
+    return Versus(
+        table_id=str(data["table_id"]), group_by=str(data["group_by"]),
+        measure=str(data.get("measure") or "sum"), value=data.get("value"),
+        filters=tuple((str(k), tuple(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v))
+                      for k, v in (data.get("filters") or ())),
+    )
 
 
 def spec_from_dict(data: dict) -> ChartSpec:
@@ -136,6 +201,7 @@ def spec_from_dict(data: dict) -> ChartSpec:
         value=data.get("value"),
         left_out=data.get("left_out"),
         days=data.get("days") if isinstance(data.get("days"), int) else None,
+        versus=_versus_from_dict(data.get("versus")),
     )
 
 
@@ -604,8 +670,9 @@ def _prompt(
             if missing else ""
         ) + (
             "TABLES INSIDE DOCUMENTS the asker can open (figures written in a "
-            "sheet or a document, not app activity):\n"
-            f"{doc_tables.catalogue(tables)}\n"
+            "sheet or a document, not app activity; the first list their values, "
+            "the rest only their column headers):\n"
+            f"{doc_tables.catalogue(tables, full=doc_tables.FULL_DETAIL)}\n"
             "To chart one: intent=chart, metric null, \"table\" = its handle "
             "(T1...), and group_by / split_by / value / filters use that "
             "table's COLUMN NAMES exactly as listed. measure = count (rows), "
@@ -620,6 +687,10 @@ def _prompt(
             "state (resolved tickets, approved requests) is a filter on the "
             "column holding that state. A filter may list several values to keep "
             "each of them (two people or sites compared). "
+            "Two figures for the same people or items from two tables (a "
+            "target or plan against what was achieved) are one chart: the first "
+            "in table/value/group_by, the second in \"versus\", each grouped by "
+            "the column naming those people or items in its own table. "
             "Prefer a table when they ask about figures IN a document (sales, "
             "budget, revenue, headcount); prefer a metric for activity in the "
             "apps (edits, pull requests, tasks).\n\n"
@@ -643,6 +714,8 @@ def _prompt(
         '"group_by": "<option or null>", "split_by": "<option or null>", '
         '"measure": "<option or null>", "filters": {"<dim>": "<value>"}, '
         + ('"table": "<T handle or null>", "value": "<number column or null>", '
+           '"versus": {"table": "<T handle>", "value": "<number column>", '
+           '"measure": "sum|count|average", "group_by": "<column>", "filters": {}} or null, '
            if tables else "") +
         '"period": "<period>", '
         '"period_words": "<their exact words asking for that period, or null>", '
@@ -1432,7 +1505,8 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     the asker's.
     """
     spec = intent.spec
-    if intent.kind != "chart" or spec is None or not spec.table_id or spec.split_by:
+    if intent.kind != "chart" or spec is None or not spec.table_id or spec.split_by \
+            or spec.versus is not None:
         return intent
     table = next((t for t in (handles or {}).values() if t.id == spec.table_id), None)
     if table is None:
@@ -1488,10 +1562,11 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     # The breakdown quote is the period's own words ("per month"): the date
     # axis drew it. Anything else ("by region") must be a drawn column.
     about_period = bool(words) and (words == quote or (word and f" {word}" in f" {words}"))
-    if (split is None and group in dates and words and not about_period
+    if (split is None and (group in dates or period_asked) and words and not about_period
             and f" {words} " in f"{asked_text} "):
         # They asked for a breakdown ("by employee", "by region") the model
-        # matched to no column of this table, and only a date axis is left:
+        # matched to no column of this table, and only a time axis is left
+        # (a date column, or the asked period on a read page's Period):
         # that chart answers another question ("revenue by region by month"
         # drew the targets sheet by month). Say which columns can be the breakdown.
         from .tables import _options
@@ -1522,7 +1597,7 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     then resolved against the real rows like every other one.
     """
     spec = intent.spec
-    if intent.kind != "chart" or spec is None or not spec.table_id:
+    if intent.kind != "chart" or spec is None or not spec.table_id or spec.versus is not None:
         return intent
     table = next((t for t in (handles or {}).values() if t.id == spec.table_id), None)
     if table is None:
@@ -1704,10 +1779,20 @@ def _parse_intent(
             period = data.get("period")
             if period not in registry.PERIODS:
                 period = DEFAULT_PERIOD
+            try:
+                paired = _parse_versus(data.get("versus"), pick, handles)
+            except doc_tables.TableRefusal as exc:
+                return AskIntent("refuse", message=f"I can't chart it that way. {exc}")
+            versus = None
+            if paired is not None:
+                names, versus = paired
+                pick = replace(pick, group_by=names, split_by=None)
             return AskIntent("chart", spec=ChartSpec(
                 metric=TABLE_METRIC, group_by=pick.group_by, period=period,
-                chart=pick.chart, split_by=pick.split_by, measure=pick.measure,
+                chart="bar" if versus else pick.chart,
+                split_by=None if versus else pick.split_by, measure=pick.measure,
                 filters=pick.filters, table_id=pick.table_id, value=pick.value,
+                versus=versus,
             ))
 
     key = data.get("metric")

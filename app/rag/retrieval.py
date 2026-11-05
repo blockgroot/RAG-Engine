@@ -474,7 +474,8 @@ class HybridRetriever:
             figures = [w for w in worked if w.provider in tools]
             if not rows and not figures:
                 return []
-            ids = sorted({r.document_id for r in rows} | {w.document_id for w in figures})
+            ids = sorted({r.document_id for r in rows} | {w.document_id for w in figures}
+                         | {d for w in figures for d in getattr(w, "requires", ())})
             cosine: dict[str, float] = {}
             # Private unless the index says otherwise: a worked figure from a
             # restricted sheet must keep its answer out of the shared cache.
@@ -489,7 +490,8 @@ class HybridRetriever:
             return []
         # Re-checked at run time: the cosine query is filtered by this viewer, so
         # a sheet they cannot open has no hit and its figures are not shown.
-        figures = [f for f in figures if f.document_id in cosine]
+        figures = [f for f in figures if f.document_id in cosine
+                   and all(d in cosine for d in getattr(f, "requires", ()))]
         rows = [r for r in rows if r.document_id in cosine]
         own = self._row_cosines(q_vec, [r.text for r in rows])
         return [

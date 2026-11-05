@@ -672,3 +672,142 @@ def test_an_asked_breakdown_the_chart_cannot_draw_is_refused(question, reply, re
     intent = resolve._table_period_axis(AskIntent("chart", spec=spec), question, reply,
                                         {"T1": targets})
     assert (intent.kind == "refuse") is refused
+
+
+def test_a_breakdown_dropped_on_a_read_pages_period_is_refused():
+    """Staging, Claude Haiku: "revenue by region by month" drew the review
+    page's monthly Revenue (a text Period column, no date) and left out region."""
+    raw = extract.profile(extract.parse_csv(
+        "Period,Revenue\nJuly,3226000\nAugust,3744000\n", name="Revenue"))
+    page = TableRef(id=uuid.uuid4().hex, name="Revenue",
+                    columns=tuple(c.as_dict() for c in raw.columns), row_count=2,
+                    truncated=False, notes=(), document_title="Q3 review", provider="google",
+                    source_uri=None, origin="text", document_id=uuid.uuid4().hex)
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(page, "Period"), period="month",
+                     chart="bar", measure="sum", value=_col(page, "Revenue"), table_id=page.id)
+    reply = '{"period": "month", "period_words": "by month", "breakdown_words": "by region"}'
+    intent = resolve._table_period_axis(AskIntent("chart", spec=spec),
+                                        "Revenue by region by month", reply, {"T1": page})
+    assert intent.kind == "refuse"
+    # Only the period asked: drawn.
+    reply = '{"period": "month", "period_words": "monthly", "breakdown_words": "monthly"}'
+    intent = resolve._table_period_axis(AskIntent("chart", spec=spec),
+                                        "Monthly revenue from the review", reply, {"T1": page})
+    assert intent.kind == "chart"
+
+
+def _targets_sheet(org_id: str, viewers: list[str]) -> str:
+    with get_connection() as conn:
+        doc = conn.execute(
+            """
+            INSERT INTO documents (org_id, title, source_uri, source_provider,
+                                   source_external_id, doc_is_public, doc_viewers)
+            VALUES (%s, 'Targets', 'https://drive.test/t', 'google', %s, false, %s)
+            RETURNING id
+            """,
+            (org_id, uuid.uuid4().hex, viewers),
+        ).fetchone()
+        conn.commit()
+    raw = extract.parse_csv("Employee,Target\nKavya Nair,1000000\nRohan Mehta,900000\n"
+                            "Arjun Iyer,500000\n", name="Targets")
+    _store_tables(str(doc[0]), SourceDocument(external_id="t", title="Targets", content="",
+                                              tables=[raw]), org_id=org_id, workspace_id=None)
+    return str(doc[0])
+
+
+@requires_db
+def test_two_sheets_are_compared_per_name_and_need_both_open(org):
+    """"Who missed their revenue target?": targets in one sheet, won deals in
+    another. Joined on the names both hold; a name only one side has is said."""
+    _sheet(org, ["sana@acme.test"])
+    targets_doc = _targets_sheet(org, ["sana@acme.test"])
+    tables = table_store.list_tables(org_id=org, workspace_id=None,
+                                     viewer=Viewer(email="sana@acme.test"))
+    handles = {t.name: f"T{i}" for i, t in enumerate(tables, start=1)}
+    [passage] = table_answers.answer("who missed target?", tables, llm=_Form([{
+        "table": handles["Leads"], "operation": "compare", "value": "Deal Value",
+        "group_by": "Owner", "filters": {"Stage": "Won"}, "label": "won vs target",
+        "against": {"table": handles["Targets"], "operation": "sum", "value": "Target",
+                    "group_by": "Employee"}}]))
+    # Kavya: 980,000 + 1,206,000 won against 1,000,000. Rohan and Arjun own
+    # leads but won none: 0 against their targets, not "missing".
+    assert "Kavya Nair: 2,186,000 vs 1,000,000 (the first is above the second" in passage.text
+    assert "Rohan Mehta: 0 vs 900,000 (the first is below the second" in passage.text
+    assert "Only in" not in passage.text
+    assert passage.requires == (targets_doc,)
+
+
+def test_a_comparison_is_dropped_when_the_second_sheet_cannot_be_opened(monkeypatch):
+    figure = table_answers.TableAnswer(provider="google", document_id="d1",
+                                       document_title="Leads", source_uri=None,
+                                       text="won vs target", requires=("d2",))
+
+    class _OnlyFirst:
+        def query(self, *a, **k):
+            return [RetrievedChunk(content="cols", score=0.5, document_id="d1",
+                                   chunk_index=0, org_id="org", doc_is_public=False)]
+
+    monkeypatch.setattr("app.doctables.store.rows_naming", lambda *a, **k: [])
+    retriever = HybridRetriever(store=_OnlyFirst(), reranker=None)
+    assert retriever._table_rows("org", "q?", [0.0], workspace_id=None,
+                                 viewer=Viewer(email="x@acme.test"), tools=["google"],
+                                 worked=(figure,)) == []
+
+
+@requires_db
+def test_a_target_vs_achieved_chart_draws_both_tables_per_name(org):
+    """"Revenue target vs achieved by employee": targets in one sheet, won
+    deals in another, one pair of bars per person."""
+    from app.agent.insights_agent import run_table_spec
+    from app.insights.resolve import Versus
+
+    _sheet(org, ["sana@acme.test"])
+    _targets_sheet(org, ["sana@acme.test", "other@acme.test"])
+    viewer = Viewer(email="sana@acme.test")
+    tables = {t.name: t for t in table_store.list_tables(org_id=org, workspace_id=None,
+                                                         viewer=viewer)}
+    targets, leads = tables["Targets"], tables["Leads"]
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(targets, "Employee"), period="month",
+                     chart="bar", measure="sum", value=_col(targets, "Target"),
+                     table_id=targets.id,
+                     versus=Versus(table_id=leads.id, group_by=_col(leads, "Owner"),
+                                   measure="sum", value=_col(leads, "Deal Value"),
+                                   filters=((_col(leads, "Stage"), "Won"),)))
+    assert resolve.spec_from_dict(resolve.spec_to_dict(spec)) == spec
+    panel, _ = run_table_spec(spec, org_id=org, workspace_id=None, viewer=viewer)
+    bars = {(p["group"], p["series"]): p["value"] for p in panel["points"]}
+    assert bars[("Kavya Nair", "Target")] == 1000000.0
+    assert bars[("Kavya Nair", "Deal Value")] == 2186000.0
+    assert bars[("Rohan Mehta", "Deal Value")] == 0.0   # owns leads, won none
+    assert panel["title"].startswith("Target vs Deal Value by Employee")
+    # Someone who can open the targets sheet but not the leads sheet gets no chart.
+    from app.insights.resolve import CannotChart
+
+    with pytest.raises(CannotChart, match="no longer available"):
+        run_table_spec(spec, org_id=org, workspace_id=None, viewer=Viewer(email="other@acme.test"))
+
+
+def test_a_versus_pick_is_validated_like_any_pick():
+    leads, targets = _leads(), _targets()
+    handles = {"T1": targets, "T2": leads}
+    reply = json.dumps({"intent": "chart", "table": "T1", "value": "Revenue Target",
+                        "group_by": "Employee", "versus": {
+                            "table": "T2", "value": "Deal Value", "group_by": "Owner",
+                            "filters": {"Stage": "Won"}}})
+    intent = resolve._parse_intent(reply, [], fail_open=False, handles=handles, fields=None,
+                                   missing=[], providers=["google"])
+    assert intent.kind == "chart" and intent.spec.versus.table_id == leads.id
+    assert intent.spec.versus.filters == ((_col(leads, "Stage"), "Won"),)
+    # Grouped by its date, a sheet with ONE names column is matched on that column.
+    by_month = json.dumps({"intent": "chart", "table": "T1", "value": "Revenue Target",
+                           "group_by": "Month", "versus": {"table": "T2", "value": "Deal Value",
+                                                            "group_by": "Owner"}})
+    intent = resolve._parse_intent(by_month, [], fail_open=False, handles=handles, fields=None,
+                                   missing=[], providers=["google"])
+    assert intent.spec.group_by == _col(targets, "Employee")
+    # A sheet with several such columns grouped by a date is refused, never guessed.
+    bad = json.dumps({"intent": "chart", "table": "T2", "value": "Deal Value",
+                      "group_by": "Created", "versus": {"table": "T1", "value": "Revenue Target",
+                                                         "group_by": "Employee"}})
+    assert resolve._parse_intent(bad, [], fail_open=False, handles=handles, fields=None,
+                                 missing=[], providers=["google"]).kind == "refuse"

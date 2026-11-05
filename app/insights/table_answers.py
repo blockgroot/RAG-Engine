@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 #: What one query may work out. "ratio" divides the rows (or the sum) matching
 #: ``filters`` + ``of_these`` by those matching ``filters``; "top" lists rows.
-OPERATIONS = ("count", "sum", "average", "min", "max", "ratio", "top")
+OPERATIONS = ("count", "sum", "average", "min", "max", "ratio", "top", "compare")
 #: Queries one form may ask for: two meanings of one measure, two people
 #: compared, an overview. More is a report, not an answer.
 MAX_QUERIES = 4
@@ -58,6 +58,9 @@ class TableAnswer:
     document_title: str
     source_uri: str | None
     text: str
+    #: Other documents whose figures this passage holds (a ``compare`` across
+    #: two sheets): shown only to a viewer who can open every one of them.
+    requires: tuple[str, ...] = ()
 
 
 class _Unfit(ValueError):
@@ -79,7 +82,9 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         '"filters": {"<column header>": "<value>" or ["<value>", ...]}, '
         '"of_these": {"<column header>": "<value>" or ["<value>", ...]}, '
         '"label": "<a few words saying what this query works out>", '
-        '"is_the_figure_asked": true|false}]}\n\n'
+        '"is_the_figure_asked": true|false, '
+        '"against": {"table": "T2", "operation": "count|sum|average", "value": "...", '
+        '"group_by": "...", "filters": {...}} (compare only)}]}\n\n'
         "Rules:\n"
         "- Use only the tables, column headers and values listed above, spelled exactly "
         "as listed. Never invent a column or a value.\n"
@@ -102,9 +107,11 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         "- People or items the question names or compares: work out their figures "
         "from EVERY listed table that has rows for them, one query per table, each "
         "grouped by the column naming them -- not only the first table that fits.\n"
-        "- Whether something met, missed or beat a plan or target: one query for the "
-        "target and one for what was achieved (often in another table), grouped by "
-        "the same people or items, so the two can be compared. Not top.\n"
+        "- compare: two figures for the same people or items, side by side -- a plan "
+        "or target against what was achieved, this period against last -- even from "
+        "two different tables. The query is the first figure; \"against\" is the "
+        "second. Each group_by is the column naming those people or items in its own "
+        "table. Use it for whether something met, missed or beat a target. Not top.\n"
         "- When a measure can be read two ways (a share of all rows or of only some of "
         "them), add one query for each reading, each with its own label.\n"
         f"- At most {MAX_QUERIES} queries. If no listed table can answer, reply "
@@ -233,6 +240,65 @@ def _run(table: TableRef, query: dict) -> str:
     return f"{head}, over {rows} rows: " + "; ".join(lines[:MAX_GROUPS]) + _more(lines)
 
 
+def _side(table: TableRef, query: dict) -> tuple[str, dict[str, float], str]:
+    """One side of a compare: ``(label, {name: value}, unit)``, grouped and checked
+    like any other query. A name the column holds with no matching row is 0
+    (Rohan Mehta won no deal: 0 against his target, not "missing")."""
+    operation = str(query.get("operation") or "").lower()
+    value = _column(table, query.get("value"), ("number",), "value to compare")
+    operation = operation if operation in ("count", "sum", "average") else (
+        "sum" if value else "count")
+    if operation != "count" and not value:
+        raise _Unfit(f"{operation} needs a number column")
+    group = _column(table, query.get("group_by"), ("category",), "breakdown")
+    if not group:
+        raise _Unfit("compare needs the column naming the people or items")
+    filters = _filters(table, query.get("filters"))
+    unit = table_unit("sum", table.column(value)) if value and operation != "count" else ""
+    name = (table.column(value) or {}).get("name") if value else "rows"
+    label = f"{name} ({operation}) from \"{table.name}\"" + (
+        f", rows where {_where(table, filters)}" if filters else "")
+    figures = dict(_grouped(table, operation, value if operation != "count" else None,
+                            group, filters))
+    if operation in ("count", "sum"):
+        for name in table_store.list_values(table, group):
+            figures.setdefault(str(name), 0.0)
+    return label, figures, unit
+
+
+def _compare(first: TableRef, query: dict, second: TableRef) -> str:
+    """Two figures per person or item, joined on the names both tables hold.
+
+    Names are matched case- and space-insensitively; a name only one side has
+    is listed, never dropped. Nothing in common is a form that does not fit."""
+    against = query.get("against")
+    if not isinstance(against, dict):
+        raise _Unfit("compare needs against")
+    a_label, a, a_unit = _side(first, query)
+    b_label, b, b_unit = _side(second, against)
+    key = lambda name: " ".join(str(name).lower().split())  # noqa: E731
+    b_by = {key(n): (n, v) for n, v in b.items()}
+    both = [(n, v, b_by[key(n)][1]) for n, v in a.items() if key(n) in b_by]
+    if not both:
+        raise _Unfit("the two sides share no names")
+    lines = []
+    for name, x, y in sorted(both, key=lambda r: r[1] - r[2]):
+        verdict = "above" if x > y else "below" if x < y else "equal to"
+        lines.append(f"{name}: {_value_text(x, a_unit)} vs {_value_text(y, b_unit)} "
+                     f"(the first is {verdict} the second by "
+                     f"{_value_text(abs(x - y), a_unit or b_unit)})")
+    only_a = sorted(n for n in a if key(n) not in b_by)
+    only_b = sorted(n for n, _ in b_by.values() if n not in a and key(n) not in {key(m) for m in a})
+    tail = ""
+    if only_a:
+        tail += f". Only in the first: {', '.join(only_a[:MAX_GROUPS])}"
+    if only_b:
+        tail += f". Only in the second: {', '.join(only_b[:MAX_GROUPS])}"
+    label = str(query.get("label") or "compared")[:120]
+    return (f"{label}: {a_label} vs {b_label}, per name (first vs second): "
+            + "; ".join(lines[:MAX_GROUPS]) + _more(lines) + tail)
+
+
 def _merge(filters, extra):
     """``extra`` narrows ``filters``: a column in both takes extra's values."""
     keys = {k for k, _ in extra}
@@ -277,28 +343,43 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
     except Exception:  # noqa: BLE001 - Ask answers as before
         logger.warning("table answers: the form could not be filled", exc_info=True)
         return []
-    per_table: dict[str, tuple[TableRef, list[str]]] = {}
+    per_table: dict[tuple, tuple[TableRef, list[str]]] = {}
     for query in _queries(reply):
         table = handles.get(str(query.get("table") or "").strip().upper())
-        if table is None or query.get("is_the_figure_asked") is False:
+        against = query.get("against") if isinstance(query.get("against"), dict) else None
+        # A filled-in second side IS a comparison, whatever operation word came
+        # with it: both models wrote "sum" + "against" for "who missed their
+        # target?", and Haiku marked the target alone "not the figure asked".
+        compares = against is not None or str(query.get("operation") or "").lower() == "compare"
+        if table is None or (query.get("is_the_figure_asked") is False and not compares):
             # A stand-in the model itself says is not the figure ("headcount,
             # not revenue") would be read as the answer.
             continue
+        requires: tuple[str, ...] = ()
         try:
-            line = _run(table, query)
+            if compares:
+                second = handles.get(str((against or {}).get("table") or "").strip().upper())
+                if second is None:
+                    raise _Unfit("compare names no second table")
+                line = _compare(table, query, second)
+                if second.document_id != table.document_id:
+                    requires = (second.document_id,)
+            else:
+                line = _run(table, query)
         except _Unfit as exc:
             logger.info("table answers: dropped a query for %r: %s", question[:60], exc)
             continue
         except Exception:  # noqa: BLE001
             logger.warning("table answers: a query failed", exc_info=True)
             continue
-        per_table.setdefault(table.id, (table, []))[1].append(line)
+        per_table.setdefault((table.id, requires), (table, []))[1].append(line)
     return [
         TableAnswer(provider=table.provider, document_id=table.document_id,
                     document_title=table.document_title, source_uri=table.source_uri,
                     text="Figures worked out from the table's rows:\n"
-                         + "\n".join(f"- {line}" for line in lines))
-        for table, lines in per_table.values()
+                         + "\n".join(f"- {line}" for line in lines),
+                    requires=requires)
+        for (_, requires), (table, lines) in per_table.items()
     ]
 
 

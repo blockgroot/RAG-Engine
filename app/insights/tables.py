@@ -22,13 +22,17 @@ from dataclasses import dataclass
 
 from ..doctables.store import AGGREGATES, TableRef
 
-#: How many tables a chart question may see. Each costs a catalogue line, but
-#: at 6 "revenue by region by month" never saw the leads sheet: its revenue
-#: column is "Deal Value" and its months are dates, so it matched one word and
-#: ranked 7th, behind tables that matched "revenue" or "month" by name. Only
-#: the model can tell those apart, so it is shown enough to choose from.
+#: How many tables a chart question may see. At 6, then 10, the leads sheet was
+#: not among them: a sheet embeds only its column names, so "revenue by region"
+#: or "target vs achieved" matched its "Deal Value" by nothing, and pages with
+#: many tables ranked above it. Only the model can tell those apart, so it is
+#: shown many -- the first ``FULL_DETAIL`` with their values, the rest as one
+#: short line of headers (``catalogue(full=...)``).
 # ponytail: one ranked list capped here; a two-step pick when scopes hold far more tables.
-MAX_OFFERED = 10
+MAX_OFFERED = 30
+FULL_DETAIL = 8
+#: Tables of one document in the first pass of an offered list (``rank``).
+PER_DOCUMENT = 2
 
 MEASURES = ("count",) + tuple(AGGREGATES)
 #: Values one table filter may keep: things compared side by side, not a list
@@ -163,13 +167,42 @@ def rank(
     scored = [(fused.get(t.document_id or "", 0.0) + own.get(i, 0.0), i, t)
               for i, t in enumerate(tables)]
     ordered = sorted(scored, key=lambda s: (-s[0], s[1]))
-    return [t for _, _, t in ordered[:limit]]
+    return _documents_first([t for _, _, t in ordered], limit)
 
 
-def catalogue(tables: list[TableRef]) -> str:
-    """The prompt section: one line per offered table, handle first."""
+def _documents_first(ordered: list[TableRef], limit: int) -> list[TableRef]:
+    """At most ``PER_DOCUMENT`` tables of one document until every ranked
+    document had its turn, then the rest in order.
+
+    A document's similarity is shared by all its tables, so one page with
+    seven tables took five of ten slots and the leads sheet the question was
+    about was never offered. A page the asker NAMED is offered whole by the
+    caller (``routing._document_tables``), before this list."""
+    taken: list[TableRef] = []
+    count: dict[str, int] = {}
+    later: list[TableRef] = []
+    for table in ordered:
+        doc = table.document_id or table.id
+        if count.get(doc, 0) < PER_DOCUMENT:
+            count[doc] = count.get(doc, 0) + 1
+            taken.append(table)
+        else:
+            later.append(table)
+    return (taken + later)[:limit]
+
+
+def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
+    """The prompt section: one line per offered table, handle first.
+
+    The first ``full`` (all, when None) carry each column's type and values;
+    the rest only their headers, so a long list stays short in the prompt."""
     lines = []
     for i, table in enumerate(tables, start=1):
+        if full is not None and i > full:
+            heads = ", ".join(str(c.get("name", "")) for c in table.columns)
+            lines.append(f"- T{i}: \"{table.name}\" in \"{table.document_title}\" "
+                         f"[{table.provider}], {table.row_count} rows. Columns: {heads}")
+            continue
         cols = []
         for c in table.columns:
             kind = c.get("type")

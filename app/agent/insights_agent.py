@@ -217,11 +217,10 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         _need(spec.value, ("number",), "value to add up")
     for key, _ in spec.filters:
         _need(key, ("category",), "filter")
-    filters = tuple(
-        (key, tuple(dict.fromkeys(_match_table_value(table, key, r) for r in raw))
-         if isinstance(raw, tuple) else _match_table_value(table, key, raw))
-        for key, raw in spec.filters
-    )
+    filters = _matched_filters(table, spec.filters)
+    if spec.versus is not None:
+        return _run_versus(spec, table, filters, org_id=org_id, workspace_id=workspace_id,
+                           viewer=viewer, uploads=uploads)
     # A column of bare years ("2024", "FY2025") is a yearly axis: drawn by
     # month it read "Jan 2024". Format, not intent.
     period = spec.period
@@ -311,6 +310,108 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
                   "origin": table.origin, "upload": table.is_upload},
     }
     return panel, period
+
+
+def _matched_filters(table, raw_filters) -> tuple:
+    """Typed filter values -> values the rows hold (one, or several kept)."""
+    return tuple(
+        (key, tuple(dict.fromkeys(_match_table_value(table, key, r) for r in raw))
+         if isinstance(raw, tuple) else _match_table_value(table, key, raw))
+        for key, raw in raw_filters
+    )
+
+
+def _run_versus(spec: ChartSpec, first, first_filters, *, org_id, workspace_id, viewer,
+                uploads=None) -> tuple[dict, str]:
+    """Two tables' figures per the same names, as one grouped bar chart.
+
+    The second table is looked up again with the viewer, like the first: a
+    chart is never more visible than either document. Names are matched case-
+    and space-insensitively; a name the column holds with no matching row is 0
+    (it counts), one only the other table has is drawn at 0 on this side only
+    when its own column holds it, and is otherwise left out and said."""
+    from ..doctables import store as table_store
+
+    versus = spec.versus
+    second = table_store.get_table(versus.table_id, org_id=org_id, workspace_id=workspace_id,
+                                   viewer=viewer, uploads=uploads)
+    if second is None:
+        raise CannotChart("That table is no longer available to chart.")
+    for tbl, key in ((first, spec.group_by), (second, versus.group_by)):
+        if (tbl.column(key) or {}).get("type") != "category":
+            raise CannotChart("I can't chart it that way: that column can't be the breakdown.")
+    for tbl, measure, value in ((first, spec.measure or "sum", spec.value),
+                                (second, versus.measure, versus.value)):
+        if measure != "count" and (tbl.column(value) or {}).get("type") != "number":
+            raise CannotChart("I can't chart it that way: there is no number column to add up.")
+    second_filters = _matched_filters(second, versus.filters)
+
+    def side(tbl, measure, value, group, filters):
+        points = table_store.run_table_query(
+            tbl, measure=measure, value_key=value if measure != "count" else None,
+            group_key=group, split_key=None, period="month", filters=filters)
+        out = {str(p.group): p.value for p in points if p.group is not None}
+        if measure in ("count", "sum"):
+            for name in table_store.list_values(tbl, group):
+                out.setdefault(str(name), 0.0)
+        return out
+
+    try:
+        a = side(first, spec.measure or "sum", spec.value, spec.group_by, first_filters)
+        b = side(second, versus.measure, versus.value, versus.group_by, second_filters)
+    except ValueError as exc:
+        raise CannotChart(f"I can't chart it that way. {exc}") from exc
+    key = lambda n: " ".join(n.lower().split())  # noqa: E731
+    b_by = {key(n): v for n, v in b.items()}
+    shared = [n for n in a if key(n) in b_by]
+    if not shared:
+        raise CannotChart(
+            f"\"{first.name}\" and \"{second.name}\" share no names to compare.")
+    a_keys = {key(n) for n in a}
+    left_out = sorted([n for n in a if key(n) not in b_by] + [n for n in b if key(n) not in a_keys])
+
+    def name_of(tbl, col):
+        c = tbl.column(col) if col else None
+        return c["name"] if c else "rows"
+
+    a_label = name_of(first, spec.value) if (spec.measure or "sum") != "count" else f"Rows in {first.name}"
+    b_label = name_of(second, versus.value) if versus.measure != "count" else f"Rows in {second.name}"
+    if a_label == b_label:
+        a_label, b_label = f"{a_label} ({first.name})", f"{b_label} ({second.name})"
+    a_unit = describe.table_unit(spec.measure or "sum", first.column(spec.value) if spec.value else None)
+    b_unit = describe.table_unit(versus.measure, second.column(versus.value) if versus.value else None)
+    points = []
+    for n in shared:
+        points.append({"bucket": "", "group": n, "series": a_label, "value": a[n]})
+        points.append({"bucket": "", "group": n, "series": b_label, "value": b_by[key(n)]})
+    title = f"{a_label} vs {b_label} by {name_of(first, spec.group_by)}"
+    for tbl, filters in ((first, first_filters), (second, second_filters)):
+        for k, v in filters:
+            title += f" — {name_of(tbl, k)}: {_shown(v)}"
+    notes = [f"From the tables in \"{first.document_title}\" and \"{second.document_title}\"."]
+    notes += [f"Names matched across the two tables; only in one of them: {_listed(left_out)}."
+              ] if left_out else []
+    panel = {
+        "id": f"table:{first.id}:vs:{second.id}:{spec.group_by}:{versus.group_by}",
+        "provider": first.provider,
+        "title": title,
+        "focus": None,
+        "chart": "bar",
+        "group_by": spec.group_by,
+        "split_by": "measure",
+        "filters": [[k, _shown(v)] for k, v in first_filters],
+        "unit": a_unit if a_unit == b_unit else "",
+        "series_units": {a_label: a_unit, b_label: b_unit},
+        "explain": (f"Each pair of bars is one {name_of(first, spec.group_by).lower()}: "
+                    f"{a_label} from \"{first.name}\" beside {b_label} from \"{second.name}\"."),
+        "caveat": " ".join(notes),
+        "points": points,
+        "details": [],
+        "measured_since": None,
+        "table": {"id": first.id, "name": first.name, "document": first.document_title,
+                  "origin": first.origin, "upload": first.is_upload},
+    }
+    return panel, spec.period
 
 
 def _shown(value) -> str:
