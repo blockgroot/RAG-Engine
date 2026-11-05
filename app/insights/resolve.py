@@ -1543,6 +1543,10 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
         named = [k for k in keys if k != group
                  and (header := _words(str((table.column(k) or {}).get("name", ""))))
                  and header <= asked]
+        # "by lead status" names Lead Status, not also Status: a header whose
+        # words sit inside another named header's is that one's word.
+        heads = {k: _words(str((table.column(k) or {}).get("name", ""))) for k in named}
+        named = [k for k in named if not any(heads[k] < heads[o] for o in named)]
         if len(named) == 1 and not data.get("group_by") and not period_asked:
             # The model named no column, so the axis was a default (the date
             # column), not asked for: "leads by stage" drew Created x Stage.
@@ -1603,6 +1607,12 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     if table is None:
         return intent
     asked = f" {_squashed(question)} "
+    # A header the question names is the column, not a value: "by applied via"
+    # filtered Lead Status to "Applied". Values are looked for outside headers.
+    for column in table.columns:
+        header = _squashed(str(column.get("name", "")))
+        if header:
+            asked = asked.replace(f" {header} ", " ")
     drawn = {spec.group_by, spec.split_by}
     filters = dict(spec.filters)
     changed = False

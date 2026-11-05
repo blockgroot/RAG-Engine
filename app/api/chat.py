@@ -1391,6 +1391,11 @@ def _counted_answer(result) -> str:
             lines.append(f"- {label}: {format_value(point['value'], chart.get('unit') or '')}")
     more = [f"- …and {len(points) - _COUNTED_LINES} more in the chart"] \
         if len(points) > _COUNTED_LINES else []
+    if lines and len(points) > 1 and chart.get("measure") in ("count", "sum"):
+        # "How many interviews?" asked for ONE number: a small model read the
+        # three months off the list and never added them up.
+        total = sum(float(p["value"]) for p in points if p.get("value") is not None)
+        more.append(f"- Total: {format_value(total, chart.get('unit') or '')}")
     return "\n".join([result.answer, "", *lines, *more]) if lines else result.answer
 
 

@@ -297,6 +297,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         "split_by": (None if by_date else spec.split_by),
         "filters": [[k, _shown(v)] for k, v in filters],
         "unit": unit,
+        "measure": measure,
         "explain": explain,
         "caveat": " ".join(notes),
         "points": [

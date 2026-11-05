@@ -191,6 +191,12 @@ def _documents_first(ordered: list[TableRef], limit: int) -> list[TableRef]:
     return (taken + later)[:limit]
 
 
+def _typed_note(table: TableRef) -> str:
+    typed = getattr(table, "typed", ())
+    return ("; the question types its values: " + ", ".join(
+        f"{name} \"{value}\"" for name, value in typed)) if typed else ""
+
+
 def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
     """The prompt section: one line per offered table, handle first.
 
@@ -200,8 +206,9 @@ def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
     for i, table in enumerate(tables, start=1):
         if full is not None and i > full:
             heads = ", ".join(str(c.get("name", "")) for c in table.columns)
+            said = _typed_note(table)
             lines.append(f"- T{i}: \"{table.name}\" in \"{table.document_title}\" "
-                         f"[{table.provider}], {table.row_count} rows. Columns: {heads}")
+                         f"[{table.provider}], {table.row_count} rows. Columns: {heads}{said}")
             continue
         cols = []
         for c in table.columns:
@@ -218,7 +225,14 @@ def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
                 unit = f", {c['unit']}" if c.get("unit") else ""
                 cols.append(f"{c['name']} (number{unit})")
             elif kind == "date":
-                cols.append(f"{c['name']} (date)")
+                span = f", {c['first']} to {c['last']}" if c.get("first") else ""
+                cols.append(f"{c['name']} (date{span})")
+            elif kind == "text":
+                # Too many values to list (a company, a link): still a column a
+                # question names a value of, so the model must see it exists.
+                values = [str(s) for s in c.get("samples", []) or []][:2]
+                cols.append(f"{c['name']} (text, {c.get('distinct', 'many')} different values"
+                            + (f", e.g. {', '.join(values)}" if values else "") + ")")
         kind = (" (figures read from the document's sentences)"
                 if getattr(table, "origin", "table") == "text" else "")
         where = (f"in the file \"{table.document_title}\" the asker uploaded to this chat"
@@ -226,9 +240,10 @@ def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
                  else f"in \"{table.document_title}\"{kind} [{table.provider}]")
         if getattr(table, "is_upload", False):
             where += kind.replace("document's", "file's")
+        said = _typed_note(table)
         lines.append(
             f"- T{i}: \"{table.name}\" {where}, {table.row_count} rows. "
-            f"Columns: {'; '.join(cols)}"
+            f"Columns: {'; '.join(cols)}{said}"
         )
     return "\n".join(lines)
 

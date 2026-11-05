@@ -655,7 +655,7 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
                      providers: list[str] | None = None, tag: str | None = None,
                      limit: int | None = None) -> list:
     try:
-        from ..doctables.store import list_tables
+        from ..doctables.store import list_tables, typed_cells
         from ..insights import tables as doc_tables
 
         listed = doc_tables.distinct(list_tables(org_id=org_id, workspace_id=workspace_id,
@@ -686,7 +686,19 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
             )
         # The page they named has to be offered. Six closer tables used to
         # fill the cap and the named page came back as "I don't see it".
-        return (named + ranked)[: limit or doc_tables.MAX_OFFERED]
+        offered = named + ranked
+        # A table holding a value the question TYPES ("Daniel Reed") comes
+        # first and says so: Claude Haiku charted another leads sheet that
+        # had no such name. The data's own cells, read through their index.
+        typed = typed_cells(question, listed)
+        if typed:
+            from dataclasses import replace
+
+            first = [replace(t, typed=typed[t.id]) for t in offered if t.id in typed]
+            first += [replace(t, typed=typed[t.id]) for t in listed
+                      if t.id in typed and t not in offered]
+            offered = first + [t for t in offered if t.id not in typed]
+        return offered[: limit or doc_tables.MAX_OFFERED]
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: could not list document tables", exc_info=True)
         return []
@@ -786,6 +798,9 @@ def _try_question_route(
     # A follow-up is read with the question it continues, for the table check
     # only: "and only for the South region?" alone asks for nothing.
     checked = with_earlier(question, context) if tables_on else question
+    # Beside the check, not after it: SQL only, so it adds no wait.
+    names_sheet = (_ROUTING_POOL.submit(_names_a_sheet, checked, org_id, workspace_id, viewer)
+                   if tables_on else None)
     try:
         intent = classify_route(checked, github="github" in connected, table=tables_on)
     except Exception:  # noqa: BLE001
@@ -805,7 +820,17 @@ def _try_question_route(
         # They asked to SEE a chart; the web chat says where charts live
         # instead of answering a chart request in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
-    if tables_on and getattr(intent, "table_ask", False):
+    table_ask = getattr(intent, "table_ask", False)
+    if tables_on and not table_ask and names_sheet is not None:
+        # Claude Haiku's yes/no flipped between runs on the same question
+        # ("which BDE has the most offers?"). A question typing a sheet's cell
+        # or naming its column is asked of the form too; the form still
+        # answers nothing when no table fits.
+        try:
+            table_ask = names_sheet.result(timeout=_NAMES_SHEET_WAIT)
+        except Exception:  # noqa: BLE001 - a hint may only ever add
+            logger.warning("Agent routing: sheet check failed", exc_info=True)
+    if tables_on and table_ask:
         # "What is our conversion ratio?": a figure over a sheet's rows, which
         # the passages cannot hold. Worked out by a checked query and given to
         # the answer as a passage of the sheet; nothing fits, Ask goes on as before.
@@ -1297,6 +1322,25 @@ def _no_clear_winner(scores: dict[str, float]) -> bool:
     """True when the best source leads the runner-up by less than the margin."""
     top = sorted(scores.values(), reverse=True)
     return not top or (len(top) > 1 and top[0] - top[1] < _FOLLOW_UP_MARGIN)
+
+
+#: Seconds the sheet check may still take once the model's check is back.
+_NAMES_SHEET_WAIT = 2.0
+
+
+def _names_a_sheet(question: str, org_id: str, workspace_id: str | None, viewer) -> bool:
+    """Does the question type a cell of a sheet this viewer can read, or name
+    one of its column headers by every word? The data's own words, no list."""
+    from ..doctables.store import list_tables, typed_cells
+    from ..insights.tables import _words
+
+    tables = [t for t in list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+              if t.origin != "text"]
+    asked = _words(question)
+    if any((words := _words(str(c.get("name", "")))) and words <= asked
+           for t in tables for c in t.columns):
+        return True
+    return bool(typed_cells(question, tables))
 
 
 def _rows_named_provider(question: str, org_id: str, workspace_id: str | None,

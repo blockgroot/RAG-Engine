@@ -865,9 +865,14 @@ class RagPipeline:
         question_decomposed = False
         recovery_queries: list[str] = []
 
+        from ..insights.table_answers import current_answers
+
+        # A turn with figures worked out for IT never reuses the last turn's
+        # passages: "and how many of them reached an offer?" was answered from
+        # the previous turn's figure and refused.
         reused = (
             None
-            if date_range is not None or tags is not None
+            if date_range is not None or tags is not None or current_answers()
             else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         )
         if reused is not None:

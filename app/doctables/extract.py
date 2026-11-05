@@ -25,7 +25,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 MAX_TABLES_PER_DOCUMENT = 10
-MAX_ROWS = 5000
+#: Rows kept per table. A lead tracker runs to tens of thousands; rows are
+#: found through an index (`store.rows_naming`) and added up in SQL.
+MAX_ROWS = 50000
 MAX_COLUMNS = 30
 #: A "table" of one row or one column is a list or a sentence with pipes in it.
 MIN_ROWS = 2
@@ -59,6 +61,9 @@ class RawTable:
     truncated: bool = False
     #: Disclosures the source knows and the rows cannot show ("first tab only").
     notes: tuple[str, ...] = ()
+    #: Leading columns WE added as labels (a merged workbook's ``Tab``): always a
+    #: category, so "Nov 2026" is a tab to filter on, never a second date axis.
+    labels: int = 0
 
 
 @dataclass(frozen=True)
@@ -74,13 +79,20 @@ class Column:
     #: Non-empty cells that did not parse as the column's type. They are
     #: stored raw and left out of any sum, and the chart caveat says how many.
     unparsed: int = 0
+    #: A date column's first and last day (ISO): which table holds "November"
+    #: is read off these, not guessed from a title.
+    first: str = ""
+    last: str = ""
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "key": self.key, "name": self.name, "type": self.type,
             "unit": self.unit, "distinct": self.distinct,
             "samples": list(self.samples), "unparsed": self.unparsed,
         }
+        if self.first:
+            out["first"], out["last"] = self.first, self.last
+        return out
 
 
 @dataclass(frozen=True)
@@ -131,6 +143,48 @@ def parse_csv(text: str, *, name: str) -> RawTable | None:
 _PIPE_ROW = re.compile(r"^\s*\|?(.+?\|.*?)\|?\s*$")
 _SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
 _HEADING = re.compile(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$")
+
+
+#: The column a workbook's same-shaped tabs are told apart by once merged.
+TAB_COLUMN = "Tab"
+
+
+def workbook_tables(name: str, data: bytes) -> list[RawTable]:
+    """Every tab of an .xlsx (an upload, a Drive file, a Google Sheet exported
+    as one) as tables, through the ONE workbook reader.
+
+    Tabs with the same header ("Oct", "Nov", "Dec" of one tracker) are ONE
+    table with a ``Tab`` column: "how many leads in total" is then one SQL
+    count over every tab, never three figures a model must add up, and a
+    question about one month filters on its tab. Other tabs stay their own.
+    """
+    from ..attachments.extract import xlsx_sheets
+
+    sheets, more = xlsx_sheets(data, MAX_ROWS + 1)
+    groups: dict[tuple, list[tuple[str, list[list[str]], bool]]] = {}
+    for tab, rows, cut in sheets:
+        if len(rows) < MIN_ROWS + 1:
+            continue
+        key = tuple(c.strip().casefold() for c in rows[0])
+        groups.setdefault(key, []).append((tab, rows, cut))
+    out = []
+    for key, tabs in groups.items():
+        notes = ()
+        if more:
+            notes += (f"Only the first {len(sheets)} sheets of this workbook were read.",)
+        if len(tabs) > 1 and TAB_COLUMN.casefold() not in key:
+            rows = [[tab, *r] for tab, body, _ in tabs for r in body[1:]]
+            cut = any(c for _, _, c in tabs) or len(rows) > MAX_ROWS
+            out.append(RawTable(
+                name=f"{name} · {', '.join(t for t, _, _ in tabs)}"[:200],
+                header=[TAB_COLUMN, *tabs[0][1][0]], rows=rows[:MAX_ROWS], truncated=cut,
+                notes=notes, labels=1))
+            continue
+        for tab, rows, cut in tabs:
+            out.append(RawTable(
+                name=(f"{name} · {tab}" if len(sheets) > 1 else name)[:200],
+                header=rows[0], rows=rows[1:MAX_ROWS + 1], truncated=cut, notes=notes))
+    return out[:MAX_TABLES_PER_DOCUMENT]
 
 
 def _split_pipe_row(line: str) -> list[str]:
@@ -334,9 +388,13 @@ def profile(raw: RawTable) -> Table | None:
         date_fmt = "%Y" if is_year and all(_YEAR.match(v) for v in values) else None
         if date_fmt is None and len(parsed_numbers) < TYPE_SHARE * len(values):
             date_fmt = _date_format(values)
+        label = i < raw.labels
+        if label:
+            date_fmt, parsed_numbers = None, []
 
         if date_fmt:
             unparsed = 0
+            days = []
             for row_i, r in enumerate(rows):
                 if not r[i]:
                     continue
@@ -345,9 +403,11 @@ def profile(raw: RawTable) -> Table | None:
                     unparsed += 1
                 else:
                     cells[row_i][key] = d.isoformat()
+                    days.append(cells[row_i][key][:10])
             columns.append(Column(key, names[i], "date", unparsed=unparsed,
                                   distinct=len(set(values)),
-                                  samples=tuple(values[:3])))
+                                  samples=tuple(values[:3]),
+                                  first=min(days, default=""), last=max(days, default="")))
             continue
 
         if len(parsed_numbers) >= TYPE_SHARE * len(values):
@@ -371,7 +431,7 @@ def profile(raw: RawTable) -> Table | None:
             continue
 
         distinct = sorted({v for v in values})
-        kind = "category" if len(distinct) <= max(MAX_CATEGORY_DISTINCT, 0) else "text"
+        kind = "category" if label or len(distinct) <= max(MAX_CATEGORY_DISTINCT, 0) else "text"
         for row_i, r in enumerate(rows):
             if r[i]:
                 cells[row_i][key] = r[i][:200]
@@ -392,6 +452,12 @@ def profile(raw: RawTable) -> Table | None:
     )
 
 
+#: How every sheet's embedded description begins. A page starting with it is
+#: OUR column description, never prose to read figures from: its "12500 rows"
+#: was read as a figure and stored as a table of the sheet's columns.
+DESCRIPTION_LEAD = "Spreadsheet table \""
+
+
 def describe(table: Table) -> str:
     """The text embedded for a spreadsheet, INSTEAD of its cells.
 
@@ -400,7 +466,7 @@ def describe(table: Table) -> str:
     a number read back out of chunk text is the unfalsifiable kind this whole
     step exists to replace. The chart path reads the rows.
     """
-    parts = [f"Spreadsheet table \"{table.name}\" with {len(table.cells)} rows."]
+    parts = [f"{DESCRIPTION_LEAD}{table.name}\" with {len(table.cells)} rows."]
     for c in table.columns:
         if c.type == "category":
             shown = c.samples[:DESCRIBED_SAMPLES]

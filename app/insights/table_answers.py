@@ -23,6 +23,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from ..doctables import store as table_store
 from ..doctables.store import TableRef
@@ -34,12 +35,15 @@ logger = logging.getLogger(__name__)
 
 #: What one query may work out. "ratio" divides the rows (or the sum) matching
 #: ``filters`` + ``of_these`` by those matching ``filters``; "top" lists rows.
-OPERATIONS = ("count", "sum", "average", "min", "max", "ratio", "top", "compare")
+OPERATIONS = ("count", "sum", "average", "min", "max", "ratio", "top", "compare",
+              "distinct", "rows")
 #: Queries one form may ask for: two meanings of one measure, two people
 #: compared, an overview. More is a report, not an answer.
 MAX_QUERIES = 4
 #: Groups written into the passage per query; the rest are counted, not dropped silently.
 MAX_GROUPS = 12
+#: Values a ``distinct`` query lists ("which companies"); the count covers them all.
+MAX_LISTED = 60
 #: The form is a short JSON object; a reasoning model is told to stop there.
 FORM_MAX_TOKENS = 700
 #: Tables the form is shown. Far more than a chart's six: "conversion ratio"
@@ -67,6 +71,12 @@ class _Unfit(ValueError):
     """The form does not fit the table; the query is dropped."""
 
 
+class _Absent(_Unfit):
+    """What the query asks about is not in the table: a name no column holds,
+    a period outside the dates. Said in the passage as a fact, so the answer
+    can say so; dropped, a small model answered "0" or guessed."""
+
+
 def _prompt(question: str, tables: list[TableRef]) -> str:
     fenced = scrub_untrusted_text(question)[:500]
     return (
@@ -76,8 +86,11 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         "Tables the person may read:\n"
         f"{doc_tables.catalogue(tables)}\n\n"
         "Reply with ONLY a JSON object:\n"
-        '{"queries": [{"table": "T1", "operation": "count|sum|average|min|max|ratio|top", '
+        '{"queries": [{"table": "T1", "operation": "count|sum|average|min|max|ratio|top|'
+        'distinct|rows", '
         '"value": "<number column header, or null for a count>", '
+        '"column": "<column header whose different values are counted and listed> '
+        '(distinct only)", '
         '"group_by": "<column header, or null>", '
         '"filters": {"<column header>": "<value>" or ["<value>", ...]}, '
         '"of_these": {"<column header>": "<value>" or ["<value>", ...]}, '
@@ -92,13 +105,23 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         "fits, and the filters that make it the figure asked about.\n"
         "- group_by is the column whose values the question compares or ranks (which "
         "one, by each, per). filters keep a subset of rows; never list every value of a "
-        "column as a filter. A list means any of those values.\n"
+        "column as a filter. A list means any of those values. A word of the question "
+        "that happens to spell a value is a filter only when the question asks for "
+        "just those rows: \"which company have we applied to most\" counts every "
+        "application, not only rows whose status reads Applied.\n"
         "- Never answer a different question as a stand-in (a count of people for "
         "an amount of money): if no listed table holds the figure asked about, leave "
         "that query out. A number column whose meaning fits counts, with the filter "
         "that makes it the figure asked (an amount earned is the amount of the rows "
         "whose state says it was earned). "
         "is_the_figure_asked is false for any query that works out something else.\n"
+        "- A date column's filter is a period: \"2026-11\" a month, \"2026\" a year, "
+        "\"2026-11-05\" a day, or [\"2026-10\", \"2026-12\"] a range, both ends included.\n"
+        "- distinct: how many DIFFERENT values of column the filtered rows hold, and "
+        "which (how many companies someone applied to, which roles, which people). A "
+        "count counts rows, not different values.\n"
+        "- rows: the matching rows themselves, when they ask to see or list the records "
+        "(what are someone's leads in one stage).\n"
         "- ratio: the share of the filtered rows that ALSO match of_these (with value, "
         "the share of its sum). Without of_these it is not a ratio.\n"
         "- top: the rows with the highest value; group_by is not used. Use it when "
@@ -150,35 +173,100 @@ def _column(table: TableRef, name, types: tuple[str, ...], role: str) -> str | N
 def _filters(table: TableRef, raw) -> tuple[tuple[str, object], ...]:
     """``{header: value or [values]}`` -> column keys and REAL cell values.
 
-    Every value must be one the column holds (case-insensitive, then written
-    as stored); one that is not is a filter the rows cannot satisfy, so the
-    query is dropped rather than answered as zero."""
+    Every value must be one the column holds (case- and space-insensitive,
+    then written as stored). A value the named column lacks but exactly ONE
+    other column holds is that column's (the data's own words: a developer
+    put under the profile column). A value no column holds, or a period
+    outside a date column's dates, is ``_Absent``: said, never answered as 0."""
     if raw in (None, {}):
         return ()
     if not isinstance(raw, dict):
         raise _Unfit("filters were not a mapping")
     out = []
     for name, wanted in raw.items():
-        key = _column(table, name, ("category",), "filter")
+        key = _column(table, name, ("category", "text", "date"), "filter")
         if key is None:
             continue
-        real = {str(v).strip().lower(): str(v) for v in table_store.list_values(table, key)}
         values = wanted if isinstance(wanted, list) else [wanted]
-        picked = []
-        for value in values:
-            found = real.get(str(value).strip().lower()) if isinstance(value, (str, int, float)) else None
-            if found is None:
-                raise _Unfit(f"{name!r} has no value {value!r}")
-            picked.append(found)
+        if (table.column(key) or {}).get("type") == "date":
+            out.append((key, _span(table, key, values)))
+            continue
+        typed = [str(v) for v in values if isinstance(v, (str, int, float))]
+        if len(typed) != len(values):
+            raise _Unfit(f"{name!r} had a value that is not text")
+        real = table_store.match_values(table, key, typed)
+        missing = [v for v in typed if _norm(v) not in real]
+        if missing:
+            key, real = _holder(table, key, typed)
+        picked = [real[_norm(v)] for v in typed]
         if picked:
             out.append((key, tuple(picked) if len(picked) > 1 else picked[0]))
     return tuple(out)
+
+
+def _norm(value) -> str:
+    return " ".join(str(value).split()).lower()
+
+
+def _holder(table: TableRef, key: str, typed: list[str]) -> tuple[str, dict[str, str]]:
+    """The one other column holding every typed value, else ``_Absent``."""
+    found = []
+    for col in table.columns:
+        if col.get("key") == key or col.get("type") not in ("category", "text"):
+            continue
+        real = table_store.match_values(table, col["key"], typed)
+        if all(_norm(v) in real for v in typed):
+            found.append((col["key"], real))
+    if len(found) == 1:
+        return found[0]
+    name = (table.column(key) or {}).get("name", key)
+    raise _Absent(f"\"{table.name}\" has no {name} {' or '.join(map(repr, typed))}, "
+                  "and no other column holds it")
+
+
+_PERIOD = re.compile(r"\s*(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?\s*")
+
+
+def _bounds(text: str) -> tuple[date, date]:
+    """``"2026-11"`` -> (first day, the day after the last)."""
+    found = _PERIOD.fullmatch(str(text))
+    if not found:
+        raise _Unfit(f"{text!r} is not a period")
+    year, month, day = (int(g) if g else None for g in found.groups())
+    try:
+        if day:
+            start = date(year, month, day)
+            return start, start + timedelta(days=1)
+        if month:
+            start = date(year, month, 1)
+            return start, date(year + month // 12, month % 12 + 1, 1)
+        return date(year, 1, 1), date(year + 1, 1, 1)
+    except ValueError as exc:
+        raise _Unfit(f"{text!r} is not a date") from exc
+
+
+def _span(table: TableRef, key: str, values: list) -> table_store.DateSpan:
+    """A period filter on a date column, checked against the dates it holds."""
+    if not values or len(values) > 2:
+        raise _Unfit("a period is one value or a [from, to] pair")
+    start, end = _bounds(values[0])[0], _bounds(values[-1])[1]
+    held = table_store.date_span(table, key)
+    name = (table.column(key) or {}).get("name", key)
+    asked = " to ".join(str(v) for v in values)
+    if held is None or end <= date.fromisoformat(held[0]) or start > date.fromisoformat(held[1]):
+        shown = f"its {name} runs from {held[0]} to {held[1]}" if held else f"its {name} is empty"
+        raise _Absent(f"\"{table.name}\" has no rows with {name} in {asked}: {shown}")
+    return table_store.DateSpan(start, end)
 
 
 def _where(table: TableRef, filters) -> str:
     parts = []
     for key, value in filters:
         name = (table.column(key) or {}).get("name", key)
+        if isinstance(value, table_store.DateSpan):
+            last = value.end - timedelta(days=1)
+            parts.append(f"{name} from {value.start.isoformat()} to {last.isoformat()}")
+            continue
         shown = " or ".join(value) if isinstance(value, tuple) else value
         parts.append(f"{name} is {shown}")
     return " and ".join(parts)
@@ -194,7 +282,7 @@ def _run(table: TableRef, query: dict) -> str:
     if operation not in OPERATIONS:
         raise _Unfit(f"unknown operation {operation!r}")
     value = _column(table, query.get("value"), ("number",), "value to work out")
-    group = _column(table, query.get("group_by"), ("category", "date"), "breakdown")
+    group = _column(table, query.get("group_by"), ("category", "date", "text"), "breakdown")
     filters = _filters(table, query.get("filters"))
     label = str(query.get("label") or operation)[:120]
     # The header's bracket, else the cells' symbol: the chart's own rule.
@@ -202,6 +290,34 @@ def _run(table: TableRef, query: dict) -> str:
     scope = _where(table, filters)
     head = f"{label} (from \"{table.name}\"" + (f", rows where {scope}" if scope else "") + ")"
 
+    if operation == "distinct":
+        column = _column(table, query.get("column") or query.get("group_by"),
+                         ("category", "text"), "column to list")
+        if not column:
+            raise _Unfit("distinct needs a column")
+        total, values = table_store.distinct_values(table, column, filters=filters,
+                                                    limit=MAX_LISTED)
+        name = table.column(column)["name"]
+        listed = "; ".join(f"{v} ({n} rows)" for v, n in values)
+        more = f"; and {total - len(values)} more" if total > len(values) else ""
+        rows = table_store.count_rows(table, filters=filters)
+        return (f"{head}, over {rows} rows: {total} different {name} values, most rows "
+                f"first: {listed}{more}")
+
+    if operation == "rows":
+        rows = table_store.count_rows(table, filters=filters)
+        shown = table_store.list_rows(table, filters=filters)
+        listed = " | ".join(
+            "; ".join(f"{c['name']}: {cells[c['key']]}" for c in table.columns
+                      if str(cells.get(c["key"], "")).strip())
+            for cells, _raw, _quote in shown)
+        more = f" (the first {len(shown)} of them)" if rows > len(shown) else ""
+        return f"{head}: {rows} rows{more}: {listed}" if shown else f"{head}: no rows."
+
+    if operation == "top" and not value and group:
+        # "Which channel brought the most applications": the most ROWS per
+        # group, which is a count by that group, largest first.
+        operation = "count"
     if operation == "top":
         if not value:
             raise _Unfit("top needs a number column")
@@ -370,6 +486,8 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
                     requires = (second.document_id,)
             else:
                 line = _run(table, query)
+        except _Absent as exc:
+            line = str(exc)
         except _Unfit as exc:
             logger.info("table answers: dropped a query for %r: %s", question[:60], exc)
             continue

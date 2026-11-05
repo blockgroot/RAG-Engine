@@ -1,0 +1,321 @@
+[
+ {
+  "n": 1,
+  "mode": "ask",
+  "question": "What is the lead status for https://jobs.example.com/harborgate-systems/50018?",
+  "expect": "Rejected (Owen Hughes at Harborgate Systems, Cloud Engineer, BDE Vivek Nair)",
+  "must": [
+   "Rejected"
+  ]
+ },
+ {
+  "n": 2,
+  "mode": "ask",
+  "question": "What is the lead status for https://jobs.example.com/maplebridge-systems/57822?",
+  "expect": "Interview Scheduled (Noah Bennett at Maplebridge Systems, Frontend Engineer, BDE Ritu Saxena)",
+  "must": [
+   "Interview Scheduled"
+  ]
+ },
+ {
+  "n": 3,
+  "mode": "ask",
+  "question": "What is the lead status for https://jobs.example.com/bluebridge-systems/59800?",
+  "expect": "Applied (Owen Hughes at Bluebridge Systems, Angular Developer, BDE Ritu Saxena)",
+  "must": [
+   "Applied"
+  ]
+ },
+ {
+  "n": 4,
+  "mode": "ask",
+  "question": "Who is the BDE on https://jobs.example.com/quantumfield-capital/59056?",
+  "expect": "Pooja Iyer",
+  "must": [
+   "Pooja Iyer"
+  ]
+ },
+ {
+  "n": 5,
+  "mode": "ask",
+  "question": "How many companies has Daniel Reed applied to?",
+  "expect": "296 different companies (482 applications)",
+  "must": [
+   "296"
+  ]
+ },
+ {
+  "n": 6,
+  "mode": "ask",
+  "question": "How many applications has Daniel Reed made in total?",
+  "expect": "482",
+  "must": [
+   "482"
+  ]
+ },
+ {
+  "n": 7,
+  "mode": "ask",
+  "question": "How many leads did Daniel Reed have in November?",
+  "expect": "235",
+  "must": [
+   "235"
+  ]
+ },
+ {
+  "n": 8,
+  "mode": "ask",
+  "question": "Which companies gave Daniel Reed an offer?",
+  "expect": "Brightworks Solutions, Cedarpoint Solutions, Harborpoint Technologies, Ironstone Capital, Maplegate Health, Maplestone Software, Novabridge Capital, Pioneerpoint Technologies, Pixelpeak Health, Quantumpoint Capital, Silverline Labs, Silverpoint Analytics, Summitgate Capital",
+  "must": [
+   "Brightworks Solutions",
+   "Cedarpoint Solutions",
+   "Harborpoint Technologies",
+   "Ironstone Capital",
+   "Maplegate Health",
+   "Maplestone Software",
+   "Novabridge Capital",
+   "Pioneerpoint Technologies",
+   "Pixelpeak Health",
+   "Quantumpoint Capital",
+   "Silverline Labs",
+   "Silverpoint Analytics",
+   "Summitgate Capital"
+  ]
+ },
+ {
+  "n": 9,
+  "mode": "ask",
+  "question": "Break down Daniel Reed's leads by lead status",
+  "expect": "Applied: 143; No Response: 107; Screening: 71; Rejected: 53; Technical Round: 41; Interview Scheduled: 31; Client Round: 23; Offer: 13",
+  "must": [
+   "143",
+   "107",
+   "41",
+   "71",
+   "31",
+   "23",
+   "53",
+   "13"
+  ]
+ },
+ {
+  "n": 10,
+  "mode": "ask",
+  "question": "Which roles has Kavya Reddy attempted, and how many times each?",
+  "expect": "Python Developer: 25; Salesforce Developer: 24; Golang Developer: 23; Technical Lead - Java: 23; Node.js Developer: 23 ...",
+  "must": [
+   "Python Developer"
+  ]
+ },
+ {
+  "n": 11,
+  "mode": "ask",
+  "question": "How many interviews has Kavya Reddy attempted?",
+  "expect": "372",
+  "must": [
+   "372"
+  ]
+ },
+ {
+  "n": 12,
+  "mode": "ask",
+  "question": "How many leads has Karan Malhotra generated?",
+  "expect": "1561",
+  "must": [
+   "1561"
+  ]
+ },
+ {
+  "n": 13,
+  "mode": "ask",
+  "question": "How many leads did Karan Malhotra generate in December?",
+  "expect": "356",
+  "must": [
+   "356"
+  ]
+ },
+ {
+  "n": 14,
+  "mode": "ask",
+  "question": "What share of Karan Malhotra's leads reached an offer?",
+  "expect": "43 of 1561 = 2.8%",
+  "must": [
+   "2.8"
+  ]
+ },
+ {
+  "n": 15,
+  "mode": "ask",
+  "question": "Which BDE has the most offers?",
+  "expect": "Pooja Iyer (60)",
+  "must": [
+   "Pooja Iyer",
+   "60"
+  ]
+ },
+ {
+  "n": 16,
+  "mode": "ask",
+  "question": "Who is Karan Malhotra's team lead and what is their email?",
+  "expect": "Neha Joshi; karan.malhotra@talentbridge.example",
+  "must": [
+   "Neha Joshi"
+  ]
+ },
+ {
+  "n": 17,
+  "mode": "ask",
+  "question": "How many applications went through LinkedIn?",
+  "expect": "4241",
+  "must": [
+   "4241"
+  ]
+ },
+ {
+  "n": 18,
+  "mode": "ask",
+  "question": "How many applications were made via LinkedIn and also via Dice?",
+  "expect": "270",
+  "must": [
+   "270"
+  ]
+ },
+ {
+  "n": 19,
+  "mode": "ask",
+  "question": "Which channel brought the most applications in November?",
+  "expect": "LinkedIn (2097)",
+  "must": [
+   "LinkedIn",
+   "2097"
+  ]
+ },
+ {
+  "n": 20,
+  "mode": "ask",
+  "question": "How many leads are in the tracker?",
+  "expect": "12500",
+  "must": [
+   "12500"
+  ]
+ },
+ {
+  "n": 21,
+  "mode": "ask",
+  "question": "How many leads are still open?",
+  "expect": "7573",
+  "must": [
+   "7573"
+  ]
+ },
+ {
+  "n": 22,
+  "mode": "ask",
+  "question": "How many offers did we get across October to December?",
+  "expect": "385",
+  "must": [
+   "385"
+  ]
+ },
+ {
+  "n": 23,
+  "mode": "ask",
+  "question": "Which company have we applied to the most?",
+  "expect": "Maplepeak Capital (45)",
+  "must": [
+   "Maplepeak Capital",
+   "45"
+  ]
+ },
+ {
+  "n": 24,
+  "mode": "ask",
+  "question": "Which profiles applied to Maplepeak Capital?",
+  "expect": "Aria Kelly, Ava Mitchell, Caleb Morris, Chloe Russell, Ella Watson, Emma Foster, Ethan Brooks, Grace Howard, Henry Ross, Lily Sanders, Logan Price, Lucas Ward, Mia Collins, Nora Bell, Olivia Hayes, Owen Hughes, Ryan Cooper, Zoe Parker",
+  "must": [
+   "Aria Kelly",
+   "Ava Mitchell",
+   "Caleb Morris"
+  ]
+ },
+ {
+  "n": 25,
+  "mode": "ask",
+  "question": "How many C2H leads are there in November?",
+  "expect": "1113",
+  "must": [
+   "1113"
+  ]
+ },
+ {
+  "n": 26,
+  "mode": "ask",
+  "question": "How many companies has Jordan Blake applied to?",
+  "expect": "No such profile; says so",
+  "refuse": true
+ },
+ {
+  "n": 27,
+  "mode": "ask",
+  "question": "How many leads did we have in March 2026?",
+  "expect": "Not in the data (Oct-Dec 2026); no zero, no guess",
+  "refuse": true
+ },
+ {
+  "n": 28,
+  "mode": "ask",
+  "question": "What salary was Daniel Reed offered?",
+  "expect": "Not in the data",
+  "refuse": true
+ },
+ {
+  "n": 29,
+  "mode": "ask",
+  "question": "How many leads has Karan Malhotra generated? -> and how many of them reached an offer?",
+  "expect": "1561; then 43",
+  "must": [
+   "43"
+  ],
+  "follow": true
+ },
+ {
+  "n": 30,
+  "mode": "chart",
+  "question": "Leads per month by applied via",
+  "expect": "stacked bar Oct-Dec x channel"
+ },
+ {
+  "n": 31,
+  "mode": "chart",
+  "question": "Offers by BDE",
+  "expect": "bar per BDE, Pooja Iyer highest (60)",
+  "must": [
+   "Pooja Iyer"
+  ]
+ },
+ {
+  "n": 32,
+  "mode": "chart",
+  "question": "Daniel Reed's leads by lead status",
+  "expect": "bar per stage",
+  "must": [
+   "143"
+  ]
+ },
+ {
+  "n": 33,
+  "mode": "chart",
+  "question": "Leads by lead type in December",
+  "expect": "bar 4 types",
+  "must": [
+   "1268"
+  ]
+ },
+ {
+  "n": 34,
+  "mode": "chart",
+  "question": "Weekly leads in November",
+  "expect": "line, weeks of Nov"
+ }
+]

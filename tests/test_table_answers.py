@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -140,6 +141,25 @@ def test_one_typed_value_is_a_filter_and_two_are_a_comparison():
                              measure="count", table_id=leads.id))
     assert (owner, ("Kavya Nair", "Rohan Mehta")) in two.filters
     assert (two.group_by, two.split_by) == (region, owner)
+
+
+def test_a_word_of_a_header_the_question_names_is_not_a_typed_value():
+    """Staging, Claude Haiku: "leads per month by applied via" filtered Lead
+    Status to "Applied": the word was the column's own name."""
+    raw = extract.profile(extract.parse_csv(
+        "Date,Lead Status,Applied Via\n2026-10-01,Applied,LinkedIn\n2026-10-02,Offer,Dice\n"
+        "2026-11-03,Applied,Dice\n", name="Leads"))
+    leads = TableRef(id=uuid.uuid4().hex, name="Leads",
+                     columns=tuple(c.as_dict() for c in raw.columns), row_count=3,
+                     truncated=False, notes=(), document_title="Leads", provider="google",
+                     source_uri=None, document_id=uuid.uuid4().hex)
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(leads, "Date"), period="month",
+                     chart="stacked_bar", measure="count", table_id=leads.id,
+                     split_by=_col(leads, "Applied Via"))
+    assert _checked("Leads per month by applied via", '{"period": "month"}', leads,
+                    spec).filters == ()
+    assert _checked("Applied leads per month", '{"period": "month"}', leads,
+                    spec).filters == ((_col(leads, "Lead Status"), "Applied"),)
 
 
 def test_a_comparison_the_model_narrowed_to_one_person_keeps_both():
@@ -367,6 +387,35 @@ def test_another_orgs_sheet_is_never_found_or_offered(org, org_cleanup):
 
 
 @requires_db
+def test_the_cells_a_question_types_are_found_per_table(org):
+    """Staging, Claude Haiku: "Daniel Reed's leads by lead status" charted
+    another leads sheet; only one held that name. The pick is told."""
+    _sheet(org, ["sana@acme.test"])
+    [table] = table_store.list_tables(org_id=org, workspace_id=None,
+                                      viewer=Viewer(email="sana@acme.test"))
+    typed = table_store.typed_cells("Kavya Nair's leads by stage", [table])
+    assert typed == {table.id: (("Owner", "Kavya Nair"),)}
+    # A header the question names is the column: "Region" is not a typed value.
+    assert table_store.typed_cells("Leads by region", [table]) == {}
+    note = doc_tables.catalogue([replace(table, typed=typed[table.id])])
+    assert 'the question types its values: Owner "Kavya Nair"' in note
+
+
+@requires_db
+def test_a_question_naming_a_sheets_column_or_cell_reaches_the_form(org):
+    from app.agent.routing import _names_a_sheet
+
+    _sheet(org, ["sana@acme.test"])
+    me = Viewer(email="sana@acme.test")
+    assert _names_a_sheet("Which region has the most deals?", org, None, me)
+    assert _names_a_sheet("How is Kavya Nair doing?", org, None, me)
+    assert not _names_a_sheet("What is the leave policy?", org, None, me)
+    # Not shared on the sheet: nothing names it.
+    assert not _names_a_sheet("How is Kavya Nair doing?", org, None,
+                              Viewer(email="someone@acme.test"))
+
+
+@requires_db
 def test_a_value_shared_by_many_rows_names_none_of_them(org):
     _sheet(org, ["sana@acme.test"])
     hits = table_store.rows_naming("Kavya Nair's leads", org_id=org, workspace_id=None,
@@ -480,9 +529,44 @@ def test_a_ratio_that_narrows_nothing_is_dropped_not_100_percent(org):
 
 
 @requires_db
-def test_a_value_the_rows_do_not_hold_is_dropped_not_zero(org):
-    assert _worked(org, {"table": "T1", "operation": "count",
-                         "filters": {"Owner": "Priya Sharma"}}) == ""
+def test_a_value_the_rows_do_not_hold_is_said_never_zero(org):
+    """Dropped, the answer had nothing to say no with: a small model answered 0."""
+    text = _worked(org, {"table": "T1", "operation": "count",
+                         "filters": {"Owner": "Priya Sharma"}})
+    assert "has no Owner 'Priya Sharma'" in text and "0" not in text.split(":", 1)[-1]
+
+
+@requires_db
+def test_a_value_under_the_wrong_column_is_read_from_the_one_that_holds_it(org):
+    # "South" is a Region, not an Owner: the data's own words decide.
+    text = _worked(org, {"table": "T1", "operation": "count",
+                         "filters": {"Owner": "south"}})
+    assert "Region is South" in text
+
+
+@requires_db
+def test_distinct_counts_different_values_and_lists_them(org):
+    text = _worked(org, {"table": "T1", "operation": "distinct", "column": "Region",
+                         "filters": {"Owner": "Kavya Nair"}, "label": "regions"})
+    rows = [r for r in LEADS.splitlines()[1:] if "Kavya Nair" in r]
+    assert f"over {len(rows)} rows" in text and "different Region values" in text
+
+
+@requires_db
+def test_a_period_filter_counts_its_dates_and_a_period_outside_them_is_said(org):
+    inside = _worked(org, {"table": "T1", "operation": "count",
+                           "filters": {"Created": "2026-06"}, "label": "june"})
+    assert re.search(r"over \d+ rows", inside) and "Created from 2026-06-01 to 2026-06-30" in inside
+    outside = _worked(org, {"table": "T1", "operation": "count",
+                            "filters": {"Created": "2025-03"}, "label": "march"})
+    assert "has no rows with Created in 2025-03: its Created runs from" in outside
+
+
+@requires_db
+def test_rows_lists_the_matching_records_with_their_columns(org):
+    text = _worked(org, {"table": "T1", "operation": "rows",
+                         "filters": {"Owner": "Kavya Nair", "Stage": "Won"}, "label": "won"})
+    assert "Owner: Kavya Nair" in text and "Stage: Won" in text
 
 
 @requires_db
@@ -647,6 +731,29 @@ def test_a_table_stored_with_five_samples_is_resampled_from_its_rows(org):
         conn.commit()
     assert next(c for c in after if c["name"] == "Stage")["samples"] == ["Lost", "New", "Won"]
     # Every other column is as it was, in order.
+    assert [c["key"] for c in after] == [c["key"] for c in columns]
+
+
+@requires_db
+def test_a_date_column_stored_without_its_span_gets_it_from_its_rows(org):
+    from pathlib import Path
+
+    sql = Path(__file__).resolve().parents[1].joinpath("app/db/schema.sql").read_text()
+    statement = sql.split("-- date_column_span:begin")[1].split("-- date_column_span:end")[0]
+    _sheet(org, ["sana@acme.test"])
+    with get_connection() as conn:
+        (table_id, columns), = conn.execute(
+            "SELECT id, columns FROM doc_tables WHERE org_id = %s", (org,)).fetchall()
+        created = next(c for c in columns if c["name"] == "Created")
+        span = (created.pop("first"), created.pop("last"))  # what an old ingest kept
+        conn.execute("UPDATE doc_tables SET columns = %s::jsonb WHERE id = %s",
+                     (json.dumps(columns), table_id))
+        conn.execute(statement)
+        (after,), = conn.execute("SELECT columns FROM doc_tables WHERE id = %s",
+                                 (table_id,)).fetchall()
+        conn.commit()
+    fixed = next(c for c in after if c["name"] == "Created")
+    assert (fixed["first"], fixed["last"]) == span
     assert [c["key"] for c in after] == [c["key"] for c in columns]
 
 
@@ -848,3 +955,20 @@ def test_a_lookup_phrase_is_every_whole_word_stretch_of_the_question():
     phrases = set(_phrases("Who closed L-1008 for Rohan Mehta's team?"))
     assert {"l-1008", "rohan mehta", "rohan mehta's team", "who closed l-1008"} <= phrases
     assert "ohan" not in phrases and "l-10" not in phrases and "mehta's tea" not in phrases
+
+
+def test_a_counted_answer_over_several_periods_states_the_total():
+    from types import SimpleNamespace
+
+    from app.api.chat import _counted_answer
+
+    chart = {"measure": "count", "unit": "", "points": [
+        {"bucket": "2026-10-01", "group": None, "series": None, "value": 102.0},
+        {"bucket": "2026-11-01", "group": None, "series": None, "value": 191.0},
+        {"bucket": "2026-12-01", "group": None, "series": None, "value": 79.0}]}
+    text = _counted_answer(SimpleNamespace(answer="Rows by month", chart=chart,
+                                           chart_period="month"))
+    assert text.endswith("- Total: 372")
+    chart["measure"] = "average"
+    assert "Total" not in _counted_answer(SimpleNamespace(answer="x", chart=chart,
+                                                          chart_period="month"))

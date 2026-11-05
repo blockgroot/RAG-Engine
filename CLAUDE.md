@@ -350,6 +350,23 @@ A Notion `table` renders as a pipe table with a header separator (first row =
 header); bare "a | b" rows were never found by the table reader. An inline
 database (`child_database`) renders as a table of its rows' properties under its
 title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
+A workbook (a Google Sheet, exported as .xlsx, or an .xlsx in Drive or uploaded) is
+read through ONE reader (`doctables.extract.workbook_tables`): EVERY tab; tabs with
+the same header are one table with a `Tab` column, so a total spans them in one SQL
+count, never figures a model adds up. A Sheet too big to export as .xlsx falls back to
+its first tab, said on the chart. A page whose first chunk is a sheet description
+(`extract.DESCRIPTION_LEAD`) is never read for prose figures.
+A table offered for a chart or an answer that holds a cell the question TYPES
+(`store.typed_cells`, through the cell index) comes first and is labelled so; a date
+column shows its first and last day. A question that types a sheet's cell or names
+its column header reaches the table form even when the model's check said no
+(`routing._names_a_sheet`, SQL beside the check). In the form a filter on a value the
+named column lacks moves to the ONE column holding it; a name or a period the table
+does not hold is STATED in the passage (`_Absent`), never answered as 0 or dropped.
+`distinct` counts different values ("how many companies") and lists them; `rows`
+lists records; a date filter is a period bound in SQL (`store.DateSpan`). A row lookup
+counts each typed value per table first (`MAX_LOOKUP_ROWS`): a name that is a group in
+one tab still names its row in another. A counted Ask answer states its total.
 A Sheet embeds a description of its columns, never its figures. Ask reads a ROW
 only when the question types one of its cells (`doctables.store.rows_naming`: whole
 words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,

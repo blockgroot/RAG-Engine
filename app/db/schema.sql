@@ -1089,6 +1089,41 @@ BEGIN
         -- category_samples_twelve:end
         INSERT INTO schema_marks (name) VALUES ('category_samples_twelve');
     END IF;
+    -- A date column's first and last day, for tables stored before
+    -- `extract.Column.first/last`: which table holds "November" is read off them.
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'date_column_span') THEN
+        -- date_column_span:begin
+        UPDATE doc_tables t
+           SET columns = (
+               SELECT jsonb_agg(
+                        CASE WHEN e.col->>'type' = 'date' AND NOT e.col ? 'first'
+                        THEN COALESCE((
+                               SELECT e.col || jsonb_build_object(
+                                        'first', min(left(r.cells->>(e.col->>'key'), 10)),
+                                        'last', max(left(r.cells->>(e.col->>'key'), 10)))
+                                 FROM doc_table_rows r
+                                WHERE r.table_id = t.id AND r.cells ? (e.col->>'key')
+                               HAVING count(*) > 0), e.col)
+                        ELSE e.col END
+                      ORDER BY e.ord)
+                 FROM jsonb_array_elements(t.columns) WITH ORDINALITY AS e(col, ord))
+         WHERE EXISTS (
+               SELECT 1 FROM jsonb_array_elements(t.columns) c
+                WHERE c->>'type' = 'date' AND NOT c ? 'first');
+        -- date_column_span:end
+        INSERT INTO schema_marks (name) VALUES ('date_column_span');
+    END IF;
+    -- Figures "read" from a sheet's own column description ("12500 rows") by
+    -- Chart mode's live prose read, before it skipped those pages.
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'no_prose_tables_from_sheets') THEN
+        DELETE FROM doc_tables t
+         WHERE t.origin = 'text'
+           AND EXISTS (SELECT 1 FROM chunks c
+                        WHERE c.document_id = t.document_id AND c.org_id = t.org_id
+                          AND c.chunk_index = 0
+                          AND starts_with(c.content, 'Spreadsheet table "'));
+        INSERT INTO schema_marks (name) VALUES ('no_prose_tables_from_sheets');
+    END IF;
 END $$;
 
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`

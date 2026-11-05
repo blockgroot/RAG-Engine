@@ -18,13 +18,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date
 
 from psycopg.types.json import Jsonb
 
 from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
 from ..security.visibility import visibility_predicate
-from .extract import Table
+from .extract import DESCRIPTION_LEAD, Table
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,9 @@ class TableRef:
     #: Set instead of ``document_id`` for a table inside a file the asker
     #: uploaded to this chat: private to them, never in ``list_tables``.
     attachment_id: str | None = None
+    #: ``(column name, value)`` cells of this table the question typed, set
+    #: per question (`typed_cells`): what the picking model is told.
+    typed: tuple[tuple[str, str], ...] = ()
 
     @property
     def is_upload(self) -> bool:
@@ -453,6 +457,12 @@ def matching_prose(
                      WHERE q.document_id = d.id AND q.org_id = d.org_id
                        AND q.status = 'done'
                )
+               AND NOT EXISTS (
+                    SELECT 1 FROM chunks c0
+                     WHERE c0.document_id = d.id AND c0.org_id = d.org_id
+                       AND c0.workspace_id IS NOT DISTINCT FROM d.workspace_id
+                       AND c0.chunk_index = 0 AND starts_with(c0.content, %(described)s)
+               )
                {access}
              GROUP BY d.id, d.workspace_id, d.source_external_id, d.title
              ORDER BY rank DESC
@@ -477,7 +487,7 @@ def matching_prose(
                 sql,
                 {"org_id": org_id, "workspace_id": workspace_id, "question": question,
                  "providers": providers, "limit": limit, "max_chunks": MAX_PROSE_CHUNKS,
-                 "tag": tag, **params},
+                 "tag": tag, "described": DESCRIPTION_LEAD, **params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not find pages with figures", cause=exc) from exc
@@ -587,13 +597,25 @@ def _col(key: str) -> str:
     return f"(r.cells->>'{key}')"
 
 
+@dataclass(frozen=True)
+class DateSpan:
+    """A filter on a DATE column: ``start`` <= day < ``end`` ("in November")."""
+
+    start: date
+    end: date
+
+
 def _filter_sql(table_id: str, filters) -> tuple[str, dict]:
     """``AND`` clauses for ``(column key, value)`` filters, every value bound.
-    A value is one cell value, or a tuple of them meaning any of them ("open"
-    is several real stages)."""
+    A value is one cell value, a tuple of them meaning any of them ("open"
+    is several real stages), or a ``DateSpan`` on a date column."""
     where, params = "", {"table_id": table_id}
     for i, (dim, value) in enumerate(filters):
-        if isinstance(value, (tuple, list)):
+        if isinstance(value, DateSpan):
+            where += (f" AND ({_col(dim)})::date >= %(f_{i}_from)s"
+                      f" AND ({_col(dim)})::date < %(f_{i}_to)s")
+            params[f"f_{i}_from"], params[f"f_{i}_to"] = value.start, value.end
+        elif isinstance(value, (tuple, list)):
             where += f" AND {_col(dim)} = ANY(%(f_{i})s)"
             params[f"f_{i}"] = [str(v) for v in value]
         else:
@@ -714,6 +736,113 @@ def list_values(table: TableRef, key: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def match_values(table: TableRef, key: str, wanted: list[str]) -> dict[str, str]:
+    """``{typed value lowercased: the value as stored}`` for the typed values
+    the column really holds (case- and space-insensitive). One query whatever
+    the column's size: a company column has hundreds of values."""
+    asked = sorted({" ".join(str(w).split()).lower() for w in wanted if str(w).strip()})
+    if not asked:
+        return {}
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT {_col(key)} FROM doc_table_rows r WHERE r.table_id = %s "
+                f"AND lower(regexp_replace({_col(key)}, '\\s+', ' ', 'g')) = ANY(%s)",
+                (table.id, asked),
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not match values", cause=exc) from exc
+    return {" ".join(r[0].split()).lower(): r[0] for r in rows if r[0] is not None}
+
+
+def date_span(table: TableRef, key: str) -> tuple[str, str] | None:
+    """The first and last day a date column holds, or None when empty."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                f"SELECT min(({_col(key)})::date), max(({_col(key)})::date) "
+                f"FROM doc_table_rows r WHERE r.table_id = %s AND {_col(key)} IS NOT NULL",
+                (table.id,),
+            ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not read a date range", cause=exc) from exc
+    return (row[0].isoformat(), row[1].isoformat()) if row and row[0] else None
+
+
+def distinct_values(
+    table: TableRef, key: str, *, filters=(), limit: int = 60,
+) -> tuple[int, list[tuple[str, int]]]:
+    """``(how many different values, [(value, rows)] most rows first)`` of one
+    column over the filtered rows: "how many companies has X applied to" and
+    which. Counted in SQL over every row; only the listing is bounded."""
+    where, params = _filter_sql(table.id, filters)
+    params["limit"] = max(1, limit)
+    try:
+        with get_connection() as conn:
+            total = conn.execute(
+                f"SELECT count(DISTINCT {_col(key)}) FROM doc_table_rows r "
+                f"WHERE r.table_id = %(table_id)s {where}", params,
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT {_col(key)}, count(*) FROM doc_table_rows r "
+                f"WHERE r.table_id = %(table_id)s {where} AND {_col(key)} IS NOT NULL "
+                f"GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT %(limit)s", params,
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not list distinct values", cause=exc) from exc
+    return int(total or 0), [(str(v), int(n)) for v, n in rows]
+
+
+def typed_cells(question: str, tables: list[TableRef]) -> dict[str, tuple[tuple[str, str], ...]]:
+    """``{table id: ((column name, value), ...)}``: the cells of these tables the
+    question types as whole words ("Daniel Reed" is a Profile Name of one
+    sheet only). Read through the cell index, one query. A word inside a
+    header the question names ("applied via") is that column, not a value.
+    The tables were already access-checked. Never raises."""
+    from ..insights.tables import _words
+
+    # Real rows only: a table read from sentences holds words like "month".
+    by_id = {t.id: t for t in tables
+             if (t.document_id or t.attachment_id) and t.origin != "text"}
+    phrases = _phrases(question)
+    if not by_id or not phrases:
+        return {}
+    try:
+        with get_connection() as conn:
+            found = conn.execute(
+                """
+                SELECT DISTINCT ON (r.table_id, p.phrase) r.table_id::text, p.phrase, r.raw
+                  FROM unnest(%s::text[]) AS p(phrase)
+                  JOIN doc_table_rows r ON lower(r.raw::text)::jsonb ? p.phrase
+                 WHERE r.table_id = ANY(%s::uuid[])
+                """,
+                (phrases, list(by_id)),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - a hint may only ever add
+        logger.warning("doctables: typed cell lookup failed", exc_info=True)
+        return {}
+    out: dict[str, list[tuple[str, str]]] = {}
+    for table_id, phrase, raw in found:
+        table = by_id[table_id]
+        cells = [str(c).strip().lower() for c in raw or []]
+        if phrase not in cells:
+            continue
+        column = table.column(f"c{cells.index(phrase)}")
+        if column is None or column.get("type") not in ("category", "text"):
+            continue
+        asked = f" {' '.join(question.lower().split())} "
+        for c in table.columns:
+            header = " ".join(str(c.get("name", "")).lower().split())
+            if header and _words(header):
+                asked = asked.replace(f" {header} ", " ")
+        if not re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", asked):
+            continue
+        value = str(raw[cells.index(phrase)]).strip()
+        out.setdefault(table_id, []).append((column["name"], value))
+    # The longest typed value wins: "daniel reed" over a cell "reed".
+    return {k: tuple(sorted(set(v), key=lambda cv: -len(cv[1])))[:4] for k, v in out.items()}
+
+
 def list_rows(
     table: TableRef, *, filters: tuple[tuple[str, str], ...] = (), limit: int = MAX_DETAILS,
 ) -> list[tuple[dict, list[str], str | None]]:
@@ -737,8 +866,12 @@ def list_rows(
 #: match and still name a row: "L-1008" or a company names one; "West" or an
 #: owner with thirty leads is a group, which is Chart mode's business.
 MAX_LOOKUP_ROWS = 8
-#: Rows read before that is decided. A bound: past it the lookup says nothing.
+#: Rows handed to the ranking: only rows a value names (at most
+#: ``MAX_LOOKUP_ROWS`` per value and table), so this binds only many such values.
 LOOKUP_SCAN = 400
+#: Cells matched while counting how many rows each typed value names. A bound:
+#: past it the counts are partial and the lookup says nothing.
+LOOKUP_MATCHES = 50000
 _MIN_LOOKUP_CHARS = 3
 #: The longest cell a question can name, and how many of the question's
 #: phrases are looked up: an index probe per phrase, never a scan of the org.
@@ -798,18 +931,34 @@ def rows_naming(
     if viewer is None or getattr(viewer, "is_unrestricted", False) or not providers:
         return []
     access, params = _visible(viewer)
+    # Each typed value is counted PER TABLE first: "Karan Malhotra" is 1,500
+    # rows of a leads tab (a group) and one row of the team tab (a name). A
+    # plain scan stopped at its bound on the leads rows and found neither.
     sql = f"""
+        WITH matched AS MATERIALIZED (
+            SELECT r.table_id, r.row_no, p.phrase
+              FROM unnest(%(phrases)s::text[]) AS p(phrase)
+              JOIN doc_table_rows r ON lower(r.raw::text)::jsonb ? p.phrase
+              JOIN doc_tables t ON t.id = r.table_id
+              JOIN documents d ON d.id = t.document_id
+             WHERE t.org_id = %(org_id)s
+               {_scoped("t", workspace_id)}
+               AND d.source_provider = ANY(%(providers)s)
+               AND t.origin <> 'text'
+               {access}
+             LIMIT %(matches)s
+        ), named AS (
+            SELECT table_id, phrase FROM matched
+             GROUP BY 1, 2 HAVING count(*) <= %(per_value)s
+        )
         SELECT d.id, d.title, d.source_provider, d.source_uri, t.name, r.row_no,
-               t.columns, r.raw, d.doc_is_public, t.id
-          FROM doc_table_rows r
+               t.columns, r.raw, d.doc_is_public, t.id,
+               (SELECT count(*) FROM matched) AS seen
+          FROM (SELECT DISTINCT m.table_id, m.row_no FROM matched m
+                  JOIN named n USING (table_id, phrase)) hit
+          JOIN doc_table_rows r ON r.table_id = hit.table_id AND r.row_no = hit.row_no
           JOIN doc_tables t ON t.id = r.table_id
           JOIN documents d ON d.id = t.document_id
-         WHERE t.org_id = %(org_id)s
-           {_scoped("t", workspace_id)}
-           AND d.source_provider = ANY(%(providers)s)
-           AND t.origin <> 'text'
-           {access}
-           AND lower(r.raw::text)::jsonb ?| %(phrases)s
          LIMIT %(scan)s
     """
     phrases = _phrases(question)
@@ -819,15 +968,19 @@ def rows_naming(
         with get_connection() as conn:
             found = conn.execute(sql, {
                 "org_id": org_id, "workspace_id": workspace_id, "providers": providers,
-                "phrases": phrases, "scan": LOOKUP_SCAN, **params,
+                "phrases": phrases, "scan": LOOKUP_SCAN, "matches": LOOKUP_MATCHES,
+                "per_value": MAX_LOOKUP_ROWS, **params,
             }).fetchall()
     except Exception:  # noqa: BLE001 - a lookup may only ever add
         logger.warning("doctables: row lookup failed", exc_info=True)
         return []
-    if len(found) >= LOOKUP_SCAN:
-        logger.info("doctables: row lookup scanned its %d-row bound; said nothing", LOOKUP_SCAN)
+    if found and found[0][10] >= LOOKUP_MATCHES:
+        logger.info("doctables: row lookup hit its %d-cell bound; said nothing", LOOKUP_MATCHES)
         return []
-    return pick_rows(question, found)
+    if len(found) >= LOOKUP_SCAN:
+        logger.info("doctables: row lookup reached its %d-row bound; said nothing", LOOKUP_SCAN)
+        return []
+    return pick_rows(question, [r[:10] for r in found])
 
 
 #: A word of a question or a cell, as the ranking compares them: letters and

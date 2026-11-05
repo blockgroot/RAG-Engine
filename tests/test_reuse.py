@@ -206,3 +206,24 @@ def test_a_failed_reuse_check_retrieves_fresh():
     pipe._embedder.embed = flaky
     r2 = pipe.answer("repeat that?", ORG, conversation_id=cid)
     assert r2.retrieval_reused is False and store.query_calls == 2
+
+
+def test_a_turn_with_its_own_worked_figures_never_reuses_the_last_turns_chunks():
+    """Staging, Claude Haiku: "and how many of them reached an offer?" reused
+    the previous turn's chunks, its figure among them, and refused."""
+    from app.insights.table_answers import TableAnswer, reset_answers, use_answers
+
+    llm = RecordingLLM(rewrite="How many paid annual leave days do we get?")
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+    memory = InMemoryConversationStore()
+    pipe = _pipeline(llm, store, memory)
+    cid = memory.create_conversation(ORG)
+    pipe.answer("How many annual leave days do we get?", ORG, conversation_id=cid)
+
+    token = use_answers([TableAnswer(provider="google", document_id="d", document_title="t",
+                                     source_uri=None, text="Figures: 43")])
+    try:
+        r2 = pipe.answer("sorry, can you repeat that?", ORG, conversation_id=cid)
+    finally:
+        reset_answers(token)
+    assert r2.retrieval_reused is False and store.query_calls == 2
