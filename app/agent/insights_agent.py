@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from collections.abc import Iterator
 
 from ..core.answer_sources import SOURCE_NONE
@@ -215,9 +215,14 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         if not spec.value:
             raise CannotChart("I can't chart it that way: there is no number column to add up.")
         _need(spec.value, ("number",), "value to add up")
-    for key, _ in spec.filters:
-        _need(key, ("category",), "filter")
-    filters = _matched_filters(table, spec.filters)
+    from ..insights.tables import is_period_filter
+
+    for key, value in spec.filters:
+        _need(key, ("date",) if is_period_filter(table, key, value) else ("category",), "filter")
+    try:
+        filters = _matched_filters(table, spec.filters)
+    except ValueError as exc:
+        raise CannotChart(f"I can't chart it that way. {exc}") from exc
     if spec.versus is not None:
         return _run_versus(spec, table, filters, org_id=org_id, workspace_id=workspace_id,
                            viewer=viewer, uploads=uploads)
@@ -314,12 +319,23 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
 
 
 def _matched_filters(table, raw_filters) -> tuple:
-    """Typed filter values -> values the rows hold (one, or several kept)."""
-    return tuple(
-        (key, tuple(dict.fromkeys(_match_table_value(table, key, r) for r in raw))
-         if isinstance(raw, tuple) else _match_table_value(table, key, raw))
-        for key, raw in raw_filters
-    )
+    """Typed filter values -> values the rows hold (one, or several kept). A
+    period on a date column ("2026-12") becomes the days it covers."""
+    from ..doctables.store import period_span
+    from ..insights.tables import is_period_filter
+
+    out = []
+    for key, raw in raw_filters:
+        if is_period_filter(table, key, raw):
+            span = period_span(raw)
+            if span is None:
+                raise ValueError(f"{raw!r} is not a period")
+            out.append((key, span))
+        elif isinstance(raw, tuple):
+            out.append((key, tuple(dict.fromkeys(_match_table_value(table, key, r) for r in raw))))
+        else:
+            out.append((key, _match_table_value(table, key, raw)))
+    return tuple(out)
 
 
 def _run_versus(spec: ChartSpec, first, first_filters, *, org_id, workspace_id, viewer,
@@ -416,7 +432,12 @@ def _run_versus(spec: ChartSpec, first, first_filters, *, org_id, workspace_id, 
 
 
 def _shown(value) -> str:
-    """A filter value as written: several kept values joined."""
+    """A filter value as written: several kept values joined, a period by its days."""
+    from ..doctables.store import DateSpan
+
+    if isinstance(value, DateSpan):
+        last = date.fromordinal(value.end.toordinal() - 1)
+        return f"{value.start.isoformat()} to {last.isoformat()}"
     return ", ".join(value) if isinstance(value, tuple) else str(value)
 
 

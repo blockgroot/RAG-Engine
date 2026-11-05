@@ -647,6 +647,21 @@ def test_a_value_the_question_types_is_added_to_a_query_that_left_it_out(org):
     assert "- by (from \"Leads\"), over 5 rows" in text
 
 
+def test_the_one_column_a_question_names_is_the_breakdown():
+    """Claude Haiku grouped "which recruiter handled the most offers?" by BDE."""
+    raw = extract.profile(extract.parse_csv(
+        "Recruit,BDE,Lead Status\nTanvi,Aman,Offer\nIshaan,Neha,Offer\n", name="Leads"))
+    leads = TableRef(id="t", name="Leads", columns=tuple(c.as_dict() for c in raw.columns),
+                     row_count=2, truncated=False, notes=(), document_title="Leads",
+                     provider="google", source_uri=None, document_id="d")
+    query = {"operation": "count", "group_by": "BDE", "filters": {"Lead Status": "Offer"}}
+    assert table_answers._named_breakdown(
+        leads, query, "Which recruiter handled the most offers?")["group_by"] == "Recruit"
+    # It names no column, or the one already drawn: unchanged.
+    assert table_answers._named_breakdown(leads, query, "Who closed the most?") == query
+    assert table_answers._named_breakdown(leads, query, "Which BDE has the most?") == query
+
+
 @requires_db
 def test_rows_lists_the_matching_records_with_their_columns(org):
     text = _worked(org, {"table": "T1", "operation": "rows",
@@ -679,6 +694,35 @@ def test_a_chart_filtered_to_two_people_counts_only_their_rows(org):
     assert {p["group"]: p["value"] for p in panel["points"]} == {
         "Kavya Nair": 3672000.0, "Rohan Mehta": 511000.0}
     assert "Owner: Kavya Nair, Rohan Mehta" in panel["title"]
+
+
+@requires_db
+def test_a_chart_filtered_to_a_month_counts_only_its_days_and_keeps_the_date_axis(org):
+    """Staging, Claude Haiku: "leads by lead type in December" was refused --
+    a date column could not be a filter -- and "weekly leads in November"
+    drew every week."""
+    from app.agent.insights_agent import run_table_spec
+
+    [leads] = _sales_tables(org)
+    created, stage = _col(leads, "Created"), _col(leads, "Stage")
+    pick = doc_tables.parse_pick({"table": "T1", "group_by": "Stage",
+                                  "filters": {"Created": "2026-06"}}, {"T1": leads})
+    assert pick.filters == ((created, "2026-06"),)
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=stage, period="month", chart="bar",
+                     measure="count", table_id=leads.id, filters=pick.filters)
+    assert resolve.spec_from_dict(resolve.spec_to_dict(spec)) == spec
+    panel, _ = run_table_spec(spec, org_id=org, workspace_id=None,
+                              viewer=Viewer(email="sana@acme.test"))
+    june = [r for r in LEADS.splitlines()[1:] if r.startswith("2026-06")]
+    assert sum(p["value"] for p in panel["points"]) == len(june)
+    assert "2026-06-01 to 2026-06-30" in panel["title"]
+    # Filtered to a month, the date column is still the axis it was.
+    weekly = resolve._table_period_axis(
+        AskIntent("chart", spec=replace(spec, group_by=created, period="week")),
+        "Weekly leads in June", '{"period": "week", "period_words": "weekly"}', {"T1": leads})
+    assert weekly.spec.group_by == created
+    with pytest.raises(doc_tables.TableRefusal):
+        doc_tables.parse_pick({"table": "T1", "filters": {"Created": "December"}}, {"T1": leads})
 
 
 @requires_db

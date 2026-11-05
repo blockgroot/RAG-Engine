@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..doctables import store as table_store
 from ..doctables.store import AGGREGATES, TableRef
 
 #: How many tables a chart question may see. At 6, then 10, the leads sheet was
@@ -440,6 +441,19 @@ def prose_chart(table: TableRef) -> TablePick | None:
     )
 
 
+def _find_quiet(table: TableRef, name, types: tuple[str, ...]) -> str | None:
+    """``_find`` that answers None instead of refusing."""
+    try:
+        return _find(table, name, types=types, role="filter")
+    except TableRefusal:
+        return None
+
+
+def is_period_filter(table: TableRef, key: str, value) -> bool:
+    """A filter on a date column: a period, never the axis's own exclusion."""
+    return (table.column(key) or {}).get("type") == "date" and isinstance(value, str)
+
+
 def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     """Validate the model's table pick. None = it did not pick a table.
 
@@ -500,6 +514,18 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
                       if isinstance(w, str) and w.strip()][:MAX_FILTER_VALUES]
             if not values:
                 continue
+            dated = _find_quiet(table, name, ("date",))
+            if dated:
+                # "In December" on a date column: one period, bound as days in
+                # SQL when the chart runs (`store.period_span`). A value that is
+                # not a period is no filter for a date.
+                span = table_store.period_span(values[0]) if len(values) == 1 else None
+                if span is None:
+                    raise TableRefusal(
+                        f"\"{(table.column(dated) or {}).get('name')}\" is a date: filter it "
+                        "on a month, a year or a day.")
+                filters.append((dated, values[0].strip()))
+                continue
             try:
                 key = _find(table, name, types=("category",), role="filter")
             except TableRefusal:
@@ -521,7 +547,8 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
         # under "Unknown". A table's axis is its first column that can be one
         # (a read page's period, a real table's row label); a date column
         # first when there is exactly one, since that IS a time axis.
-        filtered = {k for k, _ in filters}
+        # A date filtered to a period is still the time axis it was.
+        filtered = {k for k, v in filters if not is_period_filter(table, k, v)}
         dates = [c["key"] for c in table.columns if c.get("type") == "date"]
         axis = [c["key"] for c in table.columns
                 if c.get("type") in ("category", "date") and c["key"] not in filtered]

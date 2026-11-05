@@ -605,6 +605,27 @@ class DateSpan:
     end: date
 
 
+_PERIOD = re.compile(r"\s*(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?\s*")
+
+
+def period_span(text) -> DateSpan | None:
+    """``"2026-11"`` (a month), ``"2026"`` (a year) or ``"2026-11-05"`` (a day)
+    as the days it covers; None when it is not one. A format, not a word."""
+    found = _PERIOD.fullmatch(str(text or ""))
+    if not found:
+        return None
+    year, month, day = (int(g) if g else None for g in found.groups())
+    try:
+        if day:
+            start = date(year, month, day)
+            return DateSpan(start, date.fromordinal(start.toordinal() + 1))
+        if month:
+            return DateSpan(date(year, month, 1), date(year + month // 12, month % 12 + 1, 1))
+        return DateSpan(date(year, 1, 1), date(year + 1, 1, 1))
+    except ValueError:
+        return None
+
+
 def _filter_sql(table_id: str, filters) -> tuple[str, dict]:
     """``AND`` clauses for ``(column key, value)`` filters, every value bound.
     A value is one cell value, a tuple of them meaning any of them ("open"

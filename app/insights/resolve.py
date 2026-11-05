@@ -686,7 +686,10 @@ def _prompt(
             "not when it was opened, for resolutions). A figure qualified by a "
             "state (resolved tickets, approved requests) is a filter on the "
             "column holding that state. A filter may list several values to keep "
-            "each of them (two people or sites compared). "
+            "each of them (two people or sites compared). A named month, year "
+            "or day (\"in December\") is a filter on the date column: "
+            "\"2026-12\", \"2026\" or \"2026-12-05\"; the date column can still "
+            "be the time axis. "
             "Two figures for the same people or items from two tables (a "
             "target or plan against what was achieved) are one chart: the first "
             "in table/value/group_by, the second in \"versus\", each grouped by "
@@ -1513,7 +1516,10 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
         return intent
     from .tables import _words, table_shape
 
-    filtered = {k for k, _ in spec.filters}
+    from .tables import is_period_filter
+
+    # A date filtered to a period ("in November") is still the time axis.
+    filtered = {k for k, v in spec.filters if not is_period_filter(table, k, v)}
     keys = [c["key"] for c in table.columns
             if c.get("type") in ("category", "date") and c["key"] not in filtered]
     dates = [k for k in keys if (table.column(k) or {}).get("type") == "date"]

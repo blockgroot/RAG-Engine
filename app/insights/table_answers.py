@@ -255,25 +255,12 @@ def _holder(table: TableRef, key: str, typed: list[str]) -> tuple[str, dict[str,
                   "and no other column holds it")
 
 
-_PERIOD = re.compile(r"\s*(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?\s*")
-
-
 def _bounds(text: str) -> tuple[date, date]:
     """``"2026-11"`` -> (first day, the day after the last)."""
-    found = _PERIOD.fullmatch(str(text))
-    if not found:
+    span = table_store.period_span(text)
+    if span is None:
         raise _Unfit(f"{text!r} is not a period")
-    year, month, day = (int(g) if g else None for g in found.groups())
-    try:
-        if day:
-            start = date(year, month, day)
-            return start, start + timedelta(days=1)
-        if month:
-            start = date(year, month, 1)
-            return start, date(year + month // 12, month % 12 + 1, 1)
-        return date(year, 1, 1), date(year + 1, 1, 1)
-    except ValueError as exc:
-        raise _Unfit(f"{text!r} is not a date") from exc
+    return span.start, span.end
 
 
 def _span(table: TableRef, key: str, values: list) -> table_store.DateSpan:
@@ -481,6 +468,42 @@ def _with_typed(table: TableRef, query: dict, question: str,
     return {**query, "filters": filters}
 
 
+def _stem_match(a: str, b: str) -> bool:
+    """One word is the other, or begins it with five letters or more
+    ("recruit", "recruiter"). Format, not a list of words."""
+    short, long_ = sorted((a, b), key=len)
+    return short == long_ or (len(short) >= 5 and long_.startswith(short))
+
+
+def _named_breakdown(table: TableRef, query: dict, question: str) -> dict:
+    """The breakdown is the column the question NAMES, when it names exactly one.
+
+    "Which recruiter handled the most offers?" came back from Claude Haiku
+    grouped by BDE; the sheet's Recruit column is the one the question names.
+    Every word of a header must begin, or be, a word of the question; a header
+    inside a longer named one ("Status" in "Lead Status") is that one's word.
+    """
+    from .tables import _words
+
+    slot = "column" if str(query.get("operation") or "").lower() == "distinct" \
+        and query.get("column") else "group_by"
+    current = query.get(slot)
+    if not current:
+        return query
+    asked = _words(question)
+    heads = {c["name"]: _words(c["name"]) for c in table.columns
+             if c.get("type") in ("category", "text") and _words(c["name"])}
+    named = [n for n, ws in heads.items()
+             if all(any(_stem_match(w, q) for q in asked) for w in ws)]
+    named = [n for n in named if not any(heads[n] < heads[o] for o in named)]
+    filters = {_norm(k) for k in (query.get("filters") or {})}
+    if len(named) != 1 or _norm(named[0]) in filters or _norm(named[0]) == _norm(current):
+        return query
+    logger.info("table answers: %r names %r; breakdown %r replaced", question[:60],
+                named[0], current)
+    return {**query, slot: named[0]}
+
+
 def _without_header_words(table: TableRef, query: dict) -> dict | None:
     """The same query over every row, when a filter's value is also a word of
     one of the table's own headers, else None.
@@ -591,11 +614,15 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
                     requires = (second.document_id,)
             else:
                 query = _with_typed(table, query, question, typed.get(table.id, ()))
+                query = _named_breakdown(table, query, question)
                 line = _run(table, query)
                 loose = _without_header_words(table, query)
                 if loose is not None:
+                    # Every row FIRST: Claude Haiku answered from the first
+                    # line, and the stage the word also names is the narrower
+                    # reading ("applied to the most": 45, not 18).
                     try:
-                        line += "\n- " + _run(table, loose)
+                        line = _run(table, loose) + "\n- " + line
                     except _Unfit:
                         pass
         except _Absent as exc:
