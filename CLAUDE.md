@@ -370,7 +370,13 @@ when the quote is in the question); one that no cell of the offered tables holds
 whole words (`store.holds_words`) drops every figure and the passage says so: a figure
 worked out without them is not about them. A typed part of ONE stored value
 ("Maplepeak") filters on that value. A chart's typed filter also comes from the
-cells the index found (`TableRef.typed`), not only a column's twelve samples. `distinct` counts different values ("how many companies") and lists them; `rows`
+cells the index found (`TableRef.typed`), not only a column's twelve samples. Code completes the form: a cell the question types (`store.typed_cells`) is added to a
+query that does not use its column (`_with_typed`; a header word is left to the both-ways
+rule, every row first); the ONE column the question names by its header's words or their
+longer forms is the breakdown (`_named_breakdown`); `of_these` narrows the rows outside a
+ratio, never ignored. The form lists `FORM_FULL_DETAIL` tables with values, the rest by
+header. A chart filters a date column to a named month, year or day
+(`store.period_span`), and the column stays the time axis. `distinct` counts different values ("how many companies") and lists them; `rows`
 lists records; a date filter is a period bound in SQL (`store.DateSpan`). A row lookup
 counts each typed value per table first (`MAX_LOOKUP_ROWS`): a name that is a group in
 one tab still names its row in another. A counted Ask answer states its total.
