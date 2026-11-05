@@ -1968,6 +1968,8 @@ class RagPipeline:
         )
 
         asker = current_asker_facts()
+        from ..insights.table_answers import NARROWER, current_answers
+
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
@@ -1982,6 +1984,8 @@ class RagPipeline:
             partial_rule=self._settings.partial_rule,
             conflict_rule=self._settings.conflict_rule,
             assemble_rule=self._settings.assemble_rule and extra_effort_on(),
+            # A worked figure and the part of it the question may have meant.
+            readings_rule=any(NARROWER in a.text for a in current_answers()),
         )
         answer_cap = self._read_settings().max_answer_tokens  # extra effort may answer longer
         raw = self._generate_text(

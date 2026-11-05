@@ -456,7 +456,7 @@ def _with_typed(table: TableRef, query: dict, question: str,
     found in the question (`store.typed_cells`) are added to a query that does
     not already use their column. A value that is also a word of the sheet's
     own headers ("applied" beside "Applied Via") is left to the model, and is
-    then worked out both ways (`_without_header_words`)."""
+    then worked out both ways (`_broader`)."""
     from .tables import _words
 
     if not typed:
@@ -514,33 +514,47 @@ def _named_breakdown(table: TableRef, query: dict, question: str) -> dict:
     return {**query, slot: named[0]}
 
 
-def _without_header_words(table: TableRef, query: dict) -> dict | None:
-    """The same query over every row, when a filter's value is also a word of
-    one of the table's own headers, else None.
+#: Marks the narrower of two figures in a passage; the answer prompt then
+#: states both (`prompts._READINGS_RULE`).
+NARROWER = "Of these rows, only"
 
-    In an application tracker "which company have we applied to most" is
-    about every row, and "applied" is also a stage. Claude Haiku filtered on
-    the stage every time, and the answer read 18 where the sheet says 45.
-    The header ("Applied Via") shows the word describes what the sheet holds,
-    so BOTH readings are worked out and labelled; the answer says which."""
+
+def _broader(table: TableRef, query: dict, question: str) -> tuple[dict, dict] | None:
+    """The same query over every row, and the model's query labelled as the
+    narrower part of it, when a filter is the model's READING of the question
+    rather than the asker's words; else None.
+
+    A reading is a value the asker never typed ("interviews" read as the
+    stages Client Round, Interview Scheduled, Technical Round: 174 where every
+    row of Kavya Reddy's is 372), or a typed word that is also a word of the
+    table's own headers ("applied to the most" against Lead Status Applied
+    beside Applied Via: 18 where every row says 45). Claude Haiku picked one
+    reading per run, so both are worked out: the whole, then the part."""
     from .tables import _words
 
     filters = query.get("filters")
     if not isinstance(filters, dict) or not filters:
         return None
     headers = set().union(*(_words(str(c.get("name", ""))) for c in table.columns))
+    asked = _words(question)
+
+    def typed(value: str) -> bool:
+        return all(any(_stem_match(w, a) for a in asked) for w in _words(value))
+
     kept, dropped = {}, []
     for name, value in filters.items():
-        words = _words(str(value)) if isinstance(value, str) else set()
-        if words and words <= headers and not words <= _words(str(name)):
-            dropped.append(f"{name} {value}")
+        values = [v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str)]
+        words = set().union(*(_words(v) for v in values)) if values else set()
+        header_word = words and words <= headers and not words <= _words(str(name))
+        if words and (header_word or not all(typed(v) for v in values)):
+            dropped.append(f"{name} {' or '.join(values)}")
         else:
             kept[name] = value
     if not dropped:
         return None
     label = str(query.get("label") or query.get("operation") or "")[:100]
-    return {**query, "filters": kept,
-            "label": f"{label}, over every row (not only {', '.join(dropped)})"}
+    return ({**query, "filters": kept, "label": f"{label}, every row"},
+            {**query, "label": f"{NARROWER} {', '.join(dropped)}: {label}"})
 
 
 def _merge(filters, extra):
@@ -625,14 +639,13 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
             else:
                 query = _with_typed(table, query, question, typed.get(table.id, ()))
                 query = _named_breakdown(table, query, question)
+                readings = _broader(table, query, question)
                 line = _run(table, query)
-                loose = _without_header_words(table, query)
-                if loose is not None:
-                    # Every row FIRST: Claude Haiku answered from the first
-                    # line, and the stage the word also names is the narrower
-                    # reading ("applied to the most": 45, not 18).
+                if readings is not None:
+                    # The whole, then the part of it: as two alternatives
+                    # Claude Haiku kept one; as one figure and its part, both.
                     try:
-                        line = _run(table, loose) + "\n- " + line
+                        line = _run(table, readings[0]) + "\n- " + _run(table, readings[1])
                     except _Unfit:
                         pass
         except _Absent as exc:

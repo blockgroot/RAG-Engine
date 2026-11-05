@@ -638,12 +638,22 @@ def test_a_filter_on_a_word_of_the_sheets_own_headers_is_answered_both_ways(org)
                                      viewer=Viewer(email="sana@acme.test"))
     form = _Form([{"table": "T1", "operation": "count", "group_by": "Company",
                    "filters": {"Lead Status": "Applied"}, "label": "most applied"}])
-    text = "\n".join(a.text for a in table_answers.answer("q?", tables, llm=form))
+    text = "\n".join(a.text for a in table_answers.answer(
+        "Which company have we applied to the most?", tables, llm=form))
     assert "rows where Lead Status is Applied), over 3 rows: Beta: 2; Acme: 1" in text
-    assert "over every row (not only Lead Status Applied)" in text and "Acme: 3; Beta: 2" in text
-    # "Offer" is no header's word: one reading.
+    assert "most applied, every row" in text and "Acme: 3; Beta: 2" in text
+    assert text.index("every row") < text.index("Of these rows, only Lead Status Applied")
+    # "Offer" is the asker's own word and no header's: one reading.
     form = _Form([{"table": "T1", "operation": "count", "filters": {"Lead Status": "Offer"}}])
-    assert "not only" not in "".join(a.text for a in table_answers.answer("q?", tables, llm=form))
+    assert "Of these" not in "".join(a.text for a in table_answers.answer(
+        "How many offers?", tables, llm=form))
+    # Stages the asker never typed are the model's reading of their word: both.
+    form = _Form([{"table": "T1", "operation": "count", "label": "interviews",
+                   "filters": {"Company": "Acme", "Lead Status": ["Offer", "Rejected"]}}])
+    text = "".join(a.text for a in table_answers.answer(
+        "How many interviews has Acme had?", tables, llm=form))
+    assert "interviews, every row (from \"Apps\", rows where Company is Acme), over 3 rows" in text
+    assert "Of these rows, only Lead Status Offer or Rejected: interviews" in text
 
 
 @requires_db

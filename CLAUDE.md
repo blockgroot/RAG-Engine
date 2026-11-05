@@ -372,7 +372,9 @@ worked out without them is not about them. A typed part of ONE stored value
 ("Maplepeak") filters on that value. A chart's typed filter also comes from the
 cells the index found (`TableRef.typed`), not only a column's twelve samples. Code completes the form: a cell the question types (`store.typed_cells`) is added to a
 query that does not use its column (`_with_typed`; a header word is left to the both-ways
-rule, every row first); the ONE column the question names by its header's words or their
+rule); a filter that is the model's reading (a value the asker never typed, or a word of
+the headers) is worked out as the whole and then `NARROWER` its part (`_broader`), and
+the answer prompt then states both (`_READINGS_RULE`, only when that pair is present); the ONE column the question names by its header's words or their
 longer forms is the breakdown (`_named_breakdown`); `of_these` narrows the rows outside a
 ratio, never ignored. The form lists `FORM_FULL_DETAIL` tables with values, the rest by
 header. A chart filters a date column to a named month, year or day
