@@ -363,7 +363,9 @@ its column header reaches the table form even when the model's check said no
 (`routing._names_a_sheet`, SQL beside the check). In the form a filter on a value the
 named column lacks moves to the ONE column holding it; a name or a period the table
 does not hold is STATED in the passage (`_Absent`), never answered as 0 or dropped.
-`distinct` counts different values ("how many companies") and lists them; `rows`
+A filter whose value is also a word of the table's own headers ("Applied" beside
+"Applied Via") is worked out BOTH ways, labelled (`_without_header_words`): the
+word may name what the sheet holds, not a stage. `distinct` counts different values ("how many companies") and lists them; `rows`
 lists records; a date filter is a period bound in SQL (`store.DateSpan`). A row lookup
 counts each typed value per table first (`MAX_LOOKUP_ROWS`): a name that is a group in
 one tab still names its row in another. A counted Ask answer states its total.

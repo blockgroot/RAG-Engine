@@ -563,6 +563,34 @@ def test_a_period_filter_counts_its_dates_and_a_period_outside_them_is_said(org)
 
 
 @requires_db
+def test_a_filter_on_a_word_of_the_sheets_own_headers_is_answered_both_ways(org):
+    """Staging, Claude Haiku: "which company have we applied to the most?"
+    filtered Lead Status to Applied and answered 18 where the sheet says 45."""
+    with get_connection() as conn:
+        doc = conn.execute(
+            "INSERT INTO documents (org_id, title, source_uri, source_provider, "
+            "source_external_id, doc_is_public, doc_viewers) VALUES "
+            "(%s, 'Apps', 'https://drive.test/a', 'google', %s, false, %s) RETURNING id",
+            (org, uuid.uuid4().hex, ["sana@acme.test"])).fetchone()
+        conn.commit()
+    raw = extract.parse_csv("Company,Lead Status,Applied Via\nAcme,Applied,Dice\n"
+                            "Acme,Offer,Dice\nAcme,Rejected,LinkedIn\nBeta,Applied,Dice\n"
+                            "Beta,Applied,LinkedIn\n", name="Apps")
+    _store_tables(str(doc[0]), SourceDocument(external_id="a", title="Apps", content="",
+                                              tables=[raw]), org_id=org, workspace_id=None)
+    tables = table_store.list_tables(org_id=org, workspace_id=None,
+                                     viewer=Viewer(email="sana@acme.test"))
+    form = _Form([{"table": "T1", "operation": "count", "group_by": "Company",
+                   "filters": {"Lead Status": "Applied"}, "label": "most applied"}])
+    text = "\n".join(a.text for a in table_answers.answer("q?", tables, llm=form))
+    assert "rows where Lead Status is Applied), over 3 rows: Beta: 2; Acme: 1" in text
+    assert "over every row (not only Lead Status Applied)" in text and "Acme: 3; Beta: 2" in text
+    # "Offer" is no header's word: one reading.
+    form = _Form([{"table": "T1", "operation": "count", "filters": {"Lead Status": "Offer"}}])
+    assert "every row" not in "".join(a.text for a in table_answers.answer("q?", tables, llm=form))
+
+
+@requires_db
 def test_rows_lists_the_matching_records_with_their_columns(org):
     text = _worked(org, {"table": "T1", "operation": "rows",
                          "filters": {"Owner": "Kavya Nair", "Stage": "Won"}, "label": "won"})

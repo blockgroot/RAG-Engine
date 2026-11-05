@@ -419,6 +419,35 @@ def _compare(first: TableRef, query: dict, second: TableRef) -> str:
             + "; ".join(lines[:MAX_GROUPS]) + _more(lines) + tail)
 
 
+def _without_header_words(table: TableRef, query: dict) -> dict | None:
+    """The same query over every row, when a filter's value is also a word of
+    one of the table's own headers, else None.
+
+    In an application tracker "which company have we applied to most" is
+    about every row, and "applied" is also a stage. Claude Haiku filtered on
+    the stage every time, and the answer read 18 where the sheet says 45.
+    The header ("Applied Via") shows the word describes what the sheet holds,
+    so BOTH readings are worked out and labelled; the answer says which."""
+    from .tables import _words
+
+    filters = query.get("filters")
+    if not isinstance(filters, dict) or not filters:
+        return None
+    headers = set().union(*(_words(str(c.get("name", ""))) for c in table.columns))
+    kept, dropped = {}, []
+    for name, value in filters.items():
+        words = _words(str(value)) if isinstance(value, str) else set()
+        if words and words <= headers and not words <= _words(str(name)):
+            dropped.append(f"{name} {value}")
+        else:
+            kept[name] = value
+    if not dropped:
+        return None
+    label = str(query.get("label") or query.get("operation") or "")[:100]
+    return {**query, "filters": kept,
+            "label": f"{label}, over every row (not only {', '.join(dropped)})"}
+
+
 def _merge(filters, extra):
     """``extra`` narrows ``filters``: a column in both takes extra's values."""
     keys = {k for k, _ in extra}
@@ -486,6 +515,12 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
                     requires = (second.document_id,)
             else:
                 line = _run(table, query)
+                loose = _without_header_words(table, query)
+                if loose is not None:
+                    try:
+                        line += "\n- " + _run(table, loose)
+                    except _Unfit:
+                        pass
         except _Absent as exc:
             line = str(exc)
         except _Unfit as exc:
