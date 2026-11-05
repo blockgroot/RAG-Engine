@@ -214,8 +214,9 @@ The model is shown every value of a small category column (up to
 from the model, a column the question names by its header is the breakdown, not the
 date column; a column of which the question types exactly ONE value, undrawn and
 unfiltered, is filtered on it (`resolve._typed_values`); two values are a comparison.
-A breakdown asked for in words the model matched to no column is refused with the
-columns, never drawn on a default date axis. A date breakdown stays the axis wherever its
+A breakdown asked for in words the model matched to no column (its quote is not the
+period's) is refused with the columns, never drawn on a date axis alone. A chart question
+is offered `tables.MAX_OFFERED` (10) tables: at 6 the leads sheet ranked 7th. A date breakdown stays the axis wherever its
 column sits (`parse_pick` swapped Closed x Region and refused). Copies of one sheet (title
 equal but for a file extension, same columns and rows) are offered once
 (`tables.distinct`); two copies pushed the leads sheet out of the six. The chart reply cap

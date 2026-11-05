@@ -654,3 +654,21 @@ def test_a_named_row_reaches_the_reranker_when_sub_questions_crowd_fusion(monkey
     monkeypatch.setattr(retriever, "_named_tools", lambda *a, **k: [])
     hits = retriever.retrieve("org", "q?", [0.0], viewer=Viewer(email="x@acme.test")).hits
     assert hits[0].chunk_index == row.chunk_index
+
+
+@pytest.mark.parametrize("question, reply, refused", [
+    # "by region" quoted, the table has no such column: only a month axis is left.
+    ("Revenue target by region by month",
+     '{"period": "month", "period_words": "by month", "breakdown_words": "by region"}', True),
+    # The breakdown quote IS the period: the date axis drew it.
+    ("Revenue target per month", '{"period": "month", "period_words": "per month", '
+     '"breakdown_words": "per month"}', False),
+])
+def test_an_asked_breakdown_the_chart_cannot_draw_is_refused(question, reply, refused):
+    targets = _targets()
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(targets, "Month"), period="month",
+                     chart="line", measure="sum", value=_col(targets, "Revenue Target"),
+                     table_id=targets.id)
+    intent = resolve._table_period_axis(AskIntent("chart", spec=spec), question, reply,
+                                        {"T1": targets})
+    assert (intent.kind == "refuse") is refused

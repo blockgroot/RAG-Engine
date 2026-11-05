@@ -1485,12 +1485,15 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
         # each of them: one series per value, never their sum as one.
         split = kept[0]
     words = _squashed(_breakdown_words(reply) or "")
-    if (not data.get("group_by") and not period_asked and split is None
-            and group == spec.group_by and group in dates
-            and words and f" {words} " in f"{asked_text} "):
-        # They asked for a breakdown ("by employee") the model matched to no
-        # column, and the axis left is a default date nobody asked for: that
-        # chart answers another question. Say which columns can be the breakdown.
+    # The breakdown quote is the period's own words ("per month"): the date
+    # axis drew it. Anything else ("by region") must be a drawn column.
+    about_period = bool(words) and (words == quote or (word and f" {word}" in f" {words}"))
+    if (split is None and group in dates and words and not about_period
+            and f" {words} " in f"{asked_text} "):
+        # They asked for a breakdown ("by employee", "by region") the model
+        # matched to no column of this table, and only a date axis is left:
+        # that chart answers another question ("revenue by region by month"
+        # drew the targets sheet by month). Say which columns can be the breakdown.
         from .tables import _options
 
         return AskIntent("refuse", message=(

@@ -22,9 +22,13 @@ from dataclasses import dataclass
 
 from ..doctables.store import AGGREGATES, TableRef
 
-#: How many tables a single question may see. Small because each one costs
-#: prompt space on every chart-shaped question.
-MAX_OFFERED = 6
+#: How many tables a chart question may see. Each costs a catalogue line, but
+#: at 6 "revenue by region by month" never saw the leads sheet: its revenue
+#: column is "Deal Value" and its months are dates, so it matched one word and
+#: ranked 7th, behind tables that matched "revenue" or "month" by name. Only
+#: the model can tell those apart, so it is shown enough to choose from.
+# ponytail: one ranked list capped here; a two-step pick when scopes hold far more tables.
+MAX_OFFERED = 10
 
 MEASURES = ("count",) + tuple(AGGREGATES)
 #: Values one table filter may keep: things compared side by side, not a list
