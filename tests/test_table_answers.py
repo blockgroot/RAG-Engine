@@ -663,6 +663,13 @@ def test_the_one_column_a_question_names_is_the_breakdown():
 
 
 @requires_db
+def test_of_these_outside_a_ratio_narrows_the_rows_never_silently_ignored(org):
+    text = _worked(org, {"table": "T1", "operation": "count", "filters": {"Owner": "Kavya Nair"},
+                         "of_these": {"Stage": "Won"}, "label": "kavya won"})
+    assert "rows where Owner is Kavya Nair and Stage is Won), over 2 rows: 2" in text
+
+
+@requires_db
 def test_rows_lists_the_matching_records_with_their_columns(org):
     text = _worked(org, {"table": "T1", "operation": "rows",
                          "filters": {"Owner": "Kavya Nair", "Stage": "Won"}, "label": "won"})

@@ -307,6 +307,11 @@ def _run(table: TableRef, query: dict) -> str:
     value = _column(table, query.get("value"), ("number",), "value to work out")
     group = _column(table, query.get("group_by"), ("category", "date", "text"), "breakdown")
     filters = _filters(table, query.get("filters"))
+    if operation != "ratio" and query.get("of_these"):
+        # "of_these" is a further condition outside a ratio: a count that also
+        # needs "Also Applied Via is Dice" was every LinkedIn row (4,241 for
+        # 270) under a label that said "and also via Dice".
+        filters = _merge(filters, _filters(table, query.get("of_these")))
     label = str(query.get("label") or operation)[:120]
     # The header's bracket, else the cells' symbol: the chart's own rule.
     unit = table_unit("sum", table.column(value)) if value else ""
