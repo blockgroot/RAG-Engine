@@ -51,6 +51,11 @@ FORM_MAX_TOKENS = 700
 #: the MODEL picks the table from the whole list, by meaning.
 # ponytail: one ranked list capped here; a two-step pick when scopes hold far more tables.
 ANSWER_OFFERED = 40
+#: Of those, the first (best ranked, tables holding a typed cell first) are
+#: listed with their values; the rest by their headers only. Every value the
+#: form writes is resolved against the rows anyway; listing all forty in full
+#: was three quarters of an Ask question's tokens.
+FORM_FULL_DETAIL = 10
 
 
 @dataclass(frozen=True)
@@ -84,7 +89,7 @@ def _prompt(question: str, tables: list[TableRef]) -> str:
         "table. You do NOT answer it. You fill in a form that code checks against the "
         "table and runs.\n\n"
         "Tables the person may read:\n"
-        f"{doc_tables.catalogue(tables)}\n\n"
+        f"{doc_tables.catalogue(tables, full=FORM_FULL_DETAIL)}\n\n"
         "Reply with ONLY a JSON object:\n"
         '{"named": ["<the exact words of each person, company or item the question '
         'names>"], "queries": [{"table": "T1", "operation": "count|sum|average|min|max|ratio|top|'
