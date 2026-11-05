@@ -621,3 +621,36 @@ def test_a_table_stored_with_five_samples_is_resampled_from_its_rows(org):
     assert next(c for c in after if c["name"] == "Stage")["samples"] == ["Lost", "New", "Won"]
     # Every other column is as it was, in order.
     assert [c["key"] for c in after] == [c["key"] for c in columns]
+
+
+def test_a_named_row_reaches_the_reranker_when_sub_questions_crowd_fusion(monkeypatch):
+    """Staging, Sonnet: "who does Rohan Mehta report to, and what is their
+    email?" was split in two; every sheet description came back from each
+    sub-question's vector and keyword search, the row from one leg, and fusion
+    pushed the row out of the rerank pool. The reranker never saw it."""
+    from dataclasses import replace
+
+    from app.config.settings import RagSettings, RetrievalSettings
+    from app.rag.retrieval import _ROW_INDEX
+
+    def chunk(doc, index, score=0.5):
+        return RetrievedChunk(content=f"{doc}:{index}", score=score, document_id=doc,
+                              chunk_index=index, org_id="org", doc_is_public=False)
+
+    docs = [chunk(f"d{i}", 0) for i in range(6)]
+    row = chunk("sheet", _ROW_INDEX + 1, 0.66)
+    lists = [docs, docs, docs, docs, [row]]
+
+    class _Reranker:
+        def rerank(self, query, candidates, keep):
+            seen = sorted(candidates, key=lambda c: c.chunk_index < _ROW_INDEX)
+            return [replace(c, score=1.0 - i * 0.01) for i, c in enumerate(seen)][:keep]
+
+    settings = replace(RetrievalSettings.from_env(), candidate_pool=4, rerank_enabled=True)
+    retriever = HybridRetriever(store=_NoHits(), reranker=_Reranker(), settings=settings,
+                                rag_settings=RagSettings.from_env())
+    monkeypatch.setattr(retriever, "_first_stage_all", lambda *a, **k: lists)
+    monkeypatch.setattr(retriever, "_graph_documents", lambda *a, **k: ([], False))
+    monkeypatch.setattr(retriever, "_named_tools", lambda *a, **k: [])
+    hits = retriever.retrieve("org", "q?", [0.0], viewer=Viewer(email="x@acme.test")).hits
+    assert hits[0].chunk_index == row.chunk_index

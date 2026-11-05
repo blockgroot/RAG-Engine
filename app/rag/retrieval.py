@@ -180,6 +180,15 @@ class HybridRetriever:
         gate_document_id = gate_document(candidates)
 
         pool_candidates = candidates[:pool]
+        # A row the question named by a cell comes from ONE leg, while each
+        # document chunk is found again by every sub-question's vector and
+        # keyword search; fusion rewards that, and the row fell outside the
+        # pool before the reranker read it ("who does Rohan Mehta report to,
+        # and what is their email?" split in two). The reranker judges it.
+        pooled = {(c.document_id, c.chunk_index) for c in pool_candidates}
+        pool_candidates += [c for c in candidates
+                            if _ROW_INDEX <= c.chunk_index < _WORKED_INDEX
+                            and (c.document_id, c.chunk_index) not in pooled]
         # The selection below sees the WHOLE reranked pool. Cutting it to the
         # top 10 pieces first hid documents ranked lower than one long
         # document's many pieces from the wide read (RCA, 9 Oct: 62% -> 66% of

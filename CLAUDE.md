@@ -349,7 +349,8 @@ the document predicate), as a passage scored by the better of its document's cos
 its own text's (embedded then, with the question's model): both real cosines, so the gate
 holds (a sheet's column description scored 0.342 against "who closed L-1076?"). A sheet's
 description says its category values are a SAMPLE of how many, or a missing name reads
-as absent. A worked figure keeps its document's cosine.
+as absent. A named row always enters the RERANK pool: fusion rewards a chunk every
+sub-question finds again, and a row comes from one leg (the reranker still decides). A worked figure keeps its document's cosine.
 With `DOCTABLES_ANSWERS_ENABLED` (off by default), a question Ask's check flags as
 `table` (a total, share, highest, named people compared, an overview; a follow-up is
 checked with the question it continues, `resolve.with_earlier`) is worked out by `insights/table_answers.py`: the
