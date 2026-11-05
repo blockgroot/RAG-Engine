@@ -811,3 +811,13 @@ def test_a_versus_pick_is_validated_like_any_pick():
                                                          "group_by": "Employee"}})
     assert resolve._parse_intent(bad, [], fail_open=False, handles=handles, fields=None,
                                  missing=[], providers=["google"]).kind == "refuse"
+
+
+def test_a_lookup_phrase_is_every_whole_word_stretch_of_the_question():
+    """The index lookup must find exactly what a scan for each cell found:
+    a cell standing as whole words, never part of a word."""
+    from app.doctables.store import _phrases
+
+    phrases = set(_phrases("Who closed L-1008 for Rohan Mehta's team?"))
+    assert {"l-1008", "rohan mehta", "rohan mehta's team", "who closed l-1008"} <= phrases
+    assert "ohan" not in phrases and "l-10" not in phrases and "mehta's tea" not in phrases

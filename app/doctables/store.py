@@ -740,6 +740,34 @@ MAX_LOOKUP_ROWS = 8
 #: Rows read before that is decided. A bound: past it the lookup says nothing.
 LOOKUP_SCAN = 400
 _MIN_LOOKUP_CHARS = 3
+#: The longest cell a question can name, and how many of the question's
+#: phrases are looked up: an index probe per phrase, never a scan of the org.
+_MAX_LOOKUP_CHARS = 100
+_MAX_PHRASES = 4000
+
+
+def _phrases(question: str) -> list[str]:
+    """Every whole-word stretch of the question a cell could equal, lowercased.
+
+    ``pick_rows`` keeps a cell only where it stands as whole words of the
+    question; these are exactly those stretches (start and end next to a
+    non-word character), so an exact lookup finds what a scan for each cell
+    inside the question found, through the index. Format only, no word list.
+    """
+    asked = (question or "")[:2000].lower()
+    n = len(asked)
+    starts = [i for i in range(n) if not asked[i].isspace()
+              and (i == 0 or not re.match(r"\w", asked[i - 1]))]
+    ends = {j for j in range(1, n + 1) if not asked[j - 1].isspace()
+            and (j == n or not re.match(r"\w", asked[j]))}
+    out: dict[str, None] = {}
+    for i in starts:
+        for j in range(i + _MIN_LOOKUP_CHARS, min(n, i + _MAX_LOOKUP_CHARS) + 1):
+            if j in ends:
+                out.setdefault(asked[i:j], None)
+                if len(out) >= _MAX_PHRASES:
+                    return list(out)
+    return list(out)
 
 
 @dataclass(frozen=True)
@@ -781,16 +809,17 @@ def rows_naming(
            AND d.source_provider = ANY(%(providers)s)
            AND t.origin <> 'text'
            {access}
-           AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.raw) cell
-                        WHERE length(cell) >= {_MIN_LOOKUP_CHARS}
-                          AND strpos(lower(%(question)s), lower(cell)) > 0)
+           AND lower(r.raw::text)::jsonb ?| %(phrases)s
          LIMIT %(scan)s
     """
+    phrases = _phrases(question)
+    if not phrases:
+        return []
     try:
         with get_connection() as conn:
             found = conn.execute(sql, {
                 "org_id": org_id, "workspace_id": workspace_id, "providers": providers,
-                "question": question[:2000], "scan": LOOKUP_SCAN, **params,
+                "phrases": phrases, "scan": LOOKUP_SCAN, **params,
             }).fetchall()
     except Exception:  # noqa: BLE001 - a lookup may only ever add
         logger.warning("doctables: row lookup failed", exc_info=True)

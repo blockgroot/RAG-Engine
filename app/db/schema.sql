@@ -921,6 +921,11 @@ CREATE TABLE IF NOT EXISTS doc_table_rows (
 -- The exact sentence a `text` row was read from, shown on hover so a reader
 -- can check the figure against the document. NULL for a real table's rows.
 ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS quote TEXT;
+-- A question names a row by typing one of its cells ("L-1008"): looked up by
+-- the question's phrases, exact and lowercased (`store.rows_naming`), never a
+-- scan of every row the org holds.
+CREATE INDEX IF NOT EXISTS doc_table_rows_cells_lower
+    ON doc_table_rows USING gin ((lower(raw::text)::jsonb));
 
 -- Documents waiting for a BACKGROUND dataset adapter (the text adapter: an AI
 -- reads figures out of sentences). Ingestion only flags a document here after

@@ -353,7 +353,8 @@ title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
 A Sheet embeds a description of its columns, never its figures. Ask reads a ROW
 only when the question types one of its cells (`doctables.store.rows_naming`: whole
 words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,
-the document predicate), as a passage scored by the better of its document's cosine and
+the document predicate; found by the question's whole-word phrases through the
+`doc_table_rows_cells_lower` index, never a scan of the org's rows), as a passage scored by the better of its document's cosine and
 its own text's (embedded then, with the question's model): both real cosines, so the gate
 holds (a sheet's column description scored 0.342 against "who closed L-1076?"). A sheet's
 description says its category values are a SAMPLE of how many, or a missing name reads
