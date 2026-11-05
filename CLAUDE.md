@@ -415,6 +415,9 @@ MCP host are not limited. Chat answers being written at once are places
 (`take_place`, leased so a dead server's free themselves): a person's own cap is
 refused at once, the shared cap waits. Every refusal is logged with the limit's
 name, never the question or an IP. A limiter fault lets the request through.
+Redis is Valkey with `maxmemory-policy volatile-lru`, never `allkeys-lru`: the
+cache's `qa:gen:<org>` counters have no TTL, and evicting one serves answers from
+before the last sync. Every other key we write must have a TTL.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
