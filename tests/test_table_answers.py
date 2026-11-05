@@ -340,6 +340,33 @@ def test_a_row_named_by_a_cell_is_found_for_its_viewer_only(org):
 
 
 @requires_db
+def test_another_orgs_sheet_is_never_found_or_offered(org, org_cleanup):
+    """The cell index spans every org: the org filter in the query is the
+    boundary. The same email in another org sees only that org's rows."""
+    with get_connection() as conn:
+        other = str(conn.execute("INSERT INTO organizations (name) VALUES (%s) RETURNING id",
+                                 (f"rows-{uuid.uuid4().hex[:8]}",)).fetchone()[0])
+        conn.commit()
+    org_cleanup.append(other)
+    mine = _sheet(org, ["sana@acme.test"])
+    viewer = Viewer(email="sana@acme.test")
+
+    def found(org_id):
+        hits = table_store.rows_naming("Who owned L-1008?", org_id=org_id, workspace_id=None,
+                                       viewer=viewer, providers=["google"])
+        offered = table_store.list_tables(org_id=org_id, workspace_id=None, viewer=viewer)
+        return {h.document_id for h in hits}, {t.document_id for t in offered}
+
+    assert found(org) == ({mine}, {mine})
+    assert found(other) == (set(), set())
+    theirs = _sheet(other, ["sana@acme.test"])
+    assert found(other) == ({theirs}, {theirs}) and found(org) == ({mine}, {mine})
+    # Not shared on the sheet: neither its rows nor the table.
+    assert table_store.list_tables(org_id=org, workspace_id=None,
+                                   viewer=Viewer(email="someone@acme.test")) == []
+
+
+@requires_db
 def test_a_value_shared_by_many_rows_names_none_of_them(org):
     _sheet(org, ["sana@acme.test"])
     hits = table_store.rows_naming("Kavya Nair's leads", org_id=org, workspace_id=None,
