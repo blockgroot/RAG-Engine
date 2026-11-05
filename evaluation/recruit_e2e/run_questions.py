@@ -43,7 +43,7 @@ from app.llm import openai_provider  # noqa: E402
 
 #: Every model call this process makes, for the cost columns: calls, tokens in, out.
 SPEND = {"calls": 0, "in": 0, "out": 0}
-_create = openai_provider.OpenAIProvider._create
+_create = openai_provider.OpenAICompatProvider._create
 
 
 def _counted(self, kwargs):
@@ -55,7 +55,33 @@ def _counted(self, kwargs):
     return response
 
 
-openai_provider.OpenAIProvider._create = _counted
+openai_provider.OpenAICompatProvider._create = _counted
+
+from app.rag import pipeline as _pipeline  # noqa: E402
+
+#: The text every answer of this question was written from: what the number
+#: check compares the reply against.
+SHOWN: list[str] = []
+_generate_text = _pipeline.RagPipeline._generate_text
+
+
+def _seen(self, stage, prompt, **kwargs):
+    if stage == _pipeline.STAGE_GENERATE:
+        SHOWN.append(prompt)
+    return _generate_text(self, stage, prompt, **kwargs)
+
+
+_pipeline.RagPipeline._generate_text = _seen
+_NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+
+
+def unsupported(answer: str) -> list[str]:
+    """Numbers in the answer that appear nowhere in what it was written from."""
+    if not SHOWN:
+        return []
+    shown = {n.replace(",", "") for p in SHOWN for n in _NUMBER.findall(p)}
+    said = _NUMBER.findall(re.sub(r"\[\d+\]", "", answer or ""))
+    return [n for n in said if n.replace(",", "") not in shown]
 
 
 def _flat(text: str) -> str:
@@ -90,9 +116,11 @@ def main() -> None:
             turns = q["question"].split(" -> ")
             conv = client.post("/chat/conversations", json={}, cookies=cookies).json()["conversation_id"]
             before, started = dict(SPEND), time.perf_counter()
+            SHOWN.clear()
             replies = [ask(client, cookies, t, q["mode"] == "chart", conv) for t in turns]
             cost = {k: SPEND[k] - before[k] for k in SPEND}
             cost["seconds"] = round(time.perf_counter() - started, 1)
+            cost["unsupported"] = unsupported(str(replies[-1].get("answer") or ""))
             v = verdict(q, replies[-1])
             tally[v.split()[0]] = tally.get(v.split()[0], 0) + 1
             results[str(q["n"])] = {**q, "verdict": v, "cost": cost, "replies": replies}
@@ -103,7 +131,12 @@ def main() -> None:
         close_pool()
     costs = [r.get("cost") or {} for k, r in results.items() if not only or int(k) in only]
     total = {k: sum(c.get(k, 0) for c in costs) for k in ("calls", "in", "out", "seconds")}
+    total["answers_with_unsupported_numbers"] = sum(bool(c.get("unsupported")) for c in costs)
     print(tally, "| per question:", {k: round(v / max(len(costs), 1), 1) for k, v in total.items()})
+    # A release check: RECRUIT_E2E_MIN_PASS=45 fails the run below 45 passes.
+    floor = int(os.environ.get("RECRUIT_E2E_MIN_PASS", "0") or 0)
+    if tally.get("PASS", 0) < floor:
+        sys.exit(f"{tally.get('PASS', 0)} passed, below the floor of {floor}")
 
 
 if __name__ == "__main__":

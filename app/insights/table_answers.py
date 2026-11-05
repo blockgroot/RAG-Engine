@@ -450,6 +450,37 @@ def _compare(first: TableRef, query: dict, second: TableRef) -> str:
             + "; ".join(lines[:MAX_GROUPS]) + _more(lines) + tail)
 
 
+def _with_typed(table: TableRef, query: dict, question: str,
+                typed: tuple[tuple[str, str], ...]) -> dict:
+    """The query with every value the question TYPES of this table as a filter.
+
+    Claude Haiku left typed names out of the form ("Daniel Reed" on a chart,
+    "Jordan Blake" here), and the figure was every row's. The cells the index
+    found in the question (`store.typed_cells`) are added to a query that does
+    not already use their column. A value that is also a word of the sheet's
+    own headers ("applied" beside "Applied Via") is left to the model, and is
+    then worked out both ways (`_without_header_words`)."""
+    from .tables import _words
+
+    if not typed:
+        return query
+    headers = set().union(*(_words(str(c.get("name", ""))) for c in table.columns))
+    filters = dict(query.get("filters") or {}) if isinstance(query.get("filters"), dict) else {}
+    used = {_norm(n) for n in (*filters, *(query.get("of_these") or {}),
+                               query.get("group_by") or "", query.get("column") or "")}
+    added: dict[str, list[str]] = {}
+    for name, value in typed:
+        if _norm(name) in used or (_words(value) and _words(value) <= headers):
+            continue
+        added.setdefault(name, []).append(value)
+    if not added:
+        return query
+    for name, values in added.items():
+        filters[name] = values if len(values) > 1 else values[0]
+    logger.info("table answers: added typed filters %s to a query for %r", added, question[:60])
+    return {**query, "filters": filters}
+
+
 def _without_header_words(table: TableRef, query: dict) -> dict | None:
     """The same query over every row, when a filter's value is also a word of
     one of the table's own headers, else None.
@@ -523,6 +554,10 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
     except Exception:  # noqa: BLE001 - Ask answers as before
         logger.warning("table answers: the form could not be filled", exc_info=True)
         return []
+    # The cells the question types, per table: found once by routing when it
+    # offered these tables, else looked up here in one query.
+    typed = ({t.id: t.typed for t in offered if t.typed}
+             or table_store.typed_cells(question, offered))
     missing = _unheld(_named(reply, question), offered)
     if missing:
         table = offered[0]
@@ -555,6 +590,7 @@ def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnsw
                 if second.document_id != table.document_id:
                     requires = (second.document_id,)
             else:
+                query = _with_typed(table, query, question, typed.get(table.id, ()))
                 line = _run(table, query)
                 loose = _without_header_words(table, query)
                 if loose is not None:

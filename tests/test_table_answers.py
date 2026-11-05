@@ -633,6 +633,21 @@ def test_a_part_of_one_stored_value_filters_on_that_value(org):
 
 
 @requires_db
+def test_a_value_the_question_types_is_added_to_a_query_that_left_it_out(org):
+    """Claude Haiku's form dropped typed names; the figure was every row's."""
+    form = _Form([{"table": "T1", "operation": "count", "filters": {"Stage": "Won"},
+                   "label": "won"}])
+    text = "".join(a.text for a in table_answers.answer(
+        "How many deals has Kavya Nair won?", _sales_tables(org), llm=form))
+    assert "Stage is Won and Owner is Kavya Nair" in text
+    # Already grouped by that column: nothing is added.
+    form = _Form([{"table": "T1", "operation": "count", "group_by": "Owner", "label": "by"}])
+    text = "".join(a.text for a in table_answers.answer(
+        "Kavya Nair vs Rohan Mehta lead count", _sales_tables(org), llm=form))
+    assert "- by (from \"Leads\"), over 5 rows" in text
+
+
+@requires_db
 def test_rows_lists_the_matching_records_with_their_columns(org):
     text = _worked(org, {"table": "T1", "operation": "rows",
                          "filters": {"Owner": "Kavya Nair", "Stage": "Won"}, "label": "won"})
