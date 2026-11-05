@@ -994,17 +994,22 @@ def rows_naming(
     # rows of a leads tab (a group) and one row of the team tab (a name). A
     # plain scan stopped at its bound on the leads rows and found neither.
     sql = f"""
-        WITH matched AS MATERIALIZED (
-            SELECT r.table_id, r.row_no, p.phrase
-              FROM unnest(%(phrases)s::text[]) AS p(phrase)
-              JOIN doc_table_rows r ON lower(r.raw::text)::jsonb ? p.phrase
-              JOIN doc_tables t ON t.id = r.table_id
+        WITH visible AS MATERIALIZED (
+            SELECT t.id
+              FROM doc_tables t
               JOIN documents d ON d.id = t.document_id
              WHERE t.org_id = %(org_id)s
                {_scoped("t", workspace_id)}
                AND d.source_provider = ANY(%(providers)s)
                AND t.origin <> 'text'
                {access}
+        ), matched AS MATERIALIZED (
+            -- The visible tables as a LIST, so each phrase is one probe of the
+            -- cell index: joined, one source's plan scanned every row (3 s).
+            SELECT r.table_id, r.row_no, p.phrase
+              FROM unnest(%(phrases)s::text[]) AS p(phrase)
+              JOIN doc_table_rows r ON lower(r.raw::text)::jsonb ? p.phrase
+             WHERE r.table_id = ANY(ARRAY(SELECT id FROM visible))
              LIMIT %(matches)s
         ), named AS (
             SELECT table_id, phrase FROM matched
