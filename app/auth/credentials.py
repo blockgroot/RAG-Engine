@@ -368,6 +368,10 @@ def looks_like_auth_failure(exc: BaseException) -> bool:
     for _ in range(8):
         if cur is None:
             break
+        if isinstance(cur, ConfigurationError):
+            # This host's (or company app's) OAuth client was refused: its 401
+            # says nothing about the person's token, so the connection stays.
+            return False
         status = getattr(cur, "status_code", None)
         if status == 401:
             return True

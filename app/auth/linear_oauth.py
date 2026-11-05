@@ -24,7 +24,7 @@ import httpx
 
 from ..config.settings import LinearSettings
 from ..core.exceptions import ConfigurationError, OAuthError, OAuthReauthRequiredError
-from .base import OAuthProvider, OAuthTokens, compute_expires_at
+from .base import CLIENT_ERRORS, OAuthProvider, OAuthTokens, compute_expires_at, oauth_error_code
 
 _AUTHORIZE_URL = "https://linear.app/oauth/authorize"
 _TOKEN_URL = "https://api.linear.app/oauth/token"
@@ -106,6 +106,14 @@ class LinearOAuthProvider(OAuthProvider):
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            code = oauth_error_code(exc)
+            if code in CLIENT_ERRORS:
+                # Linear answers a wrong client id or secret with 401 too: that is
+                # this app's configuration, and reconnecting would not fix it.
+                raise ConfigurationError(
+                    f"Linear refused this app's OAuth client ({code}); the token was "
+                    "not refreshed.", cause=exc,
+                ) from exc
             if exc.response.status_code in (400, 401):
                 raise OAuthReauthRequiredError(
                     "Linear refused the refresh token; reconnect Linear.", cause=exc

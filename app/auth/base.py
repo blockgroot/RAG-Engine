@@ -80,3 +80,17 @@ class OAuthProvider(ABC):
         refresh.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support token refresh")
+
+
+#: OAuth token-endpoint errors that blame the CLIENT (this app's id or secret),
+#: not the person's grant (RFC 6749 §5.2). Reconnecting cannot fix them.
+CLIENT_ERRORS = frozenset({"invalid_client", "unauthorized_client"})
+
+
+def oauth_error_code(exc) -> str | None:
+    """The ``error`` field of a token endpoint's JSON error body, if any."""
+    try:
+        body = exc.response.json()
+    except (ValueError, AttributeError):
+        return None
+    return body.get("error") if isinstance(body, dict) else None
