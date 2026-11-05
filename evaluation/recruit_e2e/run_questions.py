@@ -37,6 +37,26 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "sales_e2e"))
 from run_questions import ask  # noqa: E402
 
+import time  # noqa: E402
+
+from app.llm import openai_provider  # noqa: E402
+
+#: Every model call this process makes, for the cost columns: calls, tokens in, out.
+SPEND = {"calls": 0, "in": 0, "out": 0}
+_create = openai_provider.OpenAIProvider._create
+
+
+def _counted(self, kwargs):
+    response = _create(self, kwargs)
+    usage = getattr(response, "usage", None)
+    SPEND["calls"] += 1
+    SPEND["in"] += getattr(usage, "prompt_tokens", 0) or 0
+    SPEND["out"] += getattr(usage, "completion_tokens", 0) or 0
+    return response
+
+
+openai_provider.OpenAIProvider._create = _counted
+
 
 def _flat(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d)", "", (text or "").lower())
@@ -69,16 +89,21 @@ def main() -> None:
                 continue
             turns = q["question"].split(" -> ")
             conv = client.post("/chat/conversations", json={}, cookies=cookies).json()["conversation_id"]
+            before, started = dict(SPEND), time.perf_counter()
             replies = [ask(client, cookies, t, q["mode"] == "chart", conv) for t in turns]
+            cost = {k: SPEND[k] - before[k] for k in SPEND}
+            cost["seconds"] = round(time.perf_counter() - started, 1)
             v = verdict(q, replies[-1])
             tally[v.split()[0]] = tally.get(v.split()[0], 0) + 1
-            results[str(q["n"])] = {**q, "verdict": v, "replies": replies}
-            print(f"#{q['n']} {v} | {q['question'][:70]!r}\n    expect: {q['expect'][:150]}\n"
+            results[str(q["n"])] = {**q, "verdict": v, "cost": cost, "replies": replies}
+            print(f"#{q['n']} {v} | {q['question'][:70]!r} | {cost}\n    expect: {q['expect'][:150]}\n"
                   f"    got:    {str(replies[-1]['answer'])[:300]!r}", flush=True)
             out_path.write_text(json.dumps(results, indent=1, default=str, ensure_ascii=False))
     finally:
         close_pool()
-    print(tally)
+    costs = [r.get("cost") or {} for k, r in results.items() if not only or int(k) in only]
+    total = {k: sum(c.get(k, 0) for c in costs) for k in ("calls", "in", "out", "seconds")}
+    print(tally, "| per question:", {k: round(v / max(len(costs), 1), 1) for k, v in total.items()})
 
 
 if __name__ == "__main__":

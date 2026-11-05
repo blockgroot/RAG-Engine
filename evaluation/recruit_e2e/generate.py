@@ -203,6 +203,50 @@ def main() -> None:
     # --- follow-ups -------------------------------------------------------
     add("ask", f"How many leads has {b} generated? -> and how many of them reached an offer?",
         f"{len(bl)}; then {won}", must=[str(won)], follow=True)
+    # --- harder: several typed values, values the sheet lacks, lists ----------
+    def rows(**kw):
+        return [r for r in allrows if all(r[k] == v for k, v in kw.items())]
+
+    n = len(rows(**{"Profile Name": "Sophia Turner", "Applied Via": "Dice"}))
+    n_dec = sum(r["Profile Name"] == "Sophia Turner" and r["Applied Via"] == "Dice"
+                for r in tabs["Dec 2026"])
+    add("ask", "How many Dice applications did Sophia Turner make in December?", str(n_dec),
+        must=[str(n_dec)])
+    n = len(rows(**{"BDE": "Aman Verma", "Lead Type": "C2H", "Applied Via": "LinkedIn"}))
+    add("ask", "How many C2H leads did Aman Verma get via LinkedIn?", str(n), must=[str(n)])
+    n = len(rows(**{"Profile Name": "Liam Carter", "Lead Status": "Offer", "Applied Via": "Indeed"}))
+    add("ask", "How many offers did Liam Carter get through Indeed?", str(n), must=[str(n)])
+    mine = rows(**{"Profile Name": "Olivia Hayes"})
+    tr = sum(r["Lead Status"] == "Technical Round" for r in mine)
+    add("ask", "What share of Olivia Hayes's applications reached the technical round?",
+        f"{tr} of {len(mine)} = {tr / len(mine) * 100:.1f}%", must=[f"{tr / len(mine) * 100:.1f}"])
+    role = Counter(r["Role"] for r in rows(**{"Profile Name": "Ethan Brooks"})).most_common(1)[0]
+    add("ask", "Which role has Ethan Brooks applied to most?", f"{role[0]} ({role[1]})",
+        must=[role[0], str(role[1])])
+    comp = {r["PH Name"] for r in nov if r["BDE"] == "Neha Joshi"}
+    add("ask", "How many different companies did Neha Joshi's leads go to in November?",
+        str(len(comp)), must=[str(len(comp))])
+    n = len(rows(**{"Lead Type": "Full Time", "Status": "Open"}))
+    add("ask", "How many Full Time leads are open?", str(n), must=[str(n)])
+    n = sum(r["Lead Status"] == "Rejected" for r in tabs["Oct 2026"])
+    add("ask", "How many leads were rejected in October?", str(n), must=[str(n)])
+    offers = sorted(r["PH Name"] for r in rows(**{"Profile Name": "Mia Collins",
+                                                  "Lead Status": "Offer"}))
+    add("ask", "List Mia Collins's offers with the company and role",
+        "; ".join(offers), must=offers[:4])
+    rec = Counter(r["Recruit"] for r in allrows if r["Lead Status"] == "Offer").most_common(1)[0]
+    add("ask", "Which recruiter handled the most offers?", f"{rec[0]} ({rec[1]})",
+        must=[rec[0], str(rec[1])])
+    n = len(rows(**{"Profile Name": "Logan Price", "Applied Via": "Upwork"}))
+    add("ask", "Total applications by Logan Price via Upwork", str(n), must=[str(n)])
+    add("ask", "How many applications did Sophia Turner make via Monster?",
+        "Monster is not a channel in the tracker; says so", refuse=True)
+    add("ask", "How many leads does Priya Malhotra have?", "No such person; says so", refuse=True)
+    n = len(rows(**{"Dev Attempting": "Rohit Sharma", "Lead Status": "Client Round"}))
+    add("ask", "How many client rounds has Rohit Sharma attempted?", str(n), must=[str(n)])
+    n = sum(r["BDE"] == "Vivek Nair" and r["Status"] == "On Hold" for r in nov)
+    add("ask", "How many of Vivek Nair's November leads are on hold?", str(n), must=[str(n)])
+
     # --- charts -------------------------------------------------------------
     add("chart", "Leads per month by applied via", "stacked bar Oct-Dec x channel")
     add("chart", "Offers by BDE", f"bar per BDE, {top} highest ({n_top})", must=[top])
