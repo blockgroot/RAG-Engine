@@ -20,7 +20,6 @@ from app.llm.routed import (
     selected_model,
     use_model,
 )
-from app.rag.query_cache import _question_hash
 
 
 class _Recording(LLMProvider):
@@ -124,28 +123,6 @@ def test_answering_model_resets_between_requests(routed):
 # --------------------------------------------------------------------------
 # Cache isolation — a wrong key here is a WRONG ANSWER, not a slow one
 # --------------------------------------------------------------------------
-def test_cache_key_differs_per_model():
-    base = _question_hash("what is the leave policy")
-    use_model(catalog.OLLAMA_MODELS[0].id)
-    picked = _question_hash("what is the leave policy")
-    assert base != picked
-
-
-def test_cache_key_unchanged_for_default_path():
-    """Pre-existing cache entries must stay readable after this feature."""
-    base = _question_hash("what is the leave policy")
-    use_model(catalog.AUTO)
-    assert _question_hash("what is the leave policy") == base
-
-
-def test_two_models_do_not_share_a_cache_slot():
-    keys = set()
-    for choice in catalog.OLLAMA_MODELS[:2]:
-        use_model(choice.id)
-        keys.add(_question_hash("what is the leave policy"))
-    assert len(keys) == 2
-
-
 # --------------------------------------------------------------------------
 # Validation at the trust boundary
 # --------------------------------------------------------------------------
@@ -605,10 +582,9 @@ def test_an_unknown_model_never_falls_back_to_the_deployment_key(monkeypatch):
 def test_selected_model_stays_a_string_for_its_two_outside_readers():
     """``org_id`` rides a SEPARATE ContextVar, not a tuple in ``_SELECTED``.
 
-    ``selected_model()`` is read outside routed.py in two places that both need
-    a plain string: api/chat.py puts it in the ``done`` SSE event (a tuple would
-    ship the org_id to the browser) and rag/query_cache.py folds it into the
-    answer-cache key (a tuple would reshape every key, catalogued models too).
+    ``selected_model()`` is read outside routed.py where it must stay a
+    plain string: api/chat.py puts it in the ``done`` SSE event (a tuple would
+    ship the org_id to the browser).
     """
     from app.llm.routed import selected_model, selected_org, use_model
 
@@ -617,10 +593,6 @@ def test_selected_model_stays_a_string_for_its_two_outside_readers():
     assert isinstance(selected_model(), str)
     assert selected_org() == "org-secret-uuid"
 
-    # The cache key must still be computable and stable — a tuple in _SELECTED
-    # would reshape it for every model, catalogued ones included.
-    assert _question_hash("q") == _question_hash("q")
-    assert isinstance(_question_hash("q"), str)
 
 
 def test_org_llm_row_is_not_listed_as_a_data_source():

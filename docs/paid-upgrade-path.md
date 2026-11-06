@@ -182,7 +182,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 | LangChain / LlamaIndex | Faster RAG features | Would own the gate and prompt. Contradicts document 3. |
 | Cohere embed plus rerank bundle | Best-in-class retrieval | Data residency; extra vendor; dimension and schema change. |
 | Pinecone | Managed vectors | Second isolation path; Postgres already holds vectors. |
-| Redis | Faster cache | Query-path work was eliminated; `query_answer_cache` is Postgres. |
+| Redis | Shared rate limits | Live in production for rate limits only (`docs/plans/2026-11-05-redis-choice.md`). |
 | Always-on LLM query rewrite | Better than SymSpell | Permanent latency; buy model quota first, then re-measure. |
 | Dual-LLM NLI (Phase 20) | Proof that a cited sentence is supported | Inline citations are already built. NLI is extra cost and latency, after token logs justify it. |
 

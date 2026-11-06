@@ -25,7 +25,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # Rate limits and the answer cache. REDIS_URL=redis://localhost:6379/0
+  # Rate limits (app/ratelimit/). REDIS_URL=redis://localhost:6379/0
   # Valkey, as in production and the self-hosted install.
   redis:
     image: valkey/valkey:8-alpine

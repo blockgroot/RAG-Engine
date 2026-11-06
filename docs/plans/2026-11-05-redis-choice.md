@@ -1,7 +1,9 @@
 # Which Redis to use
 
-> **Decision:** Render Key Value (Valkey 8), Starter plan, `volatile-lru`, in production.
-> Nothing on staging. A Valkey container in the self-hosted install.
+> **Decision:** Render Key Value (Valkey 8) in production: Free while usage is small,
+> Starter ($10/mo) once customers depend on it. Nothing on staging. A Valkey container in
+> the self-hosted install. Redis holds **rate limits only** (the answer cache was removed
+> on 2026-11-06).
 
 ## What Handbook keeps in Redis
 
@@ -9,30 +11,26 @@
 |---|---|---|---|
 | Rate-limit buckets (`rl:*`) | bytes per person/company | yes, on its own | allowances reset to full |
 | Answers being written at once (`rl:answers:*`) | one entry per answer | yes, 5-minute lease | the cap resets |
-| Answer cache (`qa:<org>:<generation>:<hash>`) | up to 256 KB per answer | yes, TTL | cache miss, answer is rebuilt |
-| Cache generation per company (`qa:gen:<org>`) | one number | **no** | see below |
+
+Measured: about 110 bytes per bucket, and a person uses 3–4 at a time, each expiring
+20–60 s after their last request. 1,000 people active at once is about 0.4 MB; an empty
+server is about 0.9 MB. **25 MB is far more than enough.**
 
 Everything is disposable, so **no persistence or backups are needed**. What matters is a
-fast, private connection from the API and a memory policy that never evicts the
-generation counters.
+fast, private connection from the API.
 
 ## Memory policy: `volatile-lru`
 
-When memory is full, Redis evicts keys by its `maxmemory-policy`.
-
-- `allkeys-lru` may evict a company's generation counter. It then falls back to an older
-  number, and answers cached **before the last sync** become visible again: a company
-  could see an outdated answer after its documents changed.
-- `volatile-lru` evicts only keys that have an expiry (cached answers, buckets). The
-  counters stay. This is the setting to use everywhere.
-- `noeviction` would refuse writes when full: the cache would stop storing and the limiter
-  would fail open. Safe, but worse than `volatile-lru`.
+When memory is full, Redis evicts keys by its `maxmemory-policy`. Every key Handbook
+writes has an expiry, so `volatile-lru` and `allkeys-lru` behave the same today. Use
+`volatile-lru`: if a key without an expiry is ever added, it is never evicted by surprise.
+`noeviction` would refuse writes when full and the limiter would fail open.
 
 ## What production systems use
 
 - **Stripe** runs its API rate limiters as token buckets on Redis.
 - **GitHub** moved its API rate limiter from a shared Memcached to Redis. One reason:
-  the shared cache, when full, evicted live rate-limit data. Same lesson as above.
+  the shared cache, when full, evicted live rate-limit data. Ours holds nothing else.
 - **Valkey** is the Linux Foundation fork of Redis (BSD licence), created when Redis left
   open source in 2024. AWS ElastiCache, Google Memorystore, DigitalOcean, Aiven and
   **Render** now offer it; new Render Key Value instances run Valkey 8. GitLab supports
@@ -52,9 +50,9 @@ When memory is full, Redis evicts keys by its `maxmemory-policy`.
 ## By stage
 
 **Production (now).** Render Key Value, **Starter**, same region as Hand-Book, private
-network only (no allowed IPs), Maxmemory policy **`volatile-lru`**. The Free plan works but
-holds 25 MB (100–200 cached answers) and is wiped on every restart, which resets every
-allowance; Starter avoids both for $10.
+network only (no allowed IPs), Maxmemory policy **`volatile-lru`**. Free (25 MB) holds
+everything we store; but Render may restart it at any time, which resets every allowance,
+and its connection limit is lower. Move to Starter ($10) once customers depend on it.
 
 **Staging and local.** No Redis. Limits count in each process's memory, exact for one
 server. Never point staging at production's Redis: they would share limits.
@@ -64,14 +62,14 @@ server. Never point staging at production's Redis: they would share limits.
 so no code changes. Existing installs keep their own compose file and run without Redis
 until they take the new one.
 
-**Later, at scale.** Move up a plan when memory is regularly full (cache misses rise). With
-several large API servers, give the rate limiter its own instance, apart from the cache
-(GitHub's lesson): a cache filling up should never touch rate-limit data.
+**Later, at scale.** Move up a plan for more connections when several API servers run.
+If anything else is ever stored in Redis (a cache, a queue), give it its own instance
+(GitHub's lesson): something else filling up should never touch rate-limit data.
 
 ## Production checklist (Render dashboard, by hand)
 
-1. Key Value instance → **Info**: plan **Starter** (moving off Free restarts it; only the
-   limits and cache reset).
+1. Key Value instance → **Info**: plan Free now, **Starter** once customers depend on it
+   (moving off Free restarts it; only the limits reset).
 2. **Maxmemory policy: `volatile-lru`.**
 3. Region is Hand-Book's; **Allowed IPs** empty.
 4. Hand-Book's log at startup still says "Rate limits: Redis at …, connected".

@@ -112,9 +112,6 @@ DEFAULT_DECOMPOSE_ENABLED = True
 DEFAULT_REQUEST_DEADLINE_SECONDS = 45.0
 DEFAULT_BUDGET_MIN_STAGE_SECONDS = 3.0
 
-DEFAULT_QUERY_CACHE_ENABLED = True
-DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
-
 DEFAULT_RATE_LIMIT_ENABLED = True
 # Token buckets (docs/plans/2026-11-03-rate-limiting.md): BURST requests at
 # once, refilled at PER_MINUTE. Starting numbers; tuned once real use is seen.
@@ -1586,29 +1583,6 @@ class RequestBudgetSettings:
             min_stage_seconds=float(
                 os.getenv("REQUEST_BUDGET_MIN_STAGE_SECONDS") or DEFAULT_BUDGET_MIN_STAGE_SECONDS
             ),
-        )
-
-
-@dataclass(frozen=True)
-class QueryCacheSettings:
-    """Cache for repeated standalone questions (Phase 19).
-
-    In Redis when ``REDIS_URL`` is set (the same instance as the rate limits),
-    in Postgres otherwise, so an install without Redis keeps its cache. The
-    process that runs ingest must see the same ``REDIS_URL`` as the API, or a
-    sync clears the wrong store and the old answer is served until it expires.
-    """
-
-    enabled: bool = DEFAULT_QUERY_CACHE_ENABLED
-    ttl_seconds: int = DEFAULT_QUERY_CACHE_TTL_SECONDS
-    redis_url: str | None = None
-
-    @classmethod
-    def from_env(cls) -> "QueryCacheSettings":
-        return cls(
-            enabled=env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
-            ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
-            redis_url=(os.getenv("REDIS_URL") or "").strip() or None,
         )
 
 

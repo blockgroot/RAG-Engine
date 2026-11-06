@@ -15,7 +15,6 @@ from __future__ import annotations
 import uuid
 
 from app.api.suggestions import build_slack_suggestions
-from app.rag.query_cache import _question_hash
 
 from .conftest import requires_db
 
@@ -104,16 +103,6 @@ def test_slack_scoped_keyword_search_is_filtered_too(store, embedder, org_cleanu
     )
     assert hits, "expected the Slack thread via keyword search"
     assert all("thread" in (h.document_title or "") for h in hits)
-
-
-def test_cache_key_separates_slack_from_docs_for_the_same_question():
-    """Same text, different corpus → must not share a cache slot."""
-    docs = _question_hash("what did we decide about pricing?")
-    slack = _question_hash("what did we decide about pricing?", None, "slack")
-    assert docs != slack
-    # And the un-scoped key is unchanged, so existing entries stay valid.
-    assert docs == _question_hash("what did we decide about pricing?", None, None)
-
 
 def test_slack_chips_are_channel_shaped_not_document_shaped():
     chips = build_slack_suggestions(["eng-standup"])

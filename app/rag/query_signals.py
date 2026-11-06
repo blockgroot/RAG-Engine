@@ -34,7 +34,6 @@ def log_query_signal(
         "answered": result.answered,
         "source": result.final_answer_source or result.source,
         "retrieval_reused": result.retrieval_reused,
-        "cache_hit": result.cache_hit,
         "recovery_used": result.recovery_used,
         "question_decomposed": result.question_decomposed,
         "latency_ms": result.latency_ms,

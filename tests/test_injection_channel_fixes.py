@@ -9,14 +9,6 @@ import pytest
 from app.agent import insights_agent
 from app.insights.resolve import CannotChart, ChartSpec
 from app.rag import prompts
-from app.rag.pipeline import RagResult, _is_cacheable
-
-
-def test_a_web_answer_is_never_cached_for_the_scope():
-    """`sources=[]` used to make the public-only check vacuously true."""
-    assert _is_cacheable(RagResult(answer="x", answered=True, source="web", sources=[])) is False
-    assert _is_cacheable(RagResult(answer="x", answered=True, source="policy", sources=[])) is True
-
 
 def test_repo_descriptions_are_scrubbed_and_fenced_in_the_decision_prompt():
     repo = SimpleNamespace(

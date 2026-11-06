@@ -206,12 +206,8 @@ class RetrievedChunk:
     source_provider: str | None = None
     last_editor: str | None = None
     last_modified: datetime | None = None
-    # Whether this hit's document is readable by the whole scope. Carried so
-    # the answer cache can tell a shareable answer from a personal one: an
-    # answer built from a restricted document must never be served to the next
-    # member who asks the same question (`rag/query_cache.py` has no viewer in
-    # its key, deliberately -- so the write is gated instead). Defaults True,
-    # which is what a fake, a reuse hit or a legacy row honestly is.
+    # Whether this hit's document is readable by the whole scope. Defaults
+    # True, which is what a fake, a reuse hit or a legacy row honestly is.
     doc_is_public: bool = True
     # Prompt-injection probability from ingest (`app/guard/`); None = unscored.
     injection_score: float | None = None

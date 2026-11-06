@@ -128,10 +128,8 @@ services:
       timeout: 5s
       retries: 20
 
-  # Rate-limit counts and the answer cache, both disposable: nothing to back up.
+  # Rate-limit counts only, which expire on their own: nothing to back up.
   # Valkey (BSD), not Redis 7.4+ (RSAL/SSPL): this file ships to customers.
-  # volatile-lru: when full, evict only keys that expire anyway; the answer
-  # cache's per-company generation counters have no TTL and must survive.
   # See docs/plans/2026-11-05-redis-choice.md.
   redis:
     image: valkey/valkey:8-alpine

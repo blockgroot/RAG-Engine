@@ -396,14 +396,6 @@ def test_a_connected_answer_is_told_what_was_searched():
         gp.reset_plan(token)
     assert rag_pipeline.SEARCH_COVERAGE_HEADER not in block
 
-
-def test_graph_shaped_answers_are_never_cached():
-    ok = rag_pipeline.RagResult(answer="a", answered=True)
-    assert rag_pipeline._is_cacheable(ok)
-    assert not rag_pipeline._is_cacheable(rag_pipeline.RagResult(
-        answer="a", answered=True, graph_shaped=True))
-
-
 # --------------------------------------------------------------------------
 # The chat edge
 # --------------------------------------------------------------------------

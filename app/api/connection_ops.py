@@ -18,7 +18,6 @@ from ..auth.credentials import (
 )
 from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError, SourceError
 from ..db.connection import get_connection
-from ..rag.query_cache import delete_org_entries
 from ..sources.factory import INDEXED_PROVIDERS
 from ..sources.google_drive_utils import preflight_folder_sharing
 from ..vectorstore import build_vector_store
@@ -67,13 +66,6 @@ def disconnect_connection(
         purge_provider(org_id, workspace_id, provider)
     except Exception:  # noqa: BLE001 - logged; the documents are already gone
         logger.warning("Could not purge graph rows after a disconnect", exc_info=True)
-    # The same reason an ingest clears it: a cached answer outlives the content
-    # it was built from, so for up to the TTL a disconnected source keeps
-    # answering. Org-wide because the provider is folded into the question hash.
-    try:
-        delete_org_entries(org_id)
-    except Exception:  # noqa: BLE001 - a stale cache entry, never a failed disconnect
-        logger.warning("Could not clear the answer cache after a disconnect", exc_info=True)
     return {"provider": provider, "documents_purged": purged}
 
 

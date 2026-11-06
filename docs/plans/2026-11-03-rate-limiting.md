@@ -151,9 +151,7 @@ instance. Never point staging at production's Redis, or the two would share limi
      region.
    - Plan: the smallest paid plan. The free one works, but Render may restart it at any
      time, which resets everyone's allowances. Rate-limit entries are tiny.
-   - Maxmemory policy: `volatile-lru`, not `allkeys-lru`: the answer cache's per-company
-     counters have no expiry and must never be evicted (see
-     [the Redis choice](2026-11-05-redis-choice.md)).
+   - Maxmemory policy: `volatile-lru` (see [the Redis choice](2026-11-05-redis-choice.md)).
    - Allowed IPs: **none** (private network only).
 2. Copy the instance's **Internal Key Value URL** (`redis://red-…:6379`).
 3. Hand-Book → **Environment** → add `REDIS_URL` with that URL → **Save**. This redeploys.

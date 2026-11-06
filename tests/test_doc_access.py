@@ -25,7 +25,7 @@ import pytest
 
 from app.sources.base import DocAccess, SourceDocument, SourceRef
 from app.sources.factory import ACL_CAPABLE
-from app.vectorstore.base import RetrievedChunk, Viewer
+from app.vectorstore.base import Viewer
 from app.vectorstore.pgvector_store import _normalize_viewers, _viewer_clause
 
 
@@ -192,34 +192,6 @@ def test_restamping_is_skipped_for_providers_that_report_no_acl():
 
 
 # -- the cache must not serve one person's access situation to another ------
-
-
-def test_an_answer_from_a_restricted_document_is_not_cached():
-    """`query_answer_cache` has no viewer in its key, deliberately. So the WRITE
-    is gated instead: an answer built from a document not readable by the whole
-    scope would otherwise be served verbatim to someone who cannot open it."""
-    from app.rag.pipeline import RagResult, _is_cacheable
-
-    public_hit = RetrievedChunk(
-        content="c", score=0.9, document_id="d", chunk_index=0, org_id="o",
-        doc_is_public=True,
-    )
-    private_hit = RetrievedChunk(
-        content="c", score=0.9, document_id="d", chunk_index=0, org_id="o",
-        doc_is_public=False,
-    )
-    assert _is_cacheable(RagResult(answer="a", answered=True, sources=[public_hit]))
-    assert not _is_cacheable(RagResult(answer="a", answered=True, sources=[private_hit]))
-
-
-def test_a_not_shared_with_you_refusal_is_not_cached():
-    """It is a statement about ONE person's access, and wrong for everyone else."""
-    from app.rag.pipeline import RagResult, _is_cacheable
-
-    assert not _is_cacheable(
-        RagResult(answer="ask the owner", answered=False, access_restricted=True)
-    )
-
 
 # -- the refusal says the true thing, and only when it is true --------------
 
