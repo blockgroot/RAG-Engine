@@ -1,11 +1,8 @@
-import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
-
-const TOOLS: BrandName[] = ["notion", "drive", "slack", "linear", "github"];
-
 /**
  * Left half of sign-in and sign-up. These two pages are where someone decides
- * whether to bother, so the copy says what Handbook does today, and the
- * figure shows what happens next, step by step, in the home page's style.
+ * whether to bother, so the copy says what Handbook does today, and a short
+ * row of steps says what happens next. Kept compact so this column is about
+ * as tall as the form beside it.
  */
 export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signup" }) {
   const isSignup = variant === "signup";
@@ -26,6 +23,21 @@ export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signu
         "Reports emailed daily, weekly or monthly",
       ];
 
+  // What happens next, as one compact row (the step you are on is highlighted).
+  const steps: Array<[string, string]> = isSignup
+    ? [
+        ["Request", "Company and email"],
+        ["We review", "A person reads it"],
+        ["Connect", "Your tools"],
+        ["Invite", "Your team"],
+      ]
+    : [
+        ["Your email", "Work address"],
+        ["Open the link", "Works once"],
+        ["You’re in", "Ask away"],
+      ];
+  const now = 0;
+
   return (
     <div className="auth-scene2">
       <p className="site-label">{isSignup ? "Request access" : "Sign in"}</p>
@@ -35,66 +47,15 @@ export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signu
         {points.map((line) => <li key={line}>{line}</li>)}
       </ul>
 
-      <div className="site-frame access auth-flow" aria-hidden>
-        {isSignup ? (
-          <>
-            <div className="access-node">
-              <span className="access-step">1</span>
-              <div>
-                <b>You send a request</b>
-                <span className="access-hint">Your company name and work email</span>
-              </div>
-            </div>
-            <div className="access-node access-gate">
-              <span className="access-step">2</span>
-              <div>
-                <b>We review it <em className="auth-flow-pill">In review</em></b>
-                <span className="access-hint">A person reads every request</span>
-              </div>
-            </div>
-            <div className="access-node">
-              <span className="access-step">3</span>
-              <div>
-                <b>You connect your tools</b>
-                <div className="access-tools">
-                  {TOOLS.map((t) => <BrandGlyph key={t} name={t} size={16} />)}
-                </div>
-              </div>
-            </div>
-            <div className="access-node access-last">
-              <span className="access-step">4</span>
-              <div>
-                <b>You invite your team</b>
-                <span className="access-hint">They sign in with a link, no password</span>
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="access-node">
-              <span className="access-step">1</span>
-              <div>
-                <b>Enter your work email</b>
-                <span className="access-hint">you@company.com</span>
-              </div>
-            </div>
-            <div className="access-node access-gate">
-              <span className="access-step">2</span>
-              <div>
-                <b>Open the link we email you</b>
-                <span className="access-hint">It works once and expires shortly</span>
-              </div>
-            </div>
-            <div className="access-node access-last">
-              <span className="access-step">3</span>
-              <div>
-                <b>You&rsquo;re in</b>
-                <span className="access-hint">Ask your first question</span>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
+      <ol className="auth-steps" aria-label="What happens next" style={{ ["--cols" as string]: steps.length }}>
+        {steps.map(([title, hint], i) => (
+          <li key={title} className={i === now ? "is-now" : i < now ? "is-done" : ""}>
+            <span className="auth-steps-n">{i + 1}</span>
+            <b>{title}</b>
+            <small>{hint}</small>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
+import { HbLogo } from "@/components/site/HbLogo";
 
 /** One question per tool that a new team already knows the answer to. */
 const STARTERS: Array<[BrandName, string]> = [
@@ -18,7 +19,7 @@ export function CloseFigure() {
   return (
     <div className="site-frame starter" aria-hidden>
       <div className="starter-box">
-        <span className="hero-mark">HB</span>
+        <HbLogo />
         <span className="starter-input">
           Ask your workplace anything<i className="starter-caret" />
         </span>

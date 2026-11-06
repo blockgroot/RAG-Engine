@@ -1,4 +1,5 @@
 import { BrandGlyph } from "@/components/BrandGlyph";
+import { HbLogo } from "@/components/site/HbLogo";
 
 /**
  * Section 4: the three places people meet Handbook. One card each, figure on
@@ -9,19 +10,17 @@ export function Surfaces() {
     <div className="bento">
       <article className="bento-cell">
         <div className="bento-fig" aria-hidden>
-          <div className="slackmini">
-            <p className="f-mono"># product-launch</p>
-            <div className="slackmini-msg">
-              <span className="slackmini-av">SA</span>
-              <p><b>Sana</b> <span className="slackmini-at">@Handbook</span> what&rsquo;s still open for launch?</p>
+          <div className="surf">
+            <p className="surf-head"><BrandGlyph name="slack" size={13} /> # product-launch</p>
+            <div className="surf-msg">
+              <span className="surf-av">SA</span>
+              <p><b>Sana</b><span className="surf-at">@Handbook</span> what&rsquo;s still open for launch?</p>
             </div>
-            <div className="slackmini-msg">
-              <span className="slackmini-av slackmini-bot">HB</span>
-              <p>
-                <b>Handbook</b> The security review and the customer walkthrough.
-                <span className="duo-chip"><BrandGlyph name="notion" size={11} /> Launch plan</span>
-              </p>
+            <div className="surf-msg">
+              <HbLogo className="surf-av" />
+              <p><b>Handbook</b>The security review and the customer walkthrough.</p>
             </div>
+            <p className="surf-src"><BrandGlyph name="notion" size={11} /> Launch plan</p>
           </div>
         </div>
         <h3>In Slack</h3>
@@ -30,30 +29,19 @@ export function Surfaces() {
 
       <article className="bento-cell">
         <div className="bento-fig" aria-hidden>
-          <div className="report">
-            <div className="report-setup">
-              <span className="report-tag">Every week</span>
-              <p>&ldquo;What did the Platform team ship?&rdquo;</p>
-              <span className="report-tools">
-                <BrandGlyph name="linear" size={13} />
-                <BrandGlyph name="github" size={13} />
-              </span>
+          <div className="surf">
+            <p className="surf-head"><MailIcon /> Inbox</p>
+            <div className="surf-mail is-new">
+              <HbLogo className="surf-av" />
+              <p><b>Weekly report &middot; Platform team</b><span>4 issues closed, deploy guide updated</span></p>
+              <small>Mon</small>
             </div>
-            <span className="report-arrow">&darr; every Monday</span>
-            <div className="report-mail">
-              <div className="report-mail-head">
-                <span className="hero-mark">HB</span>
-                <div>
-                  <b>Your weekly report is ready</b>
-                  <span>Platform team &middot; since last Monday</span>
-                </div>
-              </div>
-              <ul>
-                <li>4 issues closed, 2 opened</li>
-                <li>Deploy guide updated</li>
-              </ul>
-              <span className="report-open">Open report &rarr;</span>
+            <div className="surf-mail">
+              <HbLogo className="surf-av" />
+              <p><b>Weekly report &middot; Platform team</b><span>6 issues closed, 1 release</span></p>
+              <small>Mon</small>
             </div>
+            <p className="surf-src">Every Monday, from <BrandGlyph name="linear" size={11} /> <BrandGlyph name="github" size={11} /></p>
           </div>
         </div>
         <h3>In your inbox</h3>
@@ -62,16 +50,27 @@ export function Surfaces() {
 
       <article className="bento-cell">
         <div className="bento-fig" aria-hidden>
-          <div className="uploads">
-            <span className="uploads-file"><b>PDF</b> Vendor contract.pdf</span>
-            <span className="uploads-file"><b>XLSX</b> Q3 budget.xlsx</span>
-            <span className="uploads-file"><b>CSV</b> survey-export.csv</span>
-            <p className="duo-q">Which line items went over budget?</p>
+          <div className="surf">
+            <p className="surf-head"><HbLogo className="surf-chat" /> Chat</p>
+            <div className="surf-file">
+              <b>XLSX</b>
+              <p>Q3 budget.xlsx<span>3 sheets &middot; only you can see it</span></p>
+            </div>
+            <p className="surf-q">Which line items went over budget?</p>
           </div>
         </div>
         <h3>With your own files</h3>
         <p>Drop a PDF, Word, Excel or CSV file into a chat and ask about it, or chart its tables. Only you see it.</p>
       </article>
     </div>
+  );
+}
+
+function MailIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
+      <rect x="2" y="3.5" width="12" height="9" rx="1.5" />
+      <path d="M2.5 4.5 8 9l5.5-4.5" />
+    </svg>
   );
 }

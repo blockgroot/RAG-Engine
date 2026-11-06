@@ -3,15 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BrandGlyph } from "@/components/BrandGlyph";
 import { ActIcon, AskIcon, ChartIcon, DeepIcon } from "@/components/ModeIcons";
-
-/** Illustrative numbers for the Chart tab; drawn as plain bars, no chart library. */
-const BARS: Array<[string, number]> = [
-  ["Priya", 48],
-  ["Sam", 41],
-  ["Leah", 29],
-  ["Omar", 22],
-  ["Jun", 14],
-];
+import { HbLogo } from "@/components/site/HbLogo";
 
 const STEP_MS = 6000;
 
@@ -20,7 +12,8 @@ const MODES: Array<{
   icon: ReactNode;
   when: string;
   ask: string;
-  trace: string;
+  /** A finished step, as the chat shows while it works. Agent has none: its reply speaks for itself. */
+  trace?: string;
   body: ReactNode;
 }> = [
   {
@@ -29,14 +22,22 @@ const MODES: Array<{
     when: "For a fact or a quick answer.",
     ask: "Who reviewed the checkout change?",
     trace: "Read 1 pull request live from GitHub",
+    // Mirrors a real GitHub answer: pill with the live chip, cited prose,
+    // and with one source, the single line under the answer.
     body: (
       <>
+        <span className="mode-pill">
+          <i />GitHub<em>GitHub agent</em><em>GitHub · live</em>
+        </span>
         <p className="mode-text">
-          <b>Leah</b> reviewed and approved it on Tuesday. Sam asked for a retry
-          on failed card payments, which was added before the merge.
+          Leah reviewed and approved it on Tuesday. Sam asked for a retry on
+          failed card payments, which was added before the merge.
         </p>
-        <div className="mode-chips">
-          <span><BrandGlyph name="github" size={12} /> checkout#218 <em>live</em></span>
+        <div className="mode-sources">
+          <p>Source</p>
+          <ol>
+            <li><span>checkout#218 · Retry failed card payments</span><em><BrandGlyph name="github" size={11} /> GitHub</em></li>
+          </ol>
         </div>
       </>
     ),
@@ -46,19 +47,29 @@ const MODES: Array<{
     icon: <DeepIcon />,
     when: "When the answer is spread across many documents.",
     ask: "Summarise where the payments migration stands.",
-    trace: "Read 9 documents across Notion, Linear and Slack",
+    trace: "Read the top 9 documents in full",
+    // Mirrors the real Deep answer (ChatMessage + AnswerText): provenance pill,
+    // prose with gray superscript citations, then the Sources list.
     body: (
       <>
-        <div className="mode-groups">
-          <div><span className="is-done">Done</span>New provider live for EU cards</div>
-          <div><span className="is-doing">In progress</span>US cards, 3 open issues</div>
-          <div><span className="is-blocked">Blocked</span>Refunds wait on a contract change</div>
-        </div>
-        <div className="mode-chips">
-          <span><BrandGlyph name="notion" size={12} /> Migration plan</span>
-          <span><BrandGlyph name="linear" size={12} /> PAY-12</span>
-          <span><BrandGlyph name="slack" size={12} /> #payments</span>
-          <span>+6 more</span>
+        <span className="mode-pill">
+          <i />Notion + Linear + Slack<em>Connected answer</em>
+        </span>
+        <p className="mode-text">
+          The migration is about two-thirds done. EU cards moved to the new
+          provider on 14 October<sup>1</sup>; US cards follow once three open
+          issues close<sup>2</sup>.
+        </p>
+        <ul className="mode-list">
+          <li>Refunds still run on the old provider until legal signs the contract change<sup>3</sup>.</li>
+        </ul>
+        <div className="mode-sources">
+          <p>Sources</p>
+          <ol>
+            <li><span>Payments migration plan</span><em><BrandGlyph name="notion" size={11} /> Notion</em></li>
+            <li><span>PAY-12 · US card cut-over</span><em><BrandGlyph name="linear" size={11} /> Linear</em></li>
+            <li><span>#payments thread from Priya</span><em><BrandGlyph name="slack" size={11} /> Slack</em></li>
+          </ol>
         </div>
       </>
     ),
@@ -67,21 +78,19 @@ const MODES: Array<{
     label: "Chart",
     icon: <ChartIcon />,
     when: "When the answer is a number, by person, team or week.",
-    ask: "Chart commits by author this quarter.",
-    trace: "Counted 154 commits from GitHub",
+    ask: "Show product output by month as a stacked bar from the Annual Manufacturing Report.",
+    trace: "Read 12 figures from a Google Drive report",
     body: (
-      <>
-        <p className="mode-chart-title">Commits by author &middot; this quarter</p>
-        <div className="mode-bars">
-          {BARS.map(([name, n]) => (
-            <div key={name} className="mode-bar">
-              <span>{name}</span>
-              <i style={{ ["--w" as string]: `${(n / BARS[0][1]) * 100}%` }} />
-              <b>{n}</b>
-            </div>
-          ))}
-        </div>
-      </>
+      // A real Chart-mode screenshot (docs/poc-images/chart-from-document.png, cropped).
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        className="mode-shot"
+        src="/site/chart-mode.png"
+        width={1190}
+        height={545}
+        alt="Stacked bar chart of production by month, split by product, read from a Google Drive report"
+        loading="lazy"
+      />
     ),
   },
   {
@@ -89,20 +98,27 @@ const MODES: Array<{
     icon: <ActIcon />,
     when: "When you want something done: an issue, a message, a page.",
     ask: "Create a Linear issue for the scheduler bug.",
-    trace: "Drafted with your Linear account · waiting for you",
+    // Mirrors the real reply (actions/service.py) and ActionCard: label, "as
+    // you, in …", Where/details/Title/Description, four buttons and the timer.
     body: (
-      <div className="mode-draft">
-        <div className="mode-draft-head">
-          <span><BrandGlyph name="linear" size={14} /> Linear &middot; Platform team</span>
-          <em>Draft &middot; not sent</em>
+      <>
+        <p className="mode-text">Here&rsquo;s what I&rsquo;ll do. Check it, then approve.</p>
+        <div className="mode-draft">
+          <div className="mode-draft-head">
+            <strong>Linear: Save issue</strong>
+            <span>as you, in Linear</span>
+          </div>
+          <dl>
+            <dt>Where</dt><dd>Platform</dd>
+            <dt>Title</dt><dd><b>Scheduler skips jobs after a deploy</b></dd>
+            <dt>Description</dt><dd>Jobs stay pending after a worker restarts. Add a retry check before the next release.</dd>
+          </dl>
+          <div className="mode-draft-btns">
+            <b>Approve</b><i>Edit</i><i>Ask for changes</i><i>Cancel</i>
+            <span>Expires in 14:50</span>
+          </div>
         </div>
-        <strong>Scheduler skips jobs after a deploy</strong>
-        <p>Jobs stay pending after a worker restarts. Add a retry check before the next release.</p>
-        <div className="mode-draft-foot">
-          <span>Nothing is created until you approve.</span>
-          <span className="mode-draft-btns"><i>Edit</i><b>Approve</b></span>
-        </div>
-      </div>
+      </>
     ),
   },
 ];
@@ -179,20 +195,31 @@ export function ModesFigure() {
             <span /><span /><span />
             <b>Handbook</b>
           </div>
-          <div className="modes-body" key={active}>
-            <p className="duo-q">{mode.ask}</p>
-            <div className="modes-reply">
-              <span className="hero-mark">HB</span>
-              <div>
-                <p className="mode-trace">&#10003; {mode.trace}</p>
-                {mode.body}
+          {/* Every mode is rendered in the same grid cell and only the active
+              one is visible, so the window is always as tall as the tallest
+              answer and does not jump when the tab changes. */}
+          <div className="modes-stack">
+            {MODES.map((m, i) => (
+              <div
+                key={m.label}
+                className={i === active ? "modes-body is-on" : "modes-body"}
+                aria-hidden={i !== active}
+              >
+                <p className="duo-q">{m.ask}</p>
+                <div className="modes-reply">
+                  <HbLogo />
+                  <div>
+                    {m.trace && <p className="mode-trace">&#10003; {m.trace}</p>}
+                    {m.body}
+                  </div>
+                </div>
+                <div className="modes-composer">
+                  <span className="modes2-icon">{m.icon}</span>
+                  <i>Ask a follow-up&hellip;</i>
+                  <em>{m.label}</em>
+                </div>
               </div>
-            </div>
-            <div className="modes-composer">
-              <span className="modes2-icon">{mode.icon}</span>
-              <i>Ask a follow-up&hellip;</i>
-              <em>{mode.label}</em>
-            </div>
+            ))}
           </div>
         </div>
       </div>

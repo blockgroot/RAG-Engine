@@ -1,4 +1,5 @@
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
+import { HbLogo } from "@/components/site/HbLogo";
 
 /** The five connectors, in the order their lines meet the answer card. */
 const TOOLS: Array<{ name: BrandName; label: string; state: string }> = [
@@ -45,7 +46,7 @@ export function HeroFigure() {
 
       <div className="hero-answer">
         <div className="hero-answer-head">
-          <span className="hero-mark">HB</span>
+          <HbLogo />
           <b>Handbook</b>
           <i>Ask</i>
         </div>

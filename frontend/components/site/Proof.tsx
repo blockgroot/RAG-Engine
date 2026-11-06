@@ -6,7 +6,7 @@
  */
 const SCORES: Array<{ label: string; note: string; ours: number; theirs: number; shown: [string, string] }> = [
   {
-    label: "Said “I don’t know” when the answer wasn’t there",
+    label: "Said so when the answer wasn’t in the documents",
     note: "15 questions with no answer in the documents",
     ours: 100,
     theirs: 6.7,
@@ -20,7 +20,7 @@ const SCORES: Array<{ label: string; note: string; ours: number; theirs: number;
     shown: ["10.7%", "47.3%"],
   },
   {
-    label: "Right answer, or an honest “I don’t know”",
+    label: "Answered right, or didn’t guess",
     note: "All 150 questions",
     ours: 43.3,
     theirs: 34.7,
@@ -41,40 +41,42 @@ const COST = [
   { who: "Another assistant", tokens: 69466, calls: "12.1", seconds: 11.2, ours: false },
 ];
 
+/**
+ * Open stat grid, no frame: the section already has many boxed figures, so
+ * the numbers stand on the page. Bars are drawn at their final width (a
+ * scroll-linked grow left them mid-animation and read as wrong values).
+ */
 export function Scoreboard() {
   return (
-    <figure className="site-frame score">
-      <div className="f-card score-card">
-        <div className="score-head">
-          <span>Head to head &middot; same model, graded blind</span>
-          <span>150 questions</span>
-        </div>
-        <div className="score-legend" aria-hidden>
-          <span><i className="score-key-ours" /> Handbook</span>
-          <span><i className="score-key-theirs" /> Another assistant</span>
-        </div>
-        <ul className="score-rows">
-          {SCORES.map((s) => (
-            <li key={s.label}>
-              <strong>{s.label}</strong>
-              <span className="f-mono">{s.note}</span>
-              <div className="score-bar score-bar-ours" style={{ ["--w" as string]: `${s.ours}%` }}>
-                <span className="sr-only">Handbook </span><b>{s.shown[0]}</b>
-              </div>
-              <div className="score-bar score-bar-theirs" style={{ ["--w" as string]: `${s.theirs}%` }}>
-                <span className="sr-only">Another assistant </span><b>{s.shown[1]}</b>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
+    <figure className="score">
+      <ul className="score-grid">
+        {SCORES.map((s) => (
+          <li key={s.label}>
+            <p className="score-big">{s.shown[0]}</p>
+            <p className="score-vs">vs {s.shown[1]} for the other assistant</p>
+            <strong>{s.label}</strong>
+            <span>{s.note}</span>
+            <div className="score-bars" aria-hidden>
+              <i className="is-ours" style={{ width: `${Math.max(s.ours, 2)}%` }} />
+              <i style={{ width: `${Math.max(s.theirs, 2)}%` }} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      <figcaption className="score-cap">
+        <span><i className="is-ours" /> Handbook</span>
+        <span><i /> Another assistant</span>
+        <span>Same AI model for both &middot; 150 questions &middot; graded blind</span>
+      </figcaption>
     </figure>
   );
 }
 
 /**
  * How much each assistant had to read for one answer, drawn as dots so the
- * gap is seen before it is read, plus time to the first word.
+ * gap is seen before it is read, plus time to the first word. Plays as a race
+ * on an 8s loop: the dots fill in one by one (Handbook stops at 4), then both
+ * time bars grow at their real ratio and each number lands when its bar ends.
  */
 export function Receipts() {
   const slowest = Math.max(...COST.map((c) => c.seconds));
@@ -89,7 +91,7 @@ export function Receipts() {
               <span>{c.tokens.toLocaleString("en-US")} tokens &middot; {c.calls} AI calls</span>
             </div>
             <div className="cost-dots" aria-hidden>
-              {Array.from({ length: Math.round(c.tokens / 1000) }, (_, i) => <i key={i} />)}
+              {Array.from({ length: Math.round(c.tokens / 1000) }, (_, i) => <i key={i} style={{ ["--d" as string]: i }} />)}
             </div>
           </div>
         ))}

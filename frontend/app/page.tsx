@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { LandingShell } from "@/components/LandingShell";
 import { AnswerFigure, AskSteps } from "@/components/site/AnswerFigure";
 import { HeroFigure } from "@/components/site/HeroFigure";
+import { HeroFacts } from "@/components/site/HeroFacts";
 import { ModesFigure } from "@/components/site/ModesFigure";
 import { Surfaces } from "@/components/site/Surfaces";
 import { AccessFigure } from "@/components/site/AccessFigure";
@@ -13,6 +14,8 @@ import { Background } from "@/components/site/Background";
 import { CloseFigure } from "@/components/site/CloseFigure";
 import { ControlPanel } from "@/components/site/ControlPanel";
 import { Receipts, Scoreboard } from "@/components/site/Proof";
+import { SetupSteps } from "@/components/site/SetupSteps";
+import { TrustList } from "@/components/site/TrustList";
 import { api } from "@/lib/api";
 import { homePathFor } from "@/lib/routing";
 
@@ -81,11 +84,7 @@ export default function RootPage() {
         <HeroFigure />
       </section>
 
-      <ul className="site-wrap hero-facts" aria-label="At a glance">
-        <li><strong>5</strong><span>tools connected</span></li>
-        <li><strong>4</strong><span>modes in one chat</span></li>
-        <li><strong>0</strong><span>actions sent without approval</span></li>
-      </ul>
+      <HeroFacts />
 
       <section id="how" className="site-wrap sec" aria-labelledby="how-title">
         <div className="sec-head">
@@ -133,13 +132,7 @@ export default function RootPage() {
               colleagues can ask the same question and get answers from
               different documents.
             </p>
-            <ul className="sec-checks">
-              <li>Never used to train AI models</li>
-              <li>Your company&rsquo;s information is kept apart from every other company</li>
-              <li>Drive, Slack, Linear and GitHub sharing is followed per person</li>
-              <li>Disconnect a tool and its stored copy is deleted</li>
-              <li>Survey results are shown for groups, never for one person</li>
-            </ul>
+            <TrustList />
           </div>
         </div>
       </section>
@@ -161,8 +154,8 @@ export default function RootPage() {
           <p className="site-label">In the background</p>
           <h2 id="background-title" className="sec-title">Keeps working after you ask.</h2>
           <p className="sec-lead">
-            Handbook stays up to date, notices what people could not find, and
-            keeps your conversations ready for next time.
+            Handbook stays up to date on its own, and notices what people
+            could not find.
           </p>
         </div>
         <Background />
@@ -172,12 +165,11 @@ export default function RootPage() {
         <div className="sec-split">
           <div>
             <p className="site-label">Head to head</p>
-            <h2 id="results-title" className="sec-title">Answers you can trust, including &ldquo;I don&rsquo;t know&rdquo;.</h2>
+            <h2 id="results-title" className="sec-title">Answers you can trust. No guessing.</h2>
             <p className="sec-lead">
-              We asked Handbook and another leading assistant the same 150
-              questions about 1,374 company documents, with the same AI model
-              behind both. A separate model graded every answer blind against
-              the documents.
+              We gave Handbook and another leading assistant the same test:
+              the same questions, the same documents, the same AI model.
+              Every answer was graded blind.
             </p>
           </div>
           <Scoreboard />
@@ -205,28 +197,7 @@ export default function RootPage() {
             optional and can be changed later.
           </p>
         </div>
-        <ol className="setup-steps">
-          <li>
-            <span className="steps-n">01</span>
-            <strong>Connect your tools</strong>
-            <p>Notion, Drive, Slack, Linear, GitHub or Google Forms. Choose what Handbook may read.</p>
-          </li>
-          <li>
-            <span className="steps-n">02</span>
-            <strong>Invite your team</strong>
-            <p>By email. People sign in with a secure link, so there is no password to manage.</p>
-          </li>
-          <li>
-            <span className="steps-n">03</span>
-            <strong>Add spaces, if you need them</strong>
-            <p>A project or department gets its own members and tools, kept apart from the rest.</p>
-          </li>
-          <li>
-            <span className="steps-n">04</span>
-            <strong>Pick a model, or use ours</strong>
-            <p>Use the built-in model or your company&rsquo;s own provider. The connection is tested first.</p>
-          </li>
-        </ol>
+        <SetupSteps />
       </section>
 
       <section className="site-wrap sec close" aria-labelledby="close-title">
