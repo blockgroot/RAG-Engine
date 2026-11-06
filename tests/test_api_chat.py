@@ -769,3 +769,19 @@ def test_chart_starters_cover_each_source_and_its_document_tables():
         "Area chart of commits per month in GitHub",
     ]
     assert all(" donut" not in q.lower() for q in got)
+
+
+def test_chart_starters_show_three_when_a_scope_has_two_things():
+    """A space with one table and one metric still shows three starters: a
+    source is asked for again in a chart type no earlier starter used."""
+    from app.api.chat import chart_starters
+    from app.doctables.store import TableRef
+    from app.insights import registry
+
+    hiring = TableRef(id="h", name="t", row_count=4, truncated=False, notes=(),
+                      columns=({"key": "c0", "name": "Role", "type": "category"},
+                               {"key": "c1", "name": "Salary", "type": "number"}),
+                      document_title="Hiring plan 2026", provider="google", source_uri=None)
+    got = chart_starters([registry.get("drive_docs_changed")], None, [hiring], None)
+    assert len(got) == 3 and len(set(got)) == 3
+    assert len({q.split(" of ")[0] for q in got}) == 3

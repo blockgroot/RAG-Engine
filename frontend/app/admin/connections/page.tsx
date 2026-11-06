@@ -309,7 +309,6 @@ function ConnectionsPageInner() {
           eyebrow="Company"
           title="Sources"
           description="Connect Notion, Google Drive, Slack, Linear, and company GitHub. Spaces need their own GitHub account — never the same install as here."
-          scene="sources"
           meta={
             loadingConnections ? (
               <>

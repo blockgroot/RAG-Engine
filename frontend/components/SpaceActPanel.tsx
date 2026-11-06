@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
+import { ActIcon } from "@/components/ModeIcons";
 import { ApiError, api, type SpaceAct, type SpaceToolServer } from "@/lib/api";
 
 const BRANDS: Record<string, BrandName> = {
@@ -76,7 +77,7 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    <section className="studio-panel stack" aria-labelledby="space-act-title">
+    <section className="studio-panel stack space-agent" aria-labelledby="space-act-title">
       <div className="studio-section-head">
         <h2 id="space-act-title">Agent mode in this space</h2>
         <p className="muted">
@@ -84,7 +85,10 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
           change still runs on the member&rsquo;s own account and waits for their approval.
         </p>
       </div>
-      <label className="action-surface">
+      <label className={`action-surface${state.enabled ? " is-on" : ""}`}>
+        <i className="space-agent-icon" aria-hidden>
+          <ActIcon />
+        </i>
         <span>
           <strong>Allow Agent mode in this space</strong>
           <small>

@@ -304,45 +304,44 @@ def _combined_suggestions(
     """
     acl = viewer_for(session).acl()
     per_provider: dict[str, list[str]] = {}
+    # Deep mode's starters, built by the same builders from the same lookup
+    # (each source is read once), worded for reading whole documents.
+    per_provider_deep: dict[str, list[str]] = {}
 
-    def _try(key: str, build) -> None:
+    def _try(key: str, fetch, build) -> None:
         try:
-            questions = build()
+            found = fetch()
+            questions = build(found, False)
+            deep = build(found, True)
         except Exception:  # noqa: BLE001 - chips are a convenience
             logger.debug("Suggestions: %s lookup failed", key, exc_info=True)
             return
         if questions:
             per_provider[key] = questions
+        if deep:
+            per_provider_deep[key] = deep
 
     in_space = workspace_id is not None
 
-    _try(
-        "notion",
-        lambda: build_policy_suggestions(
-            _titles_for_scope_by_provider(org_id, workspace_id, "notion", acl),
-            workspace=in_space,
-        ),
-    )
-    _try(
-        "google",
-        lambda: build_policy_suggestions(
-            _titles_for_scope_by_provider(org_id, workspace_id, "google", acl),
-            workspace=in_space,
-        ),
-    )
+    def _docs(titles, deep):
+        return build_policy_suggestions(titles, workspace=in_space, deep=deep)
+
+    _try("notion", lambda: _titles_for_scope_by_provider(org_id, workspace_id, "notion", acl), _docs)
+    _try("google", lambda: _titles_for_scope_by_provider(org_id, workspace_id, "google", acl), _docs)
     _try(
         "slack",
-        lambda: build_slack_suggestions(
-            _slack_channel_names_for_scope(org_id, workspace_id)
-        ),
+        lambda: _slack_channel_names_for_scope(org_id, workspace_id),
+        lambda names, deep: build_slack_suggestions(names, deep=deep),
     )
     _try(
         "linear",
-        lambda: build_linear_suggestions(_linear_titles_for_scope(org_id, workspace_id, acl)),
+        lambda: _linear_titles_for_scope(org_id, workspace_id, acl),
+        lambda titles, deep: build_linear_suggestions(titles, deep=deep),
     )
     _try(
         "github",
-        lambda: build_github_suggestions(_github_repos_for_scope(org_id, workspace_id)),
+        lambda: _github_repos_for_scope(org_id, workspace_id),
+        lambda repos, deep: build_github_suggestions(repos, deep=deep),
     )
 
     if not per_provider.keys() & {"notion", "google"}:
@@ -354,29 +353,44 @@ def _combined_suggestions(
         # view exists to prevent. Conditional rather than always-on because
         # these titles are a SUPERSET of the per-provider ones: adding both
         # would show two near-identical chips for the same document.
-        _try(
-            "policy",
-            lambda: build_policy_suggestions(
-                _document_titles_for_scope(org_id, workspace_id, acl),
-                workspace=in_space,
-            ),
-        )
+        _try("policy", lambda: _document_titles_for_scope(org_id, workspace_id, acl), _docs)
 
     # Survey sentiment, only for someone allowed to SEE it. A chip that leads
     # to "you can't chart that here" would tell a member sentiment is being
     # collected on them, which is the one thing the gate exists to avoid.
+    # Not a Deep starter: it is a chart.
     if _may_chart_sentiment(org_id, workspace_id, session):
-        _try("forms", build_forms_suggestions)
+        _try("forms", lambda: None, lambda _, deep: [] if deep else build_forms_suggestions())
 
     questions = build_combined_suggestions(per_provider, workspace=in_space)
+    deep_questions = build_combined_suggestions(per_provider_deep, workspace=in_space)
+    # Which connector each chip came from, so the empty state can show its logo.
+    # Decoration only: a chip with no entry simply shows no logo.
+    source_of = {
+        q: key
+        for built_by in (per_provider, per_provider_deep)
+        for key, built in built_by.items()
+        for q in built
+    }
 
     # No single agent produced these, and saying "policy" would be a lie the
     # client might act on.
-    return {"agent": None, "sources": sorted(per_provider), "questions": questions}
+    return {
+        "agent": None,
+        "sources": sorted(per_provider),
+        "questions": questions,
+        "deep_questions": deep_questions,
+        "question_sources": {
+            q: source_of[q] for q in [*questions, *deep_questions] if q in source_of
+        },
+    }
 
 
 #: Chart-mode starters shown at once: two columns of three on a wide screen.
 MAX_CHART_STARTERS = 6
+
+#: Fewest starters shown when the scope has anything to chart.
+MIN_CHART_STARTERS = 3
 
 #: Order sources take turns in, documents first: their tables are the data a
 #: person is least likely to know can be charted.
@@ -514,6 +528,7 @@ def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> li
         _STARTER_SOURCES.index(p) if p in _STARTER_SOURCES else len(_STARTER_SOURCES), p))
     out: list[str] = []
     used: set[str] = set()
+    taken: list = []
     while len(out) < MAX_CHART_STARTERS and any(by_provider.values()):
         for provider in order:
             items = by_provider[provider]
@@ -524,6 +539,17 @@ def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> li
                                   if f[0] in _SHOWCASE else len(_SHOWCASE)) if fresh else forms[0]
                 used.add(shape)
                 out.append(text)
+                taken.append(forms)
+    # At least MIN_CHART_STARTERS when the scope can chart anything: a source
+    # with one metric or table is asked for again in a chart type not yet
+    # shown, so a small space still shows three things Chart mode draws.
+    for forms in taken * MIN_CHART_STARTERS:
+        if len(out) >= MIN_CHART_STARTERS:
+            break
+        extra = next(((sh, t) for sh, t in forms if sh not in used and t not in out), None)
+        if extra:
+            used.add(extra[0])
+            out.append(extra[1])
     return out
 
 

@@ -262,6 +262,15 @@ scored by the safety model; the answer fact-checker is off (§11).
   Google and Slack app), and a **Deployment** page (`/deployment`, in the site nav) explains
   Handbook Cloud and Self-Hosted: setup, what runs on the server, the install, and how a new
   version reaches a self-hosted install. Public pages name no competitor, company or AI model.
+- **In-app redesign** (6 Nov 2026, Live once deployed; checked locally in a browser): a dark
+  green menu that no longer re-animates on each page. Ask has a mode switch above the box,
+  starters with each source's logo, Deep starters that ask for whole documents
+  (`deep_questions` from `GET /chat/suggestions`), chart starters drawn as their chart (at
+  least three whenever the scope can chart anything), and Agent's example requests only for
+  tools the scope has. Each space has its own colour from its name (list cards, its page, the
+  People drawer); a space's page splits connected sources from ones to add. Reports are set up
+  in one composer (where it reads, how often) and listed as a timeline by next run. Local
+  development can sign in automatically with `NEXT_PUBLIC_DEV_LOGIN_EMAIL` (development only).
 
 ## 10. Production Status
 

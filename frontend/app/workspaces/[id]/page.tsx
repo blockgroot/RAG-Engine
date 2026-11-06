@@ -4,10 +4,10 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
-import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { FormsCard } from "@/components/FormsCard";
 import { SpaceActPanel } from "@/components/SpaceActPanel";
+import { SourceLogos, SpaceMark, spaceSources, spaceStyle } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
 import {
   api,
@@ -505,34 +505,113 @@ function WorkspaceDetailPageInner() {
   const docsReady = Boolean(workspace?.ready_to_ask);
   const githubReady = Boolean(workspace?.github_connected);
   const canAsk = docsReady || githubReady;
+  const linked = PROVIDERS.filter((p) => connections.some((c) => c.provider === p));
+  const unlinked = PROVIDERS.filter((p) => !linked.includes(p));
+  const renderSource = (provider: (typeof PROVIDERS)[number]) => {
+    const connection = connections.find((c) => c.provider === provider);
+    return (
+      <ConnectionCard
+        key={provider}
+        provider={provider}
+        setupFirst={
+          (provider === "google" || provider === "slack") &&
+          appsReady !== null &&
+          !appsReady[provider]
+        }
+        connection={connection}
+        lastJob={connection ? lastJobs[connection.id] : undefined}
+        changes={connection ? changesById[connection.id] : null}
+        checkingChanges={connection ? checkingIds.has(connection.id) : false}
+        onUpdate={handleUpdate}
+        onConfigSaved={(updated) => {
+          setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+          // Saving the folder/channels queues the ingest server-side.
+          void adoptJobs();
+          refreshChanges([updated]);
+          invalidateSuggestionsCache(workspaceId);
+          void refreshWorkspace();
+        }}
+        onDisconnected={(connectionId) => {
+          setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+          setChangesById((prev) => {
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          setReauthById((prev) => {
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          setMessage("Disconnected. Indexed docs for that source were removed.");
+          invalidateSuggestionsCache(workspaceId);
+          void refreshWorkspace();
+        }}
+        needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
+        onNeedsReauth={(needed) => {
+          if (!connection) return;
+          setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
+        }}
+        workspaceId={workspaceId}
+        onMembersInvited={async () => {
+          const updated = await api.listWorkspaceMembers(workspaceId);
+          setMembers(updated);
+        }}
+      />
+    );
+  };
 
   return (
     <AppShell me={me} variant="app">
-      <main className="page-wide studio-page stack">
-        <PageHeader
-          eyebrow="Space"
-          title={workspace?.name || "…"}
-          description="Responses are drawn exclusively from this space’s connected documents and repositories, not the organization-wide sources."
-          scene="spaces"
-          meta={
-            <>
-              <span className="studio-chip">{workspace?.role === "owner" ? "Owner" : "Member"}</span>
-              <span className="studio-chip">{members.length} people</span>
-              {canAsk ? (
-                <span className="studio-chip studio-chip-ok">Ready to ask</span>
-              ) : (
-                <span className="studio-chip studio-chip-warn">Not ready</span>
-              )}
-            </>
-          }
-          actions={
-            canAsk ? (
-              <Link href={`/workspaces/${workspaceId}/ask`} className="button">
-                Ask in this space
+      <main className="space-page">
+        <Link href="/workspaces" className="space-back">
+          ← All spaces
+        </Link>
+        <header className="room-hero" style={spaceStyle(workspace?.name)}>
+          <div className="room-hero-band" aria-hidden />
+          <div className="room-hero-body">
+            <SpaceMark name={workspace?.name} className="room-hero-mark" />
+            <div className="room-hero-copy">
+              <span className="ask-scope">
+                <span className="ask-scope-dot" aria-hidden />
+                Space · {isOwner ? "you own it" : "member"}
+              </span>
+              <h1>{workspace?.name || "…"}</h1>
+              <p className="ask-hello-copy">
+                Answers here come only from this space’s connected documents and repositories, not
+                company-wide sources.
+              </p>
+              <div className="room-hero-facts">
+                <span className="room-faces" aria-label={`${members.length} ${members.length === 1 ? "person" : "people"}`}>
+                  {members.slice(0, 5).map((m) => (
+                    <i key={m.user_id || m.email} title={m.email}>
+                      {(m.email || "?").charAt(0).toUpperCase()}
+                    </i>
+                  ))}
+                  <span>
+                    {members.length} {members.length === 1 ? "person" : "people"}
+                  </span>
+                </span>
+                {spaceSources(workspace).length > 0 && <SourceLogos sources={spaceSources(workspace)} />}
+                <span className={`room-status ${workspace?.sync_in_progress ? "is-sync" : canAsk ? "is-ready" : "is-idle"}`}>
+                  {workspace?.sync_in_progress ? "Importing documents" : canAsk ? "Ready to ask" : "Not ready yet"}
+                </span>
+              </div>
+            </div>
+            {canAsk && (
+              <Link href={`/workspaces/${workspaceId}/ask`} className="button space-hero-ask">
+                Ask in this space →
               </Link>
-            ) : undefined
-          }
-        />
+            )}
+          </div>
+          {isOwner && (
+            <nav className="room-nav" aria-label="On this page">
+              <a href="#space-people-title">People</a>
+              <a href="#space-sources">Sources</a>
+              <a href="#space-act-title">Agent mode</a>
+            </nav>
+          )}
+        </header>
 
         {message && (
           <div
@@ -580,61 +659,43 @@ function WorkspaceDetailPageInner() {
           </div>
         )}
 
-        <div className="people-layout">
-          {isOwner && (
-            <section className="studio-panel invite-panel" aria-labelledby="space-invite-title">
-              <div className="studio-panel-glow" aria-hidden />
-              <div className="studio-section-head">
-                <h2 id="space-invite-title">Invite someone</h2>
-                <p className="muted">They must already be in this company — this only adds them to the room.</p>
-                <p className="muted">
-                  Once they&rsquo;re in, they can ask about everything this space has connected,
-                  including documents added before today.
-                </p>
-              </div>
-              <form onSubmit={handleInvite} className="invite-form">
-                <div className="field">
-                  <label htmlFor="invite-email">Work email</label>
-                  <input
-                    id="invite-email"
-                    className="input"
-                    type="email"
-                    placeholder="colleague@yourcompany.com"
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                    disabled={inviting}
-                  />
-                </div>
-                {inviteError && (
-                  <div className="banner banner-warn" role="alert">
-                    {inviteError}
-                  </div>
-                )}
-                {inviteMessage && (
-                  <div className="banner banner-ok" role="status">
-                    {inviteMessage}
-                  </div>
-                )}
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={inviting || !inviteEmail.trim()}
-                >
-                  {inviting ? "Sending…" : "Send invite"}
-                </button>
-              </form>
-            </section>
-          )}
-
-          <section className="roster-board" aria-labelledby="space-people-title">
-            <div className="studio-section-head roster-board-head">
+        <section className="room-section room-people" aria-labelledby="space-people-title">
+            <div className="studio-section-head">
               <h2 id="space-people-title">People in this space</h2>
               <p className="muted">
                 {isOwner
-                  ? "Everyone who can ask here."
+                  ? "Everyone here can ask about all this space has connected, including documents added before they joined."
                   : "Everyone who can ask here. The owner manages invites and sources."}
               </p>
             </div>
+            {isOwner && (
+              <form onSubmit={handleInvite} className="spaces-new space-invite" aria-label="Invite someone">
+                <label className="sr-only" htmlFor="invite-email">
+                  Work email
+                </label>
+                <input
+                  id="invite-email"
+                  type="email"
+                  placeholder="Invite by work email: they must already be in this company"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  disabled={inviting}
+                />
+                <button className="button" type="submit" disabled={inviting || !inviteEmail.trim()}>
+                  {inviting ? "Sending…" : "Invite"}
+                </button>
+              </form>
+            )}
+            {inviteError && (
+              <div className="banner banner-warn" role="alert">
+                {inviteError}
+              </div>
+            )}
+            {inviteMessage && (
+              <div className="banner banner-ok" role="status">
+                {inviteMessage}
+              </div>
+            )}
             <div className="roster-scroll">
             {members.length === 0 ? (
               <div className="studio-empty">
@@ -692,11 +753,10 @@ function WorkspaceDetailPageInner() {
               </ul>
             )}
             </div>
-          </section>
-        </div>
+        </section>
 
         {isOwner && (
-          <section className="studio-section" aria-label="Sources for this space">
+          <section className="room-section room-sources" id="space-sources" aria-label="Sources for this space">
             <div className="studio-section-head">
               <h2>Sources for this space</h2>
               <p className="muted">
@@ -708,59 +768,14 @@ function WorkspaceDetailPageInner() {
                 ? PROVIDERS.map((provider) => (
                     <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
                   ))
-                : PROVIDERS.map((provider) => {
-                    const connection = connections.find((c) => c.provider === provider);
-                    return (
-                      <ConnectionCard
-                        key={provider}
-                        provider={provider}
-                        setupFirst={
-                          (provider === "google" || provider === "slack") &&
-                          appsReady !== null &&
-                          !appsReady[provider]
-                        }
-                        connection={connection}
-                        lastJob={connection ? lastJobs[connection.id] : undefined}
-                        changes={connection ? changesById[connection.id] : null}
-                        checkingChanges={connection ? checkingIds.has(connection.id) : false}
-                        onUpdate={handleUpdate}
-                        onConfigSaved={(updated) => {
-                          setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-                          // Saving the folder/channels queues the ingest server-side.
-                          void adoptJobs();
-                          refreshChanges([updated]);
-                          invalidateSuggestionsCache(workspaceId);
-                          void refreshWorkspace();
-                        }}
-                        onDisconnected={(connectionId) => {
-                          setConnections((prev) => prev.filter((c) => c.id !== connectionId));
-                          setChangesById((prev) => {
-                            const next = { ...prev };
-                            delete next[connectionId];
-                            return next;
-                          });
-                          setReauthById((prev) => {
-                            const next = { ...prev };
-                            delete next[connectionId];
-                            return next;
-                          });
-                          setMessage("Disconnected. Indexed docs for that source were removed.");
-                          invalidateSuggestionsCache(workspaceId);
-                          void refreshWorkspace();
-                        }}
-                        needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
-                        onNeedsReauth={(needed) => {
-                          if (!connection) return;
-                          setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
-                        }}
-                        workspaceId={workspaceId}
-                        onMembersInvited={async () => {
-                          const updated = await api.listWorkspaceMembers(workspaceId);
-                          setMembers(updated);
-                        }}
-                      />
-                    );
-                  })}
+                : (
+                    <>
+                      {linked.length > 0 && <p className="room-sub">Connected · {linked.length}</p>}
+                      {linked.map(renderSource)}
+                      {unlinked.length > 0 && <p className="room-sub">Add a source</p>}
+                      <div className="room-add-grid">{unlinked.map(renderSource)}</div>
+                    </>
+                  )}
               {/* Same Google connection, shown apart — see FormsCard. */}
               {!loadingConnections && (
                 <FormsCard
@@ -780,23 +795,26 @@ function WorkspaceDetailPageInner() {
         {isOwner && workspaceId && <SpaceActPanel workspaceId={workspaceId} />}
 
         {isOwner && (
-          <section className="studio-panel" aria-labelledby="delete-space-title">
-            <div className="studio-section-head">
+          <details className="room-danger">
+            <summary>
               <h2 id="delete-space-title">Delete this space</h2>
+              <span className="muted">Removes its sources, documents and members&rsquo; access</span>
+            </summary>
+            <div className="room-danger-body">
               <p className="muted">
                 Permanently removes this space, its members’ access here, connected sources,
                 and indexed documents for this space only — not company-wide documents.
               </p>
+              <button
+                type="button"
+                className="button space-danger-button"
+                disabled={deletingSpace}
+                onClick={() => void handleDeleteSpace()}
+              >
+                {deletingSpace ? "Deleting…" : "Delete space"}
+              </button>
             </div>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={deletingSpace}
-              onClick={() => void handleDeleteSpace()}
-            >
-              {deletingSpace ? "Deleting…" : "Delete space"}
-            </button>
-          </section>
+          </details>
         )}
       </main>
     </AppShell>

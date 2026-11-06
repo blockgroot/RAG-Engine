@@ -184,3 +184,13 @@ def test_no_sources_yields_no_chips():
 
     assert build_combined_suggestions({}) == []
     assert build_combined_suggestions({"notion": [], "slack": []}) == []
+
+
+def test_deep_starters_ask_for_whole_documents():
+    """Deep mode's starters are a different set from Ask's, from the same inputs."""
+    titles = ["Leave Policy", "Remote Work Guide"]
+    assert set(build_policy_suggestions(titles, deep=True)).isdisjoint(build_policy_suggestions(titles))
+    assert any("section by section" in q for q in build_policy_suggestions(titles, deep=True))
+    assert all(q.startswith("Login button broken") or q.startswith("Add dark mode")
+               for q in build_linear_suggestions(["Login button broken", "Add dark mode"], deep=True))
+    assert build_github_suggestions([{"full_name": "acme/api"}], deep=True)[0].endswith("part by part.")

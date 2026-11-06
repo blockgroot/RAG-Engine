@@ -4,7 +4,8 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { AskHeroArt } from "@/components/AskHeroArt";
+import { AgentIntro, AskGreeting, ChartThumb, chartKind, ModeSwitch, SOURCE_GLYPH, modelName, useTypedPlaceholder, type AskMode } from "@/components/AskHome";
+import { BrandGlyph } from "@/components/BrandGlyph";
 import { ActionCard } from "@/components/ActionCard";
 import { ActIcon, ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
@@ -41,32 +42,10 @@ function PeopleIcon() {
   );
 }
 
-function PaperclipIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function PlusIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden className="composer-menu-check">
-      <path d="m5 12 5 5 9-10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -127,6 +106,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
+  const [deepQuestions, setDeepQuestions] = useState<string[]>([]);
+  const [suggestionSources, setSuggestionSources] = useState<Record<string, string>>({});
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
   const [models, setModels] = useState<ModelChoice[]>([]);
@@ -162,10 +143,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // Chart mode's starters come from the server: built from the metrics and
   // fields this scope actually has, so each one can be drawn.
   const [chartStarters, setChartStarters] = useState<string[]>([]);
-  // The "+" menu beside the message box (files, Chart) -- one entry point
-  // for tools, the way ChatGPT, Claude and Gemini do it.
-  const [toolsOpen, setToolsOpen] = useState(false);
-  const toolsRef = useRef<HTMLDivElement>(null);
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
@@ -234,22 +211,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   }, [chartMode, workspaceId, attachmentKey]);
 
   useEffect(() => {
-    if (!toolsOpen) return;
-    function onDown(e: MouseEvent) {
-      if (toolsRef.current && !toolsRef.current.contains(e.target as Node)) setToolsOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setToolsOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [toolsOpen]);
-
-  useEffect(() => {
     let cancelled = false;
     api
       .chatModels()
@@ -275,7 +236,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     const cacheKey = suggestionsCacheKey(workspaceId);
     const cached = getCachedSuggestions(cacheKey);
     if (cached) {
-      setSuggestedQuestions(cached);
+      setSuggestedQuestions(cached.questions);
+      setDeepQuestions(cached.deep);
+      setSuggestionSources(cached.sources);
       setSuggestionsLoading(false);
     } else {
       setSuggestionsLoading(true);
@@ -284,8 +247,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       .chatSuggestions(workspaceId)
       .then((res) => {
         const questions = res.questions || [];
-        setCachedSuggestions(cacheKey, questions);
-        if (!cancelled) setSuggestedQuestions(questions);
+        const deep = res.deep_questions || [];
+        const sources = res.question_sources || {};
+        setCachedSuggestions(cacheKey, { questions, deep, sources });
+        if (!cancelled) {
+          setSuggestedQuestions(questions);
+          setDeepQuestions(deep);
+          setSuggestionSources(sources);
+        }
       })
       .catch(() => {
         if (!cancelled && !cached) setSuggestedQuestions([]);
@@ -836,6 +805,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     ask(input.trim());
   }
 
+  // Before the early returns below: a hook must run on every render.
+  const typedPlaceholder = useTypedPlaceholder(
+    (deepMode && deepQuestions.length > 0 ? deepQuestions : suggestedQuestions).slice(0, 6),
+    !actMode && !chartMode && messages.length === 0 && !input,
+    "Ask a question…",
+  );
+
   if (loading || !me) {
     return (
       <main className="page">
@@ -923,13 +899,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     : chartMode
     ? "Charts count activity in your connected apps, figures in tables inside your documents, and files you upload here (Excel, CSV, PDF or Word). Describe what you want to see."
     : deepMode
-      ? "Reads the most relevant documents in full. Best for broad questions: a whole project, a summary, or a list of everything. Uses more of your AI quota per answer."
-      : connectedNames.length > 0
-      ? `Answers are drawn from ${listCopy(connectedNames)}. For a chart, choose + then Create a chart.`
+      ? extraEffort
+        ? "Reads many documents, not only the closest ones. Best for a whole project or a long list. Uses more of your AI quota."
+        : "Reads the most relevant documents in full. Extra effort, beside Deep, reads more of them."
       : workspaceId
-        ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
-        : "Leave, benefits, remote work and more — answered from your connected documents.";
-  const starters = actMode ? [] : chartMode ? chartStarters : suggestedQuestions;
+        ? "Ask anything about this space. Every answer names the document it came from."
+        : "Ask anything about your company. Every answer names the document it came from.";
+  const starters = actMode ? [] : chartMode ? chartStarters : deepMode && deepQuestions.length > 0 ? deepQuestions : suggestedQuestions;
   const composerPlaceholder = actMode
     ? "e.g. file a Linear issue in Platform about the login timeout"
     : chartMode
@@ -940,6 +916,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // In Chart mode only models that build charts are offered; the company's own
   // model stays, marked, because we cannot know in advance.
   const pickerModels = chartMode ? models.filter((m) => m.charts !== false) : models;
+  const mode: AskMode = actMode ? "act" : chartMode ? "chart" : deepMode ? "deep" : "ask";
+  const firstName = me?.name?.trim().split(/\s+/)[0] ?? null;
 
   function toggleChartMode(on: boolean) {
     setChartMode(on);
@@ -1002,23 +980,21 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 away — the Slack pattern, where a channel's people and settings
                 sit behind its name and the conversation stays put. Plain text
                 company-wide, which has no such panel. */}
-            <p className="chat-kicker">
-              {workspaceId ? (
-                <button
-                  type="button"
-                  className="chat-kicker-link"
-                  onClick={() => setPanelOpen(true)}
-                >
-                  {workspaceName || "Space"}
-                </button>
-              ) : (
-                "Company-wide"
-              )}
-            </p>
-            {/* One destination, so one title. Which source answered is stated
-                per ANSWER (see ChatMessageView) rather than per page: it is a
-                property of the reply, not of the box you typed into. */}
-            <h1>Ask</h1>
+            {/* The scope as one small chip; the page's heading is the greeting
+                below (or, mid-chat, a heading for screen readers only). Which
+                source answered is stated per ANSWER, not per page. */}
+            {workspaceId ? (
+              <button type="button" className="ask-scope" onClick={() => setPanelOpen(true)}>
+                <span className="ask-scope-dot" aria-hidden />
+                {workspaceName || "Space"}
+              </button>
+            ) : (
+              <span className="ask-scope">
+                <span className="ask-scope-dot" aria-hidden />
+                Company-wide
+              </span>
+            )}
+            {messages.length > 0 && <h1 className="sr-only">Ask</h1>}
           </div>
 
           <div className="chat-topbar-actions">
@@ -1065,29 +1041,55 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
         <div id="ask-panel" role="tabpanel" aria-label="Ask answers">
           {messages.length === 0 ? (
-            <div className="chat-empty">
-              <AskHeroArt
-                variant={workspaceId ? "space" : "policy"}
+            <div className="chat-empty ask-empty">
+              <AskGreeting
+                name={mode === "ask" ? firstName : null}
+                title={mode === "ask" ? null : emptyTitle}
+                copy={emptyCopy}
               />
-              <div className="chat-empty-copy">
-                <h1>{emptyTitle}</h1>
-                <p className="muted">{emptyCopy}</p>
-              </div>
-              {suggestionsLoading && !chartMode ? (
+              {actMode ? (
+                <AgentIntro
+                  examples={[
+                    linearAvailable && { glyph: "linear" as const, text: "File a Linear issue about the login timeout" },
+                    codeAvailable && { glyph: "github" as const, text: "Open a GitHub issue for the flaky checkout test" },
+                    slackAvailable && { glyph: "slack" as const, text: "Post a reminder about Friday’s demo in Slack" },
+                    driveAvailable && { glyph: "drive" as const, text: "Add this week’s numbers to a Google Sheet" },
+                  ].filter((e): e is { glyph: "linear" | "github" | "slack" | "drive"; text: string } => Boolean(e))}
+                  onPick={(text) => {
+                    setInput(text);
+                    askInputRef.current?.focus();
+                  }}
+                />
+              ) : suggestionsLoading && !chartMode ? (
                 <p className="muted suggested-loading">Loading suggestions…</p>
-              ) : starters.length > 0 ? (
-                <div className="suggested-chips suggested-chips-bento">
-                  {starters.map((q) => (
-                    <button
-                      key={q}
-                      type="button"
-                      className="suggested-chip suggested-chip-card"
-                      onClick={() => ask(q)}
-                    >
-                      <ChipIcon kind={chartMode ? "chart" : "policy"} />
+              ) : chartMode && starters.length > 0 ? (
+                <div className="ask-charts">
+                  {starters.slice(0, 6).map((q, i) => (
+                    <button key={q} type="button" className="ask-chart" style={{ ["--i" as string]: i }} onClick={() => ask(q)}>
+                      <ChartThumb kind={chartKind(q)} />
                       <span>{q}</span>
                     </button>
                   ))}
+                </div>
+              ) : starters.length > 0 ? (
+                <div className={deepMode ? "ask-starters is-deep" : "ask-starters"}>
+                  {starters.slice(0, 6).map((q, i) => {
+                    const glyph = chartMode ? undefined : SOURCE_GLYPH[suggestionSources[q] ?? ""];
+                    return (
+                      <button
+                        key={q}
+                        type="button"
+                        className="ask-starter"
+                        style={{ ["--i" as string]: i }}
+                        onClick={() => ask(q)}
+                      >
+                        <span className="ask-starter-mark">
+                          {glyph ? <BrandGlyph name={glyph} size={16} /> : <ChipIcon kind={chartMode ? "chart" : "policy"} />}
+                        </span>
+                        <span className="ask-starter-text">{q}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
@@ -1206,7 +1208,37 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="chat-composer" aria-label="Ask a question">
+        <div className="ask-compose-head">
+          <ModeSwitch
+            mode={mode}
+            agent={Boolean(me.act_enabled && spaceActOn)}
+            disabled={busy}
+            onPick={(m) => {
+              if (m === "ask") {
+                toggleChartMode(false);
+                toggleDeepMode(false);
+                toggleActMode(false);
+              } else if (m === "deep") toggleDeepMode(true);
+              else if (m === "chart") toggleChartMode(true);
+              else toggleActMode(true);
+              askInputRef.current?.focus();
+            }}
+          />
+          {mode === "deep" && (
+            <button
+              type="button"
+              className="ask-effort"
+              aria-pressed={extraEffort}
+              disabled={busy}
+              title="Reads many documents, not only the closest ones. Uses more of your AI quota."
+              onClick={() => setExtraEffort((on) => !on)}
+            >
+              <DeepIcon />
+              Extra effort
+            </button>
+          )}
+        </div>
+        <form onSubmit={handleSubmit} className={`chat-composer is-${mode}${extraEffort ? " is-extra" : ""}`} aria-label="Ask a question">
           <label className="sr-only" htmlFor="ask-input">
             Your question
           </label>
@@ -1218,177 +1250,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             multiple
             onChange={(e) => attach(e.target.files)}
           />
-          <div className="composer-tools" ref={toolsRef}>
+          <div className="composer-tools">
             <button
               type="button"
               className="chat-composer-attach"
-              onClick={() => setToolsOpen((open) => !open)}
-              disabled={busy}
-              aria-haspopup="menu"
-              aria-expanded={toolsOpen}
-              aria-label="Add files or choose a mode"
-              title="Add files or choose a mode"
+              onClick={() => fileInput.current?.click()}
+              disabled={busy || uploading}
+              aria-label="Add files"
+              title="Add files"
             >
               {uploading ? <span className="composer-spinner" aria-hidden /> : <PlusIcon />}
             </button>
-            {toolsOpen && (
-              <div className="composer-menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="composer-menu-item"
-                  disabled={uploading}
-                  onClick={() => {
-                    setToolsOpen(false);
-                    fileInput.current?.click();
-                  }}
-                >
-                  <PaperclipIcon />
-                  <span className="composer-menu-text">
-                    <strong>Add files</strong>
-                    <small>PDF, Word, CSV or text</small>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitemcheckbox"
-                  aria-checked={chartMode}
-                  className="composer-menu-item"
-                  onClick={() => {
-                    setToolsOpen(false);
-                    toggleChartMode(!chartMode);
-                  }}
-                >
-                  <ChartIcon />
-                  <span className="composer-menu-text">
-                    <strong>Create a chart</strong>
-                    <small>From your connected apps and document tables</small>
-                  </span>
-                  {chartMode && <CheckIcon />}
-                </button>
-                <div className="composer-menu-group" role="presentation">
-                  <p className="composer-menu-group-label">For broader questions</p>
-                  <button
-                    type="button"
-                    role="menuitemcheckbox"
-                    aria-checked={deepMode}
-                    className="composer-menu-item"
-                    onClick={() => {
-                      setToolsOpen(false);
-                      toggleDeepMode(!deepMode);
-                    }}
-                  >
-                    <DeepIcon />
-                    <span className="composer-menu-text">
-                      <strong>Deep analysis</strong>
-                      <small>Read full documents for summaries and broad questions</small>
-                    </span>
-                    {deepMode && <CheckIcon />}
-                  </button>
-                  {/* Extra effort remains a separate opt-in, nested under Deep. */}
-                  <button
-                    type="button"
-                    role="menuitemcheckbox"
-                    aria-checked={extraEffort}
-                    className="composer-menu-item composer-menu-subitem"
-                    onClick={() => {
-                      setToolsOpen(false);
-                      if (!extraEffort && !deepMode) toggleDeepMode(true);
-                      setExtraEffort(!extraEffort);
-                    }}
-                  >
-                    <span className="composer-menu-subline" aria-hidden="true" />
-                    <span className="composer-menu-text">
-                      <strong>Use extra effort</strong>
-                      <small>Search more documents · higher AI usage</small>
-                    </span>
-                    {extraEffort && <CheckIcon />}
-                  </button>
-                </div>
-                {me.act_enabled && spaceActOn && (
-                  <button
-                    type="button"
-                    role="menuitemcheckbox"
-                    aria-checked={actMode}
-                    className="composer-menu-item"
-                    onClick={() => {
-                      setToolsOpen(false);
-                      toggleActMode(!actMode);
-                    }}
-                  >
-                    <ActIcon />
-                    <span className="composer-menu-text">
-                      <strong>Agent</strong>
-                      <small>File an issue, comment or post, after you approve</small>
-                    </span>
-                    {actMode && <CheckIcon />}
-                  </button>
-                )}
-              </div>
-            )}
           </div>
-          {chartMode && (
-            <span className="composer-mode-chip">
-              <ChartIcon />
-              <span>Chart</span>
-              <button
-                type="button"
-                className="composer-mode-chip-remove"
-                onClick={() => toggleChartMode(false)}
-                disabled={busy}
-                aria-label="Turn off Chart"
-                title="Turn off Chart"
-              >
-                {/* An icon, not the "×" character: a glyph sits on the text
-                    baseline and drops below the chart icon beside it. */}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-                </svg>
-              </button>
-            </span>
-          )}
-          {actMode && (
-            <span className="composer-mode-chip">
-              <ActIcon />
-              <span>Agent</span>
-              <button
-                type="button"
-                className="composer-mode-chip-remove"
-                onClick={() => toggleActMode(false)}
-                disabled={busy}
-                aria-label="Turn off Agent mode"
-                title="Turn off Agent mode"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-                </svg>
-              </button>
-            </span>
-          )}
-          {deepMode && (
-            <span className="composer-mode-chip">
-              <DeepIcon />
-              <span>{extraEffort ? "Deep · Extra effort" : "Deep"}</span>
-              <button
-                type="button"
-                className="composer-mode-chip-remove"
-                onClick={() => toggleDeepMode(false)}
-                disabled={busy}
-                aria-label="Turn off Deep analysis"
-                title="Turn off Deep analysis"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-                </svg>
-              </button>
-            </span>
-          )}
           <textarea
             ref={askInputRef}
             id="ask-input"
             className="chat-composer-input"
             rows={1}
-            placeholder={composerPlaceholder}
+            placeholder={mode === "ask" ? typedPlaceholder : composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -1435,10 +1314,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   `Answer with the default model (${defaultLabel})`
                 }
               >
-                <option value="auto">{defaultLabel}</option>
+                <option value="auto">{modelName(defaultLabel)}</option>
                 {pickerModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {chartMode && m.charts == null ? `${m.label} (may not support charts)` : m.label}
+                    {chartMode && m.charts == null ? `${modelName(m.label)} (may not support charts)` : modelName(m.label)}
                   </option>
                 ))}
               </select>

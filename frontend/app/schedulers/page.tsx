@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
-import { PageHeader } from "@/components/PageHeader";
+import { SpaceMark } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
 import {
   api,
@@ -93,11 +93,120 @@ function promptSuggestions(provider: string, topics: string[]): string[] {
   return suggestions;
 }
 
-/** "Company", or the space name plus what it has connected. */
-function spaceLabel(space: SchedulerSpace): string {
-  if (space.scope === "org") return space.name;
-  const sources = space.connected.map((p) => SOURCE_LABEL[p] ?? p).join(", ");
-  return sources ? `${space.name} · ${sources}` : `${space.name} · nothing connected`;
+function Logos({ providers }: { providers: string[] }) {
+  return (
+    <span className="space-logos">
+      {providers.map((p, i) =>
+        PROVIDER_GLYPH[p] ? (
+          <i key={p} title={SOURCE_LABEL[p] ?? p} style={{ ["--i" as string]: i }}>
+            <BrandGlyph name={PROVIDER_GLYPH[p]} size={12} />
+          </i>
+        ) : null,
+      )}
+    </span>
+  );
+}
+
+/**
+ * Where a report reads from: the company's apps, or one space's. A menu of
+ * rows with each scope's logos, in place of a native select that could show
+ * only text. Labelled by which APPS get read, never by audience: a schedule
+ * is personal and only its creator is emailed (`schedulers/runner.py`).
+ */
+function ScopePicker({
+  value,
+  onChange,
+  org,
+  spaces,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  org: SchedulerSpace | null;
+  spaces: SchedulerSpace[];
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const picked = value === "org" ? org : spaces.find((s) => s.id === value) ?? null;
+  const pick = (v: string) => {
+    onChange(v);
+    setOpen(false);
+  };
+  const row = (v: string, space: SchedulerSpace, mark: React.ReactNode, sub: string) => (
+    <button
+      key={v}
+      type="button"
+      role="option"
+      aria-selected={value === v}
+      className="scope-row"
+      onClick={() => pick(v)}
+    >
+      {mark}
+      <span className="scope-row-copy">
+        <b>{space.scope === "org" ? "Company-wide" : space.name}</b>
+        <small>{sub}</small>
+      </span>
+      <Logos providers={space.connected.length ? space.connected : space.providers} />
+    </button>
+  );
+  return (
+    <div
+      className="scope-picker"
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
+      }}
+      onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+    >
+      <button
+        type="button"
+        id="scope"
+        className="reports-scope"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span>Reads from</span>
+        <b>{picked ? (picked.scope === "org" ? "Company-wide" : picked.name) : "Choose…"}</b>
+        {picked && <Logos providers={picked.providers} />}
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+          <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="scope-menu" role="listbox" aria-label="Where should this read from?">
+          {org && (
+            <>
+              <p className="scope-menu-label">The company&rsquo;s apps</p>
+              {row(
+                "org",
+                org,
+                <span className="scope-org-mark" aria-hidden>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 20V6l8-3 8 3v14M9 20v-4h6v4M8 9h.01M12 9h.01M16 9h.01M8 13h.01M12 13h.01M16 13h.01" />
+                  </svg>
+                </span>,
+                "Apps connected for the whole company",
+              )}
+            </>
+          )}
+          {spaces.length > 0 && (
+            <>
+              <p className="scope-menu-label">One space&rsquo;s apps</p>
+              {spaces.map((space) =>
+                row(
+                  space.id ?? "",
+                  space,
+                  <SpaceMark name={space.name} className="scope-space-mark" />,
+                  space.connected.length ? "Only this space's own apps" : "Nothing connected yet",
+                ),
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -105,6 +214,16 @@ function spaceLabel(space: SchedulerSpace): string {
  * date helper in this app (ConnectionCard has its own copy too), and adding a
  * date library for two labels would be the wrong trade.
  */
+/** The next run as a date block for the timeline: "13 Nov" over "5:06 pm". */
+function runDate(iso: string | null): [string, string] {
+  if (!iso) return ["—", ""];
+  const when = new Date(iso);
+  return [
+    when.toLocaleDateString([], { day: "numeric", month: "short" }),
+    when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }),
+  ];
+}
+
 function whenLabel(iso: string | null): string {
   if (!iso) return "—";
   const when = new Date(iso);
@@ -242,9 +361,9 @@ export default function SchedulersPage() {
       const connection = connections.find(
         (c) => c.provider === name && c.space_id === (selectedSpace.id ?? null)
       );
-      return promptSuggestions(name, connection?.topics ?? []);
+      return promptSuggestions(name, connection?.topics ?? []).map((text) => ({ text, provider: name }));
     });
-    const interleaved: string[] = [];
+    const interleaved: Array<{ text: string; provider: string }> = [];
     for (let i = 0; interleaved.length < 6; i += 1) {
       const round = perProvider.map((list) => list[i]).filter(Boolean);
       if (!round.length) break;
@@ -344,25 +463,27 @@ export default function SchedulersPage() {
 
   return (
     <AppShell me={me}>
-      <main className="page-wide studio-page stack">
-        <PageHeader
-          eyebrow="Explore"
-          title="Scheduled reports"
-          description="Set a task once — it runs daily, weekly or monthly and covers only what changed since the last report. We email you when it's ready to read."
-          scene="reports"
-          meta={
-            <>
-              <span className="studio-chip">
-                {schedulers.length} report{schedulers.length === 1 ? "" : "s"}
-              </span>
-              <span className="studio-chip">Delivered to {me.email}</span>
-            </>
-          }
-        />
+      <main className="reports-page">
+        <header className="spaces-hero">
+          <span className="ask-scope">
+            <span className="ask-scope-dot" aria-hidden />
+            Reports
+          </span>
+          <h1>
+            Scheduled <span>reports</span>
+          </h1>
+          <p className="ask-hello-copy">
+            Set a task once. It runs daily, weekly or monthly, covers only what changed since the last
+            report, and we email you when it is ready to read.
+          </p>
+          <p className="reports-meta">
+            <b>{schedulers.length}</b> schedule{schedulers.length === 1 ? "" : "s"}
+            <span aria-hidden>·</span>
+            Emailed to <b>{me.email}</b>
+          </p>
+        </header>
 
-        <div className="people-layout">
-          <section className="studio-panel" aria-labelledby="setup-title">
-            <div className="studio-panel-glow" aria-hidden />
+          <section className="room-section reports-new" aria-labelledby="setup-title">
             <div className="studio-section-head">
               <h2 id="setup-title">New report</h2>
               <p className="muted">
@@ -378,117 +499,41 @@ export default function SchedulersPage() {
                 one on the Sources page, or connect one inside a space, then come back.
               </div>
             ) : (
-              <form onSubmit={create} className="stack">
-                <div className="field">
-                  <label htmlFor="scope">1 · Where should this read from?</label>
-                  <select
-                    id="scope"
-                    className="input"
-                    value={scope}
-                    onChange={(e) => setScope(e.target.value)}
+              <form onSubmit={create} className="reports-form">
+                <div className="reports-composer">
+                  <label className="sr-only" htmlFor="prompt">What should the report cover?</label>
+                  <textarea
+                    id="prompt"
+                    rows={2}
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="What should the report cover? e.g. what the team discussed, and anything urgent"
                     disabled={creating}
-                  >
-                    <option value="">Choose…</option>
-                    {/* Grouped, so the company option cannot read as "just
-                        another space" — which is exactly how the old flat
-                        Organisation/Personal pair read to a first-time user.
-                        Labelled by WHICH APPS get read, never by audience: an
-                        earlier "Everyone in the company" read as who receives
-                        the report, which is wrong — a scheduler is personal
-                        and only its creator is ever emailed
-                        (`schedulers/runner.py` resolves one recipient). */}
-                    <optgroup label="The company's apps">
-                      <option value="org">
-                        Company-wide{orgSpace?.providers.length
-                          ? ` · ${orgSpace.providers
-                              .map((p) => SOURCE_LABEL[p] ?? p)
-                              .join(", ")}`
-                          : ""}
-                      </option>
-                    </optgroup>
-                    {mySpaces.length > 0 && (
-                      <optgroup label="One space's apps">
-                        {mySpaces.map((space) => (
-                          <option key={space.id} value={space.id ?? ""}>
-                            {spaceLabel(space)}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </select>
-                  {/* Two things stated once: which apps get read, and who
-                      gets the report. The second is not decoration — the
-                      scope names an organisation or a shared space, so
-                      without it a reader reasonably assumes their colleagues
-                      are about to be emailed a report they did not ask for. */}
-                  <p className="muted sched-hint">
-                    {!scope
-                      ? mySpaces.length
-                        ? "Choose which apps this report reads: the ones connected for the whole organisation, or one space's own. Either way the report is private to you."
-                        : "Reads the apps connected for the whole organisation. The report is private to you."
-                      : scope === "org"
-                        ? "Reads the apps connected for the whole organisation. Only you receive it — schedules are personal, and nobody else can see this one."
-                        : `Reads only ${selectedSpace?.name ?? "this space"}'s own apps, never the company's. Only you receive it — other members of the space are not emailed.`}
-                  </p>
-                  {/* Disclosed, not hidden: a space whose only sources have no
-                      "what happened since T" feed would otherwise look broken. */}
-                  {selectedSpace && !selectedSpace.providers.length && (
-                    <p className="muted sched-hint">
-                      {selectedSpace.connected.length
-                        ? `${selectedSpace.name} has ${selectedSpace.connected
-                            .map((c) => SOURCE_LABEL[c] ?? c)
-                            .join(", ")} connected, which cannot be scheduled yet. Reports need a service with an activity feed: ${SCHEDULABLE_LABELS}.`
-                        : `${selectedSpace.name} has nothing connected yet.`}
-                    </p>
-                  )}
-                </div>
-
-                <div className="field">
-                  <label htmlFor="prompt">2 · What should the report cover?</label>
-                  {/* Built from what the chosen connection actually covers —
-                      the picked channels, the authorized repos — so the field
-                      starts from a real topic instead of a blank box. Writing
-                      into the input rather than replacing it: the prompt stays
-                      free text, which is the whole point of the feature. */}
-                  {suggestions.length > 0 && (
-                    <select
-                      className="input"
-                      value=""
-                      onChange={(e) => e.target.value && setPrompt(e.target.value)}
-                      aria-label="Use a suggested report"
-                      disabled={creating}
-                      style={{ marginBottom: "0.5rem" }}
-                    >
-                      <option value="">Start from an example…</option>
-                      {suggestions.map((text) => (
-                        <option key={text} value={text}>
-                          {text}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <div className="scheduler-compose">
-                    <input
-                      id="prompt"
-                      className="input"
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      placeholder="e.g. summarise what the team discussed and flag anything urgent"
+                  />
+                  <div className="reports-bar">
+                    <ScopePicker
+                      value={scope}
+                      onChange={setScope}
+                      org={orgSpace}
+                      spaces={mySpaces}
                       disabled={creating}
                     />
-                    <select
-                      className="input"
-                      value={frequency}
-                      onChange={(e) => setFrequency(e.target.value)}
-                      aria-label="How often?"
-                      disabled={creating}
-                    >
-                      <option value="daily">Daily</option>
-                      <option value="weekly">Weekly</option>
-                      <option value="monthly">Monthly</option>
-                    </select>
+                    <div className="reports-freq" role="radiogroup" aria-label="How often?">
+                      {(["daily", "weekly", "monthly"] as const).map((f) => (
+                        <button
+                          key={f}
+                          type="button"
+                          role="radio"
+                          aria-checked={frequency === f}
+                          onClick={() => setFrequency(f)}
+                          disabled={creating}
+                        >
+                          {FREQUENCY_LABEL[f] ?? f}
+                        </button>
+                      ))}
+                    </div>
                     <button
-                      className="button"
+                      className="button reports-create"
                       type="submit"
                       disabled={creating || !selectedSpace || !prompt.trim()}
                     >
@@ -496,6 +541,55 @@ export default function SchedulersPage() {
                     </button>
                   </div>
                 </div>
+                {/* Two things stated once: which apps get read, and who
+                    gets the report. The second is not decoration — the
+                    scope names an organisation or a shared space, so
+                    without it a reader reasonably assumes their colleagues
+                    are about to be emailed a report they did not ask for. */}
+                <p className="muted sched-hint">
+                  {!scope
+                    ? mySpaces.length
+                      ? "Choose which apps this report reads: the ones connected for the whole organisation, or one space's own. Either way the report is private to you."
+                      : "Reads the apps connected for the whole organisation. The report is private to you."
+                    : scope === "org"
+                      ? "Reads the apps connected for the whole organisation. Only you receive it — schedules are personal, and nobody else can see this one."
+                      : `Reads only ${selectedSpace?.name ?? "this space"}'s own apps, never the company's. Only you receive it — other members of the space are not emailed.`}
+                </p>
+                {/* Disclosed, not hidden: a space whose only sources have no
+                    "what happened since T" feed would otherwise look broken. */}
+                {selectedSpace && !selectedSpace.providers.length && (
+                  <p className="muted sched-hint">
+                    {selectedSpace.connected.length
+                      ? `${selectedSpace.name} has ${selectedSpace.connected
+                          .map((c) => SOURCE_LABEL[c] ?? c)
+                          .join(", ")} connected, which cannot be scheduled yet. Reports need a service with an activity feed: ${SCHEDULABLE_LABELS}.`
+                      : `${selectedSpace.name} has nothing connected yet.`}
+                  </p>
+                )}
+
+                {/* Built from what the chosen connection actually covers; a
+                    click writes it into the box, which stays free text. */}
+                {suggestions.length > 0 && (
+                  <div className="reports-ideas">
+                    <p>Ideas from what is connected</p>
+                    <ul>
+                      {suggestions.slice(0, 4).map((idea, i) => (
+                        <li key={idea.text} style={{ ["--i" as string]: i }}>
+                          <button type="button" onClick={() => setPrompt(idea.text)} disabled={creating}>
+                            <i aria-hidden>
+                              {PROVIDER_GLYPH[idea.provider] ? (
+                                <BrandGlyph name={PROVIDER_GLYPH[idea.provider]} size={14} />
+                              ) : (
+                                idea.provider.charAt(0).toUpperCase()
+                              )}
+                            </i>
+                            <span>{idea.text}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {formError && (
                   <div className="banner banner-warn" role="alert">
@@ -506,8 +600,8 @@ export default function SchedulersPage() {
             )}
           </section>
 
-          <section className="roster-board" aria-labelledby="reports-title">
-            <div className="studio-section-head roster-board-head">
+          <section className="room-section" aria-labelledby="reports-title">
+            <div className="studio-section-head">
               <h2 id="reports-title">Your schedules</h2>
               <p className="muted">Only yours — nobody else in the company sees these.</p>
             </div>
@@ -529,34 +623,35 @@ export default function SchedulersPage() {
                   <div className="studio-empty-mark" aria-hidden />
                   <h3>No reports yet</h3>
                   <p className="muted">
-                    Describe your first one on the left and it will show up here.
+                    Describe your first one above and it will show up here.
                   </p>
                 </div>
               ) : (
-                <ul className="people-grid">
-                  {schedulers.map((scheduler, i) => {
+                <ol className="sched-timeline">
+                  {[...schedulers]
+                    .sort((x, y) => (x.next_run_at ?? "").localeCompare(y.next_run_at ?? ""))
+                    .map((scheduler, i) => {
                     const label =
                       PROVIDER_LABEL[scheduler.provider] ?? scheduler.provider;
                     const glyph = PROVIDER_GLYPH[scheduler.provider];
                     const editing = editingId === scheduler.id;
                     const stopped = scheduler.status === "failed";
+                    const [day, time] = runDate(scheduler.next_run_at);
                     return (
                       <li
                         key={scheduler.id}
-                        className="people-card"
-                        style={{ animationDelay: `${0.08 + i * 0.05}s` }}
+                        className={`sched-item${editing ? " is-editing" : ""}${stopped ? " is-stopped" : ""}`}
+                        style={{ ["--i" as string]: i }}
                       >
-                        {glyph ? (
-                          <span className="people-avatar" aria-hidden>
-                            <BrandGlyph name={glyph} size={22} />
-                          </span>
-                        ) : (
-                          <span className="people-avatar" aria-hidden>
-                            {label.charAt(0)}
-                          </span>
-                        )}
+                        <span className="sched-date" aria-hidden>
+                          <b>{day}</b>
+                          <small>{time}</small>
+                        </span>
+                        <span className="sched-dot" aria-hidden>
+                          {glyph ? <BrandGlyph name={glyph} size={14} /> : label.charAt(0)}
+                        </span>
 
-                        <div className="people-card-copy">
+                        <div className="sched-body">
                           {editing ? (
                             <>
                               <div className="field">
@@ -638,10 +733,10 @@ export default function SchedulersPage() {
                           )}
                         </div>
 
-                        <div className="people-card-meta">
+                        <div className="sched-side">
                           {/* Cadence is the one chip worth always showing: it
                               is how the row is scanned. */}
-                          <span className="studio-chip">
+                          <span className="sched-freq">
                             {FREQUENCY_LABEL[scheduler.frequency] ??
                               scheduler.frequency}
                           </span>
@@ -658,7 +753,7 @@ export default function SchedulersPage() {
                               {stopped ? "stopped" : "retrying"}
                             </span>
                           )}
-                          <div className="people-card-actions">
+                          <div className="sched-actions">
                             {editing ? (
                               <>
                                 <button
@@ -703,14 +798,12 @@ export default function SchedulersPage() {
                       </li>
                     );
                   })}
-                </ul>
+                </ol>
               )}
             </div>
           </section>
-        </div>
 
-        <section className="studio-panel" aria-labelledby="delivered-title">
-          <div className="studio-panel-glow" aria-hidden />
+        <section className="room-section" aria-labelledby="delivered-title">
           <div className="studio-section-head">
             <h2 id="delivered-title">Delivered reports</h2>
             <p className="muted">

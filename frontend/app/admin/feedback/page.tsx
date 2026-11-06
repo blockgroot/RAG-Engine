@@ -32,7 +32,6 @@ export default function FeedbackPage() {
           eyebrow="Company"
           title="What we couldn’t answer"
           description="Topics people asked about and couldn't get answered, or got an answer they marked wrong. Each is a document worth writing or a source worth connecting."
-          scene="people"
         />
         <GapTopics />
       </main>

@@ -38,7 +38,6 @@ export default function SpaceFeedbackPage() {
           eyebrow={name ? `Space · ${name}` : "Space"}
           title="What we couldn’t answer"
           description="Topics this space's members asked about and couldn't get answered, or got an answer they marked wrong. Each is a document worth adding to the space."
-          scene="spaces"
         />
         <GapTopics workspaceId={workspaceId} />
       </main>

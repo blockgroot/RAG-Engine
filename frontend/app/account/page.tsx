@@ -94,7 +94,6 @@ function AccountContent() {
           eyebrow="You"
           title="Linked accounts"
           description="Your accounts in the tools your company connected. Handbook uses these to know which Slack messages, documents and pull requests are yours. Linking never changes what you or anyone else can see."
-          scene="people"
         />
 
         {linked && (

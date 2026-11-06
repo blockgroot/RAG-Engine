@@ -1262,6 +1262,9 @@ export const api = {
       agent: string | null;
       sources: string[];
       questions: string[];
+      /** Combined view only: the connector each question came from. */
+      deep_questions?: string[];
+      question_sources?: Record<string, string>;
     }>(`/chat/suggestions${query ? `?${query}` : ""}`);
   },
 

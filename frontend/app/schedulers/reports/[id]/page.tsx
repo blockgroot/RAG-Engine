@@ -4,7 +4,6 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { AnswerText } from "@/components/AnswerText";
 import { AppShell } from "@/components/AppShell";
-import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { api, ReportDetail } from "@/lib/api";
 
@@ -132,35 +131,38 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
       {/* page-wide, like every other studio page: `.page` is 640px, which
           squeezes the studio header's art column. The prose keeps its own
           68ch measure via .report-body, so the wider shell costs nothing. */}
-      <main className="page-wide studio-page stack">
-        <PageHeader
-          eyebrow={`${report.frequency} report`}
-          title={report.title}
-          description={`${WINDOW_NOUN[report.frequency] ?? "Period"} ${windowLabel(
-            report.window_start,
-            report.window_end
-          )} · generated ${sentLabel(report.created_at)}`}
-          scene="reports"
-          meta={
-            <>
+      <main className="reports-page">
+        <Link href="/schedulers" className="space-back">
+          ← All reports
+        </Link>
+        <header className="space-hero">
+          <div className="space-hero-copy">
+            <span className="ask-scope">
+              <span className="ask-scope-dot" aria-hidden />
+              {FREQUENCY_LABEL[report.frequency] ?? report.frequency} report
+            </span>
+            <h1>{report.title}</h1>
+            <p className="ask-hello-copy">
+              {`${WINDOW_NOUN[report.frequency] ?? "Period"} ${windowLabel(
+                report.window_start,
+                report.window_end
+              )} · generated ${sentLabel(report.created_at)}`}
+            </p>
+            <div className="space-hero-chips">
               <span className="studio-chip">{provider}</span>
               <span className="studio-chip">{report.space_name ?? "Company-wide"}</span>
-              <span className="studio-chip">
-                {FREQUENCY_LABEL[report.frequency] ?? report.frequency}
-              </span>
               {report.item_count > 0 ? (
-                <span className="studio-chip">
+                <span className="studio-chip studio-chip-ok">
                   {report.item_count} item{report.item_count === 1 ? "" : "s"}
                 </span>
               ) : (
                 <span className="studio-chip">Quiet period</span>
               )}
-            </>
-          }
-        />
+            </div>
+          </div>
+        </header>
 
         <section className="studio-panel report-body" aria-label="Report">
-          <div className="studio-panel-glow" aria-hidden />
           {report.item_count === 0 ? (
             // A quiet period is a RESULT, not an error, and the fixed note on
             // its own read like something had gone wrong. Saying what was

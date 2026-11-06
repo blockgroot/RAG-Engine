@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { SpaceMark, spaceStyle } from "@/components/SpaceMark";
 import { api, WorkspaceMemberRecord } from "@/lib/api";
 
 /**
@@ -135,6 +136,7 @@ export function SpacePanel({
         ref={panelRef}
         tabIndex={-1}
         className="space-panel"
+        style={spaceStyle(spaceName)}
         role="dialog"
         aria-modal="true"
         aria-labelledby="space-panel-title"
@@ -143,6 +145,7 @@ export function SpacePanel({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="space-panel-head">
+          <SpaceMark name={spaceName} className="space-panel-mark" />
           <div>
             <p className="space-panel-eyebrow">Space</p>
             <h2 id="space-panel-title">{spaceName || "Space"}</h2>
@@ -266,7 +269,11 @@ export function SpacePanel({
               they have no settings to reach. */}
           {isOwner && (
             <Link href={`/workspaces/${workspaceId}`} className="space-panel-settings">
-              Connected apps &amp; space settings →
+              <span>
+                <strong>Connected apps &amp; space settings</strong>
+                <small>Sources, Agent mode and deleting the space</small>
+              </span>
+              <i aria-hidden>→</i>
             </Link>
           )}
         </div>

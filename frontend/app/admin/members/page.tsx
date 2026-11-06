@@ -141,7 +141,6 @@ export default function MembersPage() {
           eyebrow="Company"
           title="People"
           description="Invite teammates, make admins for succession, and remove people who leave. Always keep at least one other admin before you leave."
-          scene="people"
           meta={
             <>
               <span className="studio-chip">{members.length} people</span>

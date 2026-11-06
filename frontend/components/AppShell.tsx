@@ -419,14 +419,14 @@ export function AppShell({
                 </div>
               </div>
               <div className="rail-user-actions">
-                <Link href="/account" className="rail-user-action">
+                <Link href="/account" className="rail-user-action" title="Account">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
                     <circle cx="12" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.7" />
                     <path d="M5 20c.7-4 3.3-6 7-6s6.3 2 7 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
                   </svg>
                   <span>Account</span>
                 </Link>
-                <button type="button" className="rail-user-action rail-user-signout" onClick={handleSignOut}>
+                <button type="button" className="rail-user-action rail-user-signout" title="Sign out" onClick={handleSignOut}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
                     <path d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4M14 8l4 4-4 4M9 12h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>

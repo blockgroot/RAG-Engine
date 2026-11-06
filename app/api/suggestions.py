@@ -33,6 +33,36 @@ _SLACK_TEMPLATES = (
     "Any open questions or blockers in #{channel}?",
 )
 
+# Deep mode reads whole documents, so its starters ask for what a passage
+# search cannot give: everything in a document, across it, or over time.
+_GITHUB_DEEP_TEMPLATES = (
+    "Explain how {name} is structured, part by part.",
+    "Walk me through how a request moves through {name}.",
+    "What should a new engineer know before changing {name}?",
+    "What are the open risks or gaps in {name}?",
+)
+
+_SLACK_DEEP_TEMPLATES = (
+    "List every decision made in #{channel} this month, and who made it.",
+    "What themes keep coming up in #{channel}?",
+    "How has the conversation in #{channel} changed over the last month?",
+    "List every unanswered question in #{channel} and who asked it.",
+)
+
+_LINEAR_DEEP_QUESTIONS = (
+    "Full history, from first report to now.",
+    "What was tried, and what still blocks it?",
+    "Who worked on it, and what each decided.",
+    "Every comment, and what was agreed.",
+)
+
+_DOC_DEEP_TEMPLATES = (
+    'Go through "{title}" section by section.',
+    'List every rule, exception and deadline in "{title}".',
+    'What does "{title}" say about edge cases and exceptions?',
+    'What in "{title}" would a new joiner most likely miss?',
+)
+
 _LINEAR_KIND_RE = re.compile(r"^\[([^\]]+)\]\s*")
 _LINEAR_KIND_ALIASES = {
     "bug": "bug",
@@ -111,7 +141,7 @@ def _linear_chip_topic(title: str) -> tuple[str | None, str]:
     return kind, _trim_at_word(raw, 42)
 
 
-def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
+def build_github_suggestions(repos: list[dict[str, Any]], *, deep: bool = False) -> list[str]:
     """Turn authorized repo rows into short Code-tab starter questions."""
     cleaned: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -140,7 +170,7 @@ def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
     names = [short for short, _ in ranked]
 
     questions: list[str] = []
-    for i, template in enumerate(_GITHUB_TEMPLATES):
+    for i, template in enumerate(_GITHUB_DEEP_TEMPLATES if deep else _GITHUB_TEMPLATES):
         if len(questions) >= _MAX:
             break
         name = names[i % len(names)]
@@ -148,7 +178,7 @@ def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
     return questions
 
 
-def build_slack_suggestions(channel_names: list[str]) -> list[str]:
+def build_slack_suggestions(channel_names: list[str], *, deep: bool = False) -> list[str]:
     """Turn connected Slack channel names into Slack-tab starter questions."""
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -166,14 +196,14 @@ def build_slack_suggestions(channel_names: list[str]) -> list[str]:
         return []
 
     questions: list[str] = []
-    for i, template in enumerate(_SLACK_TEMPLATES):
+    for i, template in enumerate(_SLACK_DEEP_TEMPLATES if deep else _SLACK_TEMPLATES):
         if len(questions) >= _MAX:
             break
         questions.append(template.format(channel=_display_title(cleaned[i % len(cleaned)])))
     return questions
 
 
-def build_linear_suggestions(titles: list[str]) -> list[str]:
+def build_linear_suggestions(titles: list[str], *, deep: bool = False) -> list[str]:
     """Turn ingested Linear issue titles into Linear-tab starter questions."""
     cleaned: list[tuple[str | None, str]] = []
     seen: set[str] = set()
@@ -194,7 +224,10 @@ def build_linear_suggestions(titles: list[str]) -> list[str]:
     questions: list[str] = []
     for i in range(_MAX):
         kind, topic = cleaned[i % len(cleaned)]
-        if kind and kind in _LINEAR_KIND_QUESTIONS:
+        if deep:
+            ask = _LINEAR_DEEP_QUESTIONS[i % len(_LINEAR_DEEP_QUESTIONS)]
+            topic = _trim_at_word(topic, 26)
+        elif kind and kind in _LINEAR_KIND_QUESTIONS:
             variants = _LINEAR_KIND_QUESTIONS[kind]
             n = kind_counts.get(kind, 0)
             kind_counts[kind] = n + 1
@@ -206,7 +239,7 @@ def build_linear_suggestions(titles: list[str]) -> list[str]:
 
 
 def build_policy_suggestions(
-    titles: list[str], *, workspace: bool = False
+    titles: list[str], *, workspace: bool = False, deep: bool = False
 ) -> list[str]:
     """Turn ingested document titles into short Policies or Space Ask chips."""
     cleaned: list[str] = []
@@ -224,13 +257,19 @@ def build_policy_suggestions(
     if not cleaned:
         return []
 
-    templates = _WORKSPACE_DOC_TEMPLATES if workspace else _ORG_POLICY_TEMPLATES
+    if deep:
+        templates = _DOC_DEEP_TEMPLATES
+    else:
+        templates = _WORKSPACE_DOC_TEMPLATES if workspace else _ORG_POLICY_TEMPLATES
     questions: list[str] = []
     for i, template in enumerate(templates):
         if len(questions) >= _MAX:
             break
         title = cleaned[i % len(cleaned)]
-        questions.append(template.format(title=_display_title(title)))
+        # A Deep starter's ask is longer, so its title is cut sooner: the
+        # chip must still show what it asks for.
+        shown = _trim_at_word(title, 30) if deep else _display_title(title)
+        questions.append(template.format(title=shown))
     return questions
 
 
