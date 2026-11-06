@@ -34,7 +34,7 @@ import httpx
 
 from ..config.settings import GoogleSettings
 from ..core.exceptions import ConfigurationError, OAuthError
-from .base import OAuthProvider, OAuthTokens, compute_expires_at
+from .base import CLIENT_ERRORS, OAuthProvider, OAuthTokens, compute_expires_at, oauth_error_code
 
 _AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -128,12 +128,15 @@ class GoogleOAuthProvider(OAuthProvider):
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            body = {}
-            try:
-                body = exc.response.json()
-            except ValueError:
-                pass
-            if body.get("error") == "invalid_grant":
+            code = oauth_error_code(exc)
+            if code in CLIENT_ERRORS:
+                # This app's client id or secret is wrong for the token: a host
+                # (or a company app) misconfiguration, not the person's grant.
+                raise ConfigurationError(
+                    f"Google refused this app's OAuth client ({code}); the token was "
+                    "not refreshed.", cause=exc,
+                ) from exc
+            if code == "invalid_grant":
                 raise OAuthError(
                     "Google OAuth refresh failed with invalid_grant — the refresh "
                     "token has been revoked, expired, or rotated out; the admin "

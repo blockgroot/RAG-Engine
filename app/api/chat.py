@@ -58,6 +58,7 @@ from ..agent.routing import (
     _connected_providers,
     choose_agent,
     named_providers,
+    refusal_retry,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..config.settings import AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings
@@ -1366,12 +1367,63 @@ def _graph_connected_enabled() -> bool:
         return False
 
 
-def _invoke_with_plan(graph_input: dict, plan):
-    """Run the agent graph with ``plan`` as this request's graph plan."""
+#: Values written under a counted answer; the chart beside it has the rest.
+_COUNTED_LINES = 12
+
+
+def _counted_answer(result) -> str:
+    """A count asked in Ask, answered by SQL as a chart, with its numbers
+    written out too: "how many leads in August?" asked for a number, and a
+    caption over bars makes the reader find it. Every value is the chart's
+    own (``describe.format_value``); nothing here is computed."""
+    from ..chartrender.matplotlib_renderer import format_bucket
+    from ..insights.describe import format_value
+
+    chart = getattr(result, "chart", None)
+    points = (chart or {}).get("points") if isinstance(chart, dict) else None
+    if not points:
+        return result.answer
+    period = getattr(result, "chart_period", None) or "month"
+    lines = []
+    for point in points[:_COUNTED_LINES]:
+        when = format_bucket(point["bucket"], period) if point.get("bucket") else ""
+        label = " · ".join(str(p) for p in (point.get("group"), point.get("series"), when) if p)
+        if label and point.get("value") is not None:
+            lines.append(f"- {label}: {format_value(point['value'], chart.get('unit') or '')}")
+    more = [f"- …and {len(points) - _COUNTED_LINES} more in the chart"] \
+        if len(points) > _COUNTED_LINES else []
+    if lines and len(points) > 1 and chart.get("measure") in ("count", "sum"):
+        # "How many interviews?" asked for ONE number: a small model read the
+        # three months off the list and never added them up.
+        total = sum(float(p["value"]) for p in points if p.get("value") is not None)
+        more.append(f"- Total: {format_value(total, chart.get('unit') or '')}")
+    return "\n".join([result.answer, "", *lines, *more]) if lines else result.answer
+
+
+def _refusal_retry(decision, plan, org_id: str, workspace_id: str | None):
+    """``(decision, plan, tools)`` for asking a refusal once more, elsewhere
+    (``routing.refusal_retry``), or ``None``. The retried tools' own searches
+    join, so no graph is needed. One retry, never a loop; Slack runs it too."""
+    retry = refusal_retry(decision) if _graph_connected_enabled() else None
+    if retry is None:
+        return None
+    agent, also = retry
+    base = plan if plan is not None else graph_plan.GraphPlan(org_id, workspace_id)
+    return (dataclasses.replace(decision, agent_key=agent),
+            base.connected({agent} | also, search=also), {agent} | also)
+
+
+def _invoke_with_plan(graph_input: dict, plan, worked: tuple = ()):
+    """Run the agent graph with ``plan`` as this request's graph plan, and
+    ``worked`` (``insights.table_answers``) as its worked-out figures."""
+    from ..insights.table_answers import reset_answers, use_answers
+
     token = graph_plan.use_plan(plan)
+    figures = use_answers(worked)
     try:
         return _agent_graph().invoke(graph_input)["response"]
     finally:
+        reset_answers(figures)
         graph_plan.reset_plan(token)
 
 
@@ -1631,7 +1683,7 @@ def _stream_answer_body(
         "viewer": viewer_for(session),
     }
     try:
-        result = _invoke_with_plan(graph_input, plan)
+        result = _invoke_with_plan(graph_input, plan, decision.table_answers)
         # ESCALATION: the routed tool refused, and the graph already proved
         # the question connects to documents the asker can open in OTHER
         # tools. One retry, as a connected answer -- never a loop, and never
@@ -1645,11 +1697,17 @@ def _stream_answer_body(
             and not result.grounded and not result.access_restricted
             else None
         )
-        if retry_tools:
+        retry_plan = plan.connected(retry_tools) if retry_tools else None
+        if retry_plan is None and not result.grounded and not result.access_restricted:
+            elsewhere = _refusal_retry(decision, plan, org_id, workspace_id)
+            if elsewhere is not None:
+                decision, retry_plan, retry_tools = elsewhere
+                graph_input = {**graph_input, "requested_agent": decision.agent_key}
+        if retry_plan is not None:
             _drop_refusal_turn(org_id, conversation_id, question, result.answer)
             connected = retry_tools
             progress.searching(decision.agent_key, retry_tools)
-            result = _invoke_with_plan(graph_input, plan.connected(retry_tools))
+            result = _invoke_with_plan(graph_input, retry_plan)
     except LLMProviderError as exc:
         logger.warning("Chat LLM failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
@@ -1659,6 +1717,8 @@ def _stream_answer_body(
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
 
+    if decision.reason == "count-chart":
+        result = dataclasses.replace(result, answer=_counted_answer(result))
     # A connected retry was answered by the pipeline, which already saved its
     # own turn. Saving again would put the question in the history twice.
     if not retry_tools:

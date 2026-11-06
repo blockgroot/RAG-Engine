@@ -23,10 +23,11 @@ _PDF_MIME = "application/pdf"
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 _CSV_MIME = "text/csv"
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Sheets and CSVs are indexed as TABLES (app/doctables): their rows are kept
 # for charts and only a description of the columns is embedded -- never the
 # cells, because a figure read back out of chunk text cannot be checked.
-_TABLE_MIMES = {_SHEET_MIME, _CSV_MIME}
+_TABLE_MIMES = {_SHEET_MIME, _CSV_MIME, _XLSX_MIME}
 _SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME} | _TABLE_MIMES
 # `lastModifyingUser` costs nothing here: it rides along in the files.list
 # request we already make, which is why "top editors" needs no extra call.
@@ -192,6 +193,19 @@ def _table_document(text: str, *, name: str, sheet: bool):
     return describe(table), [raw]
 
 
+def _workbook_document(data: bytes, *, name: str):
+    """``(content, tables)`` for a workbook: EVERY tab, read by the one
+    workbook reader (`doctables.extract.workbook_tables`). The content is
+    each table's column description, as for a single sheet."""
+    from ..doctables.extract import describe, profile, workbook_tables
+
+    raws = workbook_tables(name, data)
+    profiled = [t for t in (profile(r) for r in raws) if t is not None]
+    if not profiled:
+        return "", None
+    return "\n\n".join(describe(t) for t in profiled), raws
+
+
 def _file_uri(file_id: str, mime: str) -> str:
     if mime == _DOC_MIME:
         return _doc_uri(file_id)
@@ -279,10 +293,10 @@ class GoogleDriveAdapter(SourceAdapter):
             if mime == _DOC_MIME:
                 content = self._export_markdown(external_id)
             elif mime == _SHEET_MIME:
-                content, tables = _table_document(
-                    self._export(external_id, "text/csv"),
-                    name=meta.get("name", "Untitled"), sheet=True,
-                )
+                content, tables = self._sheet_document(external_id, meta.get("name", "Untitled"))
+            elif mime == _XLSX_MIME:
+                content, tables = _workbook_document(
+                    self._download_media(external_id), name=meta.get("name", "Untitled"))
             elif mime == _CSV_MIME:
                 content, tables = _table_document(
                     self._download_media(external_id).decode("utf-8", errors="replace"),
@@ -436,7 +450,28 @@ class GoogleDriveAdapter(SourceAdapter):
     def _export_markdown(self, file_id: str) -> str:
         return self._export(file_id, "text/markdown")
 
+    def _sheet_document(self, file_id: str, name: str):
+        """Every tab of a Google Sheet, exported as .xlsx. Drive refuses an
+        export past its size limit; then the CSV export (first tab only) is
+        read and the chart says so, rather than indexing nothing."""
+        try:
+            data = self._export_bytes(file_id, _XLSX_MIME)
+        except SourceError:
+            logger.warning("Drive: workbook export failed for %s; reading the first tab",
+                           file_id, exc_info=True)
+        else:
+            content, tables = _workbook_document(data, name=name)
+            if tables:
+                return content, tables
+        return _table_document(self._export(file_id, "text/csv"), name=name, sheet=True)
+
+    def _export_bytes(self, file_id: str, mime: str) -> bytes:
+        return self._export_response(file_id, mime).content
+
     def _export(self, file_id: str, mime: str) -> str:
+        return self._export_response(file_id, mime).text
+
+    def _export_response(self, file_id: str, mime: str) -> httpx.Response:
         try:
             response = httpx.get(
                 f"{_API_BASE}/files/{file_id}/export",
@@ -449,7 +484,7 @@ class GoogleDriveAdapter(SourceAdapter):
             raise SourceError(
                 f"Google Drive files.export({file_id}) failed: {exc}", cause=exc
             ) from exc
-        return response.text
+        return response
 
     def _download_media(self, file_id: str) -> bytes:
         """Download raw bytes for a PDF or DOCX file."""

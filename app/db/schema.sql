@@ -913,6 +913,11 @@ CREATE TABLE IF NOT EXISTS doc_table_rows (
 -- The exact sentence a `text` row was read from, shown on hover so a reader
 -- can check the figure against the document. NULL for a real table's rows.
 ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS quote TEXT;
+-- A question names a row by typing one of its cells ("L-1008"): looked up by
+-- the question's phrases, exact and lowercased (`store.rows_naming`), never a
+-- scan of every row the org holds.
+CREATE INDEX IF NOT EXISTS doc_table_rows_cells_lower
+    ON doc_table_rows USING gin ((lower(raw::text)::jsonb));
 
 -- Documents waiting for a BACKGROUND dataset adapter (the text adapter: an AI
 -- reads figures out of sentences). Ingestion only flags a document here after
@@ -1037,6 +1042,79 @@ BEGIN
            AND NOT EXISTS (SELECT 1 FROM doc_tables t
                             WHERE t.document_id = q.document_id AND t.origin = 'text');
         INSERT INTO schema_marks (name) VALUES ('prose_done_reread');
+    END IF;
+END $$;
+
+-- A category column kept five sample values until 2026-11, and the chart and
+-- table-answer models are shown those as the column's values: a Stage column's
+-- "Won" fell off the end, so "conversion ratio" was worked out on "Contacted".
+-- New tables keep up to twelve (`extract.CATEGORY_SAMPLES`); a sync skips an
+-- unchanged sheet, so stored tables are re-sampled here from their own rows,
+-- sorted as Python's sorted() does (codepoint order).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'category_samples_twelve') THEN
+        -- category_samples_twelve:begin
+        UPDATE doc_tables t
+           SET columns = (
+               SELECT jsonb_agg(
+                        CASE WHEN e.col->>'type' = 'category'
+                              AND jsonb_array_length(COALESCE(e.col->'samples', '[]'::jsonb))
+                                  < LEAST(COALESCE((e.col->>'distinct')::int, 0), 12)
+                        THEN jsonb_set(e.col, '{samples}', COALESCE((
+                               SELECT jsonb_agg(v ORDER BY v COLLATE "C")
+                                 FROM (SELECT d.v FROM (
+                                         SELECT DISTINCT r.cells->>(e.col->>'key') AS v
+                                           FROM doc_table_rows r
+                                          WHERE r.table_id = t.id
+                                            AND r.cells ? (e.col->>'key')) d
+                                        ORDER BY d.v COLLATE "C"
+                                        LIMIT 12) s), e.col->'samples'))
+                        ELSE e.col END
+                      ORDER BY e.ord)
+                 FROM jsonb_array_elements(t.columns) WITH ORDINALITY AS e(col, ord))
+         WHERE EXISTS (
+               SELECT 1 FROM jsonb_array_elements(t.columns) c
+                WHERE c->>'type' = 'category'
+                  AND jsonb_array_length(COALESCE(c->'samples', '[]'::jsonb))
+                      < LEAST(COALESCE((c->>'distinct')::int, 0), 12));
+        -- category_samples_twelve:end
+        INSERT INTO schema_marks (name) VALUES ('category_samples_twelve');
+    END IF;
+    -- A date column's first and last day, for tables stored before
+    -- `extract.Column.first/last`: which table holds "November" is read off them.
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'date_column_span') THEN
+        -- date_column_span:begin
+        UPDATE doc_tables t
+           SET columns = (
+               SELECT jsonb_agg(
+                        CASE WHEN e.col->>'type' = 'date' AND NOT e.col ? 'first'
+                        THEN COALESCE((
+                               SELECT e.col || jsonb_build_object(
+                                        'first', min(left(r.cells->>(e.col->>'key'), 10)),
+                                        'last', max(left(r.cells->>(e.col->>'key'), 10)))
+                                 FROM doc_table_rows r
+                                WHERE r.table_id = t.id AND r.cells ? (e.col->>'key')
+                               HAVING count(*) > 0), e.col)
+                        ELSE e.col END
+                      ORDER BY e.ord)
+                 FROM jsonb_array_elements(t.columns) WITH ORDINALITY AS e(col, ord))
+         WHERE EXISTS (
+               SELECT 1 FROM jsonb_array_elements(t.columns) c
+                WHERE c->>'type' = 'date' AND NOT c ? 'first');
+        -- date_column_span:end
+        INSERT INTO schema_marks (name) VALUES ('date_column_span');
+    END IF;
+    -- Figures "read" from a sheet's own column description ("12500 rows") by
+    -- Chart mode's live prose read, before it skipped those pages.
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'no_prose_tables_from_sheets') THEN
+        DELETE FROM doc_tables t
+         WHERE t.origin = 'text'
+           AND EXISTS (SELECT 1 FROM chunks c
+                        WHERE c.document_id = t.document_id AND c.org_id = t.org_id
+                          AND c.chunk_index = 0
+                          AND starts_with(c.content, 'Spreadsheet table "'));
+        INSERT INTO schema_marks (name) VALUES ('no_prose_tables_from_sheets');
     END IF;
 END $$;
 

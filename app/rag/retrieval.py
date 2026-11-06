@@ -42,6 +42,12 @@ _graph_log = logging.getLogger("rag.graph_signals")
 # the pool size the extra tasks just queue on a connection instead of a query.
 _MAX_RETRIEVAL_WORKERS = 4
 
+#: A table row's passage index: past any real chunk, so a row never collides
+#: with (or is mistaken for a neighbour of) the document's own chunks.
+_ROW_INDEX = 1_000_000
+#: A figure worked out over a table for this question (past every row index).
+_WORKED_INDEX = 2_000_000
+
 
 @dataclass(frozen=True)
 class RetrievalResult:
@@ -138,6 +144,11 @@ class HybridRetriever:
         )
         extra_tools = self._named_tools(org_id, workspace_id)
         graph_cross = graph_cross or bool(extra_tools)
+        from ..insights.table_answers import current_answers
+
+        # Read HERE, on the request's thread: the first-stage pool does not
+        # inherit context.
+        worked = current_answers()
         graph_counter: list[int] = []
         ranked_lists = self._first_stage_all(
             org_id,
@@ -151,6 +162,7 @@ class HybridRetriever:
             graph_counter=graph_counter,
             graph_cross=graph_cross,
             extra_tools=extra_tools,
+            worked=worked,
         )
         graph_hits = sum(graph_counter)
         if graph_documents:
@@ -168,6 +180,15 @@ class HybridRetriever:
         gate_document_id = gate_document(candidates)
 
         pool_candidates = candidates[:pool]
+        # A row the question named by a cell comes from ONE leg, while each
+        # document chunk is found again by every sub-question's vector and
+        # keyword search; fusion rewards that, and the row fell outside the
+        # pool before the reranker read it ("who does Rohan Mehta report to,
+        # and what is their email?" split in two). The reranker judges it.
+        pooled = {(c.document_id, c.chunk_index) for c in pool_candidates}
+        pool_candidates += [c for c in candidates
+                            if _ROW_INDEX <= c.chunk_index < _WORKED_INDEX
+                            and (c.document_id, c.chunk_index) not in pooled]
         # The selection below sees the WHOLE reranked pool. Cutting it to the
         # top 10 pieces first hid documents ranked lower than one long
         # document's many pieces from the wide read (RCA, 9 Oct: 62% -> 66% of
@@ -187,6 +208,11 @@ class HybridRetriever:
             final = pool_candidates[: keep if graph_cross else rag.ranked_max_hits]
         if graph_cross:
             final = _reserve_other_tools(final, top_k, self._source_provider)
+        # A figure worked out for THIS question is never ranked out: the rows
+        # that answer it are not text the reranker could weigh.
+        kept = {(c.document_id, c.chunk_index) for c in final}
+        final = final + [c for c in candidates if c.chunk_index >= _WORKED_INDEX
+                         and (c.document_id, c.chunk_index) not in kept]
 
         return RetrievalResult(
             hits=final, gate_score=gate_score, graph_hits=graph_hits,
@@ -264,11 +290,12 @@ class HybridRetriever:
     def _named_tools(self, org_id: str, workspace_id: str | None) -> list[str]:
         """Tools a connected answer searches besides this retriever's own.
 
-        Only ever the ones the question NAMED (``GraphPlan.search``); empty
-        for every normal answer, so their searches do not run at all.
+        Only ever the ones the question NAMED, or a refused answer's retry
+        across the tools that cleared the gate (``GraphPlan.search``); empty
+        for every normal answer, so their searches do not run at all. Not tied
+        to the graph flag: these are plain searches, and the retry builds its
+        plan without a graph.
         """
-        if not self._graph_settings.retrieval_enabled:
-            return []
         try:
             from ..graph.plan import current_plan
 
@@ -294,6 +321,7 @@ class HybridRetriever:
         graph_counter: list[int] | None = None,
         graph_cross: bool = False,
         extra_tools: list[str] | None = None,
+        worked: tuple = (),
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -321,6 +349,10 @@ class HybridRetriever:
         if graph_documents and query_pairs:
             q_text, q_vec = query_pairs[0]
             tasks.append((0, "graph", q_text, q_vec))
+        if query_pairs:
+            # Rows of this tool's (and a connected answer's tools') document
+            # tables that the question names by a cell (`_table_rows`).
+            tasks.append((0, "rows", *query_pairs[0]))
         # A connected answer's NAMED tools: the same vector (+ keyword) search
         # the routed tool runs, pinned to that tool, primary query only. Run in
         # the same pool as everything else, so they add no wall-clock time.
@@ -338,6 +370,11 @@ class HybridRetriever:
             i, kind, q_text, q_vec = task
             kind, _, tool = kind.partition(":")
             provider = tool or self._source_provider
+            if kind == "rows":
+                return (i, task[1]), self._table_rows(
+                    org_id, q_text, q_vec, workspace_id=workspace_id, viewer=viewer,
+                    tools=[self._source_provider, *(extra_tools or [])], worked=worked,
+                )
             if kind == "graph":
                 # A connected answer's graph documents were already limited to
                 # the tools that answer may use (GraphPlan.documents_for), so
@@ -402,6 +439,8 @@ class HybridRetriever:
                 legs.append(results.get((i, "keyword"), []))
             if (i, "graph") in results:
                 legs.append(results[(i, "graph")])
+            if results.get((i, "rows")):
+                legs.append(results[(i, "rows")])
             if i == 0:
                 for tool in extra_tools or []:
                     legs.append(results.get((0, f"vector:{tool}"), []))
@@ -409,6 +448,92 @@ class HybridRetriever:
                         legs.append(results.get((0, f"keyword:{tool}"), []))
             ranked.append(legs[0] if len(legs) == 1 else self._rrf_fuse(legs, self._settings.rrf_k))
         return ranked
+
+    def _table_rows(
+        self, org_id: str, q_text: str, q_vec: list[float], *, workspace_id: str | None,
+        viewer: Viewer | None, tools: list[str | None], worked: tuple = (),
+    ) -> list[RetrievedChunk]:
+        """Table rows the question names by a cell, and figures worked out over a
+        table for it (``insights.table_answers``), as passages of their document.
+
+        A sheet embeds only its columns, so "who was the field officer on
+        L-1008?" could never reach the row. ``doctables.store.rows_naming``
+        finds it by the exact text typed, as this viewer. A figure carries its
+        DOCUMENT's own cosine to the question; a row the better of that and
+        its OWN text's cosine, embedded here with the question's model. Both
+        are real cosines of what the model is shown, so the gate still means
+        what it says: a sheet's column description scored 0.342 against "who
+        closed L-1076?" and refused the row that answers it.
+        Never raises: a lookup may only ever add.
+        """
+        try:
+            from ..doctables.store import rows_naming
+
+            rows = rows_naming(q_text, org_id=org_id, workspace_id=workspace_id,
+                               viewer=viewer, providers=[t for t in tools if t])
+            figures = [w for w in worked if w.provider in tools]
+            if not rows and not figures:
+                return []
+            ids = sorted({r.document_id for r in rows} | {w.document_id for w in figures}
+                         | {d for w in figures for d in getattr(w, "requires", ())})
+            cosine: dict[str, float] = {}
+            # Private unless the index says otherwise: a worked figure from a
+            # restricted sheet must keep its answer out of the shared cache.
+            public: dict[str, bool] = {}
+            for hit in self._store.query(org_id, q_vec, top_k=4 * len(ids),
+                                         workspace_id=workspace_id, viewer=viewer,
+                                         document_ids=ids):
+                cosine[hit.document_id] = max(cosine.get(hit.document_id, 0.0), hit.score)
+                public[hit.document_id] = hit.doc_is_public
+        except Exception:  # noqa: BLE001
+            logger.warning("retrieval: table row lookup skipped", exc_info=True)
+            return []
+        # Re-checked at run time: the cosine query is filtered by this viewer, so
+        # a sheet they cannot open has no hit and its figures are not shown.
+        figures = [f for f in figures if f.document_id in cosine
+                   and all(d in cosine for d in getattr(f, "requires", ()))]
+        rows = [r for r in rows if r.document_id in cosine]
+        own = self._row_cosines(q_vec, [r.text for r in rows])
+        return [
+            RetrievedChunk(
+                content=figure.text, score=cosine.get(figure.document_id, 0.0),
+                document_id=figure.document_id, chunk_index=_WORKED_INDEX + i,
+                org_id=org_id, document_title=figure.document_title,
+                source_provider=figure.provider,
+                doc_is_public=public.get(figure.document_id, False),
+                source_uri=figure.source_uri,
+            )
+            for i, figure in enumerate(figures)
+        ] + [
+            RetrievedChunk(
+                content=row.text, score=max(cosine[row.document_id], own[i]),
+                document_id=row.document_id, chunk_index=_ROW_INDEX + row.row_no,
+                org_id=org_id, document_title=row.document_title,
+                source_provider=row.provider, doc_is_public=row.is_public,
+                source_uri=row.source_uri,
+            )
+            for i, row in enumerate(rows)
+        ]
+
+    @staticmethod
+    def _row_cosines(q_vec: list[float], texts: list[str]) -> list[float]:
+        """Cosine of each row's text to the question, one batched embed call;
+        zeros (the document's score stands) when it cannot be measured."""
+        if not texts:
+            return []
+        try:
+            from ..agent.routing import _probe_embedder
+
+            vectors = _probe_embedder().embed(texts)
+        except Exception:  # noqa: BLE001 - the document's cosine still stands
+            logger.warning("retrieval: could not embed named rows", exc_info=True)
+            return [0.0] * len(texts)
+        qn = sum(x * x for x in q_vec) ** 0.5
+        out = []
+        for v in vectors:
+            vn = sum(x * x for x in v) ** 0.5
+            out.append(sum(a * b for a, b in zip(q_vec, v)) / (qn * vn) if qn and vn else 0.0)
+        return out
 
     @staticmethod
     def _rrf_fuse(

@@ -1123,14 +1123,40 @@ def test_in_slack_a_chart_ask_is_answered_in_chart_mode(monkeypatch):
 
 
 def test_a_count_ask_is_carried_for_the_chart_button(monkeypatch):
+    """No chart fits the count: Ask answers it, and the button is offered."""
     from app.insights.resolve import AskIntent
 
     _stub(monkeypatch, connected={"linear", "notion"}, scores={"notion": 0.8})
     monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
     monkeypatch.setattr("app.insights.resolve.classify_route",
                         lambda q, **k: AskIntent("qa", chart_ask="count"))
+    monkeypatch.setattr(routing, "_chart_mode_route", lambda *a, **k: routing.RoutingDecision(
+        INSIGHTS_KEY, "chart-refuse", chart_refusal="no"))
     decision = routing.choose_agent("how many issues did we close?", ORG)
     assert (decision.agent_key, decision.chart_ask) == ("notion", "count")
+
+
+@pytest.mark.parametrize("filters,counted", [
+    ((("c6", "Rohan Mehta"),), True),
+    # Not narrowed to anything typed: a broader question ("leads by rohan"
+    # drew every lead), so Ask answers instead of a chart that reads as one.
+    ((), False),
+])
+def test_a_count_ask_is_counted_only_when_the_chart_is_narrowed(monkeypatch, filters, counted):
+    """"How many leads did Rohan Mehta generate in August?": the rows are
+    never embedded, so the count is SQL over them, in Ask as in Slack."""
+    from app.insights.resolve import AskIntent, ChartSpec, TABLE_METRIC
+
+    spec = ChartSpec(metric=TABLE_METRIC, group_by="c1", period="month", chart="bar",
+                     measure="count", table_id="t", filters=filters)
+    _stub(monkeypatch, connected={"google", "notion"}, scores={"notion": 0.8})
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="count"))
+    monkeypatch.setattr(routing, "_chart_mode_route", lambda *a, **k: routing.RoutingDecision(
+        INSIGHTS_KEY, "chart", chart_spec=spec))
+    decision = routing.choose_agent("how many leads did Rohan Mehta generate in August?", ORG)
+    assert (decision.reason == "count-chart") is counted
 
 
 # --------------------------------------------------------------------------
