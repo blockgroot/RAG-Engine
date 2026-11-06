@@ -162,6 +162,8 @@ def source_version() -> str | None:
 def update_status(settings: UpdateSettings | None = None) -> UpdateStatus:
     settings = settings or UpdateSettings.from_env()
     current = settings.current_version or source_version()
+    if not current and settings.build_commit:
+        current = f"main@{settings.build_commit[:7]}"
     selfhosted = settings.deployment == "selfhosted"
     if not settings.check_enabled or not current or not VERSION_RE.match(current):
         return UpdateStatus(settings.deployment, current, [], None, False, None)

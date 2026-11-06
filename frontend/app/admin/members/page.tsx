@@ -7,6 +7,9 @@ import { spaceStyle } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
 import { api, MemberRecord } from "@/lib/api";
 
+
+/** Faces shown before "+N": the card keeps one row however big the company gets. */
+const FACES = 4;
 export default function MembersPage() {
   const { me, loading } = useMe({ requireAdmin: true });
   const [members, setMembers] = useState<MemberRecord[]>([]);
@@ -152,11 +155,12 @@ export default function MembersPage() {
         <div className="people-layout">
           <section className="people-invite" aria-labelledby="invite-title">
             <div className="team-faces" aria-hidden>
-              {members.slice(0, 7).map((m, i) => (
+              {members.slice(0, FACES).map((m, i) => (
                 <i key={m.id} style={{ ...spaceStyle(m.email), ["--i" as string]: i }}>
                   {(m.email || "?").charAt(0).toUpperCase()}
                 </i>
               ))}
+              {members.length > FACES && <i className="team-faces-more">+{members.length - FACES}</i>}
               <i className="team-faces-add">+</i>
             </div>
             <div className="team-split" aria-hidden>

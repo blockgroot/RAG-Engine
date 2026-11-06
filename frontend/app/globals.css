@@ -11100,3 +11100,14 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 @media (max-width: 640px) { .ask-starters, .ask-starters.is-deep { grid-template-columns: 1fr; } }
+
+/* ===== Rail account: a round avatar with a still ring ======================
+   The ring used to spin a square behind a rounded square, which showed as
+   tilted tiles behind the letter and crowded the name. */
+.app-rail .rail-avatar { width: 2.3rem; height: 2.3rem; border-radius: 999px; box-shadow: 0 0 0 2px #0f2a26, 0 0 0 3.5px rgba(94,234,212,0.55); }
+.app-rail .rail-avatar::before { content: none; }
+.app-rail .rail-user-copy strong, .app-rail .user-name-row > :first-child { color: #fff; }
+
+/* ===== People: one row of faces, then "+N" ================================ */
+.team-faces { flex-wrap: nowrap; }
+.team-faces i.team-faces-more { color: #0f766e; background: #e6f4ef; font-size: 0.85rem; animation: none; }

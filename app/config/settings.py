@@ -1944,6 +1944,9 @@ class UpdateSettings:
       Else ``HANDBOOK_IMAGE_VERSION``, which the release build writes into the
       image, so a blank ``.env`` line still leaves the version known. Neither
       means no version is known and nothing is checked.
+    - ``build_commit``  ``RENDER_GIT_COMMIT``: Cloud deploys main straight from
+      git (no tag, no ``.git`` in the image), so the commit is all it knows.
+      Shown, never checked against the feed: a commit is not a release.
     - ``check_enabled``  off for a server that must not contact anyone.
     - ``updater_url`` / ``updater_token``  the self-hosted updater container.
       Both or neither: without them the page shows the upgrade command.
@@ -1951,6 +1954,7 @@ class UpdateSettings:
 
     deployment: str = "cloud"
     current_version: str | None = None
+    build_commit: str | None = None
     feed_url: str = DEFAULT_UPDATE_FEED_URL
     check_enabled: bool = True
     updater_url: str | None = None
@@ -1967,6 +1971,7 @@ class UpdateSettings:
             current_version=(
                 os.getenv("HANDBOOK_VERSION") or os.getenv("HANDBOOK_IMAGE_VERSION") or ""
             ).strip().lstrip("v") or None,
+            build_commit=(os.getenv("RENDER_GIT_COMMIT") or "").strip() or None,
             feed_url=os.getenv("UPDATE_FEED_URL") or DEFAULT_UPDATE_FEED_URL,
             check_enabled=env_bool("UPDATE_CHECK_ENABLED", True),
             updater_url=os.getenv("UPDATER_URL") or None,

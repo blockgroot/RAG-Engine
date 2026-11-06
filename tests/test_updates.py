@@ -157,3 +157,16 @@ def test_a_source_checkout_shows_its_git_version_but_is_not_checked(monkeypatch)
     monkeypatch.setattr(check, "fetch_releases", lambda s: (_ for _ in ()).throw(AssertionError("fetched")))
     status = check.update_status(UpdateSettings(current_version=None))
     assert status.current == "0.2.1-66-g732955e" and status.newer == []
+
+
+def test_a_main_build_with_no_version_shows_its_commit(monkeypatch):
+    """Cloud built from main has no tag and no git: the deploy's commit is
+    shown, and never compared with the release feed."""
+    from app.config.settings import UpdateSettings
+    from app.updates import check
+
+    monkeypatch.setattr(check, "source_version", lambda: None)
+    monkeypatch.setattr(check, "fetch_releases", lambda s: (_ for _ in ()).throw(AssertionError("fetched")))
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "0b1c2d3e4f5a6b7c")
+    status = check.update_status(UpdateSettings.from_env())
+    assert status.current == "main@0b1c2d3" and status.newer == []

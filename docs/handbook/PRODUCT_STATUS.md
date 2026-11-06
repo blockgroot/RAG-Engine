@@ -277,7 +277,8 @@ scored by the safety model; the answer fact-checker is off (§11).
 - **Updates shows the version** (6 Nov 2026): `HANDBOOK_VERSION`, else the version the release
   build writes into the image (`HANDBOOK_IMAGE_VERSION`), else, for a copy run from the source,
   `git describe` ("0.2.1, 66 changes after it"), which is shown but never checked against the
-  release feed.
+  release feed. Cloud deployed straight from main has none of these, so it shows "Latest build
+  from main" and the deploy's commit (`RENDER_GIT_COMMIT`), also never checked.
 
 ## 10. Production Status
 

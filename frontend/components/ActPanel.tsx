@@ -205,7 +205,10 @@ export function ActPanel() {
               </div>
               <div className="account-actions-list">
                 {recent.map((r) =>
-                  r.status === "proposed" || r.status === "executing" ? (
+                  // A draft past its expiry can no longer be approved, so it is
+                  // history, not a live card in the middle of the list.
+                  r.status === "executing" ||
+                  (r.status === "proposed" && Date.parse(r.expires_at) > Date.now()) ? (
                     <ActionCard
                       key={r.id}
                       card={r}
@@ -213,7 +216,10 @@ export function ActPanel() {
                       onNext={(next) => setRecent((all) => [...next.actions, ...all])}
                     />
                   ) : (
-                    <ActionHistoryRow key={r.id} action={r} />
+                    <ActionHistoryRow
+                      key={r.id}
+                      action={r.status === "proposed" ? { ...r, status: "expired" } : r}
+                    />
                   ),
                 )}
               </div>

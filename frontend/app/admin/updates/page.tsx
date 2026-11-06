@@ -128,7 +128,9 @@ export default function AdminUpdatesPage() {
   const selfhosted = info?.deployment === "selfhosted";
   // "0.2.1-66-g732955e": a copy run from the source, 66 changes after 0.2.1.
   const dev = /^(\d+\.\d+\.\d+)-(\d+)-g[0-9a-f]+$/.exec(info?.current ?? "");
-  const shown = dev ? dev[1] : info?.current ?? null;
+  // "main@0b1c2d3": Cloud built straight from main, known only by its commit.
+  const build = /^main@([0-9a-f]{7,})$/.exec(info?.current ?? "");
+  const shown = dev ? dev[1] : build ? null : info?.current ?? null;
   const latest = info?.newer[0] ?? null;
   const running = progress?.state === "running";
 
@@ -179,13 +181,16 @@ export default function AdminUpdatesPage() {
         {info && (
           <section className="version-card" aria-label="This copy's version">
             <div className="version-badge" aria-hidden>
-              <span>v</span>
-              {shown ?? "?"}
+              {build ? "main" : <><span>v</span>{shown ?? "?"}</>}
             </div>
             <div className="version-copy">
               <p className="version-label">This copy of Handbook</p>
-              <h2>{shown ? `Handbook ${shown}` : "Version not set"}</h2>
-              {dev ? (
+              <h2>{build ? "Latest build from main" : shown ? `Handbook ${shown}` : "Version not set"}</h2>
+              {build ? (
+                <p className="version-status is-ok">
+                  Commit {build[1]} · kept current by the Handbook team as changes land
+                </p>
+              ) : dev ? (
                 <p className="version-status is-dev">
                   {dev[2]} change{dev[2] === "1" ? "" : "s"} after {dev[1]}, not yet released
                 </p>
