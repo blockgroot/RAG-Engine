@@ -2,7 +2,7 @@
 the tag half — date-range shipped first).
 
 ``tags`` is a hard filter on ``documents.tags``, threaded through
-``HybridRetriever`` and ``QueryAnswerCache`` exactly like the existing
+``HybridRetriever`` exactly like the existing
 ``date_range``/``workspace_id``/``source_provider`` filters — a ``WHERE``
 term (overlap match), never a re-ranking signal, no-op when ``None``. This
 module deliberately never decides WHERE a tag comes from (admin-set field,
@@ -17,7 +17,6 @@ WHERE-clause shape.
 
 from __future__ import annotations
 
-from app.rag.query_cache import _question_hash
 from app.rag.retrieval import HybridRetriever
 from app.vectorstore.base import RetrievedChunk, VectorStore
 
@@ -86,26 +85,3 @@ def test_retrieve_with_no_tags_is_unaffected():
     assert store.query_tags == [None]
     assert store.keyword_tags == [None]
 
-
-def test_question_hash_differs_by_tags():
-    plain = _question_hash("what is the leave policy")
-    eng = _question_hash("what is the leave policy", tags=["engineering"])
-    hr = _question_hash("what is the leave policy", tags=["hr"])
-
-    assert plain != eng
-    assert eng != hr
-
-
-def test_question_hash_is_order_independent_for_tags():
-    """tags is an OR-match filter — [a, b] and [b, a] mean the same query,
-    so they must share a cache slot rather than doubling storage."""
-    a = _question_hash("q", tags=["engineering", "hr"])
-    b = _question_hash("q", tags=["hr", "engineering"])
-    assert a == b
-
-
-def test_question_hash_unchanged_when_tags_is_none_or_empty():
-    """Every pre-existing cache key must stay byte-identical."""
-    base = _question_hash("q")
-    assert base == _question_hash("q", tags=None)
-    assert base == _question_hash("q", tags=[])

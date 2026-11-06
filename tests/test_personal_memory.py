@@ -17,7 +17,7 @@ import pytest
 
 from app.config.settings import PersonalMemorySettings, RagSettings
 from app.memory import personal
-from app.rag.pipeline import RagPipeline, _is_cacheable
+from app.rag.pipeline import RagPipeline
 from app.rag.prompts import build_grounded_prompt
 
 from .conftest import requires_db
@@ -122,7 +122,7 @@ def test_the_pipeline_uses_facts_but_never_audits_or_caches_them(monkeypatch):
     grounded = [p for p in llm.prompts if "<<<UNTRUSTED_DOCUMENT_CONTENT>>>" in p][-1]
     assert "Works in the Bangalore office" in grounded
     assert audited and not any("Bangalore office" in c for c in audited[0])
-    assert result.personalized and _is_cacheable(result) is False
+    assert result.personalized
 
 
 def test_without_facts_nothing_changes():

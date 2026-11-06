@@ -62,9 +62,7 @@ _RESOLVED: ContextVar[str | None] = ContextVar("llm_resolved_model", default=Non
 #: A SEPARATE var rather than making ``_SELECTED`` an ``(org_id, model_id)``
 #: tuple, because ``selected_model()`` is read outside this module and both
 #: readers need it to stay a plain string: ``api/chat.py`` puts it in the
-#: ``done`` SSE event (a tuple would ship the org_id to the browser) and
-#: ``rag/query_cache.py`` folds it into the answer-cache key (a tuple would
-#: silently reshape every key, catalogued models included).
+#: ``done`` SSE event (a tuple would ship the org_id to the browser).
 _ORG: ContextVar[str | None] = ContextVar("llm_selected_org", default=None)
 
 # Routing preferences sent on EVERY OpenRouter request.

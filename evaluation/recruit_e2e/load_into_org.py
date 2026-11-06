@@ -25,7 +25,6 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from app.db import close_pool  # noqa: E402
 from app.ingestion.pipeline import ingest_source  # noqa: E402
-from app.rag.query_cache import delete_org_entries  # noqa: E402
 from app.sources.base import DocAccess, SourceDocument, SourceRef  # noqa: E402
 from app.sources.google_drive import _workbook_document  # noqa: E402
 
@@ -61,7 +60,6 @@ if __name__ == "__main__":
     try:
         result = ingest_source(LocalWorkbook(viewer), org, provider="google", incremental=False)
         print(result, f"{time.perf_counter() - started:.1f}s")
-        delete_org_entries(org)
         _record_insight_facts(org, "google", None)
         _build_graph(org, "google", None, result)
     finally:

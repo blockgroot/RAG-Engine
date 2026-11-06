@@ -65,10 +65,9 @@ GitHub; employees get answers from *their* data.
   company-wide Slack connection; with only spaces' connections, only those spaces'
   members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it.
-- A conversation is personal (`conversations.user_id`). `query_answer_cache` stays
-  keyed on the scope and the model, not the asker. With `REDIS_URL` it is in Redis
-  (`qa:<org>:<generation>:<hash>`; a sync raises the org's generation), else Postgres. Do not store an answer when any
-  hit was non-public or the reply is an access notice.
+- A conversation is personal (`conversations.user_id`). There is no answer cache:
+  every question is answered fresh. A cache keyed on the scope would serve one person's
+  answer to the next asker, so any cache must be re-justified against that.
 - Notion has no per-page permission API. Say so on the Sources card. A half-enforced
   guarantee that reads as whole is worse than none.
 
@@ -122,7 +121,7 @@ cleared the gate ("rows-named", run beside the probe; retried like a probe pick)
 sheet embeds only its columns, so a person's name lost to Slack by 0.03. One word of a
 longer title (numbers aside) does not NAME a page ("by employee" is not "Employee
 Referral Policy"; `resolve.title_match`). Adjacent markers citing one document
-collapse to one. A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
+collapse to one. The bot's own Slack
 traffic is not indexed. Query-norm max edit distance is 1, and the normalized
 string is never the web-search query.
 
@@ -514,6 +513,8 @@ MCP host are not limited. Chat answers being written at once are places
 (`take_place`, leased so a dead server's free themselves): a person's own cap is
 refused at once, the shared cap waits. Every refusal is logged with the limit's
 name, never the question or an IP. A limiter fault lets the request through.
+Redis (Valkey, `maxmemory-policy volatile-lru`) holds rate limits only, and every key
+we write has a TTL.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

@@ -103,8 +103,7 @@ class AgentResponse:
     #: shared with you", not "nothing matched". Carried so callers can tell the
     #: two apart WITHOUT matching on the answer text: `/chat` must not log a
     #: withheld document as a documentation gap (the document exists and is
-    #: written -- the company is not missing it), and the answer cache must not
-    #: serve one person's access situation to the next asker.
+    #: written -- the company is not missing it).
     access_restricted: bool = False
     #: The answer was spread over several documents (a wide read): normal Ask
     #: offers Deep analysis, which reads more of them.

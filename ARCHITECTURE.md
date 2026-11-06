@@ -121,7 +121,7 @@ There are **two end-to-end flows**: the **write path** (ingestion) and the **rea
 4. **For each changed document:** the adapter renders plain text; text is chunked at **256 tokens / 40 overlap** with a **4,000-character** ceiling; chunks are embedded (1024-dim) and stored with `org_id` and, when set, `workspace_id`. A short context line may be prepended at ingest. Empty documents are skipped.
 5. **Access is stored on the row**, not inferred later: `doc_is_public` and `doc_viewers`. An ACL-capable provider that cannot read sharing indexes the document for the connected account only. An already-indexed document whose sharing goes unreadable keeps its last viewer list.
 6. **Document tables, inline.** Each changed document goes through the dataset adapters (`ingestion.pipeline._store_tables`): the table adapter saves tables the document already has (no AI), and the text adapter has the background model list the figures written in its sentences, which code turns into tables (see §6.3). Rows go to `doc_tables`/`doc_table_rows` with the document's access. `documents.tables_checked_at` marks what was read; each sync backfills a bounded batch of unchecked documents.
-7. **After a successful job:** activity facts for charts, knowledge-graph capture, and a clear of that org's answer cache. GitHub does not ingest; its charts come from a separate facts sync, refreshed when a chart asks.
+7. **After a successful job:** activity facts for charts and knowledge-graph capture. GitHub does not ingest; its charts come from a separate facts sync, refreshed when a chart asks.
 
 Contextual retrieval spends LLM calls, so background work leaves headroom for live questions (`app/llm/pacing.py`). `INGEST_CONTEXTUAL_ENABLED=false` stores bare chunks.
 
@@ -230,7 +230,7 @@ The full column list lives in `schema.sql` and in CLAUDE.md §6. The groups that
 | Sign-in | `magic_link_tokens`, `oauth_states`, `email_change_requests`, `org_signup_requests` |
 | Connectors | `oauth_connections` (encrypted tokens, `source_config`), `drive_watch_channels`, `github_install_pending` |
 | Corpus | `documents` (`doc_is_public`, `doc_viewers`, `source_meta`), `chunks` (`halfvec(1024)`, generated `content_tsv`, injection score) |
-| Ask | `conversations` (personal: `user_id`), `conversation_turns`, `conversation_last_retrieval`, `conversation_attachments` (metadata only), `query_answer_cache`, `user_memory` |
+| Ask | `conversations` (personal: `user_id`), `conversation_turns`, `conversation_last_retrieval`, `conversation_attachments` (metadata only), `user_memory` |
 | Charts & graph | `activity_facts`, `insight_pins`, `doc_tables`, `doc_table_rows`, `doc_text_queue` (read marker), `kg_entities`, `kg_edges`, `kg_evidence`, `person_identities` |
 | Ops | `ingestion_jobs`, `schedulers`, `scheduler_reports`, `feedback_and_gaps`, `live_tool_calls` (rate limits are in Redis, `app/ratelimit/`) |
 

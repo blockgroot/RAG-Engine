@@ -25,9 +25,11 @@ services:
       timeout: 5s
       retries: 10
 
-  # Rate-limit buckets (app/ratelimit/). REDIS_URL=redis://localhost:6379/0
+  # Rate limits (app/ratelimit/). REDIS_URL=redis://localhost:6379/0
+  # Valkey, as in production and the self-hosted install.
   redis:
-    image: redis:7.4-alpine
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
     container_name: rag-redis
     ports:
       - "6379:6379"

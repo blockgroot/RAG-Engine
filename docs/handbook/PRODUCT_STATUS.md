@@ -257,6 +257,11 @@ scored by the safety model; the answer fact-checker is off (§11).
 - **Admins:** Sources (connect, choose folders and channels, who-can-see notes), feedback and
   gaps (Feedback in the sidebar: unanswered questions, refused charts, figure reading), the
   needs-attention bell, model settings, people.
+- **Public site** (6 Nov 2026, Live once deployed; checked locally in a browser): the home page
+  shows the product as it is (mode figures, admin controls, a section on each company's own
+  Google and Slack app), and a **Deployment** page (`/deployment`, in the site nav) explains
+  Handbook Cloud and Self-Hosted: setup, what runs on the server, the install, and how a new
+  version reaches a self-hosted install. Public pages name no competitor, company or AI model.
 
 ## 10. Production Status
 

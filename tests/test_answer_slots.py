@@ -87,6 +87,19 @@ def test_a_person_over_their_own_cap_is_told_at_once():
     assert someone_else == [TOKEN]
 
 
+def test_a_waiter_is_logged_once_not_on_every_retry(caplog):
+    async def scenario():
+        holder = _slot(_settings(1), "u1")
+        await holder.__anext__()
+        return await _collect(_slot(_settings(1, wait=1), "u2"))  # ~4 retries
+
+    with caplog.at_level("WARNING", logger="app.security.rate_limit"):
+        events = asyncio.run(scenario())
+    assert events[-1].startswith("event: error")
+    refused = [r for r in caplog.records if "rate limit refused" in r.getMessage()]
+    assert len(refused) == 1
+
+
 def test_leaving_mid_answer_gives_both_places_back():
     settings = _settings(1, per_person=1)
 

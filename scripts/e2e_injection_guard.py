@@ -33,10 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 
 load_dotenv()
-os.environ.update(GUARD_MODE="enforce", GUARD_BACKEND="safeguard", GUARD_ANSWER_CHECK="true",
-                  # Off, or a later case is answered from an earlier case's cached
-                  # answer and never reaches the model it is testing (it did).
-                  QUERY_CACHE_ENABLED="false")
+os.environ.update(GUARD_MODE="enforce", GUARD_BACKEND="safeguard", GUARD_ANSWER_CHECK="true")
 
 from app.api.slack_events import _to_slack_mrkdwn  # noqa: E402
 from app.config.settings import RecoverySettings  # noqa: E402

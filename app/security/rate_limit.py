@@ -137,9 +137,15 @@ def report_store(settings: RateLimitSettings | None = None) -> str:
     return line
 
 
-def take_place(key: str, limit: int, settings: RateLimitSettings) -> str | None:
+def take_place(
+    key: str, limit: int, settings: RateLimitSettings, *, log_refusal: bool = True
+) -> str | None:
     """Hold one of ``limit`` places. None: all are held. "": not tracked (the
-    cap is off, or the store failed and the request goes ahead)."""
+    cap is off, or the store failed and the request goes ahead).
+
+    A waiter retries every quarter second; only its first refusal is logged
+    (``log_refusal=False`` on the retries), or one person waiting 30 s wrote
+    120 lines and the refusal counts no longer counted people."""
     if limit <= 0:
         return ""
     try:
@@ -147,7 +153,7 @@ def take_place(key: str, limit: int, settings: RateLimitSettings) -> str | None:
     except RateLimiterError as exc:
         logger.error("Rate limiter unavailable, answer let through: %s", exc.cause or exc)
         return ""
-    if token is None:
+    if token is None and log_refusal:
         logger.warning("rate limit refused: limit=%s", _describe(key))
     return token
 

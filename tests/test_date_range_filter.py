@@ -1,13 +1,12 @@
 """Hard metadata filter: date-range on retrieval (production-RAG gap #3).
 
 A ``DateRange`` (``app/vectorstore/base.py``) is a hard filter on
-``documents.source_last_modified``, threaded through ``HybridRetriever`` and
-``QueryAnswerCache`` exactly like the existing ``workspace_id``/``source_provider``
+``documents.source_last_modified``, threaded through ``HybridRetriever``
+exactly like the existing ``workspace_id``/``source_provider``
 filters — a ``WHERE`` term, never a re-ranking signal, no-op when ``None``.
 
 These are plumbing tests (no live Postgres): they prove the filter actually
-reaches the store call and that the cache never conflates two different
-ranges. The SQL itself (``pgvector_store.py``) is exercised indirectly by the
+reaches the store call. The SQL itself (``pgvector_store.py``) is exercised indirectly by the
 existing ``requires_db`` retrieval tests, which all still pass unfiltered.
 """
 
@@ -15,7 +14,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from app.rag.query_cache import _question_hash
 from app.rag.retrieval import HybridRetriever
 from app.vectorstore.base import DateRange, RetrievedChunk, VectorStore
 
@@ -85,25 +83,3 @@ def test_retrieve_with_no_date_range_is_unaffected():
     assert store.query_date_ranges == [None]
     assert store.keyword_date_ranges == [None]
 
-
-def test_question_hash_differs_by_date_range():
-    """A date-filtered question must never share a cache slot with an
-    unfiltered (or differently-filtered) one — same reasoning as workspace_id."""
-    plain = _question_hash("what is the leave policy")
-    ranged_a = _question_hash(
-        "what is the leave policy",
-        date_range=DateRange(after=datetime(2026, 1, 1, tzinfo=timezone.utc)),
-    )
-    ranged_b = _question_hash(
-        "what is the leave policy",
-        date_range=DateRange(after=datetime(2025, 1, 1, tzinfo=timezone.utc)),
-    )
-
-    assert plain != ranged_a
-    assert ranged_a != ranged_b
-
-
-def test_question_hash_unchanged_when_date_range_is_none():
-    """Every pre-existing cache key must stay byte-identical."""
-    assert _question_hash("q") == _question_hash("q", date_range=None)
-    assert _question_hash("q") == _question_hash("q", date_range=DateRange())

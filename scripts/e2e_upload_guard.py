@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 
 load_dotenv()
-os.environ.update(GUARD_MODE="enforce", GUARD_BACKEND="safeguard", QUERY_CACHE_ENABLED="false")
+os.environ.update(GUARD_MODE="enforce", GUARD_BACKEND="safeguard")
 
 import docx  # noqa: E402
 from docx.shared import Pt, RGBColor  # noqa: E402

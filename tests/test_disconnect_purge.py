@@ -38,28 +38,13 @@ def test_github_has_nothing_to_purge(store):
     assert store.deleted == []
 
 
-def test_disconnect_purges_and_clears_the_answer_cache(monkeypatch, store):
-    cleared: list[str] = []
+def test_disconnect_purges_the_documents(monkeypatch, store):
     monkeypatch.setattr(connection_ops, "delete_connection", lambda *a, **k: "linear")
-    monkeypatch.setattr(connection_ops, "delete_org_entries", lambda org: cleared.append(org))
 
     result = connection_ops.disconnect_connection("org", "conn")
 
     assert result == {"provider": "linear", "documents_purged": 7}
     assert store.deleted == [("org", "linear", None)]
-    # Otherwise a cached answer built from the disconnected source is served
-    # for up to the cache TTL.
-    assert cleared == ["org"]
-
-
-def test_a_cache_failure_never_fails_the_disconnect(monkeypatch, store):
-    monkeypatch.setattr(connection_ops, "delete_connection", lambda *a, **k: "notion")
-
-    def boom(_org):
-        raise RuntimeError("cache down")
-
-    monkeypatch.setattr(connection_ops, "delete_org_entries", boom)
-    assert connection_ops.disconnect_connection("org", "conn")["provider"] == "notion"
 
 
 def test_indexed_providers_matches_the_adapters_that_exist():

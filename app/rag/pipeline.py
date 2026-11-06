@@ -90,7 +90,6 @@ from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
 from . import progress
 from .deep import deep_read_on, extra_effort_on, reset_deep_read, use_deep_read  # noqa: F401 -- re-exported
-from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .query_normalize import CorpusSpellNormalizer
@@ -166,43 +165,6 @@ def _read_order(hit) -> tuple[float, str, int]:
         stamp = 0.0
     return (stamp, hit.document_id or "", hit.chunk_index or 0)
 
-def _is_cacheable(result: "RagResult") -> bool:
-    """May this answer be served to the NEXT person who asks the same thing?
-
-    `query_answer_cache` is keyed on the scope, never on the asker — a
-    deliberate choice, because per-user keys would only cost hit rate while the
-    scope check had already passed. Document-level access filtering breaks that
-    premise for exactly two kinds of answer, so those two are simply not
-    written rather than the whole cache being re-keyed (which would cost every
-    scope-wide question its hit for the sake of a few restricted ones):
-
-    * an answer built from a document that is NOT readable by the whole scope —
-      it would be served verbatim to a member who cannot open that document;
-    * a "these documents are not shared with you" notice, which is a statement
-      about ONE person's access and is wrong for everybody else.
-
-    Web answers are never written either. Their sources are pages anyone can
-    publish, `sources=[]` made the check above vacuously true, and a cached
-    one is served to the whole scope for the TTL: one poisoned search result
-    would have become everybody's answer.
-    """
-    if result.source == SOURCE_WEB:
-        return False
-    if not all(getattr(hit, "doc_is_public", True) for hit in result.sources):
-        return False
-    # Graph facts are walked AS the asker (who wrote what, what links where),
-    # and a connected answer reads other tools the cache key does not name --
-    # either would be served verbatim to the next person on the same key.
-    if getattr(result, "graph_shaped", False):
-        return False
-    # A live read is one moment, read for one asker (plan D13); a withheld
-    # object is about that moment too.
-    if getattr(result, "live_sources", None) or getattr(result, "live_withheld", False):
-        return False
-    if getattr(result, "personalized", False):
-        return False
-    return not getattr(result, "access_restricted", False)
-
 
 #: Heads the graph-facts context block. Named as what it is, so the model can
 #: say "Sana wrote the Leave Policy" and the reader can see where that came from.
@@ -224,7 +186,7 @@ def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | No
     Read from the plan the chat edge built -- never a second walk. A normal
     answer gets only facts inside its own tool; a connected one gets the
     tools it was widened to (``GraphPlan.facts``). ``graph_shaped`` is True
-    whenever the plan changed what this answer could see, so it is not cached.
+    whenever the plan changed what this answer could see.
     """
     try:
         from ..graph.plan import current_plan
@@ -292,18 +254,6 @@ def _deep_spans(
             radius += 1
         spans[first.document_id] = sorted(picked)
     return spans
-
-
-def _cross_plan_active() -> bool:
-    """A connected answer is running: its answer must not come FROM the cache
-    either, since the cache key names one tool and this answer reads several."""
-    try:
-        from ..graph.plan import current_plan
-
-        plan = current_plan()
-        return plan is not None and plan.cross is not None
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _connected_tools(org_id: str | None) -> frozenset[str]:
@@ -432,7 +382,6 @@ class RagResult:
     question_tone: str | None = None
     question_decomposed: bool = False
     sub_questions: list[str] = field(default_factory=list)
-    cache_hit: bool = False
     budget_exhausted: bool = False
     audit_used: bool = False
     audit_downgraded: bool = False
@@ -442,12 +391,10 @@ class RagResult:
     # answer TEXT is the only other place it appears, and matching on text is
     # how a message becomes load-bearing: the API needs it to keep the
     # documentation-gap log honest (a withheld document is not a gap in the
-    # company's documentation) and the cache needs it to not serve one
-    # person's access situation to everyone else.
+    # company's documentation).
     access_restricted: bool = False
     # True when this request's knowledge-graph plan shaped the answer (facts
-    # in the context, or a connected answer reading other tools). Keeps it out
-    # of the scope-wide cache; see `_is_cacheable`.
+    # in the context, or a connected answer reading other tools).
     graph_shaped: bool = False
     # Second Brain live tools (git history: docs/plans/2026-09-29-live-connector-access.md):
     # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
@@ -455,10 +402,10 @@ class RagResult:
     # True when this refusal is "the matching item is no longer available":
     # a live read said the object behind the answer is gone or no longer
     # readable. Like ``access_restricted`` it rides the result so nothing
-    # matches on text: not cached, and not logged as a documentation gap.
+    # matches on text: not logged as a documentation gap.
     live_withheld: bool = False
     # True when personal memory was in the prompt: the answer was interpreted
-    # for ONE person, so it is never served to the next asker on the same key.
+    # for ONE person.
     personalized: bool = False
     # Inline citations (`rag/cite.py`): ``[{n, document_id, title, provider,
     # url}]`` for every valid ``[n]`` marker left in ``answer``.
@@ -552,7 +499,6 @@ class RagPipeline:
         decompose_settings: DecomposeSettings | None = None,
         llm_aux: LLMProvider | None = None,
         budget_settings: RequestBudgetSettings | None = None,
-        query_cache: QueryAnswerCache | None = None,
         query_norm: CorpusSpellNormalizer | None = None,
         query_norm_settings: QueryNormSettings | None = None,
         prompt_profile: PromptProfile | None = None,
@@ -574,7 +520,6 @@ class RagPipeline:
         self._tone_settings = tone_settings or ToneSettings.from_env()
         self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
         self._budget_settings = budget_settings or RequestBudgetSettings.from_env()
-        self._query_cache = query_cache if query_cache is not None else QueryAnswerCache()
         self._query_norm = query_norm or CorpusSpellNormalizer(
             query_norm_settings or QueryNormSettings.from_env()
         )
@@ -723,30 +668,6 @@ class RagPipeline:
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
 
-        if (
-            conversation_id is None
-            and not _cross_plan_active()
-            and current_live_request() is None
-            and not current_asker_facts()
-            # The cache is keyed on the scope and the model, not the depth.
-            and not deep_read_on()
-        ):
-            cached = self._query_cache.get(
-                org_id,
-                resolved,
-                workspace_id=workspace_id,
-                source_provider=self._source_provider,
-                date_range=date_range,
-                tags=tags,
-            )
-            if cached is not None:
-                out = replace(
-                    cached,
-                    resolved_question=resolved if resolved != question else None,
-                )
-                log_query_signal(out, org_id=org_id, conversation_id=conversation_id)
-                return out
-
         budget = RequestBudget.from_settings(self._budget_settings)
         result = self._run(
             resolved,
@@ -760,18 +681,6 @@ class RagPipeline:
             attachments=attachments,
             viewer=viewer,
         )
-
-        if (conversation_id is None and not result.cache_hit and not deep_read_on()
-                and _is_cacheable(result)):
-            self._query_cache.put(
-                org_id,
-                resolved,
-                result,
-                workspace_id=workspace_id,
-                source_provider=self._source_provider,
-                date_range=date_range,
-                tags=tags,
-            )
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -1998,7 +1907,7 @@ class RagPipeline:
         mode, text = _parse_tagged_mode(raw)
         if current_live_request() is not None:
             # Live tools: a handle the model echoed ("per [L1]") is
-            # machinery, never text for the reader, the cache or a turn (D4a).
+            # machinery, never text for the reader or a turn (D4a).
             text = strip_handles(text)
 
         tone_retry_used = False

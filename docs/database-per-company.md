@@ -83,7 +83,7 @@ The web app, the API code and the user experience are unchanged. Only where data
 - `drive_watch_channels`;
 - `activity_facts`, `doc_tables`, `doc_table_rows`;
 - `kg_*`, `actions`, `act_runs`, `mcp_servers`;
-- `user_memory`, `feedback_and_gaps`, `gap_topics`, `query_answer_cache`;
+- `user_memory`, `feedback_and_gaps`, `gap_topics`;
 - and the rest.
 
 Each company database keeps its own `schema_marks`.

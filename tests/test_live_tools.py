@@ -28,7 +28,7 @@ from app.livetools import base, gateway, linear
 from app.livetools.base import LiveRead, LiveRefresh, ProviderRead
 from app.livetools.context import LiveRequest, reset_live_request, use_live_request
 from app.rag import pipeline as rp
-from app.rag.pipeline import RagPipeline, RagResult, _is_cacheable, _without_withheld
+from app.rag.pipeline import RagPipeline, RagResult, _without_withheld
 from app.rag.retrieval import HybridRetriever, gate_document
 from app.config.settings import RetrievalSettings
 from app.vectorstore.base import RetrievedChunk
@@ -401,7 +401,6 @@ def test_the_live_block_replaces_the_synced_copy(monkeypatch, live_request):
     assert result.live_sources == [{"provider": "linear",
                                     "fetched_at": "2026-09-29T12:04:00+00:00",
                                     "document_id": "doc-linear"}]
-    assert _is_cacheable(result) is False
 
 
 def test_the_audit_is_handed_the_live_block(monkeypatch, live_request):
@@ -435,7 +434,6 @@ def test_withholding_the_gate_document_refuses_with_the_notice(monkeypatch, live
     assert "Linear item that matched this question is no longer available" in result.answer
     assert "SYV-5" not in result.answer  # the connector, never the item
     assert _grounded_prompt(llm) is None  # no generation from a stale copy
-    assert _is_cacheable(result) is False
 
 
 def test_a_live_withheld_refusal_never_tries_the_web(monkeypatch, live_request):

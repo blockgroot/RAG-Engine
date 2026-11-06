@@ -1058,7 +1058,8 @@ async def _in_a_slot(
                     return
                 await asyncio.sleep(_PLACE_POLL_SECONDS)
                 shared = await asyncio.to_thread(
-                    take_place, "answers:all", settings.chat_max_concurrent, settings
+                    take_place, "answers:all", settings.chat_max_concurrent, settings,
+                    log_refusal=False,
                 )
         async for event in iterate_in_threadpool(stream):
             yield event
