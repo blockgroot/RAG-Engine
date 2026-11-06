@@ -163,10 +163,6 @@ export default function MembersPage() {
               {members.length > FACES && <i className="team-faces-more">+{members.length - FACES}</i>}
               <i className="team-faces-add">+</i>
             </div>
-            <div className="team-split" aria-hidden>
-              <span style={{ flex: Math.max(adminCount, 0.0001) }} />
-              <span style={{ flex: Math.max(memberCount, 0.0001) }} />
-            </div>
             <p className="team-split-key">
               <span><i className="is-admin" />{adminCount} admin{adminCount === 1 ? "" : "s"}</span>
               <span><i />{memberCount} member{memberCount === 1 ? "" : "s"}</span>

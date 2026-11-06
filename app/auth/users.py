@@ -91,8 +91,39 @@ def create_user(email: str, *, org_id: str | None = None, role: str = ROLE_MEMBE
 
 
 def create_admin(email: str, org_id: str) -> User:
-    """Create the first admin user for a freshly-created org (Phase 13/14 signup)."""
-    return create_user(email, org_id=org_id, role=ROLE_ADMIN)
+    """Create the first admin user for a freshly-created org (Phase 13/14 signup).
+
+    Their address's domain becomes the company's: everyone invited later must
+    share it (``assert_company_email``).
+    """
+    user = create_user(email, org_id=org_id, role=ROLE_ADMIN)
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE organizations SET email_domain = COALESCE(email_domain, %s) WHERE id = %s",
+            (email_domain(email), org_id),
+        )
+    return user
+
+
+def email_domain(email: str) -> str:
+    return email.rsplit("@", 1)[-1].strip().lower()
+
+
+def assert_company_email(email: str, org_id: str) -> None:
+    """Refuse an address outside the company's domain.
+
+    Without it an admin could invite (or a member switch to) a personal
+    address, and company content would be one sign-in away from outside.
+    Exact match: a subdomain is another domain. A company with no domain
+    recorded (none of its users was ever an admin) is not checked.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT email_domain FROM organizations WHERE id = %s", (org_id,)
+        ).fetchone()
+    domain = row[0] if row else None
+    if domain and email_domain(email) != domain:
+        raise AuthError(f"Only @{domain} addresses can join this company.")
 
 
 def invite_member(email: str, org_id: str) -> User:

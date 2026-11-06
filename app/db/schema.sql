@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS organizations (
     name       TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- The company's email domain ("syvora.com"), from its first admin's address.
+-- Invites and email changes must use it (auth/users.assert_company_email).
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_domain TEXT;
 
 -- Source documents (one policy file / page / upload). Org-scoped.
 CREATE TABLE IF NOT EXISTS documents (
@@ -957,6 +960,19 @@ CREATE TABLE IF NOT EXISTS schema_marks (
     name       TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Companies made before email_domain existed take their earliest admin's domain.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'org_email_domain_backfill') THEN
+        UPDATE organizations o SET email_domain = (
+            SELECT lower(split_part(u.email, '@', 2)) FROM users u
+             WHERE u.org_id = o.id AND u.role = 'admin'
+             ORDER BY u.created_at LIMIT 1)
+         WHERE o.email_domain IS NULL;
+        INSERT INTO schema_marks (name) VALUES ('org_email_domain_backfill');
+    END IF;
+END $$;
 
 -- Notion tables were rendered without a header separator, and inline
 -- databases ("/table" -> table view) not at all, until 2026-10, so Notion

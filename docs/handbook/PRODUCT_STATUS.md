@@ -280,6 +280,11 @@ scored by the safety model; the answer fact-checker is off (§11).
   release feed. Cloud deployed straight from main has none of these, so it shows "Latest build
   from main" and the deploy's commit (`RENDER_GIT_COMMIT`), also never checked.
 
+- **Company email domain** (6 Nov 2026): a company's domain is its first admin's
+  (`organizations.email_domain`, existing companies filled from their earliest admin). Inviting
+  someone, or changing your sign-in email, to another domain (a personal @gmail.com, or a
+  subdomain) is refused with "Only @<domain> addresses can join this company."
+
 ## 10. Production Status
 
 **Enabled and working in production (team-verified, 30 Sep – 1 Oct 2026):** Ask with grounding,

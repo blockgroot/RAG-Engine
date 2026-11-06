@@ -603,3 +603,16 @@ def test_google_changes_with_config_uses_adapter(client, admin_org, monkeypatch)
     assert body["has_changes"] is True
     assert captured["provider"] == "google"
     assert captured["config"]["folder_id"] == "1FolderIdXXXXX"
+
+
+@requires_db
+def test_invite_refuses_an_address_outside_the_company_domain(client, admin_org):
+    """The first admin's domain is the company's: a personal address is refused."""
+    _, cookies = admin_org
+    outside = client.post("/admin/members", json={"email": f"x-{uuid.uuid4().hex[:8]}@gmail.com"}, cookies=cookies)
+    assert outside.status_code == 400
+    assert "@example.com" in outside.json()["detail"]
+    sub = client.post("/admin/members", json={"email": f"x-{uuid.uuid4().hex[:8]}@eng.example.com"}, cookies=cookies)
+    assert sub.status_code == 400
+    same = client.post("/admin/members", json={"email": f"x-{uuid.uuid4().hex[:8]}@Example.com"}, cookies=cookies)
+    assert same.status_code == 200

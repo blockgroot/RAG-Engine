@@ -18,7 +18,7 @@ from ..auth.github_oauth import GitHubAppProvider
 from ..auth import email_change
 from ..auth.email import send_email_change_verification_safe
 from ..auth.oauth_state import LINK_GITHUB, consume_link_state, create_state
-from ..auth.users import get_user
+from ..auth.users import assert_company_email, get_user
 from ..config.settings import ApiSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
 from ..security.rate_limit import limit_email
@@ -252,6 +252,7 @@ def request_email_change(
     )
     limit_email(f"user:{session.user_id}")
     try:
+        assert_company_email(email, session.org_id)
         token = email_change.request_email_change(session.user_id, email)
     except AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

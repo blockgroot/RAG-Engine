@@ -10922,10 +10922,7 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 }
 .team-faces i.team-faces-add { color: var(--accent-strong); background: var(--accent-soft); border-style: dashed; border-color: color-mix(in srgb, var(--accent) 45%, white); box-shadow: none; animation: none; }
 @keyframes face-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
-.team-split { display: flex; gap: 3px; height: 6px; border-radius: 999px; overflow: hidden; }
-.team-split span { border-radius: 999px; background: #d6e1dd; transition: flex 0.4s var(--ease); }
-.team-split span:first-child { background: linear-gradient(90deg, #2dd4bf, var(--accent-strong)); }
-.team-split-key { display: flex; gap: 1rem; margin: -0.3rem 0 0.3rem; font-size: 0.76rem; color: var(--ink-muted); }
+.team-split-key { display: flex; gap: 1rem; margin: 0 0 0.3rem; font-size: 0.76rem; color: var(--ink-muted); }
 .team-split-key span { display: inline-flex; align-items: center; gap: 0.35rem; }
 .team-split-key i { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: #d6e1dd; }
 .team-split-key i.is-admin { background: var(--accent-strong); }

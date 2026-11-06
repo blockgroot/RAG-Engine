@@ -16,6 +16,7 @@ from ..auth import (
     get_connection_config,
     get_live_connection_token,
     get_user_by_email,
+    assert_company_email,
     invite_member,
     list_connections,
     list_members,
@@ -125,6 +126,10 @@ def invite(
         raise HTTPException(status_code=400, detail="A valid email is required")
     if get_user_by_email(email) is not None:
         raise HTTPException(status_code=400, detail="An account already exists for this email")
+    try:
+        assert_company_email(email, session.org_id)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     user = invite_member(email, session.org_id)
 

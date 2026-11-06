@@ -187,3 +187,17 @@ def test_a_connector_identity_stays_linked_after_the_change(client, member):
             (org_id,),
         ).fetchone()[0]
     assert linked == user.id
+
+
+@requires_db
+def test_a_change_to_an_address_outside_the_company_domain_is_refused(client, store, org_cleanup):
+    from app.auth.users import create_admin
+
+    org_id = store.create_organization("Email Change Domain Org")
+    org_cleanup.append(org_id)
+    create_admin(f"admin-{uuid.uuid4().hex[:8]}@acme.example", org_id)
+    user = invite_member(f"m-{uuid.uuid4().hex[:8]}@acme.example", org_id)
+    cookies = {"session": create_session_token(user)}
+    refused = _request(client, cookies, f"me-{uuid.uuid4().hex[:8]}@gmail.com")
+    assert refused.status_code == 400 and "@acme.example" in refused.json()["detail"]
+    assert _request(client, cookies, f"me-{uuid.uuid4().hex[:8]}@acme.example").status_code == 200

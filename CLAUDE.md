@@ -44,6 +44,9 @@ GitHub; employees get answers from *their* data.
   none without it. Every `chunks` query passes the org (`all_orgs=True` only for
   cross-tenant background jobs) and still filters on `org_id`, which is also
   what prunes to the partition (`tests/test_chunk_partitions.py`).
+- A company's people share its email domain (`organizations.email_domain`, from its first
+  admin): an invite or an email change to any other domain is refused
+  (`auth/users.assert_company_email`). Exact match; a subdomain is another domain.
 - `workspace_id` nests inside `org_id` and is never used alone. `NULL` is org-wide.
   A workspace sees only its own rows, never also the org-wide ones.
   `workspaces/store.py::assert_member` is the membership check. A non-member gets
