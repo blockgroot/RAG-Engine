@@ -374,7 +374,10 @@ cells the index found (`TableRef.typed`), not only a column's twelve samples. Co
 query that does not use its column (`_with_typed`; a header word is left to the both-ways
 rule); a filter that is the model's reading (a value the asker never typed, or a word of
 the headers) is worked out as the whole and then `NARROWER` its part (`_broader`), and
-the answer prompt then states both (`_READINGS_RULE`, only when that pair is present); the ONE column the question names by its header's words or their
+the answer prompt then states both (`_READINGS_RULE`, only when that pair is present); a typed value
+several columns hold ("LinkedIn" in Applied Via and Also Applied Via (O)) is ONE filter, on the column
+whose header the question names most of (`_best_named`; none on a tie, never onto a column another
+filter holds), in answers and charts alike; a month in `named` is a period, never an absent name; the ONE column the question names by its header's words or their
 longer forms is the breakdown (`_named_breakdown`); `of_these` narrows the rows outside a
 ratio, never ignored. The form lists `FORM_FULL_DETAIL` tables with values, the rest by
 header. A chart filters a date column to a named month, year or day

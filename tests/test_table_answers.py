@@ -729,6 +729,33 @@ def test_the_one_column_a_question_names_is_the_breakdown():
     assert table_answers._named_breakdown(leads, query, "Which BDE has the most?") == query
 
 
+
+def test_a_value_in_two_columns_is_one_filter_on_the_column_the_question_names():
+    """Staging, the synced workbook: "LinkedIn" is a cell of Applied Via and of
+    Also Applied Via (O). Haiku's right filter got the other column added
+    (0 rows); "via LinkedIn" put on the "Also" column counted 12, not 109."""
+    t = TableRef(id="t", name="Leads", columns=(), row_count=0, truncated=False, notes=(),
+                 document_title="Leads", provider="google", source_uri=None, document_id="d")
+    typed = (("Applied Via", "LinkedIn"), ("Also Applied Via (O)", "LinkedIn"))
+    q = {"operation": "count", "filters": {"Applied Via": "LinkedIn"}}
+    assert table_answers._with_typed(t, q, "How many went through LinkedIn?", typed) == q
+    moved = table_answers._with_typed(
+        t, {"operation": "count", "filters": {"Also Applied Via (O)": "LinkedIn"}},
+        "How many leads did Aman get via LinkedIn?", typed)
+    assert moved["filters"] == {"Applied Via": "LinkedIn"}
+    # Left out entirely: added to the named column only, and to none on a tie.
+    assert table_answers._with_typed(t, {"operation": "count", "filters": {}},
+                                     "Leads via LinkedIn", typed)["filters"] == {
+        "Applied Via": "LinkedIn"}
+    assert table_answers._with_typed(t, {"operation": "count", "filters": {}},
+                                     "LinkedIn leads", typed)["filters"] == {}
+    # One value in each column, as the model wrote it: never moved onto the other.
+    typed2 = typed + (("Applied Via", "Dice"), ("Also Applied Via (O)", "Dice"))
+    both = {"operation": "count", "filters": {"Applied Via": "LinkedIn",
+                                              "Also Applied Via (O)": "Dice"}}
+    assert table_answers._with_typed(
+        t, both, "How many were made via LinkedIn and also via Dice?", typed2) == both
+
 @requires_db
 def test_of_these_outside_a_ratio_narrows_the_rows_never_silently_ignored(org):
     text = _worked(org, {"table": "T1", "operation": "count", "filters": {"Owner": "Kavya Nair"},
@@ -1175,3 +1202,41 @@ def test_a_counted_answer_over_several_periods_states_the_total():
     chart["measure"] = "average"
     assert "Total" not in _counted_answer(SimpleNamespace(answer="x", chart=chart,
                                                           chart_period="month"))
+
+
+def test_a_chart_filters_a_value_in_two_columns_on_the_one_the_question_names():
+    """"LinkedIn" is a value of Applied Via and of Also Applied Via (O): a chart
+    must not filter both (no row has it in both) nor the "Also" one for "via"."""
+    leads = _dated("Leads", "Date,Role,Applied Via,Also Applied Via (O)\n"
+                   "2026-10-01,QA,LinkedIn,Dice\n2026-10-02,Dev,Dice,LinkedIn\n")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(leads, "Role"), period="month",
+                     chart="bar", measure="count", table_id=leads.id)
+    handles = {"T1": leads}
+    via = resolve._typed_values(AskIntent("chart", spec=spec), "Leads by role via LinkedIn",
+                                handles).spec
+    assert via.filters == ((_col(leads, "Applied Via"), "LinkedIn"),)
+    tie = resolve._typed_values(AskIntent("chart", spec=spec), "LinkedIn leads by role",
+                                handles).spec
+    assert tie.filters == ()
+
+
+def test_a_header_inside_the_breakdowns_header_is_not_a_second_breakdown():
+    """Staging: "Daniel Reed's leads by lead status" with group_by Lead Status
+    from Claude Haiku drew Lead Status x Status."""
+    t = _dated("L", "Date,Profile Name,Lead Status,Status\n2026-10-01,Daniel Reed,Applied,Open\n"
+               "2026-10-02,Daniel Reed,Offer,Closed\n")
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=_col(t, "Lead Status"), period="month",
+                     chart="bar", measure="count", table_id=t.id,
+                     filters=((_col(t, "Profile Name"), "Daniel Reed"),))
+    out = resolve._table_period_axis(AskIntent("chart", spec=spec),
+                                     "Daniel Reed's leads by lead status",
+                                     '{"group_by": "Lead Status"}', {"T1": t}).spec
+    assert (out.group_by, out.split_by) == (_col(t, "Lead Status"), None)
+
+
+def test_a_month_in_named_is_a_period_not_a_name_no_cell_holds():
+    """Staging: Claude Haiku named "December"; no cell holds the word, so the
+    right figure (21) was dropped as about someone the sheet does not hold."""
+    reply = '{"named": ["Sophia Turner", "December", "Dec 2026"], "queries": []}'
+    question = "How many Dice applications did Sophia Turner make in December? Dec 2026"
+    assert table_answers._named(reply, question) == ["Sophia Turner"]

@@ -898,8 +898,15 @@ def typed_cells(question: str, tables: list[TableRef]) -> dict[str, tuple[tuple[
             continue
         value = str(raw[cells.index(phrase)]).strip()
         out.setdefault(table_id, []).append((column["name"], value))
+        # "LinkedIn" is a cell of Applied Via AND Also Applied Via (O): the
+        # one row found names one of them, the columns' values name the rest.
+        out[table_id].extend(
+            (c["name"], value) for c in table.columns
+            if c.get("type") in ("category", "text")
+            and phrase in {str(v).strip().lower() for v in c.get("samples") or ()})
     # The longest typed value wins: "daniel reed" over a cell "reed".
-    return {k: tuple(sorted(set(v), key=lambda cv: -len(cv[1])))[:4] for k, v in out.items()}
+    return {k: tuple(sorted(set(v), key=lambda cv: (-len(cv[1]), cv)))[:6]
+            for k, v in out.items()}
 
 
 def list_rows(

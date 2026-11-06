@@ -1552,13 +1552,15 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
         # that is not drawn yet is the series. EVERY word of the header: a
         # shared word is not a name ("uptime target" is not "Latency target").
         asked = _words(question)
-        named = [k for k in keys if k != group
-                 and (header := _words(str((table.column(k) or {}).get("name", ""))))
+        named = [k for k in keys
+                 if (header := _words(str((table.column(k) or {}).get("name", ""))))
                  and header <= asked]
         # "by lead status" names Lead Status, not also Status: a header whose
-        # words sit inside another named header's is that one's word.
+        # words sit inside another named header's is that one's word -- also
+        # when that one is already the breakdown.
         heads = {k: _words(str((table.column(k) or {}).get("name", ""))) for k in named}
-        named = [k for k in named if not any(heads[k] < heads[o] for o in named)]
+        named = [k for k in named
+                 if k != group and not any(heads[k] < heads[o] for o in named)]
         if len(named) == 1 and not data.get("group_by") and not period_asked:
             # The model named no column, so the axis was a default (the date
             # column), not asked for: "leads by stage" drew Created x Stage.
@@ -1686,6 +1688,7 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     typed_by_name: dict[str, list[str]] = {}
     for name, value in getattr(table, "typed", ()) or ():
         typed_by_name.setdefault(name, []).append(value)
+    hits: dict[str, list[str]] = {}
     for column in table.columns:
         values = [str(v) for v in column.get("samples") or []]
         key = column["key"]
@@ -1695,7 +1698,34 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
             values = typed_by_name.get(column.get("name"), [])
         elif column.get("type") != "category":
             continue
-        typed = [v for v in values if _squashed(v) and f" {_squashed(v)} " in asked]
+        hits[key] = [v for v in values if _squashed(v) and f" {_squashed(v)} " in asked]
+    # "LinkedIn" is a value of Applied Via AND Also Applied Via (O): one
+    # column, the one the question's words name best; none on a tie, unless
+    # the model already put it in one of them.
+    from .table_answers import _best_named
+
+    holders: dict[str, list[str]] = {}
+    for key, typed in hits.items():
+        for v in typed:
+            holders.setdefault(_squashed(v), []).append(key)
+    for value, keys in holders.items():
+        if len(keys) < 2:
+            continue
+        names = {str((table.column(k) or {}).get("name", k)): k for k in keys}
+        best = names.get(_best_named(list(names), question) or "")
+        if best in filters and value not in {
+                _squashed(v) for v in (filters[best] if isinstance(filters[best], tuple)
+                                       else [filters[best]])}:
+            best = None  # another value is filtered there: leave the model's columns
+        for key in keys:
+            mine = filters.get(key)
+            mine = {_squashed(v) for v in (mine if isinstance(mine, tuple) else [mine])} if mine else set()
+            if key != best and (best or value not in mine):
+                hits[key] = [v for v in hits[key] if _squashed(v) != value]
+                if best and value in mine:
+                    del filters[key]
+                    changed = True
+    for key, typed in hits.items():
         kept = filters.get(key)
         kept = {_squashed(v) for v in (kept if isinstance(kept, tuple) else [kept])} if kept else set()
         if len(typed) > 1 and kept <= {_squashed(v) for v in typed}:
