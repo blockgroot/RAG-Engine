@@ -64,15 +64,14 @@ export function GapTopics({ workspaceId }: { workspaceId?: string | null }) {
     }
   }
 
+  const attention = topics?.filter((t) => t.alerting).length ?? 0;
+
   return (
-    <section className="studio-panel stack" aria-labelledby="gap-topics-title">
-      <div className="studio-section-head">
-        <h2 id="gap-topics-title">What people couldn&rsquo;t get answered</h2>
-        <p className="muted">
-          Topics from the last 14 days where 3 different people couldn&rsquo;t get an answer, or 2
-          marked its answers wrong. You get a notification when one appears.
-        </p>
-      </div>
+    <section className="room-section gap-section" aria-labelledby="gap-topics-title">
+      <p className="gap-rule muted" id="gap-topics-title">
+        A topic shows here when, in the last 14 days, 3 different people couldn&rsquo;t get an answer or
+        2 marked its answers wrong. You get a notification when one appears.
+      </p>
 
       {error && (
         <p className="act-card-error" role="alert">
@@ -83,72 +82,105 @@ export function GapTopics({ workspaceId }: { workspaceId?: string | null }) {
       {!topics ? (
         !error && <p className="muted">Loading…</p>
       ) : topics.length === 0 ? (
-        <p className="muted">Nothing has reached that point in the last 14 days.</p>
+        <div className="gap-clear">
+          <span className="gap-clear-mark" aria-hidden>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m5 12 5 5 9-10" />
+            </svg>
+          </span>
+          <div>
+            <b>Nothing to fix right now</b>
+            <p className="muted">No topic has reached that point in the last 14 days.</p>
+          </div>
+        </div>
       ) : (
-        <ul className="gap-list">
-          {topics.map((t) => (
-            <li key={t.id} id={`topic-${t.id}`} className="gap-item">
-              <details
-                open={opened === t.id}
-                onToggle={(e) => {
-                  const isOpen = (e.target as HTMLDetailsElement).open;
-                  setOpened((cur) => (isOpen ? t.id : cur === t.id ? null : cur));
-                }}
+        <>
+          <p className="hero-facts gap-summary">
+            <b>{topics.length}</b> topic{topics.length === 1 ? "" : "s"}
+            {attention > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="hero-fact-warn">{attention} need{attention === 1 ? "s" : ""} attention</span>
+              </>
+            )}
+          </p>
+          <ul className="gap-list">
+            {topics.map((t, i) => (
+              <li
+                key={t.id}
+                id={`topic-${t.id}`}
+                className={`gap-item${t.alerting ? " is-alerting" : ""}`}
+                style={{ ["--i" as string]: i }}
               >
-                <summary>
-                  <span className="gap-item-question">&ldquo;{t.label}&rdquo;</span>{" "}
-                  {t.alerting && <span className="studio-chip">Needs attention</span>}
-                  <p className="gap-item-meta muted">
-                    {t.missing_people > 0 && `${people(t.missing_people)} got no answer`}
-                    {t.missing_people > 0 && t.wrong_people > 0 && " · "}
-                    {t.wrong_people > 0 && `${people(t.wrong_people)} marked an answer wrong`}
-                    {" · "}last asked {when(t.last_asked)}
-                    {t.surfaces.includes("slack") && " · asked in Slack too"}
-                  </p>
-                </summary>
+                <details
+                  open={opened === t.id}
+                  onToggle={(e) => {
+                    const isOpen = (e.target as HTMLDetailsElement).open;
+                    setOpened((cur) => (isOpen ? t.id : cur === t.id ? null : cur));
+                  }}
+                >
+                  <summary>
+                    <span className="gap-count" aria-hidden>
+                      {/* One count, never the two added: the same person can be in both. */}
+                      <b>{t.missing_people || t.wrong_people}</b>
+                      <small>{t.missing_people ? "no answer" : "marked wrong"}</small>
+                    </span>
+                    <span className="gap-head">
+                      <span className="gap-item-question">&ldquo;{t.label}&rdquo;</span>
+                      <span className="gap-item-meta muted">
+                        {t.missing_people > 0 && `${people(t.missing_people)} got no answer`}
+                        {t.missing_people > 0 && t.wrong_people > 0 && " · "}
+                        {t.wrong_people > 0 && `${people(t.wrong_people)} marked an answer wrong`}
+                        {" · "}last asked {when(t.last_asked)}
+                        {t.surfaces.includes("slack") && " · asked in Slack too"}
+                      </span>
+                    </span>
+                    {t.alerting && <span className="gap-flag">Needs attention</span>}
+                    <span className="gap-chevron" aria-hidden>›</span>
+                  </summary>
 
-                <p className="gap-item-meta muted">
-                  {t.best_score === null
-                    ? "Nothing in your connected sources came close, so the document is probably missing."
-                    : "Something related exists but wasn't a close enough match. It may be hard to find, or only partly cover this."}
-                </p>
-                <p className="gap-item-meta">How people asked it:</p>
-                <ul>
-                  {t.questions.map((q) => (
-                    <li key={q} className="gap-item-comment">
-                      {q}
-                    </li>
-                  ))}
-                </ul>
-                {t.wrong_answer && (
-                  <>
-                    <p className="gap-item-meta">
-                      The latest answer marked wrong
-                      {t.wrong_reason &&
-                        ` (${FEEDBACK_REASONS.find((r) => r.value === t.wrong_reason)?.label ?? t.wrong_reason})`}
-                      :
+                  <div className="gap-body">
+                    <p className={`gap-hint ${t.best_score === null ? "is-missing" : "is-weak"}`}>
+                      {t.best_score === null
+                        ? "Nothing in your connected sources came close, so the document is probably missing."
+                        : "Something related exists but wasn't a close enough match. It may be hard to find, or only partly cover this."}
                     </p>
-                    <p className="gap-item-answer muted">{t.wrong_answer}</p>
-                    {t.wrong_comment && <p className="gap-item-comment">&ldquo;{t.wrong_comment}&rdquo;</p>}
-                  </>
-                )}
-                <div className="act-card-actions">
-                  <button
-                    type="button"
-                    className="button button-secondary"
-                    disabled={busy === t.id}
-                    onClick={() => void handled(t.id)}
-                  >
-                    {busy === t.id ? "Saving…" : "Mark as handled"}
-                  </button>
-                  <span className="muted act-card-timer">
-                    Hidden until it&rsquo;s asked again.
-                  </span>
-                </div>
-              </details>
-            </li>
-          ))}
-        </ul>
+                    <p className="gap-label">How people asked it</p>
+                    <ul className="gap-asks">
+                      {t.questions.map((q) => (
+                        <li key={q}>{q}</li>
+                      ))}
+                    </ul>
+                    {t.wrong_answer && (
+                      <>
+                        <p className="gap-label">
+                          The latest answer marked wrong
+                          {t.wrong_reason &&
+                            ` · ${FEEDBACK_REASONS.find((r) => r.value === t.wrong_reason)?.label ?? t.wrong_reason}`}
+                        </p>
+                        <blockquote className="gap-wrong">
+                          {t.wrong_answer}
+                          {t.wrong_comment && <cite>&ldquo;{t.wrong_comment}&rdquo;</cite>}
+                        </blockquote>
+                      </>
+                    )}
+                    <div className="gap-actions">
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        disabled={busy === t.id}
+                        onClick={() => void handled(t.id)}
+                      >
+                        {busy === t.id ? "Saving…" : "Mark as handled"}
+                      </button>
+                      <span className="muted">Hidden until it&rsquo;s asked again.</span>
+                    </div>
+                  </div>
+                </details>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );

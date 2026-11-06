@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
+import { spaceStyle } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
 import { api, MemberRecord } from "@/lib/api";
 
@@ -142,55 +143,65 @@ export default function MembersPage() {
           title="People"
           description="Invite teammates, make admins for succession, and remove people who leave. Always keep at least one other admin before you leave."
           meta={
-            <>
-              <span className="studio-chip">{members.length} people</span>
-              <span className="studio-chip studio-chip-ok">{adminCount} admin{adminCount === 1 ? "" : "s"}</span>
-              <span className="studio-chip">{memberCount} member{memberCount === 1 ? "" : "s"}</span>
-            </>
+            <span className="hero-facts">
+              <b>{members.length}</b> {members.length === 1 ? "person" : "people"} in {me.org_name ?? "the company"}
+            </span>
           }
         />
 
         <div className="people-layout">
-          <section className="studio-panel invite-panel" aria-labelledby="invite-title">
-            <div className="studio-panel-glow" aria-hidden />
+          <section className="people-invite" aria-labelledby="invite-title">
+            <div className="team-faces" aria-hidden>
+              {members.slice(0, 7).map((m, i) => (
+                <i key={m.id} style={{ ...spaceStyle(m.email), ["--i" as string]: i }}>
+                  {(m.email || "?").charAt(0).toUpperCase()}
+                </i>
+              ))}
+              <i className="team-faces-add">+</i>
+            </div>
+            <div className="team-split" aria-hidden>
+              <span style={{ flex: Math.max(adminCount, 0.0001) }} />
+              <span style={{ flex: Math.max(memberCount, 0.0001) }} />
+            </div>
+            <p className="team-split-key">
+              <span><i className="is-admin" />{adminCount} admin{adminCount === 1 ? "" : "s"}</span>
+              <span><i />{memberCount} member{memberCount === 1 ? "" : "s"}</span>
+            </p>
             <div className="studio-section-head">
               <h2 id="invite-title">Invite someone</h2>
-              <p className="muted">They get a magic link — no password to set up.</p>
+              <p className="muted">They get a sign-in link by email. No password to set up.</p>
             </div>
-            <form onSubmit={handleInvite} className="invite-form">
-              <div className="field">
-                <label htmlFor="email">Work email</label>
-                <input
-                  id="email"
-                  className="input"
-                  type="email"
-                  placeholder="teammate@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  disabled={sending}
-                />
-              </div>
+            <form onSubmit={handleInvite} className="spaces-new space-invite">
+              <label className="sr-only" htmlFor="email">Work email</label>
+              <input
+                id="email"
+                type="email"
+                placeholder="teammate@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                disabled={sending}
+              />
               <button className="button" type="submit" disabled={sending || !email.trim()}>
                 {sending ? "Sending…" : "Send invite"}
               </button>
-              {inviteError && (
-                <div className="banner banner-warn" role="alert">
-                  {inviteError}
-                </div>
-              )}
-              {inviteMessage && (
-                <div className="banner banner-ok" role="status">
-                  {inviteMessage}
-                </div>
-              )}
             </form>
+            {inviteError && (
+              <div className="banner banner-warn" role="alert">
+                {inviteError}
+              </div>
+            )}
+            {inviteMessage && (
+              <div className="banner banner-ok" role="status">
+                {inviteMessage}
+              </div>
+            )}
           </section>
 
-          <section className="roster-board" aria-labelledby="roster-title">
-            <div className="studio-section-head roster-board-head">
-              <h2 id="roster-title">Team roster</h2>
-              <p className="muted">Everyone who can ask in this company.</p>
+          <section className="room-section people-roster" aria-labelledby="roster-title">
+            <div className="studio-section-head">
+              <h2 id="roster-title">Everyone in the company</h2>
+              <p className="muted">Admins manage sources, the model, people and actions. Members ask.</p>
             </div>
             {rosterError && (
               <div className="banner banner-warn" role="alert" style={{ marginBottom: "0.75rem" }}>
@@ -210,27 +221,34 @@ export default function MembersPage() {
                 <p className="muted">Send an invite to bring in your first teammate.</p>
               </div>
             ) : (
-              <ul className="people-grid">
-                {members.map((m, i) => {
+              (["admin", "member"] as const).map((role) => {
+                const group = members.filter((m) => m.role === role);
+                if (!group.length) return null;
+                return (
+              <div key={role} className="roster-group">
+              <p className="room-sub">{role === "admin" ? "Admins" : "Members"} · {group.length}</p>
+              <ul className="roster-list">
+                {group.map((m, i) => {
                   const initial = (m.email || "?").trim().charAt(0).toUpperCase();
                   return (
                     <li
                       key={m.id}
-                      className="people-card"
-                      style={{ animationDelay: `${0.08 + i * 0.05}s` }}
+                      className="roster-row"
+                      style={{ ["--i" as string]: i }}
                     >
-                      <span className="people-avatar" aria-hidden>
+                      <span className="people-avatar" style={spaceStyle(m.email)} aria-hidden>
                         {initial}
                       </span>
                       <div className="people-card-copy">
-                        <strong>{m.email}</strong>
+                        <strong>
+                          {m.email}
+                          {m.id === me.user_id && <em className="roster-you">you</em>}
+                        </strong>
                         <span className="muted">
                           Joined {new Date(m.created_at).toLocaleDateString()}
                         </span>
                       </div>
-                      <div className="people-card-meta">
-                      <span className={`role-chip role-${m.role}`}>{m.role}</span>
-                      <div className="people-card-actions">
+                      <div className="roster-actions">
                         {m.role === "member" && (
                           <button
                             type="button"
@@ -272,11 +290,13 @@ export default function MembersPage() {
                           </button>
                         )}
                       </div>
-                      </div>
                     </li>
                   );
                 })}
               </ul>
+              </div>
+                );
+              })
             )}
             </div>
           </section>

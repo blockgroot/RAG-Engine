@@ -302,6 +302,58 @@ function ConnectionsPageInner() {
     return Boolean(changesById[c.id]?.has_changes);
   }).length;
 
+  const linked = PROVIDERS.filter((p) => connections.some((c) => c.provider === p));
+  const unlinked = PROVIDERS.filter((p) => !linked.includes(p));
+  const renderSource = (provider: (typeof PROVIDERS)[number]) => {
+    const connection = connections.find((c) => c.provider === provider);
+    return (
+      <ConnectionCard
+        key={provider}
+        provider={provider}
+        setupFirst={
+          (provider === "google" || provider === "slack") &&
+          Boolean(apps) &&
+          !apps![provider].configured &&
+          !apps![provider].server_app
+        }
+        connection={connection}
+        lastJob={connection ? lastJobs[connection.id] : undefined}
+        changes={connection ? changesById[connection.id] : null}
+        checkingChanges={connection ? checkingIds.has(connection.id) : false}
+        onUpdate={handleUpdate}
+        onConfigSaved={(updated) => {
+          setConnections((prev) =>
+            prev.map((c) => (c.id === updated.id ? updated : c))
+          );
+          // Saving the folder/channels queues the ingest server-side.
+          void adoptJobs();
+          refreshChanges([updated]);
+          invalidateSuggestionsCache(null);
+        }}
+        onDisconnected={(connectionId) => {
+          setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+          setChangesById((prev) => {
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          setReauthById((prev) => {
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          invalidateSuggestionsCache(null);
+          setMessage("Disconnected. Indexed docs for that source were removed.");
+        }}
+        needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
+        onNeedsReauth={(needed) => {
+          if (!connection) return;
+          setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
+        }}
+      />
+    );
+  };
+
   return (
     <AppShell me={me} variant="admin">
       <main className="page-wide studio-page stack">
@@ -311,20 +363,17 @@ function ConnectionsPageInner() {
           description="Connect Notion, Google Drive, Slack, Linear, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           meta={
             loadingConnections ? (
-              <>
-                <span className="studio-chip">{PROVIDERS.length} providers</span>
-                <span className="studio-chip">Loading…</span>
-              </>
+              <span className="hero-facts">Loading…</span>
             ) : (
-              <>
-                <span className="studio-chip studio-chip-ok">{linkedCount} linked</span>
-                <span className="studio-chip">{PROVIDERS.length} providers</span>
+              <span className="hero-facts">
+                <b>{linkedCount}</b> of {PROVIDERS.length} connected
+                <span aria-hidden>·</span>
                 {needsAttention > 0 ? (
-                  <span className="studio-chip studio-chip-warn">{needsAttention} need attention</span>
+                  <span className="hero-fact-warn">{needsAttention} need attention</span>
                 ) : (
-                  <span className="studio-chip studio-chip-ok">All set</span>
+                  <span className="hero-fact-ok">All set</span>
                 )}
-              </>
+              </span>
             )
           }
         />
@@ -349,7 +398,7 @@ function ConnectionsPageInner() {
                 Google Drive and Slack connect through an app your company owns. Set each one up once, then connect below.
               </p>
             </div>
-            <div className="source-bento">
+            <div className="own-apps-grid">
               {(["google", "slack"] as const).map((provider) => (
                 <OwnAppSetup
                   key={provider}
@@ -365,7 +414,7 @@ function ConnectionsPageInner() {
             </div>
           </section>
         )}
-        <section className="studio-section" aria-label="Source connections">
+        <section className="studio-section room-sources" aria-label="Source connections">
           <div className="studio-section-head">
             <h2>Your connections</h2>
             <p className="muted">Each source keeps its own sync boundary — never mixed across providers.</p>
@@ -375,55 +424,14 @@ function ConnectionsPageInner() {
               ? PROVIDERS.map((provider) => (
                   <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
                 ))
-              : PROVIDERS.map((provider) => {
-              const connection = connections.find((c) => c.provider === provider);
-              return (
-                <ConnectionCard
-                  key={provider}
-                  provider={provider}
-                  setupFirst={
-                    (provider === "google" || provider === "slack") &&
-                    Boolean(apps) &&
-                    !apps![provider].configured &&
-                    !apps![provider].server_app
-                  }
-                  connection={connection}
-                  lastJob={connection ? lastJobs[connection.id] : undefined}
-                  changes={connection ? changesById[connection.id] : null}
-                  checkingChanges={connection ? checkingIds.has(connection.id) : false}
-                  onUpdate={handleUpdate}
-                  onConfigSaved={(updated) => {
-                    setConnections((prev) =>
-                      prev.map((c) => (c.id === updated.id ? updated : c))
-                    );
-                    // Saving the folder/channels queues the ingest server-side.
-                    void adoptJobs();
-                    refreshChanges([updated]);
-                    invalidateSuggestionsCache(null);
-                  }}
-                  onDisconnected={(connectionId) => {
-                    setConnections((prev) => prev.filter((c) => c.id !== connectionId));
-                    setChangesById((prev) => {
-                      const next = { ...prev };
-                      delete next[connectionId];
-                      return next;
-                    });
-                    setReauthById((prev) => {
-                      const next = { ...prev };
-                      delete next[connectionId];
-                      return next;
-                    });
-                    invalidateSuggestionsCache(null);
-                    setMessage("Disconnected. Indexed docs for that source were removed.");
-                  }}
-                  needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
-                  onNeedsReauth={(needed) => {
-                    if (!connection) return;
-                    setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
-                  }}
-                />
-              );
-                })}
+              : (
+                  <>
+                    {linked.length > 0 && <p className="room-sub">Connected · {linked.length}</p>}
+                    {linked.map(renderSource)}
+                    {unlinked.length > 0 && <p className="room-sub">Add a source</p>}
+                    <div className="room-add-grid">{unlinked.map(renderSource)}</div>
+                  </>
+                )}
             {/* Surveys ride the same Google connection but are shown apart:
                 indexing a folder and reading a survey once have different
                 consequences, and one card made them look like one decision. */}

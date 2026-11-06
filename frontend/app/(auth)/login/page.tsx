@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
 import { api, ApiError, MagicLinkResponse } from "@/lib/api";
@@ -21,31 +21,12 @@ function SuccessMark() {
   );
 }
 
-/**
- * Local development only: with NEXT_PUBLIC_DEV_LOGIN_EMAIL set in .env.local,
- * the login page signs straight in as that account. It follows the sign-in
- * link the API returns only in console-email mode, so a build for production
- * (NODE_ENV=production) or an API that sends real email never skips sign-in.
- */
-const DEV_LOGIN_EMAIL =
-  process.env.NODE_ENV === "development" ? process.env.NEXT_PUBLIC_DEV_LOGIN_EMAIL : undefined;
-
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [result, setResult] = useState<MagicLinkResponse | null>(null);
   const [sentTo, setSentTo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!DEV_LOGIN_EMAIL) return;
-    api
-      .requestMagicLink(DEV_LOGIN_EMAIL)
-      .then((r) => {
-        if (r.dev_link) window.location.replace(r.dev_link);
-      })
-      .catch(() => {});
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

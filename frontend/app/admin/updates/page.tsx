@@ -126,6 +126,9 @@ export default function AdminUpdatesPage() {
   }
 
   const selfhosted = info?.deployment === "selfhosted";
+  // "0.2.1-66-g732955e": a copy run from the source, 66 changes after 0.2.1.
+  const dev = /^(\d+\.\d+\.\d+)-(\d+)-g[0-9a-f]+$/.exec(info?.current ?? "");
+  const shown = dev ? dev[1] : info?.current ?? null;
   const latest = info?.newer[0] ?? null;
   const running = progress?.state === "running";
 
@@ -136,16 +139,14 @@ export default function AdminUpdatesPage() {
           eyebrow="Company"
           title="Updates"
           description={
-            selfhosted
+            dev
+              ? "Which version of Handbook this copy runs."
+              : selfhosted
               ? "New versions of Handbook, and updating this server to them."
               : "Handbook Cloud is kept up to date by the Handbook team. Here is what changed."
           }
           meta={
-            info?.current ? (
-              <span className={`studio-chip${latest ? "" : " studio-chip-ok"}`}>
-                {latest ? `Update available: ${latest.version}` : `Up to date: ${info.current}`}
-              </span>
-            ) : null
+            null
           }
         />
 
@@ -176,16 +177,30 @@ export default function AdminUpdatesPage() {
         )}
 
         {info && (
-          <section className="studio-panel stack">
-            <div className="studio-section-head">
-              <h2>{info.current ? `You are on Handbook ${info.current}` : "Version not known"}</h2>
+          <section className="version-card" aria-label="This copy's version">
+            <div className="version-badge" aria-hidden>
+              <span>v</span>
+              {shown ?? "?"}
             </div>
-            {!info.current && (
-              <p className="muted">
-                This copy does not report its version, so new versions cannot be checked.
-              </p>
-            )}
-            {info.current && !latest && <p className="muted">This is the latest version.</p>}
+            <div className="version-copy">
+              <p className="version-label">This copy of Handbook</p>
+              <h2>{shown ? `Handbook ${shown}` : "Version not set"}</h2>
+              {dev ? (
+                <p className="version-status is-dev">
+                  {dev[2]} change{dev[2] === "1" ? "" : "s"} after {dev[1]}, not yet released
+                </p>
+              ) : info.current ? (
+                <p className={`version-status ${latest ? "is-new" : "is-ok"}`}>
+                  {latest ? `${latest.version} is available` : "Up to date"}
+                </p>
+              ) : (
+                <p className="muted">
+                  {selfhosted
+                    ? "Set HANDBOOK_VERSION in this server's .env (the installer does this), and new versions will be checked."
+                    : "This server was started without a version, so new versions cannot be checked. It is set when a release is deployed."}
+                </p>
+              )}
+            </div>
           </section>
         )}
 

@@ -134,3 +134,26 @@ def test_the_updater_edits_only_the_version_line(updater):
     updater.write_env("HANDBOOK_VERSION", "1.10.0")
     assert updater.read_env("HANDBOOK_VERSION") == "1.10.0"
     assert updater.read_env("OTHER") == "x"
+
+
+def test_version_falls_back_to_the_image_when_env_is_blank(monkeypatch):
+    """A blank HANDBOOK_VERSION line in .env must not hide the image's own version."""
+    from app.config.settings import UpdateSettings
+
+    monkeypatch.setenv("HANDBOOK_VERSION", "")
+    monkeypatch.setenv("HANDBOOK_IMAGE_VERSION", "v0.2.1")
+    assert UpdateSettings.from_env().current_version == "0.2.1"
+    monkeypatch.setenv("HANDBOOK_VERSION", "0.3.0")
+    assert UpdateSettings.from_env().current_version == "0.3.0"
+
+
+def test_a_source_checkout_shows_its_git_version_but_is_not_checked(monkeypatch):
+    """No version set: the git version is shown, and a build past a tag is
+    never compared with the release feed (it is not a release)."""
+    from app.config.settings import UpdateSettings
+    from app.updates import check
+
+    monkeypatch.setattr(check, "source_version", lambda: "0.2.1-66-g732955e")
+    monkeypatch.setattr(check, "fetch_releases", lambda s: (_ for _ in ()).throw(AssertionError("fetched")))
+    status = check.update_status(UpdateSettings(current_version=None))
+    assert status.current == "0.2.1-66-g732955e" and status.newer == []

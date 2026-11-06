@@ -27,6 +27,11 @@ COPY scripts/init_db.py scripts/check_llm_config.py scripts/check_embedding_conf
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# The release build passes the tag, so an installed copy knows its version
+# even when its .env leaves HANDBOOK_VERSION blank (app/config/settings.py).
+ARG HANDBOOK_IMAGE_VERSION=""
+ENV HANDBOOK_IMAGE_VERSION=${HANDBOOK_IMAGE_VERSION}
+
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 

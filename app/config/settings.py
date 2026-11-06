@@ -1941,7 +1941,9 @@ class UpdateSettings:
       ``selfhosted`` (the company updates it; admins are offered the update).
     - ``current_version``  ``HANDBOOK_VERSION``: the self-hosted ``.env`` sets
       it for the images it runs; Cloud sets it when a release is deployed.
-      Unset means no version is known and nothing is shown.
+      Else ``HANDBOOK_IMAGE_VERSION``, which the release build writes into the
+      image, so a blank ``.env`` line still leaves the version known. Neither
+      means no version is known and nothing is checked.
     - ``check_enabled``  off for a server that must not contact anyone.
     - ``updater_url`` / ``updater_token``  the self-hosted updater container.
       Both or neither: without them the page shows the upgrade command.
@@ -1962,7 +1964,9 @@ class UpdateSettings:
     def from_env(cls) -> "UpdateSettings":
         return cls(
             deployment=(os.getenv("HANDBOOK_DEPLOYMENT") or "cloud").strip().lower(),
-            current_version=(os.getenv("HANDBOOK_VERSION") or "").strip().lstrip("v") or None,
+            current_version=(
+                os.getenv("HANDBOOK_VERSION") or os.getenv("HANDBOOK_IMAGE_VERSION") or ""
+            ).strip().lstrip("v") or None,
             feed_url=os.getenv("UPDATE_FEED_URL") or DEFAULT_UPDATE_FEED_URL,
             check_enabled=env_bool("UPDATE_CHECK_ENABLED", True),
             updater_url=os.getenv("UPDATER_URL") or None,

@@ -131,9 +131,37 @@ def fetch_releases(settings: UpdateSettings) -> list[Release]:
     return releases
 
 
+_SOURCE_VERSION: list[str | None] = []
+
+
+def source_version() -> str | None:
+    """The version a copy run from the source code is at, from git: "0.2.1"
+    on a release tag, "0.2.1-66-g732955e" past one (66 changes after it).
+
+    Only for a copy with no version set (a development checkout); an image
+    has no git and says None. Read once per process, two seconds at most.
+    The dashed form fails ``VERSION_RE``, so it is shown but never checked
+    against the release feed: it is not a release.
+    """
+    if not _SOURCE_VERSION:
+        import subprocess
+        from pathlib import Path
+
+        try:
+            out = subprocess.run(
+                ["git", "describe", "--tags", "--match", "v[0-9]*"],
+                cwd=Path(__file__).resolve().parents[2],
+                capture_output=True, text=True, timeout=2, check=True,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        _SOURCE_VERSION.append(out.lstrip("v") or None)
+    return _SOURCE_VERSION[0]
+
+
 def update_status(settings: UpdateSettings | None = None) -> UpdateStatus:
     settings = settings or UpdateSettings.from_env()
-    current = settings.current_version
+    current = settings.current_version or source_version()
     selfhosted = settings.deployment == "selfhosted"
     if not settings.check_enabled or not current or not VERSION_RE.match(current):
         return UpdateStatus(settings.deployment, current, [], None, False, None)

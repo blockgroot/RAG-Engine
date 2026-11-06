@@ -25,6 +25,71 @@ const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
   unknown: "Agent mode: couldn't be tested — save again to retry",
 };
 
+/** The provider list as a menu: each one with its letter mark, the chosen one ticked. */
+function ProviderPicker({
+  presets,
+  value,
+  onChange,
+  disabled,
+}: {
+  presets: ModelPreset[];
+  value: string;
+  onChange: (id: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const picked = presets.find((p) => p.id === value);
+  return (
+    <div
+      className="provider-picker"
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
+      }}
+      onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+    >
+      <button
+        type="button"
+        id="preset"
+        className="input provider-picker-button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <i aria-hidden>{(picked?.label ?? "?").charAt(0)}</i>
+        <span>{picked?.label ?? "Choose a provider"}</span>
+        <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden>
+          <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="provider-menu" role="listbox" aria-label="Provider">
+          {presets.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="option"
+              aria-selected={p.id === value}
+              onClick={() => {
+                onChange(p.id);
+                setOpen(false);
+              }}
+            >
+              <i aria-hidden>{p.label.charAt(0)}</i>
+              <span>{p.label}</span>
+              {p.id === value && (
+                <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
+                  <path d="m6 12 4 4 8-8" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminModelPage() {
   const { me, loading } = useMe({ requireAdmin: true });
 
@@ -111,11 +176,13 @@ export default function AdminModelPage() {
           title="Company model"
           description="Connect one model for your team’s chat answers. This is optional; Handbook’s built-in models remain available."
           meta={
-            saved ? (
-              <span className="studio-chip studio-chip-ok">Connected to {saved.preset_label}</span>
-            ) : (
-              <span className="studio-chip">Using built-in models</span>
-            )
+            <span className="hero-facts">
+              {saved ? (
+                <span className="hero-fact-ok">Connected to {saved.preset_label}</span>
+              ) : (
+                <>Using Handbook&rsquo;s built-in models</>
+              )}
+            </span>
           }
         />
 
@@ -131,7 +198,7 @@ export default function AdminModelPage() {
         )}
 
         {saved && (
-          <section className="studio-panel model-current-panel" aria-labelledby="current-title">
+          <section className="room-section model-current-panel" aria-labelledby="current-title">
             <div className="studio-section-head">
               <p className="model-section-label">Current connection</p>
               <h2 id="current-title">Available to your team</h2>
@@ -152,34 +219,16 @@ export default function AdminModelPage() {
           </section>
         )}
 
-        <section className="studio-panel model-setup-panel" aria-labelledby="add-title">
-          <header className="model-setup-head">
-            <div>
-              <p className="model-section-label">{saved ? "Change connection" : "Model setup"}</p>
-              <h2 id="add-title">{saved ? "Replace your model" : "Connect your model"}</h2>
-              <p>We verify the credentials before this model becomes available to your team.</p>
-            </div>
-            <span>3-step setup</span>
-          </header>
+        <section className="room-section model-setup" aria-labelledby="add-title">
+          <div className="studio-section-head">
+            <h2 id="add-title">{saved ? "Replace your model" : "Connect your model"}</h2>
+            <p className="muted">We test it before it becomes available to your team.</p>
+          </div>
 
           <form onSubmit={save} className="model-form">
             <div className="field">
               <label htmlFor="preset"><span aria-hidden>1</span> Provider</label>
-              <span className="model-select-wrap">
-                <select
-                  id="preset"
-                  className="input"
-                  value={preset}
-                  onChange={(e) => setPreset(e.target.value)}
-                  disabled={busy}
-                >
-                  {presets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </span>
+              <ProviderPicker presets={presets} value={preset} onChange={setPreset} disabled={busy} />
             </div>
 
             <div className="field">
@@ -240,38 +289,32 @@ export default function AdminModelPage() {
           </form>
         </section>
 
-        <section className="model-boundary" aria-labelledby="usage-title">
-          <header>
-            <p className="model-section-label">Data route</p>
+        <section className="room-section model-boundary" aria-labelledby="usage-title">
+          <div className="studio-section-head">
             <h2 id="usage-title">How your model is used</h2>
-            <p>Connecting a key changes one part of Handbook—not the whole system.</p>
-          </header>
-          <div className="model-boundary-routes">
-            <article>
-              <span className="model-route-icon" aria-hidden>
-                <svg viewBox="0 0 24 24" fill="none">
-                  <path d="M5 6h14v10H9l-4 3V6Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-                </svg>
+            <p className="muted">Connecting a key changes one part of Handbook, not all of it.</p>
+          </div>
+          <div className="model-lanes">
+            <div className="model-lane is-yours">
+              <span className="model-lane-end">A question in chat</span>
+              <i aria-hidden />
+              <span className="model-lane-node">
+                <b>Your model</b>
+                <small>Your key, billed by {activePreset?.label ?? "your provider"}</small>
               </span>
-              <div>
-                <span>Chat answers</span>
-                <strong>Your selected model</strong>
-                <p>Uses your API key and is billed by your provider.</p>
-              </div>
-            </article>
-            <article>
-              <span className="model-route-icon model-route-icon-muted" aria-hidden>
-                <svg viewBox="0 0 24 24" fill="none">
-                  <path d="M6 4h9l3 3v13H6V4Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-                  <path d="M9 11h6M9 15h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                </svg>
+              <i aria-hidden />
+              <span className="model-lane-end">The answer</span>
+            </div>
+            <div className="model-lane">
+              <span className="model-lane-end">Your documents</span>
+              <i aria-hidden />
+              <span className="model-lane-node">
+                <b>Handbook&rsquo;s model</b>
+                <small>Your key is never used here</small>
               </span>
-              <div>
-                <span>Indexing and quality checks</span>
-                <strong>Handbook’s model</strong>
-                <p>Your key is never used for document processing.</p>
-              </div>
-            </article>
+              <i aria-hidden />
+              <span className="model-lane-end">Indexing and quality checks</span>
+            </div>
           </div>
           <footer>
             <strong>Built-in fallback stays available.</strong>

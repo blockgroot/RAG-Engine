@@ -230,7 +230,7 @@ export function OwnAppSetup({
   );
 
   return (
-    <div className={`card source-row own-app${ready ? " is-linked" : ""}`}>
+    <div className={`card source-row own-app${ready ? " is-linked" : ""}${open ? " is-open" : ""}`}>
       <div className="source-row-head">
         <div className="source-row-main">
           <span className="source-row-mark">
@@ -278,7 +278,14 @@ export function OwnAppSetup({
       )}
 
       {open && !done && (
-        <ol className="own-app-panel own-app-steps">
+        <div className="own-app-panel">
+        <div className="own-app-progress" aria-hidden>
+          <span>
+            Step {step + 1} of {steps.length}
+          </span>
+          <i style={{ ["--p" as string]: (step + 1) / steps.length }} />
+        </div>
+        <ol className="own-app-steps">
           {steps.map((s, i) => {
             const state = i < step ? "is-done" : i === step ? "is-current" : "is-next";
             return (
@@ -367,6 +374,7 @@ export function OwnAppSetup({
             );
           })}
         </ol>
+        </div>
       )}
     </div>
   );

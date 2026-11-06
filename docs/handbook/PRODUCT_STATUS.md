@@ -269,8 +269,13 @@ scored by the safety model; the answer fact-checker is off (§11).
   least three whenever the scope can chart anything), and Agent's example requests only for
   tools the scope has. Each space has its own colour from its name (list cards, its page, the
   People drawer); a space's page splits connected sources from ones to add. Reports are set up
-  in one composer (where it reads, how often) and listed as a timeline by next run. Local
-  development can sign in automatically with `NEXT_PUBLIC_DEV_LOGIN_EMAIL` (development only).
+  in one composer (where it reads, how often) and listed as a timeline by next run. Admin
+  pages (Sources with each company app's setup as steps, Model, People, Actions) and both
+  "What we couldn't answer" pages share the same calm layout.
+- **Updates shows the version** (6 Nov 2026): `HANDBOOK_VERSION`, else the version the release
+  build writes into the image (`HANDBOOK_IMAGE_VERSION`), else, for a copy run from the source,
+  `git describe` ("0.2.1, 66 changes after it"), which is shown but never checked against the
+  release feed.
 
 ## 10. Production Status
 
