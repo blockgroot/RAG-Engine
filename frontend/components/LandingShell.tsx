@@ -22,6 +22,7 @@ export function LandingShell({ children }: { children: ReactNode }) {
             <Link href="/#modes" className="site-nav-link">Modes</Link>
             <Link href="/#security" className="site-nav-link">Security</Link>
             <Link href="/#results" className="site-nav-link">Results</Link>
+            <Link href="/deployment" className="site-nav-link">Deployment</Link>
           </nav>
           <div className="site-nav-actions">
             <Link href="/login" className="site-btn site-btn-ghost site-hide-sm">
@@ -51,6 +52,7 @@ export function LandingShell({ children }: { children: ReactNode }) {
               <Link href="/#modes">Modes</Link>
               <Link href="/#security">Security</Link>
               <Link href="/#results">Results</Link>
+              <Link href="/deployment">Deployment</Link>
               <Link href="/login">Sign in</Link>
               <Link href="/signup" className="site-foot-cta">Request access</Link>
             </nav>

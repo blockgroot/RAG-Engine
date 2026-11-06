@@ -16,6 +16,7 @@ import { ControlPanel } from "@/components/site/ControlPanel";
 import { Receipts, Scoreboard } from "@/components/site/Proof";
 import { SetupSteps } from "@/components/site/SetupSteps";
 import { TrustList } from "@/components/site/TrustList";
+import { OwnAppsFigure } from "@/components/site/OwnAppsFigure";
 import { api } from "@/lib/api";
 import { homePathFor } from "@/lib/routing";
 
@@ -147,6 +148,25 @@ export default function RootPage() {
           </p>
         </div>
         <ControlPanel />
+      </section>
+
+      <section id="own-apps" className="site-wrap sec" aria-labelledby="own-apps-title">
+        <div className="oa">
+          <div className="sec-head">
+            <p className="site-label">Google and Slack</p>
+            <h2 id="own-apps-title" className="sec-title">Connected through your own app.</h2>
+            <p className="sec-lead">
+              Your company creates its own Google and Slack app once, in about 10 and 5 minutes.
+              Handbook walks you through each step, with every value ready to copy.
+            </p>
+            <ul className="oa-why">
+              <li>Everyone in your company can sign in, with no Google review</li>
+              <li>Slack is read at full speed</li>
+              <li>Your data travels only between your company and Handbook</li>
+            </ul>
+          </div>
+          <OwnAppsFigure />
+        </div>
       </section>
 
       <section id="background" className="site-wrap sec" aria-labelledby="background-title">
