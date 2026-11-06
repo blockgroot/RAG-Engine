@@ -271,7 +271,9 @@ scored by the safety model; the answer fact-checker is off (§11).
   People drawer); a space's page splits connected sources from ones to add. Reports are set up
   in one composer (where it reads, how often) and listed as a timeline by next run. Admin
   pages (Sources with each company app's setup as steps, Model, People, Actions) and both
-  "What we couldn't answer" pages share the same calm layout.
+  "What we couldn't answer" pages share the same calm layout. Ask's starters sit in an even
+  two-column grid. A report's activity list shows who, where and when above one clean line
+  (the Slack chunk header and `*` marks stripped), the first six, then "Show all".
 - **Updates shows the version** (6 Nov 2026): `HANDBOOK_VERSION`, else the version the release
   build writes into the image (`HANDBOOK_IMAGE_VERSION`), else, for a copy run from the source,
   `git describe` ("0.2.1, 66 changes after it"), which is shown but never checked against the

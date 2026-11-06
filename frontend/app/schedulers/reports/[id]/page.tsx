@@ -73,11 +73,34 @@ function isWebUrl(url: string | null | undefined): url is string {
   return !!url && /^https?:\/\//i.test(url);
 }
 
+/**
+ * One activity item as who / where / when / what. A Slack item's text starts
+ * with the chunk header ("Channel: #x [05:57] Name: ..."), and its meta repeats
+ * the text as a title; shown raw, every row read as a log line twice over.
+ */
+function tidyItem(item: { summary: string; meta?: string | null }) {
+  const meta = item.meta || "";
+  const cut = meta.lastIndexOf(" · ");
+  const when = cut >= 0 ? meta.slice(cut + 3) : "";
+  let where = cut >= 0 ? meta.slice(0, cut) : meta;
+  let who = "";
+  let text = item.summary;
+  const slack = /^Channel:\s*(#[\w.-]+)\s*(?:\[\d{1,2}:\d{2}\])?\s*([^:\n]{1,60}):\s*([\s\S]*)$/.exec(text);
+  if (slack) {
+    [, where, who, text] = slack;
+  }
+  text = text.replace(/\*+/g, "").replace(/\s+/g, " ").trim().replace(/^(?:\d+\.|[•\-–])\s+/, "");
+  return { who, where, when, text };
+}
+
+const ITEMS_SHOWN = 6;
+
 export default function ReportPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me, loading } = useMe();
   const [report, setReport] = useState<ReportDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [allItems, setAllItems] = useState(false);
 
   useEffect(() => {
     if (!me) return;
@@ -209,39 +232,42 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
               </p>
             </div>
             <ul className="report-items">
-              {report.items.map((item, i) => {
-                // meta above, content below: the eye lands on what happened,
-                // and the attribution is there when it is wanted. Content is
-                // clamped to two lines — one long Slack post used to fill a
-                // screen and bury every item after it — with the full text in
-                // title= so nothing is unreachable.
+              {(allItems ? report.items : report.items.slice(0, ITEMS_SHOWN)).map((item, i) => {
+                const { who, where, when, text } = tidyItem(item);
                 const body = (
                   <>
-                    {item.meta && <span className="report-item-meta">{item.meta}</span>}
-                    <span className="report-item-text">{item.summary}</span>
+                    <span className="report-item-avatar" aria-hidden>
+                      {(who || where.replace(/^#/, "") || "•").charAt(0).toUpperCase()}
+                    </span>
+                    <span className="report-item-meta">
+                      {who && <b>{who}</b>}
+                      {where && <span className="report-item-where">{where}</span>}
+                      {when && <span className="report-item-when">{when}</span>}
+                    </span>
+                    <span className="report-item-text">{text}</span>
                   </>
                 );
                 return (
                   <li key={`${i}-${item.summary}`}>
                     {isWebUrl(item.url) ? (
-                      <a
-                        href={item.url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        title={item.summary}
-                      >
+                      <a href={item.url} target="_blank" rel="noreferrer noopener" title={text}>
                         {body}
                         <span className="report-item-go" aria-hidden>
                           ↗
                         </span>
                       </a>
                     ) : (
-                      <div title={item.summary}>{body}</div>
+                      <div title={text}>{body}</div>
                     )}
                   </li>
                 );
               })}
             </ul>
+            {report.items.length > ITEMS_SHOWN && (
+              <button className="report-items-more" type="button" onClick={() => setAllItems((v) => !v)}>
+                {allItems ? "Show fewer" : `Show all ${report.items.length}`}
+              </button>
+            )}
           </section>
         )}
 

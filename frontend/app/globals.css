@@ -11058,3 +11058,45 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .gap-clear .muted { margin: 0.1rem 0 0; font-size: 0.8rem; }
 @media (max-width: 640px) { .gap-body { padding-left: 1rem; } .gap-flag { display: none; } }
 .gap-rule { margin: 0; font-size: 0.82rem; }
+
+/* ===== Report activity v2: who / where / when, then one tidy line ========= */
+.report-items { gap: 0; border: 1px solid #e3ece8; border-radius: 16px; overflow: hidden; background: #fff; }
+.report-items li, .reports-page .report-items li { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.report-items li + li { border-top: 1px solid #edf3f0; }
+.report-items li:hover, .reports-page .report-items li:hover { background: #f6fbf9; box-shadow: none; }
+.report-items a, .report-items li > div {
+  grid-template-columns: 2rem minmax(0, 1fr) auto; gap: 0.15rem 0.75rem; padding: 0.75rem 1rem; align-items: start;
+}
+.report-item-avatar {
+  grid-row: 1 / span 2; width: 2rem; height: 2rem; border-radius: 999px; display: grid; place-items: center;
+  font-size: 0.8rem; font-weight: 700; color: #0f766e; background: #e6f4ef;
+}
+.report-item-meta { grid-column: 2; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.5rem; font-size: 0.78rem; font-weight: 500; color: var(--ink-muted); }
+.report-item-meta b { font-weight: 650; color: var(--ink); }
+.report-item-where { color: #0f766e; }
+.report-item-when::before { content: "·"; margin-right: 0.5rem; color: #b6c6c0; }
+.report-item-text { grid-column: 2; font-size: 0.88rem; color: color-mix(in srgb, var(--ink) 82%, white); }
+.report-item-go { grid-column: 3; grid-row: 1 / span 2; opacity: 0; transition: opacity 0.15s; }
+.report-items a:hover .report-item-go { opacity: 1; }
+.report-items a:hover .report-item-text { text-decoration: none; }
+.report-items-more {
+  align-self: flex-start; justify-self: start; width: auto; margin-top: 0.7rem; padding: 0.45rem 0.95rem; border-radius: 999px; font: inherit; font-size: 0.82rem; font-weight: 600;
+  color: #0f766e; background: #fff; border: 1px solid #d6e6e0; cursor: pointer;
+}
+.report-items-more:hover { background: #f1f8f5; }
+
+/* ===== Ask starters v4: an even 2-column grid, not floating pills ========= */
+.ask-starters, .ask-starters.is-deep {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; width: 100%; max-width: 46rem;
+}
+.ask-starter, .ask-starters.is-deep .ask-starter {
+  display: flex; align-items: center; gap: 0.7rem; width: auto; max-width: none; min-height: 3.6rem; margin: 0;
+  padding: 0.6rem 0.9rem 0.6rem 0.6rem; border-radius: 14px; background: rgba(255,255,255,0.88);
+  animation: rise-in 0.45s var(--ease) both; animation-delay: calc(0.2s + var(--i) * 0.05s);
+}
+.ask-starter:nth-child(3n+2) { margin-top: 0; }
+.ask-starter-text, .ask-starters.is-deep .ask-starter-text {
+  white-space: normal; text-align: left; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+@media (max-width: 640px) { .ask-starters, .ask-starters.is-deep { grid-template-columns: 1fr; } }
