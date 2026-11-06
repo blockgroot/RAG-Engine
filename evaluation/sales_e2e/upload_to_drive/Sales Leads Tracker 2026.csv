@@ -1,0 +1,165 @@
+Lead ID,Created,Company,Contact,Industry,Source,Owner,Field Officer,Region,Stage,Deal Value (₹),Closed,CRM Link
+L-1001,2026-06-11,Saffron Labs,Karan Bhatia,Education,LinkedIn,Rohan Mehta,Farhan Qureshi,West,Lost,511000,2026-06-24,https://crm.acmedemo.example/leads/L-1001
+L-1002,2026-06-27,Amber Logistics,Amit Shah,Education,Website,Rohan Mehta,Farhan Qureshi,West,Lost,747000,2026-08-10,https://crm.acmedemo.example/leads/L-1002
+L-1003,2026-06-04,Cedar Hotels,Neha Joshi,Logistics,Trade Show,Rohan Mehta,Farhan Qureshi,West,Lost,130000,2026-06-11,https://crm.acmedemo.example/leads/L-1003
+L-1004,2026-06-12,Falcon Textiles,Swati Jain,Healthcare,Website,Rohan Mehta,Farhan Qureshi,West,Qualified,781000,,https://crm.acmedemo.example/leads/L-1004
+L-1005,2026-06-18,Pinnacle Foods,Swati Jain,Healthcare,Trade Show,Rohan Mehta,Farhan Qureshi,West,Lost,305000,2026-07-04,https://crm.acmedemo.example/leads/L-1005
+L-1006,2026-06-15,Harbor Retail,Pooja Desai,Logistics,LinkedIn,Rohan Mehta,Farhan Qureshi,West,Lost,407000,2026-07-29,https://crm.acmedemo.example/leads/L-1006
+L-1007,2026-06-16,Cedar Labs,Manoj Pillai,Retail,LinkedIn,Kavya Nair,Divya Menon,South,Won,980000,2026-07-19,https://crm.acmedemo.example/leads/L-1007
+L-1008,2026-06-08,Kesari Motors,Isha Reddy,Manufacturing,Cold Call,Kavya Nair,Divya Menon,South,Lost,1486000,2026-07-18,https://crm.acmedemo.example/leads/L-1008
+L-1009,2026-06-08,Cedar Labs,Sanjay Patil,Education,Cold Call,Kavya Nair,Divya Menon,South,Lost,285000,2026-07-14,https://crm.acmedemo.example/leads/L-1009
+L-1010,2026-06-22,Granite Motors,Neha Joshi,Healthcare,Trade Show,Kavya Nair,Divya Menon,South,Proposal,1463000,,https://crm.acmedemo.example/leads/L-1010
+L-1011,2026-06-01,Amber Labs,Isha Reddy,Healthcare,Referral,Kavya Nair,Divya Menon,South,Won,1206000,2026-07-16,https://crm.acmedemo.example/leads/L-1011
+L-1012,2026-06-09,Tidal Labs,Nikhil Rao,Retail,Trade Show,Kavya Nair,Divya Menon,South,Lost,880000,2026-07-17,https://crm.acmedemo.example/leads/L-1012
+L-1013,2026-06-15,Falcon Academy,Isha Reddy,Manufacturing,Cold Call,Arjun Iyer,Divya Menon,South,New,554000,,https://crm.acmedemo.example/leads/L-1013
+L-1014,2026-06-27,Cedar Hotels,Pooja Desai,Manufacturing,Cold Call,Arjun Iyer,Divya Menon,South,Lost,1131000,2026-07-21,https://crm.acmedemo.example/leads/L-1014
+L-1015,2026-06-05,Amber Labs,Pooja Desai,Education,Referral,Arjun Iyer,Divya Menon,South,Lost,66000,2026-06-12,https://crm.acmedemo.example/leads/L-1015
+L-1016,2026-06-08,Indigo Hotels,Rahul Verma,Retail,Trade Show,Arjun Iyer,Divya Menon,South,Won,101000,2026-07-19,https://crm.acmedemo.example/leads/L-1016
+L-1017,2026-06-22,Vistara Labs,Neha Joshi,Logistics,LinkedIn,Arjun Iyer,Divya Menon,South,Lost,935000,2026-07-30,https://crm.acmedemo.example/leads/L-1017
+L-1018,2026-06-05,Orbit Pharma,Tanvi Ghosh,Healthcare,LinkedIn,Arjun Iyer,Divya Menon,South,Qualified,147000,,https://crm.acmedemo.example/leads/L-1018
+L-1019,2026-06-13,Granite Foods,Pooja Desai,Logistics,Website,Meera Kapoor,Harpreet Gill,North,Lost,713000,2026-07-02,https://crm.acmedemo.example/leads/L-1019
+L-1020,2026-06-02,Sundar Labs,Isha Reddy,Healthcare,Trade Show,Meera Kapoor,Harpreet Gill,North,Lost,873000,2026-06-10,https://crm.acmedemo.example/leads/L-1020
+L-1021,2026-06-15,Orbit Pharma,Tanvi Ghosh,Education,Referral,Meera Kapoor,Harpreet Gill,North,Lost,209000,2026-07-21,https://crm.acmedemo.example/leads/L-1021
+L-1022,2026-06-14,Coral Labs,Karan Bhatia,Retail,Referral,Meera Kapoor,Harpreet Gill,North,Lost,635000,2026-07-05,https://crm.acmedemo.example/leads/L-1022
+L-1023,2026-06-21,Nimbus Retail,Nikhil Rao,Manufacturing,Cold Call,Meera Kapoor,Harpreet Gill,North,New,875000,,https://crm.acmedemo.example/leads/L-1023
+L-1024,2026-06-23,Banyan Labs,Rahul Verma,Manufacturing,Referral,Meera Kapoor,Harpreet Gill,North,Lost,81000,2026-08-02,https://crm.acmedemo.example/leads/L-1024
+L-1025,2026-06-09,Granite Academy,Rahul Verma,Healthcare,Referral,Vikram Singh,Harpreet Gill,North,Lost,474000,2026-06-21,https://crm.acmedemo.example/leads/L-1025
+L-1026,2026-06-09,Pinnacle Retail,Rahul Verma,Healthcare,LinkedIn,Vikram Singh,Harpreet Gill,North,Lost,1079000,2026-07-12,https://crm.acmedemo.example/leads/L-1026
+L-1027,2026-06-16,Indigo Textiles,Neha Joshi,Manufacturing,Website,Vikram Singh,Harpreet Gill,North,Lost,591000,2026-07-26,https://crm.acmedemo.example/leads/L-1027
+L-1028,2026-06-03,Harbor Pharma,Amit Shah,Healthcare,Referral,Vikram Singh,Harpreet Gill,North,Lost,713000,2026-07-06,https://crm.acmedemo.example/leads/L-1028
+L-1029,2026-06-18,Kesari Academy,Manoj Pillai,Education,Referral,Sneha Kulkarni,Farhan Qureshi,West,Lost,1153000,2026-07-08,https://crm.acmedemo.example/leads/L-1029
+L-1030,2026-06-19,Vistara Textiles,Sanjay Patil,Retail,Cold Call,Sneha Kulkarni,Farhan Qureshi,West,Won,430000,2026-07-31,https://crm.acmedemo.example/leads/L-1030
+L-1031,2026-06-06,Orbit Textiles,Manoj Pillai,Healthcare,Trade Show,Sneha Kulkarni,Farhan Qureshi,West,Won,143000,2026-07-05,https://crm.acmedemo.example/leads/L-1031
+L-1032,2026-06-19,Orbit Academy,Sanjay Patil,Retail,Website,Sneha Kulkarni,Farhan Qureshi,West,Lost,462000,2026-07-16,https://crm.acmedemo.example/leads/L-1032
+L-1033,2026-07-28,Sundar Foods,Pooja Desai,Manufacturing,Website,Rohan Mehta,Farhan Qureshi,West,Qualified,421000,,https://crm.acmedemo.example/leads/L-1033
+L-1034,2026-07-10,Monsoon Hotels,Isha Reddy,Education,LinkedIn,Rohan Mehta,Farhan Qureshi,West,Won,671000,2026-08-22,https://crm.acmedemo.example/leads/L-1034
+L-1035,2026-07-02,Amber Motors,Nikhil Rao,Retail,Trade Show,Rohan Mehta,Farhan Qureshi,West,Qualified,599000,,https://crm.acmedemo.example/leads/L-1035
+L-1036,2026-07-28,Granite Academy,Ritu Malhotra,Retail,Cold Call,Rohan Mehta,Farhan Qureshi,West,Lost,936000,2026-08-20,https://crm.acmedemo.example/leads/L-1036
+L-1037,2026-07-01,Pinnacle Motors,Ritu Malhotra,Education,Website,Rohan Mehta,Farhan Qureshi,West,Lost,344000,2026-07-15,https://crm.acmedemo.example/leads/L-1037
+L-1038,2026-07-18,Kesari Pharma,Tanvi Ghosh,Retail,Website,Rohan Mehta,Farhan Qureshi,West,Contacted,556000,,https://crm.acmedemo.example/leads/L-1038
+L-1039,2026-07-02,Sundar Motors,Tanvi Ghosh,Manufacturing,Trade Show,Rohan Mehta,Farhan Qureshi,West,Won,366000,2026-07-28,https://crm.acmedemo.example/leads/L-1039
+L-1040,2026-07-14,Saffron Pharma,Rahul Verma,Education,Website,Rohan Mehta,Farhan Qureshi,West,Lost,260000,2026-08-16,https://crm.acmedemo.example/leads/L-1040
+L-1041,2026-07-23,Vistara Logistics,Amit Shah,Retail,Trade Show,Kavya Nair,Divya Menon,South,Proposal,1609000,,https://crm.acmedemo.example/leads/L-1041
+L-1042,2026-07-18,Vistara Textiles,Rahul Verma,Education,Website,Kavya Nair,Divya Menon,South,Lost,530000,2026-08-14,https://crm.acmedemo.example/leads/L-1042
+L-1043,2026-07-21,Falcon Hotels,Amit Shah,Hospitality,Website,Kavya Nair,Divya Menon,South,Qualified,663000,,https://crm.acmedemo.example/leads/L-1043
+L-1044,2026-07-21,Saffron Labs,Rahul Verma,Hospitality,Cold Call,Kavya Nair,Divya Menon,South,Proposal,176000,,https://crm.acmedemo.example/leads/L-1044
+L-1045,2026-07-23,Indigo Hotels,Neha Joshi,Healthcare,Trade Show,Kavya Nair,Divya Menon,South,Contacted,1044000,,https://crm.acmedemo.example/leads/L-1045
+L-1046,2026-07-15,Pinnacle Logistics,Rahul Verma,Hospitality,Cold Call,Kavya Nair,Divya Menon,South,Lost,1022000,2026-08-21,https://crm.acmedemo.example/leads/L-1046
+L-1047,2026-07-16,Falcon Motors,Amit Shah,Hospitality,Referral,Arjun Iyer,Divya Menon,South,Qualified,986000,,https://crm.acmedemo.example/leads/L-1047
+L-1048,2026-07-03,Vistara Textiles,Amit Shah,Education,Referral,Arjun Iyer,Divya Menon,South,Lost,679000,2026-07-26,https://crm.acmedemo.example/leads/L-1048
+L-1049,2026-07-28,Nimbus Motors,Karan Bhatia,Education,LinkedIn,Arjun Iyer,Divya Menon,South,Lost,720000,2026-09-09,https://crm.acmedemo.example/leads/L-1049
+L-1050,2026-07-26,Kesari Textiles,Rahul Verma,Hospitality,Cold Call,Arjun Iyer,Divya Menon,South,Lost,232000,2026-09-03,https://crm.acmedemo.example/leads/L-1050
+L-1051,2026-07-18,Banyan Pharma,Sanjay Patil,Healthcare,LinkedIn,Meera Kapoor,Harpreet Gill,North,Lost,108000,2026-08-31,https://crm.acmedemo.example/leads/L-1051
+L-1052,2026-07-10,Sundar Retail,Karan Bhatia,Healthcare,LinkedIn,Meera Kapoor,Harpreet Gill,North,Lost,1286000,2026-07-29,https://crm.acmedemo.example/leads/L-1052
+L-1053,2026-07-06,Harbor Pharma,Rahul Verma,Retail,Website,Meera Kapoor,Harpreet Gill,North,Lost,92000,2026-08-02,https://crm.acmedemo.example/leads/L-1053
+L-1054,2026-07-17,Monsoon Textiles,Ritu Malhotra,Healthcare,Referral,Meera Kapoor,Harpreet Gill,North,Lost,946000,2026-07-24,https://crm.acmedemo.example/leads/L-1054
+L-1055,2026-07-18,Kesari Hotels,Isha Reddy,Retail,Website,Meera Kapoor,Harpreet Gill,North,Won,827000,2026-08-02,https://crm.acmedemo.example/leads/L-1055
+L-1056,2026-07-13,Monsoon Retail,Isha Reddy,Retail,LinkedIn,Meera Kapoor,Harpreet Gill,North,Lost,436000,2026-07-27,https://crm.acmedemo.example/leads/L-1056
+L-1057,2026-07-08,Monsoon Textiles,Pooja Desai,Retail,Cold Call,Vikram Singh,Harpreet Gill,North,Lost,752000,2026-08-13,https://crm.acmedemo.example/leads/L-1057
+L-1058,2026-07-25,Orbit Hotels,Karan Bhatia,Education,LinkedIn,Vikram Singh,Harpreet Gill,North,Lost,825000,2026-08-15,https://crm.acmedemo.example/leads/L-1058
+L-1059,2026-07-11,Granite Hotels,Rahul Verma,Manufacturing,Cold Call,Vikram Singh,Harpreet Gill,North,Lost,975000,2026-08-18,https://crm.acmedemo.example/leads/L-1059
+L-1060,2026-07-08,Monsoon Motors,Tanvi Ghosh,Logistics,Referral,Vikram Singh,Harpreet Gill,North,Qualified,830000,,https://crm.acmedemo.example/leads/L-1060
+L-1061,2026-07-05,Tidal Academy,Ritu Malhotra,Retail,Trade Show,Vikram Singh,Harpreet Gill,North,Lost,631000,2026-07-20,https://crm.acmedemo.example/leads/L-1061
+L-1062,2026-07-27,Indigo Logistics,Ritu Malhotra,Manufacturing,LinkedIn,Sneha Kulkarni,Farhan Qureshi,West,Qualified,261000,,https://crm.acmedemo.example/leads/L-1062
+L-1063,2026-07-25,Granite Motors,Amit Shah,Education,Trade Show,Sneha Kulkarni,Farhan Qureshi,West,Won,465000,2026-08-30,https://crm.acmedemo.example/leads/L-1063
+L-1064,2026-07-22,Harbor Labs,Neha Joshi,Logistics,Trade Show,Sneha Kulkarni,Farhan Qureshi,West,Lost,191000,2026-08-29,https://crm.acmedemo.example/leads/L-1064
+L-1065,2026-07-21,Sundar Academy,Manoj Pillai,Hospitality,Trade Show,Sneha Kulkarni,Farhan Qureshi,West,Lost,1334000,2026-08-08,https://crm.acmedemo.example/leads/L-1065
+L-1066,2026-08-11,Cedar Hotels,Amit Shah,Retail,Referral,Rohan Mehta,Farhan Qureshi,West,Lost,603000,2026-09-17,https://crm.acmedemo.example/leads/L-1066
+L-1067,2026-08-21,Lotus Foods,Neha Joshi,Logistics,LinkedIn,Rohan Mehta,Farhan Qureshi,West,Won,824000,2026-09-14,https://crm.acmedemo.example/leads/L-1067
+L-1068,2026-08-09,Banyan Labs,Amit Shah,Retail,Referral,Rohan Mehta,Farhan Qureshi,West,Lost,380000,2026-09-20,https://crm.acmedemo.example/leads/L-1068
+L-1069,2026-08-11,Orbit Academy,Pooja Desai,Education,Cold Call,Rohan Mehta,Farhan Qureshi,West,Proposal,230000,,https://crm.acmedemo.example/leads/L-1069
+L-1070,2026-08-23,Kesari Foods,Sanjay Patil,Logistics,Website,Rohan Mehta,Farhan Qureshi,West,Lost,582000,2026-09-07,https://crm.acmedemo.example/leads/L-1070
+L-1071,2026-08-06,Cedar Hotels,Ritu Malhotra,Healthcare,Trade Show,Rohan Mehta,Farhan Qureshi,West,Lost,512000,2026-08-27,https://crm.acmedemo.example/leads/L-1071
+L-1072,2026-08-16,Nimbus Retail,Rahul Verma,Retail,Cold Call,Kavya Nair,Divya Menon,South,Won,1599000,2026-09-08,https://crm.acmedemo.example/leads/L-1072
+L-1073,2026-08-26,Banyan Hotels,Sanjay Patil,Education,Cold Call,Kavya Nair,Divya Menon,South,Lost,1518000,2026-10-01,https://crm.acmedemo.example/leads/L-1073
+L-1074,2026-08-10,Coral Labs,Nikhil Rao,Education,Trade Show,Kavya Nair,Divya Menon,South,Won,168000,2026-09-12,https://crm.acmedemo.example/leads/L-1074
+L-1075,2026-08-16,Lotus Retail,Ritu Malhotra,Hospitality,Trade Show,Kavya Nair,Divya Menon,South,Lost,1547000,2026-09-25,https://crm.acmedemo.example/leads/L-1075
+L-1076,2026-08-12,Indigo Labs,Manoj Pillai,Logistics,Website,Kavya Nair,Divya Menon,South,Won,1781000,2026-08-30,https://crm.acmedemo.example/leads/L-1076
+L-1077,2026-08-20,Banyan Motors,Manoj Pillai,Education,Referral,Kavya Nair,Divya Menon,South,New,875000,,https://crm.acmedemo.example/leads/L-1077
+L-1078,2026-08-07,Cedar Pharma,Manoj Pillai,Hospitality,Trade Show,Arjun Iyer,Divya Menon,South,Qualified,942000,,https://crm.acmedemo.example/leads/L-1078
+L-1079,2026-08-12,Harbor Logistics,Rahul Verma,Education,LinkedIn,Arjun Iyer,Divya Menon,South,Proposal,663000,,https://crm.acmedemo.example/leads/L-1079
+L-1080,2026-08-23,Nimbus Foods,Sanjay Patil,Healthcare,Referral,Arjun Iyer,Divya Menon,South,Contacted,201000,,https://crm.acmedemo.example/leads/L-1080
+L-1081,2026-08-05,Vistara Retail,Rahul Verma,Manufacturing,Website,Arjun Iyer,Divya Menon,South,Lost,671000,2026-09-03,https://crm.acmedemo.example/leads/L-1081
+L-1082,2026-08-25,Harbor Foods,Sanjay Patil,Manufacturing,LinkedIn,Arjun Iyer,Divya Menon,South,Won,227000,2026-10-02,https://crm.acmedemo.example/leads/L-1082
+L-1083,2026-08-12,Tidal Pharma,Ritu Malhotra,Manufacturing,LinkedIn,Arjun Iyer,Divya Menon,South,New,585000,,https://crm.acmedemo.example/leads/L-1083
+L-1084,2026-08-02,Indigo Hotels,Amit Shah,Manufacturing,LinkedIn,Arjun Iyer,Divya Menon,South,Lost,117000,2026-08-31,https://crm.acmedemo.example/leads/L-1084
+L-1085,2026-08-28,Banyan Pharma,Neha Joshi,Manufacturing,Cold Call,Meera Kapoor,Harpreet Gill,North,Proposal,894000,,https://crm.acmedemo.example/leads/L-1085
+L-1086,2026-08-07,Tidal Retail,Ritu Malhotra,Hospitality,Referral,Meera Kapoor,Harpreet Gill,North,Lost,733000,2026-09-10,https://crm.acmedemo.example/leads/L-1086
+L-1087,2026-08-10,Cedar Textiles,Neha Joshi,Hospitality,Referral,Meera Kapoor,Harpreet Gill,North,Lost,612000,2026-09-21,https://crm.acmedemo.example/leads/L-1087
+L-1088,2026-08-04,Orbit Textiles,Rahul Verma,Manufacturing,Cold Call,Meera Kapoor,Harpreet Gill,North,Qualified,959000,,https://crm.acmedemo.example/leads/L-1088
+L-1089,2026-08-07,Vistara Academy,Sanjay Patil,Hospitality,Trade Show,Meera Kapoor,Harpreet Gill,North,Proposal,94000,,https://crm.acmedemo.example/leads/L-1089
+L-1090,2026-08-01,Monsoon Retail,Rahul Verma,Retail,Referral,Vikram Singh,Harpreet Gill,North,Lost,521000,2026-08-25,https://crm.acmedemo.example/leads/L-1090
+L-1091,2026-08-18,Nimbus Labs,Ritu Malhotra,Healthcare,Website,Vikram Singh,Harpreet Gill,North,Lost,417000,2026-09-18,https://crm.acmedemo.example/leads/L-1091
+L-1092,2026-08-15,Falcon Textiles,Sanjay Patil,Healthcare,Website,Vikram Singh,Harpreet Gill,North,Lost,610000,2026-09-24,https://crm.acmedemo.example/leads/L-1092
+L-1093,2026-08-03,Kesari Motors,Nikhil Rao,Education,Cold Call,Vikram Singh,Harpreet Gill,North,Lost,118000,2026-09-07,https://crm.acmedemo.example/leads/L-1093
+L-1094,2026-08-16,Vistara Foods,Pooja Desai,Logistics,Website,Sneha Kulkarni,Farhan Qureshi,West,Lost,271000,2026-09-12,https://crm.acmedemo.example/leads/L-1094
+L-1095,2026-08-06,Coral Labs,Pooja Desai,Hospitality,Trade Show,Sneha Kulkarni,Farhan Qureshi,West,Lost,412000,2026-08-15,https://crm.acmedemo.example/leads/L-1095
+L-1096,2026-08-23,Lotus Retail,Swati Jain,Manufacturing,Cold Call,Sneha Kulkarni,Farhan Qureshi,West,Won,1382000,2026-09-14,https://crm.acmedemo.example/leads/L-1096
+L-1097,2026-08-08,Nimbus Retail,Neha Joshi,Education,Referral,Sneha Kulkarni,Farhan Qureshi,West,Lost,1231000,2026-09-10,https://crm.acmedemo.example/leads/L-1097
+L-1098,2026-08-15,Granite Retail,Manoj Pillai,Retail,Cold Call,Sneha Kulkarni,Farhan Qureshi,West,Won,217000,2026-09-21,https://crm.acmedemo.example/leads/L-1098
+L-1099,2026-09-13,Pinnacle Logistics,Manoj Pillai,Healthcare,Trade Show,Rohan Mehta,Farhan Qureshi,West,Proposal,762000,,https://crm.acmedemo.example/leads/L-1099
+L-1100,2026-09-25,Monsoon Labs,Rahul Verma,Education,Website,Rohan Mehta,Farhan Qureshi,West,Lost,716000,2026-10-03,https://crm.acmedemo.example/leads/L-1100
+L-1101,2026-09-19,Harbor Pharma,Isha Reddy,Logistics,Website,Rohan Mehta,Farhan Qureshi,West,Lost,239000,2026-09-30,https://crm.acmedemo.example/leads/L-1101
+L-1102,2026-09-26,Sundar Logistics,Neha Joshi,Retail,Trade Show,Rohan Mehta,Farhan Qureshi,West,Won,951000,2026-10-28,https://crm.acmedemo.example/leads/L-1102
+L-1103,2026-09-25,Coral Academy,Rahul Verma,Retail,Referral,Rohan Mehta,Farhan Qureshi,West,Qualified,879000,,https://crm.acmedemo.example/leads/L-1103
+L-1104,2026-09-23,Harbor Foods,Ritu Malhotra,Hospitality,Cold Call,Rohan Mehta,Farhan Qureshi,West,New,867000,,https://crm.acmedemo.example/leads/L-1104
+L-1105,2026-09-21,Cedar Foods,Sanjay Patil,Retail,Referral,Kavya Nair,Divya Menon,South,Contacted,1197000,,https://crm.acmedemo.example/leads/L-1105
+L-1106,2026-09-21,Nimbus Retail,Sanjay Patil,Retail,LinkedIn,Kavya Nair,Divya Menon,South,Won,428000,2026-10-16,https://crm.acmedemo.example/leads/L-1106
+L-1107,2026-09-06,Saffron Retail,Amit Shah,Education,Trade Show,Kavya Nair,Divya Menon,South,Lost,966000,2026-10-17,https://crm.acmedemo.example/leads/L-1107
+L-1108,2026-09-08,Nimbus Foods,Karan Bhatia,Logistics,LinkedIn,Kavya Nair,Divya Menon,South,Lost,875000,2026-09-30,https://crm.acmedemo.example/leads/L-1108
+L-1109,2026-09-03,Saffron Pharma,Manoj Pillai,Manufacturing,LinkedIn,Kavya Nair,Divya Menon,South,Lost,1149000,2026-09-20,https://crm.acmedemo.example/leads/L-1109
+L-1110,2026-09-25,Amber Textiles,Amit Shah,Healthcare,Website,Kavya Nair,Divya Menon,South,Lost,556000,2026-10-12,https://crm.acmedemo.example/leads/L-1110
+L-1111,2026-09-25,Saffron Retail,Swati Jain,Manufacturing,Trade Show,Arjun Iyer,Divya Menon,South,Won,1131000,2026-10-31,https://crm.acmedemo.example/leads/L-1111
+L-1112,2026-09-06,Granite Textiles,Swati Jain,Logistics,Cold Call,Arjun Iyer,Divya Menon,South,Lost,183000,2026-09-13,https://crm.acmedemo.example/leads/L-1112
+L-1113,2026-09-22,Coral Foods,Nikhil Rao,Healthcare,Referral,Arjun Iyer,Divya Menon,South,Lost,639000,2026-10-21,https://crm.acmedemo.example/leads/L-1113
+L-1114,2026-09-04,Orbit Academy,Swati Jain,Education,Website,Arjun Iyer,Divya Menon,South,Lost,331000,2026-09-30,https://crm.acmedemo.example/leads/L-1114
+L-1115,2026-09-01,Kesari Logistics,Nikhil Rao,Logistics,Referral,Arjun Iyer,Divya Menon,South,Lost,897000,2026-10-07,https://crm.acmedemo.example/leads/L-1115
+L-1116,2026-09-20,Vistara Foods,Tanvi Ghosh,Education,Trade Show,Arjun Iyer,Divya Menon,South,Proposal,180000,,https://crm.acmedemo.example/leads/L-1116
+L-1117,2026-09-05,Pinnacle Pharma,Karan Bhatia,Hospitality,Website,Arjun Iyer,Divya Menon,South,Lost,340000,2026-10-10,https://crm.acmedemo.example/leads/L-1117
+L-1118,2026-09-19,Amber Textiles,Karan Bhatia,Healthcare,Cold Call,Meera Kapoor,Harpreet Gill,North,Won,343000,2026-10-16,https://crm.acmedemo.example/leads/L-1118
+L-1119,2026-09-25,Indigo Retail,Swati Jain,Education,Cold Call,Meera Kapoor,Harpreet Gill,North,Lost,1244000,2026-10-21,https://crm.acmedemo.example/leads/L-1119
+L-1120,2026-09-16,Kesari Labs,Amit Shah,Manufacturing,Referral,Meera Kapoor,Harpreet Gill,North,Lost,451000,2026-10-03,https://crm.acmedemo.example/leads/L-1120
+L-1121,2026-09-23,Saffron Hotels,Rahul Verma,Retail,Referral,Meera Kapoor,Harpreet Gill,North,Lost,1293000,2026-10-25,https://crm.acmedemo.example/leads/L-1121
+L-1122,2026-09-13,Granite Logistics,Tanvi Ghosh,Education,Trade Show,Meera Kapoor,Harpreet Gill,North,Won,479000,2026-10-24,https://crm.acmedemo.example/leads/L-1122
+L-1123,2026-09-18,Monsoon Retail,Neha Joshi,Manufacturing,LinkedIn,Meera Kapoor,Harpreet Gill,North,Lost,533000,2026-10-11,https://crm.acmedemo.example/leads/L-1123
+L-1124,2026-09-02,Tidal Pharma,Isha Reddy,Logistics,Cold Call,Vikram Singh,Harpreet Gill,North,Contacted,356000,,https://crm.acmedemo.example/leads/L-1124
+L-1125,2026-09-22,Falcon Hotels,Manoj Pillai,Healthcare,Cold Call,Vikram Singh,Harpreet Gill,North,Won,363000,2026-10-01,https://crm.acmedemo.example/leads/L-1125
+L-1126,2026-09-08,Falcon Hotels,Ritu Malhotra,Logistics,LinkedIn,Vikram Singh,Harpreet Gill,North,Qualified,874000,,https://crm.acmedemo.example/leads/L-1126
+L-1127,2026-09-08,Monsoon Logistics,Manoj Pillai,Education,Cold Call,Vikram Singh,Harpreet Gill,North,Won,589000,2026-10-09,https://crm.acmedemo.example/leads/L-1127
+L-1128,2026-09-28,Banyan Pharma,Isha Reddy,Education,Cold Call,Sneha Kulkarni,Farhan Qureshi,West,New,208000,,https://crm.acmedemo.example/leads/L-1128
+L-1129,2026-09-16,Banyan Hotels,Amit Shah,Education,Website,Sneha Kulkarni,Farhan Qureshi,West,Contacted,661000,,https://crm.acmedemo.example/leads/L-1129
+L-1130,2026-09-04,Monsoon Labs,Nikhil Rao,Retail,Cold Call,Sneha Kulkarni,Farhan Qureshi,West,Won,609000,2026-10-10,https://crm.acmedemo.example/leads/L-1130
+L-1131,2026-09-08,Coral Hotels,Nikhil Rao,Manufacturing,Cold Call,Sneha Kulkarni,Farhan Qureshi,West,Lost,1299000,2026-09-21,https://crm.acmedemo.example/leads/L-1131
+L-1132,2026-10-14,Harbor Retail,Ritu Malhotra,Education,Referral,Rohan Mehta,Farhan Qureshi,West,Lost,137000,2026-10-31,https://crm.acmedemo.example/leads/L-1132
+L-1133,2026-10-04,Amber Textiles,Manoj Pillai,Logistics,Referral,Rohan Mehta,Farhan Qureshi,West,Lost,258000,2026-10-31,https://crm.acmedemo.example/leads/L-1133
+L-1134,2026-10-03,Amber Retail,Amit Shah,Logistics,Cold Call,Rohan Mehta,Farhan Qureshi,West,Won,467000,2026-10-14,https://crm.acmedemo.example/leads/L-1134
+L-1135,2026-10-12,Tidal Textiles,Sanjay Patil,Hospitality,LinkedIn,Rohan Mehta,Farhan Qureshi,West,New,415000,,https://crm.acmedemo.example/leads/L-1135
+L-1136,2026-10-17,Sundar Pharma,Tanvi Ghosh,Education,Trade Show,Rohan Mehta,Farhan Qureshi,West,Lost,140000,2026-10-31,https://crm.acmedemo.example/leads/L-1136
+L-1137,2026-10-09,Saffron Hotels,Pooja Desai,Logistics,Website,Rohan Mehta,Farhan Qureshi,West,Proposal,763000,,https://crm.acmedemo.example/leads/L-1137
+L-1138,2026-10-19,Pinnacle Logistics,Swati Jain,Education,LinkedIn,Rohan Mehta,Farhan Qureshi,West,Qualified,334000,,https://crm.acmedemo.example/leads/L-1138
+L-1139,2026-10-06,Indigo Labs,Isha Reddy,Healthcare,Cold Call,Rohan Mehta,Farhan Qureshi,West,Qualified,71000,,https://crm.acmedemo.example/leads/L-1139
+L-1140,2026-10-24,Amber Pharma,Ritu Malhotra,Education,Trade Show,Rohan Mehta,Farhan Qureshi,West,Qualified,231000,,https://crm.acmedemo.example/leads/L-1140
+L-1141,2026-10-09,Banyan Hotels,Swati Jain,Healthcare,Website,Rohan Mehta,Farhan Qureshi,West,Contacted,42000,,https://crm.acmedemo.example/leads/L-1141
+L-1142,2026-10-11,Granite Textiles,Ritu Malhotra,Logistics,Cold Call,Kavya Nair,Divya Menon,South,Proposal,1131000,,https://crm.acmedemo.example/leads/L-1142
+L-1143,2026-10-19,Monsoon Motors,Swati Jain,Healthcare,Trade Show,Kavya Nair,Divya Menon,South,Proposal,693000,,https://crm.acmedemo.example/leads/L-1143
+L-1144,2026-10-26,Nimbus Foods,Swati Jain,Healthcare,LinkedIn,Kavya Nair,Divya Menon,South,Qualified,788000,,https://crm.acmedemo.example/leads/L-1144
+L-1145,2026-10-18,Tidal Academy,Karan Bhatia,Healthcare,Trade Show,Kavya Nair,Divya Menon,South,New,1403000,,https://crm.acmedemo.example/leads/L-1145
+L-1146,2026-10-01,Orbit Foods,Swati Jain,Healthcare,LinkedIn,Kavya Nair,Divya Menon,South,Lost,174000,2026-10-22,https://crm.acmedemo.example/leads/L-1146
+L-1147,2026-10-18,Kesari Motors,Neha Joshi,Retail,Website,Kavya Nair,Divya Menon,South,New,574000,,https://crm.acmedemo.example/leads/L-1147
+L-1148,2026-10-26,Amber Labs,Swati Jain,Retail,Trade Show,Arjun Iyer,Divya Menon,South,Proposal,92000,,https://crm.acmedemo.example/leads/L-1148
+L-1149,2026-10-14,Nimbus Motors,Sanjay Patil,Manufacturing,Trade Show,Arjun Iyer,Divya Menon,South,Proposal,269000,,https://crm.acmedemo.example/leads/L-1149
+L-1150,2026-10-21,Nimbus Textiles,Isha Reddy,Education,Cold Call,Arjun Iyer,Divya Menon,South,Contacted,748000,,https://crm.acmedemo.example/leads/L-1150
+L-1151,2026-10-27,Pinnacle Textiles,Rahul Verma,Logistics,Referral,Arjun Iyer,Divya Menon,South,Contacted,952000,,https://crm.acmedemo.example/leads/L-1151
+L-1152,2026-10-24,Orbit Academy,Amit Shah,Retail,Referral,Meera Kapoor,Harpreet Gill,North,Contacted,315000,,https://crm.acmedemo.example/leads/L-1152
+L-1153,2026-10-15,Coral Foods,Ritu Malhotra,Education,Website,Meera Kapoor,Harpreet Gill,North,Qualified,550000,,https://crm.acmedemo.example/leads/L-1153
+L-1154,2026-10-09,Coral Academy,Manoj Pillai,Education,Website,Meera Kapoor,Harpreet Gill,North,Contacted,485000,,https://crm.acmedemo.example/leads/L-1154
+L-1155,2026-10-27,Monsoon Pharma,Rahul Verma,Manufacturing,Referral,Meera Kapoor,Harpreet Gill,North,Contacted,642000,,https://crm.acmedemo.example/leads/L-1155
+L-1156,2026-10-18,Cedar Hotels,Neha Joshi,Manufacturing,Referral,Meera Kapoor,Harpreet Gill,North,Lost,206000,2026-10-31,https://crm.acmedemo.example/leads/L-1156
+L-1157,2026-10-12,Pinnacle Labs,Amit Shah,Education,Trade Show,Meera Kapoor,Harpreet Gill,North,Contacted,843000,,https://crm.acmedemo.example/leads/L-1157
+L-1158,2026-10-24,Pinnacle Pharma,Sanjay Patil,Logistics,Cold Call,Vikram Singh,Harpreet Gill,North,Lost,702000,2026-10-31,https://crm.acmedemo.example/leads/L-1158
+L-1159,2026-10-26,Kesari Academy,Nikhil Rao,Logistics,Website,Vikram Singh,Harpreet Gill,North,New,260000,,https://crm.acmedemo.example/leads/L-1159
+L-1160,2026-10-16,Nimbus Textiles,Sanjay Patil,Logistics,Website,Vikram Singh,Harpreet Gill,North,Qualified,181000,,https://crm.acmedemo.example/leads/L-1160
+L-1161,2026-10-07,Lotus Logistics,Amit Shah,Hospitality,Trade Show,Vikram Singh,Harpreet Gill,North,New,76000,,https://crm.acmedemo.example/leads/L-1161
+L-1162,2026-10-09,Harbor Logistics,Amit Shah,Healthcare,LinkedIn,Sneha Kulkarni,Farhan Qureshi,West,Proposal,1003000,,https://crm.acmedemo.example/leads/L-1162
+L-1163,2026-10-23,Nimbus Hotels,Ritu Malhotra,Manufacturing,LinkedIn,Sneha Kulkarni,Farhan Qureshi,West,Proposal,1012000,,https://crm.acmedemo.example/leads/L-1163
+L-1164,2026-10-09,Harbor Textiles,Nikhil Rao,Hospitality,Website,Sneha Kulkarni,Farhan Qureshi,West,Qualified,1161000,,https://crm.acmedemo.example/leads/L-1164

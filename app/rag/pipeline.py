@@ -135,6 +135,12 @@ _NEIGHBOR_TOP_HITS = 2
 _MAX_RECOVERY_QUERY_LEN = 200
 
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
+#: The tag on a line of its own AFTER a short lead-in: Claude Haiku sometimes
+#: writes one sentence first ("The CONTEXT lists the owner...\n\nMODE: B"), and
+#: the tag then shipped mid-answer with the audit skipped. Bounded so a "MODE:"
+#: quoted deep inside a long answer is never taken for the tag.
+_LATE_MODE_TAG_RE = re.compile(r"^[ \t]*MODE:[ \t]*([ABC])[ \t]*\n+", re.IGNORECASE | re.MULTILINE)
+_MODE_LEAD_IN_CHARS = 400
 
 
 
@@ -345,9 +351,14 @@ def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
     never as an error, so behavior degrades gracefully instead of breaking.
     """
     match = _MODE_TAG_RE.match(raw)
-    if not match:
-        return None, raw
-    return match.group(1).upper(), match.group(2).strip()
+    if match:
+        return match.group(1).upper(), match.group(2).strip()
+    late = _LATE_MODE_TAG_RE.search(raw, 0, _MODE_LEAD_IN_CHARS + 20)
+    if late and late.start() <= _MODE_LEAD_IN_CHARS:
+        # The answer is what follows the tag, as the prompt asks; the lead-in
+        # was narration before it ("The CONTEXT lists ...").
+        return late.group(1).upper(), raw[late.end():].strip()
+    return None, raw
 
 
 def _violates_mode_b_tone(text: str) -> bool:
@@ -854,9 +865,14 @@ class RagPipeline:
         question_decomposed = False
         recovery_queries: list[str] = []
 
+        from ..insights.table_answers import current_answers
+
+        # A turn with figures worked out for IT never reuses the last turn's
+        # passages: "and how many of them reached an offer?" was answered from
+        # the previous turn's figure and refused.
         reused = (
             None
-            if date_range is not None or tags is not None
+            if date_range is not None or tags is not None or current_answers()
             else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         )
         if reused is not None:
@@ -1952,6 +1968,8 @@ class RagPipeline:
         )
 
         asker = current_asker_facts()
+        from ..insights.table_answers import NARROWER, current_answers
+
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
@@ -1966,6 +1984,8 @@ class RagPipeline:
             partial_rule=self._settings.partial_rule,
             conflict_rule=self._settings.conflict_rule,
             assemble_rule=self._settings.assemble_rule and extra_effort_on(),
+            # A worked figure and the part of it the question may have meant.
+            readings_rule=any(NARROWER in a.text for a in current_answers()),
         )
         answer_cap = self._read_settings().max_answer_tokens  # extra effort may answer longer
         raw = self._generate_text(

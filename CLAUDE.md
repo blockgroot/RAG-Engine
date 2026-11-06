@@ -114,7 +114,14 @@ entry. `doc_viewers && '{}'` is false, which is what makes public-only work.
 `Viewer(email=None)` is unrestricted; do not conflate it with public-only.
 A tool the question NAMES decides routing: one named tool is routed there;
 several are probed among themselves and the connected answer reads exactly those,
-never a tool the asker did not mention. Adjacent markers citing one document
+never a tool the asker did not mention. The probe's own pick that refuses is asked
+once more on the best OTHER tool that cleared the gate, the rest searched beside it,
+never the refusing tool again (`routing.refusal_retry`; chat and Slack). A question that
+types a cell of ONE tool's sheet rows (`rows_naming`) is routed to that tool when it
+cleared the gate ("rows-named", run beside the probe; retried like a probe pick): a
+sheet embeds only its columns, so a person's name lost to Slack by 0.03. One word of a
+longer title (numbers aside) does not NAME a page ("by employee" is not "Employee
+Referral Policy"; `resolve.title_match`). Adjacent markers citing one document
 collapse to one. A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
 traffic is not indexed. Query-norm max edit distance is 1, and the normalized
 string is never the web-search query.
@@ -125,6 +132,13 @@ the audit never runs. Do not move CONTEXT or QUESTION earlier in that prompt.
 are never throttled; background work keeps `LLM_RESERVE_RPM` free. A 429 is the
 quota, not a blip. Do not name the routing wrapper in `build_aux_llm_provider`'s
 docstring; a test reads that source.
+Reasoning stays OFF on every call, or the lowest effort a model accepts when it
+cannot be off (`routed.py` per-vendor extras; a model that names another "off" form
+in its 400 gets that). A call's `max_tokens` is sized to its whole reply plus the
+prose a model may write before JSON, never to the bare fields: the cap is a ceiling,
+not a cost, and a reply cut at it (`llm.truncated`) is a silent wrong answer (charts
+and the question check were cut at 200). Raise the cap where it is set; no retry
+loop hides it.
 
 **Sync.** Every sync path takes an explicit provider. Disconnect uses
 `sources.factory.INDEXED_PROVIDERS`, not a hand-kept list. A Slack listing deletes
@@ -164,17 +178,21 @@ emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
 (`insights/attr_catalog.py`); `registry.ATTRS` is display hints only, never a
 list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
-Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
-the question check reads as a chart ask, "visual" or "count"). Slack passes the
+Charts are built in Chart mode (chat sends `mode: "chart"`; Slack: a question
+the question check reads as a chart ask, "visual" or "count"), and for an Ask
+question the check reads as "count" when a chart fits AND is narrowed by a filter or
+focus from the question (`count-chart`, its values also written under it; an
+unnarrowed chart answers a broader question); otherwise Ask answers as before. Slack passes the
 asker's `Viewer` into routing. A DM charts what they can open: the probed scope
 first, then (on a chart refusal) up to `MAX_DM_CHART_SCOPES` of their other
 scopes, and the reply names the scope that answered; a chart ask in a
 CHANNEL charts that channel only (`channel_tag`: Slack metrics focused on the
 channel, tables and paragraphs from its threads, the room's public+channel
 viewer), never another connector. Chart mode answers with a chart or a
-refusal, never a document answer. Ask never runs the chart classifier: its question
-check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
-`chart_ask` ("visual" gets the Chart-mode hint, "count" the Turn on Chart button).
+refusal, never a document answer. Ask runs the chart classifier only for a "count":
+its question check (`resolve.classify_route`) decides a live GitHub read, `needs_live`
+and `chart_ask` ("visual" gets the Chart-mode hint, "count" a SQL count or, when no
+chart fits, the Turn on Chart button).
 **No word list decides intent anywhere in charts**: the model reads the question
 and code verifies what it can (a quote is in the question, a value has rows, a type
 came from the source). Which connector a chart uses is decided the same way,
@@ -187,7 +205,35 @@ a shared kind the question does not distinguish is refused rather than drawn.
 A connector the question NAMES ("the Google doc") is `AskIntent.source`, kept only
 when its `source_words` quote is in the question; then no other connector's
 table is drawn, and the retry, the live read and the paragraph read all stay on
-that connector. A table pick is never swapped for an activity metric.
+that connector. A table pick is never swapped for an activity metric, and is
+drawn across connectors when the question has a word of that table's labels or names
+its page; a pick nothing in the question supports is refused, naming the documents.
+Two figures from two tables ("target vs achieved") are `ChartSpec.versus`: each side
+is SQL over its own table, joined on each side's names column, the second table
+re-fetched with the viewer at run time, never summed into one measure. The chart
+prompt offers `tables.MAX_OFFERED` tables, at most `PER_DOCUMENT` per document
+first, only the first `FULL_DETAIL` with their values (the rest headers only).
+A breakdown asked beside a period that the chart cannot draw is refused, also on
+a read page's Period column.
+The model is shown every value of a small category column (up to
+`extract.CATEGORY_SAMPLES`; tables stored with five are re-sampled from their rows once,
+`schema_marks` `category_samples_twelve`). With no column
+from the model, a column the question names by its header is the breakdown, not the
+date column; a column of which the question types exactly ONE value, undrawn and
+unfiltered, is filtered on it (`resolve._typed_values`); two values are a comparison.
+A breakdown asked for in words the model matched to no column (its quote is not the
+period's) is refused with the columns, never drawn on a date axis alone. A chart question
+is offered `tables.MAX_OFFERED` (10) tables: at 6 the leads sheet ranked 7th. A date breakdown stays the axis wherever its
+column sits (`parse_pick` swapped Closed x Region and refused). Copies of one sheet (title
+equal but for a file extension, same columns and rows) are offered once
+(`tables.distinct`); two copies pushed the leads sheet out of the six. The chart reply cap
+(`resolve.MAX_TOKENS`) fits the whole JSON object: at 200 it was cut off and refused. A table's time axis is a DATE column, never
+a series; a period the asker did not ask for (`period`/`period_words` not in the
+question) is the default grain. A table filter may keep several values (a tuple,
+`= ANY`, each value matched to real rows); kept values are drawn one series each. A
+filter header the table lacks is the ONE column whose complete samples hold every value
+(`tables._holding`); "A, B" written as one string is split only when the whole is no
+value and every part is.
 Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
 The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
@@ -214,7 +260,7 @@ A filter on `subject` (one channel/repo/team) is a focus in the wrong slot:
 moved to `focus`, never refused. Refusals name fields by `dim_label`, never keys.
 The asker's time range ("over the last year") is `spec.days`, kept only when the
 model's `range_words` quote is in the question, capped at `MAX_RANGE_DAYS`, and
-said in the title. An empty chart is never stepped to a finer period (that
+said in the title. On a TABLE the named month, year or day is `range_period` ("2026-11"), a filter on the date column under the same quote check (`resolve._table_range`); a period outside that column's stored range is refused with the range and the offered tables that hold it, never drawn empty. An empty chart is never stepped to a finer period (that
 shrank the window). An empty GitHub pull-request chart asks GitHub why
 (`_github_pull_diagnosis`: no "Pull requests: Read" vs none exist), naming no repo.
 A GitHub chart reads GitHub when it is ASKED (`github_facts.refresh_for_chart`:
@@ -304,7 +350,57 @@ A Notion `table` renders as a pipe table with a header separator (first row =
 header); bare "a | b" rows were never found by the table reader. An inline
 database (`child_database`) renders as a table of its rows' properties under its
 title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
-A Sheet embeds a description of its columns, never its figures. An unparseable
+A workbook (a Google Sheet, exported as .xlsx, or an .xlsx in Drive or uploaded) is
+read through ONE reader (`doctables.extract.workbook_tables`): EVERY tab; tabs with
+the same header are one table with a `Tab` column, so a total spans them in one SQL
+count, never figures a model adds up. A Sheet too big to export as .xlsx falls back to
+its first tab, said on the chart. A page whose first chunk is a sheet description
+(`extract.DESCRIPTION_LEAD`) is never read for prose figures.
+A table offered for a chart or an answer that holds a cell the question TYPES
+(`store.typed_cells`, through the cell index) comes first and is labelled so; a date
+column shows its first and last day. A question that types a sheet's cell or names
+its column header reaches the table form even when the model's check said no
+(`routing._names_a_sheet`, SQL beside the check). In the form a filter on a value the
+named column lacks moves to the ONE column holding it; a name or a period the table
+does not hold is STATED in the passage (`_Absent`), never answered as 0 or dropped.
+A filter whose value is also a word of the table's own headers ("Applied" beside
+"Applied Via") is worked out BOTH ways, labelled (`_without_header_words`): the
+word may name what the sheet holds, not a stage. The form QUOTES every person, company or item the question names (`named`, kept only
+when the quote is in the question); one that no cell of the offered tables holds as
+whole words (`store.holds_words`) drops every figure and the passage says so: a figure
+worked out without them is not about them. A typed part of ONE stored value
+("Maplepeak") filters on that value. A chart's typed filter also comes from the
+cells the index found (`TableRef.typed`), not only a column's twelve samples. Code completes the form: a cell the question types (`store.typed_cells`) is added to a
+query that does not use its column (`_with_typed`; a header word is left to the both-ways
+rule); a filter that is the model's reading (a value the asker never typed, or a word of
+the headers) is worked out as the whole and then `NARROWER` its part (`_broader`), and
+the answer prompt then states both (`_READINGS_RULE`, only when that pair is present); the ONE column the question names by its header's words or their
+longer forms is the breakdown (`_named_breakdown`); `of_these` narrows the rows outside a
+ratio, never ignored. The form lists `FORM_FULL_DETAIL` tables with values, the rest by
+header. A chart filters a date column to a named month, year or day
+(`store.period_span`), and the column stays the time axis. `distinct` counts different values ("how many companies") and lists them; `rows`
+lists records; a date filter is a period bound in SQL (`store.DateSpan`). A row lookup
+counts each typed value per table first (`MAX_LOOKUP_ROWS`): a name that is a group in
+one tab still names its row in another. A counted Ask answer states its total.
+A Sheet embeds a description of its columns, never its figures. Ask reads a ROW
+only when the question types one of its cells (`doctables.store.rows_naming`: whole
+words, a value naming at most `MAX_LOOKUP_ROWS` rows of its table, real tables only,
+the document predicate; found by the question's whole-word phrases through the
+`doc_table_rows_cells_lower` index, never a scan of the org's rows), as a passage scored by the better of its document's cosine and
+its own text's (embedded then, with the question's model): both real cosines, so the gate
+holds (a sheet's column description scored 0.342 against "who closed L-1076?"). A sheet's
+description says its category values are a SAMPLE of how many, or a missing name reads
+as absent. A named row always enters the RERANK pool: fusion rewards a chunk every
+sub-question finds again, and a row comes from one leg (the reranker still decides). A worked figure keeps its document's cosine.
+With `DOCTABLES_ANSWERS_ENABLED` (off by default), a question Ask's check flags as
+`table` (a total, share, highest, named people compared, an overview; a follow-up is
+checked with the question it continues, `resolve.with_earlier`) is worked out by `insights/table_answers.py`: the
+model fills a FORM (table, operation, columns, values), code checks every name and
+value against the real table, SQL computes, and the result is a passage of the
+sheet that retrieval never ranks out (re-checked for the viewer). A form that does
+not fit is dropped and Ask answers as before, and so is a query the model itself marks
+as not the figure asked (`is_the_figure_asked`: a headcount for revenue); a ratio that narrows nothing is
+dropped, never 100%. Off, the question check's prompt is unchanged. An unparseable
 cell is absent from a sum, never zero. A trend draws every period from "measured since"
 (or the window, if later) to now, a quiet one at zero; never a period before the
 data begins, which is unknown, not zero (`insights_agent._fill_gaps`). `points: null` means the panel failed; `[]`

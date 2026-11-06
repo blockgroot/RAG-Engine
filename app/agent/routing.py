@@ -162,6 +162,10 @@ class RoutingDecision:
     #: The question check's ``chart_ask`` ("visual" / "count" / None), so the
     #: chat can offer Chart mode beside a written answer to a count.
     chart_ask: str | None = None
+    #: Figures worked out over a sheet's rows for this question
+    #: (``insights.table_answers``), one passage per sheet, handed to the
+    #: answer as passages of their documents. Empty for every other question.
+    table_answers: tuple = ()
 
 
 #: What a member is likely to CALL each service when they type its name.
@@ -648,13 +652,14 @@ def _upload_tables(org_id: str, uploads) -> list:
 
 
 def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str, *,
-                     providers: list[str] | None = None, tag: str | None = None) -> list:
+                     providers: list[str] | None = None, tag: str | None = None,
+                     limit: int | None = None) -> list:
     try:
-        from ..doctables.store import list_tables
+        from ..doctables.store import list_tables, typed_cells
         from ..insights import tables as doc_tables
 
-        listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
-                             providers=providers, tag=tag)
+        listed = doc_tables.distinct(list_tables(org_id=org_id, workspace_id=workspace_id,
+                                                 viewer=viewer, providers=providers, tag=tag))
         from ..insights.resolve import title_match
 
         # The page they named: the LONGEST title run in the question, so a
@@ -670,17 +675,30 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
         if signals is None:
             ranked = doc_tables.rank(
                 rest, None, floor=RagSettings.from_env().similarity_threshold,
-                question=question,
+                question=question, limit=limit or doc_tables.MAX_OFFERED,
             )
         else:
             cosine, keywords = signals
             ranked = doc_tables.rank(
                 rest, cosine, keywords=keywords,
                 floor=RagSettings.from_env().similarity_threshold, question=question,
+                limit=limit or doc_tables.MAX_OFFERED,
             )
         # The page they named has to be offered. Six closer tables used to
         # fill the cap and the named page came back as "I don't see it".
-        return (named + ranked)[: doc_tables.MAX_OFFERED]
+        offered = named + ranked
+        # A table holding a value the question TYPES ("Daniel Reed") comes
+        # first and says so: Claude Haiku charted another leads sheet that
+        # had no such name. The data's own cells, read through their index.
+        typed = typed_cells(question, listed)
+        if typed:
+            from dataclasses import replace
+
+            first = [replace(t, typed=typed[t.id]) for t in offered if t.id in typed]
+            first += [replace(t, typed=typed[t.id]) for t in listed
+                      if t.id in typed and t not in offered]
+            offered = first + [t for t in offered if t.id not in typed]
+        return offered[: limit or doc_tables.MAX_OFFERED]
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: could not list document tables", exc_info=True)
         return []
@@ -746,6 +764,15 @@ def _chart_unsupported_model() -> str | None:
     return unsupported_model_message(label, alternatives)
 
 
+def _table_answers_on() -> bool:
+    try:
+        from ..config.settings import DocTablesSettings
+
+        return DocTablesSettings.from_env().answers_enabled
+    except Exception:  # noqa: BLE001 - off is the safe reading
+        return False
+
+
 def _try_question_route(
     question: str,
     connected: set[str],
@@ -755,6 +782,7 @@ def _try_question_route(
     chart_out: list | None = None,
     chart_from_words: bool = False,
     viewer=None,
+    context: str | None = None,
 ) -> RoutingDecision | None:
     """Ask's small check: a live code question, and the live-data verdict.
 
@@ -764,10 +792,17 @@ def _try_question_route(
     still runs. Never raises: a dead check is a document question.
     ``live_out`` receives the ``needs_live`` answer.
     """
-    from ..insights.resolve import CHART_MODE_HINT, classify_route
+    from ..insights.resolve import CHART_MODE_HINT, classify_route, with_earlier
 
+    tables_on = viewer is not None and _table_answers_on()
+    # A follow-up is read with the question it continues, for the table check
+    # only: "and only for the South region?" alone asks for nothing.
+    checked = with_earlier(question, context) if tables_on else question
+    # Beside the check, not after it: SQL only, so it adds no wait.
+    names_sheet = (_ROUTING_POOL.submit(_names_a_sheet, checked, org_id, workspace_id, viewer)
+                   if tables_on else None)
     try:
-        intent = classify_route(question, github="github" in connected)
+        intent = classify_route(checked, github="github" in connected, table=tables_on)
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: question check failed", exc_info=True)
         return None
@@ -785,6 +820,39 @@ def _try_question_route(
         # They asked to SEE a chart; the web chat says where charts live
         # instead of answering a chart request in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
+    table_ask = getattr(intent, "table_ask", False)
+    if tables_on and not table_ask and names_sheet is not None:
+        # Claude Haiku's yes/no flipped between runs on the same question
+        # ("which BDE has the most offers?"). A question typing a sheet's cell
+        # or naming its column is asked of the form too; the form still
+        # answers nothing when no table fits.
+        try:
+            table_ask = names_sheet.result(timeout=_NAMES_SHEET_WAIT)
+        except Exception:  # noqa: BLE001 - a hint may only ever add
+            logger.warning("Agent routing: sheet check failed", exc_info=True)
+    if tables_on and table_ask:
+        # "What is our conversion ratio?": a figure over a sheet's rows, which
+        # the passages cannot hold. Worked out by a checked query and given to
+        # the answer as a passage of the sheet; nothing fits, Ask goes on as before.
+        from ..insights.table_answers import ANSWER_OFFERED, answer
+
+        worked = answer(checked, _document_tables(org_id, workspace_id, viewer, checked,
+                                                  limit=ANSWER_OFFERED))
+        if worked:
+            return RoutingDecision(worked[0].provider, "table-answer",
+                                   table_answers=tuple(worked))
+    if ask == "count":
+        # "How many leads did Rohan Mehta generate in August?" is a count over
+        # rows a sheet never embeds, so the passages cannot answer it. Counted
+        # by SQL only when the chart is NARROWED to what the question typed (a
+        # filter or focus): an unnarrowed one answers a broader question --
+        # "leads by rohan" drew every lead, "sales in March" June's targets,
+        # a person who does not exist everyone -- and reads as the answer.
+        # Otherwise Ask answers as it always did, beside the Chart button.
+        counted = _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+        spec = getattr(counted, "chart_spec", None)
+        if spec is not None and (getattr(spec, "filters", None) or getattr(spec, "focus", None)):
+            return replace(counted, reason="count-chart")
     if intent.kind != "github_live":
         return None
     # GitHub embeds nothing, so it can never win the cosine probe, and
@@ -1228,10 +1296,71 @@ def _single_table_chart(table):
 _FOLLOW_UP_MARGIN = 0.1
 
 
+def refusal_retry(decision: RoutingDecision) -> tuple[str, set[str]] | None:
+    """Where a REFUSED answer is asked once more: ``(agent, also_searched)``.
+
+    The probe picks the tool holding the single closest chunk, and a short
+    focused Notion page can edge a Drive file that holds the answer inside a
+    longer chunk ("is Vikram on a PIP?": Slack 0.536, Notion 0.520, Drive
+    0.449, answer in Drive). The tool that refused was read and did not
+    answer, so it is left out: re-reading it only crowds the others out of the
+    passages. The best of the rest that cleared the gate answers, with the
+    remaining ones searched beside it. Only for a probe's own pick or a sheet
+    row the question named: a tool the question named, the graph placed, or
+    the asker requested stays the only one.
+    """
+    if decision.reason not in ("best-match", "follow-up", "rows-named") or not decision.scores:
+        return None
+    gate = RagSettings.from_env().similarity_threshold
+    others = sorted((tool for tool, score in decision.scores.items()
+                     if score >= gate and tool != decision.agent_key),
+                    key=lambda tool: -decision.scores[tool])
+    return (others[0], set(others[1:])) if others else None
+
+
 def _no_clear_winner(scores: dict[str, float]) -> bool:
     """True when the best source leads the runner-up by less than the margin."""
     top = sorted(scores.values(), reverse=True)
     return not top or (len(top) > 1 and top[0] - top[1] < _FOLLOW_UP_MARGIN)
+
+
+#: Seconds the sheet check may still take once the model's check is back.
+_NAMES_SHEET_WAIT = 2.0
+
+
+def _names_a_sheet(question: str, org_id: str, workspace_id: str | None, viewer) -> bool:
+    """Does the question type a cell of a sheet this viewer can read, or name
+    one of its column headers by every word? The data's own words, no list."""
+    from ..doctables.store import list_tables, typed_cells
+    from ..insights.tables import _words
+
+    tables = [t for t in list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+              if t.origin != "text"]
+    asked = _words(question)
+    if any((words := _words(str(c.get("name", "")))) and words <= asked
+           for t in tables for c in t.columns):
+        return True
+    return bool(typed_cells(question, tables))
+
+
+def _rows_named_provider(question: str, org_id: str, workspace_id: str | None,
+                         viewer, embedded: set[str]) -> str | None:
+    """The one tool whose sheet rows the question names by a cell, or None.
+
+    The same exact-text lookup Ask's rows leg uses (``doctables.store.
+    rows_naming``), as this viewer. Rows in two tools name neither, the
+    ``_graph_named_provider`` rule. Never raises.
+    """
+    try:
+        from ..doctables.store import rows_naming
+
+        hits = rows_naming(question, org_id=org_id, workspace_id=workspace_id,
+                           viewer=viewer, providers=sorted(embedded))
+    except Exception:  # noqa: BLE001 - routing must never fail a question
+        logger.warning("Agent routing: row lookup failed", exc_info=True)
+        return None
+    tools = {hit.provider for hit in hits}
+    return next(iter(tools)) if len(tools) == 1 else None
 
 
 def _graph_named_provider(graph_plan, embedded: set[str]) -> str | None:
@@ -1404,10 +1533,18 @@ def _choose_agent(
             contextvars.copy_context().run,
             _probe_scores, question, org_id, workspace_id, connected,
         )
+    # Beside the probe, not after it: a SQL lookup, no model call.
+    rows = None
+    if probe is not None and viewer is not None:
+        rows = _ROUTING_POOL.submit(
+            contextvars.copy_context().run,
+            _rows_named_provider, question, org_id, workspace_id, viewer, embedded,
+        )
 
     classified = _try_question_route(
         question, connected, org_id, workspace_id, live_out=live_out,
         chart_out=chart_out, chart_from_words=chart_from_words, viewer=viewer,
+        context=context,
     )
     if classified is not None:
         return classified
@@ -1450,6 +1587,15 @@ def _choose_agent(
     )
     threshold = RagSettings.from_env().similarity_threshold
     best = max(scores, key=scores.get) if scores else None
+
+    # The question names a cell of one tool's sheet ("Kavya Nair", "L-1008"):
+    # that tool holds the rows, which a sheet never embeds, so the probe saw
+    # only its column description and Slack won by 0.03. A refusal there is
+    # still asked again elsewhere (`refusal_retry`).
+    rows_tool = rows.result() if rows is not None else None
+    if rows_tool is not None and rows_tool != best and scores.get(rows_tool, 0.0) >= threshold:
+        logger.info("Agent routing: %r names rows of a %s sheet", question[:60], rows_tool)
+        return RoutingDecision(rows_tool, "rows-named", scores)
 
     if context and _no_clear_winner(scores):
         follow = _probe_scores(f"{context}\n{question}", org_id, workspace_id, connected)

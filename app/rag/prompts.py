@@ -192,6 +192,15 @@ _CONFLICT_RULE = (
     "say briefly that the earlier value was superseded."
 )
 
+_READINGS_RULE = (
+    "When CONTEXT gives a figure over some rows and then a figure \"Of these "
+    "rows, only\" part of them, state BOTH in your answer, the whole first and "
+    "then how much of it is that part and what the part keeps (\"372 in all; "
+    "174 of them at the interview stages\"). Never give only one. When the "
+    "QUESTION asks which ones, name every one the whole lists, even beyond "
+    "rule 5's 3-5 points."
+)
+
 _ASSEMBLE_RULE = (
     "If the QUESTION asks about the company or a product as a whole (its "
     "strategy, offering, features or structure), or asks for every item of a "
@@ -216,6 +225,7 @@ def build_grounded_prompt(
     partial_rule: bool = False,
     conflict_rule: bool = False,
     assemble_rule: bool = False,
+    readings_rule: bool = False,
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
 
@@ -308,7 +318,8 @@ def build_grounded_prompt(
             f"{n}. {rule}\n"
             for n, rule in enumerate(
                 [r for on, r in ((focus_rule, _FOCUS_RULE), (partial_rule, _PARTIAL_RULE),
-                                 (conflict_rule, _CONFLICT_RULE), (assemble_rule, _ASSEMBLE_RULE)) if on],
+                                 (conflict_rule, _CONFLICT_RULE), (assemble_rule, _ASSEMBLE_RULE),
+                                 (readings_rule, _READINGS_RULE)) if on],
                 start=6,
             )
         )

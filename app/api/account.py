@@ -155,6 +155,19 @@ def get_memory(session=Depends(get_session)):
     }
 
 
+@router.put("/name")
+def set_name(body: dict, session=Depends(get_session)):
+    from ..auth.users import set_display_name
+
+    name = body.get("name")
+    if not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="name must be text")
+    try:
+        return {"name": set_display_name(session.user_id, session.org_id, name)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.put("/memory/settings")
 def set_memory_enabled(body: dict, session=Depends(get_session)):
     from ..memory import personal

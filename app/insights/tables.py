@@ -20,13 +20,44 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..doctables import store as table_store
 from ..doctables.store import AGGREGATES, TableRef
 
-#: How many tables a single question may see. Small because each one costs
-#: prompt space on every chart-shaped question.
-MAX_OFFERED = 6
+#: How many tables a chart question may see. At 6, then 10, the leads sheet was
+#: not among them: a sheet embeds only its column names, so "revenue by region"
+#: or "target vs achieved" matched its "Deal Value" by nothing, and pages with
+#: many tables ranked above it. Only the model can tell those apart, so it is
+#: shown many -- the first ``FULL_DETAIL`` with their values, the rest as one
+#: short line of headers (``catalogue(full=...)``).
+# ponytail: one ranked list capped here; a two-step pick when scopes hold far more tables.
+MAX_OFFERED = 30
+FULL_DETAIL = 8
+#: Tables of one document in the first pass of an offered list (``rank``).
+PER_DOCUMENT = 2
 
 MEASURES = ("count",) + tuple(AGGREGATES)
+#: Values one table filter may keep: things compared side by side, not a list
+#: of everything (that is no filter at all).
+MAX_FILTER_VALUES = 6
+
+def distinct(tables: list[TableRef]) -> list[TableRef]:
+    """One of each copy of a sheet: the same title but for a file extension
+    ("Sales Targets 2026.csv"), the same columns and the same row count. Two
+    copies took two of the six chart slots and pushed the leads sheet out. A
+    template's monthly reports differ in title, so they all stay."""
+    def stem(text: str | None) -> str:
+        return re.sub(r"\.[a-z0-9]{2,5}$", "", (text or "").strip().lower())
+
+    seen: set[tuple] = set()
+    out = []
+    for table in tables:
+        key = (stem(table.document_title), stem(table.name), table.row_count,
+               tuple(str(c.get("name", "")).lower() for c in table.columns))
+        if key not in seen:
+            seen.add(key)
+            out.append(table)
+    return out
+
 
 def document_similarity(
     question: str, tables: list[TableRef], *, org_id: str, workspace_id: str | None,
@@ -137,24 +168,72 @@ def rank(
     scored = [(fused.get(t.document_id or "", 0.0) + own.get(i, 0.0), i, t)
               for i, t in enumerate(tables)]
     ordered = sorted(scored, key=lambda s: (-s[0], s[1]))
-    return [t for _, _, t in ordered[:limit]]
+    return _documents_first([t for _, _, t in ordered], limit)
 
 
-def catalogue(tables: list[TableRef]) -> str:
-    """The prompt section: one line per offered table, handle first."""
+def _documents_first(ordered: list[TableRef], limit: int) -> list[TableRef]:
+    """At most ``PER_DOCUMENT`` tables of one document until every ranked
+    document had its turn, then the rest in order.
+
+    A document's similarity is shared by all its tables, so one page with
+    seven tables took five of ten slots and the leads sheet the question was
+    about was never offered. A page the asker NAMED is offered whole by the
+    caller (``routing._document_tables``), before this list."""
+    taken: list[TableRef] = []
+    count: dict[str, int] = {}
+    later: list[TableRef] = []
+    for table in ordered:
+        doc = table.document_id or table.id
+        if count.get(doc, 0) < PER_DOCUMENT:
+            count[doc] = count.get(doc, 0) + 1
+            taken.append(table)
+        else:
+            later.append(table)
+    return (taken + later)[:limit]
+
+
+def _typed_note(table: TableRef) -> str:
+    typed = getattr(table, "typed", ())
+    return ("; the question types its values: " + ", ".join(
+        f"{name} \"{value}\"" for name, value in typed)) if typed else ""
+
+
+def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
+    """The prompt section: one line per offered table, handle first.
+
+    The first ``full`` (all, when None) carry each column's type and values;
+    the rest only their headers, so a long list stays short in the prompt."""
     lines = []
     for i, table in enumerate(tables, start=1):
+        if full is not None and i > full:
+            heads = ", ".join(str(c.get("name", "")) for c in table.columns)
+            said = _typed_note(table)
+            lines.append(f"- T{i}: \"{table.name}\" in \"{table.document_title}\" "
+                         f"[{table.provider}], {table.row_count} rows. Columns: {heads}{said}")
+            continue
         cols = []
         for c in table.columns:
             kind = c.get("type")
             if kind == "category":
-                samples = ", ".join(str(s) for s in c.get("samples", [])[:3])
-                cols.append(f"{c['name']} (category: {samples})")
+                values = [str(s) for s in c.get("samples", []) or []]
+                if values and c.get("distinct") == len(values):
+                    # Every value: a filter on one the model was never shown
+                    # ("Won") is a filter it will not write.
+                    cols.append(f"{c['name']} (category, values: {', '.join(values)})")
+                else:
+                    cols.append(f"{c['name']} (category: {', '.join(values[:3])})")
             elif kind == "number":
                 unit = f", {c['unit']}" if c.get("unit") else ""
                 cols.append(f"{c['name']} (number{unit})")
             elif kind == "date":
-                cols.append(f"{c['name']} (date)")
+                span = f", {c['first']} to {c['last']}" if c.get("first") else ""
+                cols.append(f"{c['name']} (date{span})")
+            elif kind == "text":
+                # Too many values to list (a company, a link): still a column a
+                # question names a value of, so the model must see it exists.
+                values = [str(s) for s in c.get("samples", []) or []][:2]
+                cols.append(f"{c['name']} (text, {c.get('distinct', 'many')} different values"
+                            + (f", e.g. {', '.join(values)}" if values else "") + ")")
         kind = (" (figures read from the document's sentences)"
                 if getattr(table, "origin", "table") == "text" else "")
         where = (f"in the file \"{table.document_title}\" the asker uploaded to this chat"
@@ -162,9 +241,10 @@ def catalogue(tables: list[TableRef]) -> str:
                  else f"in \"{table.document_title}\"{kind} [{table.provider}]")
         if getattr(table, "is_upload", False):
             where += kind.replace("document's", "file's")
+        said = _typed_note(table)
         lines.append(
             f"- T{i}: \"{table.name}\" {where}, {table.row_count} rows. "
-            f"Columns: {'; '.join(cols)}"
+            f"Columns: {'; '.join(cols)}{said}"
         )
     return "\n".join(lines)
 
@@ -191,8 +271,17 @@ def _find(table: TableRef, name, *, types: tuple[str, ...], role: str) -> str | 
     if not isinstance(name, str):
         raise TableRefusal(f"I couldn't tell which column to use for the {role}.")
     squash = re.sub(r"[^a-z0-9]", "", name.lower())
+    squashed = {c["key"]: re.sub(r"[^a-z0-9]", "", str(c.get("name", "")).lower())
+                for c in table.columns}
+    if squash not in squashed.values() and len(squash) >= 4:
+        # A header written short ("Applied Via (O)" for "Also Applied Via
+        # (O)"): the ONE header containing it is meant. Claude Haiku dropped
+        # a word and the query was refused; two candidates name neither.
+        holding = [k for k, h in squashed.items() if squash in h]
+        if len(holding) == 1:
+            squash = squashed[holding[0]]
     for c in table.columns:
-        if re.sub(r"[^a-z0-9]", "", str(c.get("name", "")).lower()) == squash:
+        if squashed[c["key"]] == squash:
             if c.get("type") not in types:
                 raise TableRefusal(
                     f"\"{c['name']}\" in {table.name} can't be the {role}: "
@@ -202,6 +291,34 @@ def _find(table: TableRef, name, *, types: tuple[str, ...], role: str) -> str | 
             return c["key"]
     raise TableRefusal(f"{table.name} has no column called \"{name[:60]}\". "
                        + _options(table, types, role))
+
+
+def _holding(table: TableRef, values: list[str]) -> str | None:
+    """The one category column whose listed values hold every one of ``values``.
+
+    Only a column whose samples are complete can say a value is absent; two
+    columns holding them all name neither."""
+    found = []
+    for c in table.columns:
+        known = {str(x).lower() for x in c.get("samples") or ()}
+        if c.get("type") == "category" and {v.lower() for v in _listed(values, known)} <= known:
+            found.append(c["key"])
+    return found[0] if len(found) == 1 else None
+
+
+def _listed(values: list[str], samples) -> list[str]:
+    """``"Kavya Nair, Rohan Mehta"`` -> both, when the whole is not one of the
+    column's values and every part is. A list written as text (format); a
+    cell that itself holds a comma stays whole."""
+    known = {str(x).lower() for x in samples or ()}
+    out = []
+    for value in values:
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        if value.lower() not in known and len(parts) > 1 and all(p.lower() in known for p in parts):
+            out.extend(parts)
+        else:
+            out.append(value)
+    return out
 
 
 def _options(table: TableRef, types: tuple[str, ...], role: str) -> str:
@@ -333,6 +450,19 @@ def prose_chart(table: TableRef) -> TablePick | None:
     )
 
 
+def _find_quiet(table: TableRef, name, types: tuple[str, ...]) -> str | None:
+    """``_find`` that answers None instead of refusing."""
+    try:
+        return _find(table, name, types=types, role="filter")
+    except TableRefusal:
+        return None
+
+
+def is_period_filter(table: TableRef, key: str, value) -> bool:
+    """A filter on a date column: a period, never the axis's own exclusion."""
+    return (table.column(key) or {}).get("type") == "date" and isinstance(value, str)
+
+
 def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     """Validate the model's table pick. None = it did not pick a table.
 
@@ -354,7 +484,11 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     if split_by and split_by == group_by:
         split_by = None
     keys = [c["key"] for c in table.columns]
-    if split_by and group_by in keys and split_by in keys and keys.index(split_by) < keys.index(group_by):
+    group_is_date = (table.column(group_by) or {}).get("type") == "date" if group_by else False
+    # A date is the time axis wherever it sits: "revenue by region by month" on
+    # Closed x Region was swapped to Region x Closed and refused.
+    if split_by and not group_is_date and group_by in keys and split_by in keys \
+            and keys.index(split_by) < keys.index(group_by):
         # The table's earlier column is the axis: a read page puts its period
         # first, a real table its row label. "Each plant per month" drew the
         # plants along the axis with the months as colours.
@@ -384,11 +518,41 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     raw_filters = data.get("filters")
     if isinstance(raw_filters, dict):
         for name, wanted in raw_filters.items():
-            if not isinstance(wanted, str) or not wanted.strip():
+            # A list keeps each of its values: "Kavya Nair and Rohan Mehta".
+            values = [w.strip()[:120] for w in (wanted if isinstance(wanted, list) else [wanted])
+                      if isinstance(w, str) and w.strip()][:MAX_FILTER_VALUES]
+            if not values:
                 continue
-            key = _find(table, name, types=("category",), role="filter")
+            dated = _find_quiet(table, name, ("date",))
+            if dated:
+                # "In December" on a date column: one period, bound as days in
+                # SQL when the chart runs (`store.period_span`). A value that is
+                # not a period is no filter for a date.
+                span = table_store.period_span(values[0]) if len(values) == 1 else None
+                if span is None:
+                    raise TableRefusal(
+                        f"\"{(table.column(dated) or {}).get('name')}\" is a date: filter it "
+                        "on a month, a year or a day.")
+                filters.append((dated, values[0].strip()))
+                continue
+            try:
+                key = _find(table, name, types=("category",), role="filter")
+            except TableRefusal:
+                if values == [str(data.get("range_period") or "").strip()] \
+                        and table_store.period_span(values[0]):
+                    # "date": "2026-11" on a sheet whose dates are Created and
+                    # Closed: the named period, which range_period carries and
+                    # `resolve._table_range` checks against the table's dates.
+                    continue
+                # A header the table does not have ("Employee") with values it
+                # does ("Kavya Nair"): the one column holding every value is
+                # meant. Real cells decide, never the header's wording.
+                key = _holding(table, values)
+                if key is None:
+                    raise
             if key:
-                filters.append((key, wanted.strip()[:120]))
+                values = _listed(values, (table.column(key) or {}).get("samples"))[:MAX_FILTER_VALUES]
+                filters.append((key, tuple(values) if len(values) > 1 else values[0]))
 
     requested = data.get("chart") if isinstance(data.get("chart"), str) else None
     if group_by is None:
@@ -398,7 +562,8 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
         # under "Unknown". A table's axis is its first column that can be one
         # (a read page's period, a real table's row label); a date column
         # first when there is exactly one, since that IS a time axis.
-        filtered = {k for k, _ in filters}
+        # A date filtered to a period is still the time axis it was.
+        filtered = {k for k, v in filters if not is_period_filter(table, k, v)}
         dates = [c["key"] for c in table.columns if c.get("type") == "date"]
         axis = [c["key"] for c in table.columns
                 if c.get("type") in ("category", "date") and c["key"] not in filtered]

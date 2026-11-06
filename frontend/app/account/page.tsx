@@ -4,8 +4,8 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
-import { useMe } from "@/lib/useMe";
-import { LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
+import { clearMeCache, useMe } from "@/lib/useMe";
+import { ApiError, LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
 import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
@@ -113,6 +113,8 @@ function AccountContent() {
           </div>
         )}
 
+        {me && <YourName current={me.name} />}
+
         <section className="studio-panel stack account-identities" aria-labelledby="linked-title">
           <div className="account-identities-head">
             <div className="studio-section-head">
@@ -188,5 +190,55 @@ export default function AccountPage() {
     >
       <AccountContent />
     </Suspense>
+  );
+}
+
+function YourName({ current }: { current: string | null }) {
+  const [name, setName] = useState(current ?? "");
+  const [saved, setSaved] = useState(current ?? "");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  return (
+    <section className="studio-panel stack" aria-labelledby="name-title">
+      <div className="studio-section-head">
+        <h2 id="name-title">Your name</h2>
+        <p className="muted">How your name shows in Handbook.</p>
+      </div>
+      <form
+        className="account-name-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setBusy(true);
+          setNote(null);
+          api
+            .setName(name)
+            .then((r) => {
+              setName(r.name);
+              setSaved(r.name);
+              setNote("Saved.");
+              clearMeCache();
+            })
+            .catch((err) => setNote(err instanceof ApiError ? err.message : "Could not save. Try again."))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <input
+          className="input"
+          aria-label="Your name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={60}
+          autoComplete="name"
+        />
+        <button
+          className="button button-secondary"
+          type="submit"
+          disabled={busy || !name.trim() || name.trim() === saved}
+        >
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </form>
+      {note && <p className="muted" role="status">{note}</p>}
+    </section>
   );
 }

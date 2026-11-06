@@ -155,10 +155,13 @@ export function OwnAppSetup({
   provider,
   app,
   onSaved,
+  asSource = false,
 }: {
   provider: "google" | "slack";
   app: ConnectorApp;
   onSaved: (app: ConnectorApp) => void;
+  /** Shown in a list of sources (onboarding): named after the source, not the app. */
+  asSource?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
@@ -234,18 +237,22 @@ export function OwnAppSetup({
             <BrandGlyph name={provider} size={28} />
           </span>
           <div className="source-row-copy">
-            <h3>{name} app</h3>
+            <h3>{asSource ? source : `${name} app`}</h3>
             <p className="source-row-kind">
-              {ready
-                ? `${source} connects through this app.`
-                : `Needed once before you connect ${source}. About ${provider === "google" ? 10 : 5} minutes.`}
+              {asSource
+                ? `Set up your company's ${name} app first, about ${provider === "google" ? 10 : 5} minutes.`
+                : ready
+                  ? `${source} connects through this app.`
+                  : `Needed once before you connect ${source}. About ${provider === "google" ? 10 : 5} minutes.`}
             </p>
           </div>
         </div>
         <div className="source-row-actions">
-          <span className={`badge ${ready ? "badge-verified" : "badge-pending"}`}>
-            {app.configured ? "Ready" : app.server_app ? "Ready · this server's app" : "Not set up"}
-          </span>
+          {!asSource && (
+            <span className={`badge ${ready ? "badge-verified" : "badge-pending"}`}>
+              {app.configured ? "Ready" : app.server_app ? "Ready · this server's app" : "Not set up"}
+            </span>
+          )}
           <button
             className={`button${open || ready ? " button-secondary" : ""}`}
             type="button"
@@ -257,7 +264,7 @@ export function OwnAppSetup({
               setStep(app.configured ? steps.findIndex((s) => s.form) : 0);
             }}
           >
-            {open ? "Close" : app.configured ? "Change keys" : "Set up"}
+            {open ? "Close" : app.configured ? "Change keys" : asSource ? "Set up app" : "Set up"}
           </button>
         </div>
       </div>

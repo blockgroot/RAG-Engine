@@ -497,16 +497,40 @@ def test_fetch_document_unsupported_mime_raises_source_error(monkeypatch):
         adapter.fetch_document("slides-1")
 
 
+def _workbook(tabs: dict[str, list[list]]) -> bytes:
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.remove(book.active)
+    for name, rows in tabs.items():
+        sheet = book.create_sheet(name)
+        for row in rows:
+            sheet.append(row)
+    out = BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
 def test_a_sheet_is_fetched_as_a_table_in_one_export(monkeypatch):
     """One metadata call and ONE export -- no per-tab or per-cell requests --
-    and the embedded content describes the columns, never the figures."""
+    EVERY tab read (a CSV export is the first tab only), and the embedded
+    content describes the columns, never the figures. Tabs with the same
+    columns are one table with a Tab column, so a total spans every tab."""
     calls = []
+    data = _workbook({
+        "Oct": [["Region", "Revenue"], ["North", 120000], ["South", 90000]],
+        "Nov": [["Region", "Revenue"], ["North", 80000], ["West", 70000]],
+        "Team": [["Name", "Region"], ["Asha", "North"], ["Ravi", "South"]],
+    })
 
     def fake_get(url, *, params=None, headers=None, timeout=None):
         calls.append(url.rsplit("/", 1)[-1])
         if url.endswith("/export"):
-            assert params == {"mimeType": "text/csv"}
-            return FakeResponse(text="Region,Revenue\nNorth,\"1,20,000\"\nSouth,\"90,000\"\n")
+            assert params == {"mimeType": "application/vnd.openxmlformats-officedocument"
+                                            ".spreadsheetml.sheet"}
+            return FakeResponse(content=data)
         return FakeResponse({"name": "Sales", "mimeType": "application/vnd.google-apps.spreadsheet",
                              "modifiedTime": "2026-02-01T00:00:00.000Z",
                              "permissions": [{"type": "anyone"}]})
@@ -515,5 +539,26 @@ def test_a_sheet_is_fetched_as_a_table_in_one_export(monkeypatch):
 
     doc = GoogleDriveAdapter(token="tok", folder_id="root").fetch_document("sheet-1")
     assert calls == ["sheet-1", "export"]
-    assert "Revenue" in doc.content and "1,20,000" not in doc.content
-    assert doc.tables and doc.tables[0].header == ["Region", "Revenue"]
+    assert "Revenue" in doc.content and "120000" not in doc.content
+    months, team = doc.tables
+    assert months.header == ["Tab", "Region", "Revenue"] and len(months.rows) == 4
+    assert months.rows[2] == ["Nov", "North", "80000"]
+    assert team.header == ["Name", "Region"] and team.name == "Sales · Team"
+
+
+def test_a_sheet_too_big_to_export_as_a_workbook_still_reads_its_first_tab(monkeypatch):
+    import httpx
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if url.endswith("/export"):
+            if params["mimeType"] != "text/csv":
+                return FakeResponse(status_code=403)
+            return FakeResponse(text="Region,Revenue\nNorth,\"1,20,000\"\nSouth,\"90,000\"\n")
+        return FakeResponse({"name": "Sales", "mimeType": "application/vnd.google-apps.spreadsheet",
+                             "modifiedTime": "2026-02-01T00:00:00.000Z",
+                             "permissions": [{"type": "anyone"}]})
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+    doc = GoogleDriveAdapter(token="tok", folder_id="root").fetch_document("sheet-1")
+    assert doc.tables[0].header == ["Region", "Revenue"]
+    assert "Only the first tab" in doc.tables[0].notes[0]

@@ -45,21 +45,7 @@ def _csv_tables(filename: str, data: bytes) -> list[extract.RawTable]:
 
 
 def _xlsx_tables(filename: str, data: bytes) -> list[extract.RawTable]:
-    from ..attachments.extract import xlsx_sheets
-
-    sheets, more = xlsx_sheets(data, extract.MAX_ROWS + 1)
-    out = []
-    for name, rows, cut in sheets:
-        if len(rows) < extract.MIN_ROWS + 1:
-            continue
-        notes = (f"Only the first {extract.MAX_ROWS} rows of this sheet were read.",) if cut else ()
-        if more:
-            notes += (f"Only the first {len(sheets)} sheets of this workbook were read.",)
-        out.append(extract.RawTable(
-            name=f"{filename} · {name}" if len(sheets) > 1 else filename,
-            header=rows[0], rows=rows[1:], truncated=cut, notes=notes,
-        ))
-    return out
+    return extract.workbook_tables(filename, data)
 
 
 def _docx_tables(filename: str, data: bytes) -> list[extract.RawTable]:

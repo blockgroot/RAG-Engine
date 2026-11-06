@@ -287,3 +287,20 @@ def test_followup_uses_original_user_question_for_empathy():
     assert llm.empathy_opener_calls == 1
     assert result.answer.startswith("I'm sorry you're feeling so stressed")
     assert "Counselling Support" in result.answer
+
+
+def test_a_mode_tag_after_a_short_lead_in_is_still_the_tag():
+    """Staging, Claude Haiku: "The CONTEXT lists ... \\n\\nMODE: B\\n\\n..." shipped the
+    tag mid-answer and skipped the audit."""
+    from app.rag.pipeline import _parse_tagged_mode
+
+    raw = ("The CONTEXT lists the owner but not who closed it.\n\nMODE: B\n\n"
+           "L-1076 is owned by Kavya Nair [1].")
+    assert _parse_tagged_mode(raw) == ("B", "L-1076 is owned by Kavya Nair [1].")
+
+
+def test_a_mode_word_deep_inside_a_long_answer_is_not_a_tag():
+    from app.rag.pipeline import _parse_tagged_mode
+
+    raw = "x" * 600 + "\nMODE: A\nmore"
+    assert _parse_tagged_mode(raw) == (None, raw)

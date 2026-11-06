@@ -68,7 +68,8 @@ def me(session: SessionClaims = Depends(get_session)):
                 WHERE org_id = %(org)s
                   AND source_provider = 'google'
                   AND workspace_id IS NULL
-              ) AS drive_ready
+              ) AS drive_ready,
+              (SELECT display_name FROM users WHERE id = %(user)s) AS display_name
             """,
             {"org": session.org_id, "user": session.user_id},
         ).fetchone()
@@ -81,12 +82,15 @@ def me(session: SessionClaims = Depends(get_session)):
     linear_ready = bool(row[4]) if row else False
     notion_ready = bool(row[5]) if row else False
     drive_ready = bool(row[6]) if row else False
+    display_name = row[7] if row else None
 
     return {
         "user_id": session.user_id,
         "org_id": session.org_id,
         "org_name": org_name,
         "email": email,
+        # What the person asked to be called; None until they have said.
+        "name": display_name,
         "role": session.role,
         # Whether the chat UI should offer its "Code" tab. Reported here rather
         # than read from /admin/connections because that route is admin-only,
