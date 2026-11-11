@@ -274,6 +274,20 @@ scored by the safety model; the answer fact-checker is off (§11).
   "What we couldn't answer" pages share the same calm layout. Ask's starters sit in an even
   two-column grid. A report's activity list shows who, where and when above one clean line
   (the Slack chunk header and `*` marks stripped), the first six, then "Show all".
+- **Sources pages tidied** (11 Nov 2026): connected tools sit in a two-column grid, each card
+  in its tool's colour with one access line (lock) and one status line ("Synced 8 Nov · 18
+  pages · checked 3 days ago"), buttons at the bottom; tools to add are a row of tiles. The
+  Google Forms survey card is gone from the company and space Sources pages.
+- **Agent mode, Account and connect pages redesigned** (11 Nov 2026): Admin › Actions is one
+  large Agent mode switch with the ask → draft → approve steps, tool rows in their colour with a
+  meter of tools on, and Slack as two tiles. Account opens with a profile card (avatar, name,
+  email), then tool tiles, Agent sign-ins with logos, and the last 5 actions with "Show all". The
+  GitHub account chooser and a new setup guide share one card look. Pressing Connect for a tool
+  whose keys are not set now lands on `/connect/setup` (what to create, the callback address to
+  copy, the settings to fill; Google and Slack point to the company app in Sources) instead of a
+  JSON error. A running sync shows "12 of 40 issues done" on every connector's card (it was hidden
+  while the change check ran or had found changes), named per tool: pages, files, conversations,
+  issues. The Ask home centres its greeting and starters without cutting off the heading.
 - **Updates shows the version** (6 Nov 2026): `HANDBOOK_VERSION`, else the version the release
   build writes into the image (`HANDBOOK_IMAGE_VERSION`), else, for a copy run from the source,
   `git describe` ("0.2.1, 66 changes after it"), which is shown but never checked against the

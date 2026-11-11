@@ -114,13 +114,11 @@ function manageExternalHref(
  * guarantee differs per source, and a half-enforced one that reads as whole
  * is worse than none (CLAUDE.md §3, document-level access). */
 const ACCESS_NOTE: Record<Provider, string> = {
-  google: "Each file is only used in answers for people it's shared with in Drive.",
-  slack: "Private channels are only used in answers for their members.",
-  linear: "Issues from a private team are only used in answers for that team's members and workspace admins.",
-  github:
-    "Private repositories are only used in answers for people whose linked GitHub account can open them (Account → Linked accounts).",
-  notion:
-    "Everyone here can get answers from every page shared with this connection: Notion doesn't tell apps who else a page is shared with.",
+  google: "Each file answers only the people it's shared with in Drive.",
+  slack: "Private channels answer only their members.",
+  linear: "A private team's issues answer only that team and workspace admins.",
+  github: "Private repos answer only people whose linked GitHub account can open them.",
+  notion: "Everyone here can get answers from every shared page: Notion doesn't say who else can see a page.",
 };
 
 /** GitHub's install page opens only for the account the App is installed on
@@ -349,11 +347,7 @@ export function ConnectionCard({
           </div>
         </div>
 
-        {connection ? (
-          <span className="badge badge-verified">Linked</span>
-        ) : (
-          <span className="badge">{available ? "Not linked yet" : "Coming soon"}</span>
-        )}
+        {!available && <span className="badge">Coming soon</span>}
 
         <div className="source-row-actions">
           {available && !connection && setupFirst && (
@@ -464,7 +458,7 @@ export function ConnectionCard({
               type="button"
               onClick={refreshScope}
               disabled={refreshingScope}
-              title="Pull the latest repo list after you change access on GitHub"
+              title="Add or remove repos on GitHub (Manage), then pull the new list here"
             >
               {refreshingScope ? "Refreshing…" : "Refresh list"}
             </button>
@@ -489,7 +483,7 @@ export function ConnectionCard({
           )}
           {connection && !syncInProgress && !disconnecting && (
             <button
-              className="button button-secondary"
+              className="button button-secondary source-disconnect"
               type="button"
               onClick={handleDisconnect}
               disabled={disconnecting}
@@ -511,17 +505,13 @@ export function ConnectionCard({
                 : "No repos linked yet — manage access on GitHub, then refresh the list."}
           </p>
           {repoSelection !== "all" && repos.length > 0 && (
-            <p className="muted source-live-repos" style={{ margin: 0 }}>
-              {repos
-                .slice(0, 4)
-                .map((r) => r.full_name.split("/").pop() || r.full_name)
-                .join(" · ")}
-              {repos.length > 4 ? ` · +${repos.length - 4} more` : ""}
+            <p className="source-chips">
+              {repos.slice(0, 6).map((r) => (
+                <span key={r.full_name}>{r.full_name.split("/").pop() || r.full_name}</span>
+              ))}
+              {repos.length > 6 && <span>+{repos.length - 6} more</span>}
             </p>
           )}
-          <p className="muted source-live-hint" style={{ margin: 0 }}>
-            To add or remove repos, manage access on GitHub, then Refresh list here.
-          </p>
           {scopeError && <div className="banner banner-warn">{scopeError}</div>}
         </div>
       )}
@@ -691,7 +681,11 @@ export function ConnectionCard({
         )}
 
       {connection && (
-        <p className="muted" style={{ marginTop: "0.65rem", fontSize: "0.85rem" }}>
+        <p className="source-access">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="2" />
+          </svg>
           {ACCESS_NOTE[provider]}
         </p>
       )}
@@ -702,32 +696,19 @@ export function ConnectionCard({
         </p>
       )}
 
-      {showDocsJobBadge && !needsReauth && lastJob && (
+      {lastJob && !needsReauth && (syncInProgress || (showDocsJobBadge && lastJob.status === "failed")) && (
         <div className="stack" style={{ marginTop: "0.55rem", gap: "0.35rem" }}>
           <p
             className="muted"
             style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
           >
             <JobStatusBadge status={lastJob.status} />
-            {ACTIVE.has(lastJob.status)
-              ? syncPhaseHeadline(lastJob)
-              : lastJob.status === "succeeded"
-                ? (() => {
-                    const when = friendlyWhen(lastJob.finished_at || lastJob.created_at);
-                    const count = lastJob.doc_count;
-                    if (count != null && count > 0) {
-                      return `${when} · ${count} page${count === 1 ? "" : "s"}`;
-                    }
-                    return when;
-                  })()
-                : lastJob.status === "failed"
-                  ? "Update failed — try again"
-                  : null}
+            {ACTIVE.has(lastJob.status) ? syncPhaseHeadline(lastJob) : "Update failed — try again"}
           </p>
           {ACTIVE.has(lastJob.status) && (
             <>
               <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
-                {syncPagesDetail(lastJob)}
+                {syncPagesDetail(lastJob, provider)}
               </p>
               {syncPercent(lastJob) != null && (
                 <div
@@ -748,33 +729,31 @@ export function ConnectionCard({
         </div>
       )}
 
-      {connection && !needsReauth && !needsFolder && !needsChannels && !needsTeams && !syncInProgress && !needsUpdate && (
-        <p className="muted" style={{ marginTop: "0.55rem" }}>
-          {connection.last_sync_at
-            ? `Syncs automatically · last checked ${checkedAgo(connection.last_sync_at)}`
-            : "Syncs automatically · first check due within the hour"}
-        </p>
-      )}
-
-      {docsCheckedFresh && !showDocsJobBadge && (
-        <p
-          className="muted"
-          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
-        >
-          <span className="badge badge-verified">Up to date</span>
-          <span>No changes</span>
-        </p>
-      )}
-
-      {showGithubUpToDate && (
-        <p
-          className="muted"
-          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
-        >
-          <span className="badge badge-verified">Up to date</span>
-          <span>Repo list refreshed</span>
-        </p>
-      )}
+      {(() => {
+        // Last sync, the automatic check and "up to date" were three lines that
+        // said one thing; now they are one.
+        if (!connection || needsReauth || needsFolder || needsChannels || needsTeams || syncInProgress) return null;
+        const synced =
+          showDocsJobBadge && lastJob?.status === "succeeded"
+            ? `Synced ${friendlyWhen(lastJob.finished_at || lastJob.created_at)}${
+                lastJob.doc_count ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"}` : ""
+              }`
+            : null;
+        const parts = [
+          synced ?? (isLive ? "Read live" : "Syncs automatically"),
+          !needsUpdate &&
+            (connection.last_sync_at
+              ? `checked ${checkedAgo(connection.last_sync_at)}`
+              : "first check within the hour"),
+          (docsCheckedFresh || showGithubUpToDate) && "up to date",
+        ].filter(Boolean);
+        return (
+          <p className="source-row-foot">
+            <span className="source-dot" aria-hidden />
+            {parts.join(" · ")}
+          </p>
+        );
+      })()}
 
       {connection && !needsFolder && !needsChannels && !needsTeams && needsUpdate && !syncInProgress && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
@@ -788,7 +767,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && checkingChanges && !isLive && !needsFolder && !needsChannels && !needsTeams && (
+      {connection && checkingChanges && !syncInProgress && !isLive && !needsFolder && !needsChannels && !needsTeams && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           Checking…
         </p>

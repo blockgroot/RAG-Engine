@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import html
 import logging
 import re
@@ -220,7 +222,12 @@ def logout():
 
 
 @router.get("/{provider}/authorize")
-def authorize(provider: str, workspace_id: str | None = None, session=Depends(get_session)):
+def authorize(
+    provider: str,
+    workspace_id: str | None = None,
+    session=Depends(get_session),
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
     """Start a connect flow.
 
     Without ``workspace_id``: the existing org-wide admin connect flow —
@@ -244,13 +251,15 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
                 status_code=403, detail="Only the workspace owner can connect a source"
             )
 
-    try:
-        oauth_provider = build_oauth_provider(provider, org_id=session.org_id)
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     state = create_state(session.org_id, provider, workspace_id=workspace_id)
-    return RedirectResponse(url=oauth_provider.authorize_url(state))
+    try:
+        url = build_oauth_provider(provider, org_id=session.org_id).authorize_url(state)
+    except ConfigurationError:
+        # This is a browser navigation, not a fetch: a JSON 400 rendered as a
+        # blank page. The guide page says what to set up, and by whom.
+        space = f"&space={quote(workspace_id)}" if workspace_id else ""
+        return _frontend_redirect(settings, f"/connect/setup?provider={quote(provider)}{space}")
+    return RedirectResponse(url=url)
 
 
 def _frontend_redirect(settings: ApiSettings, path: str) -> RedirectResponse:

@@ -10,18 +10,27 @@ export function syncPhaseHeadline(job: JobRecord | undefined): string {
   return "Updating…";
 }
 
-export function syncPagesDetail(job: JobRecord | undefined): string {
+/** What one synced item is called in each tool, for "12 of 40 issues done". */
+export const SYNC_UNIT: Record<string, [string, string]> = {
+  notion: ["page", "pages"],
+  google: ["file", "files"],
+  slack: ["conversation", "conversations"],
+  linear: ["issue", "issues"],
+};
+
+export function syncPagesDetail(job: JobRecord | undefined, provider?: string): string {
+  const [one, many] = SYNC_UNIT[provider ?? ""] ?? ["page", "pages"];
   const total = job?.total_documents ?? null;
   const done = job?.processed_documents ?? 0;
   if (job?.phase === "listing") {
-    return "Checking for pages that are new or changed.";
+    return `Checking for ${many} that are new or changed.`;
   }
   if (total != null && total > 0) {
     const current = Math.min(total, done + 1);
     if (done < total) {
-      return `${done} of ${total} pages done · working on page ${current}`;
+      return `${done} of ${total} ${many} done · working on ${one} ${current}`;
     }
-    return `${done} of ${total} pages done.`;
+    return `${done} of ${total} ${many} done.`;
   }
   if (total === 0) return "No changes since the last sync — finishing up.";
   if (job?.status === "queued") return "Waiting for the sync worker…";

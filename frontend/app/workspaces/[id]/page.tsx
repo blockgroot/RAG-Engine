@@ -5,7 +5,6 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { ConnectionCard } from "@/components/ConnectionCard";
-import { FormsCard } from "@/components/FormsCard";
 import { SpaceActPanel } from "@/components/SpaceActPanel";
 import { SourceLogos, SpaceMark, spaceSources, spaceStyle } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
@@ -341,7 +340,9 @@ function WorkspaceDetailPageInner() {
       const prev = prevStatuses.current[connectionId];
       const curr = job.status;
       if (ACTIVE_STATUSES.has(curr)) {
-        setMessage(`${syncPhaseHeadline(job)} ${syncPagesDetail(job)}`);
+        setMessage(
+          `${syncPhaseHeadline(job)} ${syncPagesDetail(job, connections.find((c) => c.id === connectionId)?.provider)}`,
+        );
         setError(null);
       } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
@@ -776,18 +777,6 @@ function WorkspaceDetailPageInner() {
                       <div className="room-add-grid">{unlinked.map(renderSource)}</div>
                     </>
                   )}
-              {/* Same Google connection, shown apart — see FormsCard. */}
-              {!loadingConnections && (
-                <FormsCard
-                  connection={connections.find((c) => c.provider === "google")}
-                  workspaceId={workspaceId}
-                  onConfigSaved={(updated) =>
-                    setConnections((prev) =>
-                      prev.map((c) => (c.id === updated.id ? updated : c))
-                    )
-                  }
-                />
-              )}
             </div>
           </section>
         )}

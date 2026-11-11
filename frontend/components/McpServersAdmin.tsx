@@ -174,7 +174,7 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
             const q = filter.trim().toLowerCase();
             const grouped = row.servers.length > 1;
             return (
-              <li key={row.key} className="mcp-row" data-open={expanded}>
+              <li key={row.key} className={`mcp-row mcp-row--${row.brand}`} data-open={expanded}>
                 <div className="mcp-row-head">
                   <button
                     type="button"
@@ -191,6 +191,9 @@ export function McpServersAdmin({ disabled }: { disabled: boolean }) {
                     <span className="mcp-row-text">
                       <strong>{row.name}</strong>
                       <small>{all.length ? `${on} of ${all.length} tools on` : "Sign in to list its tools"}</small>
+                      {all.length > 0 && (
+                        <i className="mcp-meter" style={{ ["--p" as string]: on / all.length }} aria-hidden />
+                      )}
                     </span>
                     <span className="mcp-chevron" aria-hidden="true">
                       {expanded ? "▴" : "▾"}

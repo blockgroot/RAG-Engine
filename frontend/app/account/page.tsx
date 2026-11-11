@@ -10,6 +10,7 @@ import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
+import { spaceStyle } from "@/components/SpaceMark";
 
 const TOOL_NAMES: Record<string, string> = {
   github: "GitHub",
@@ -33,7 +34,11 @@ function toolName(provider: string) {
 
 function accountLabel(identity: LinkedIdentity) {
   if (identity.provider === "github") return `@${identity.account}`;
-  return identity.display_name || identity.email || identity.account.replace(/^email:/, "");
+  return (
+    identity.display_name ||
+    identity.email ||
+    identity.account.replace(/^email:/, "")
+  );
 }
 
 /**
@@ -85,15 +90,16 @@ function AccountContent() {
 
   const linked = params.get("linked") === "github";
   const linkFailed = params.get("link_error") === "github";
-  const hasGitHub = data?.identities.some((i) => i.provider === "github") ?? false;
+  const hasGitHub =
+    data?.identities.some((i) => i.provider === "github") ?? false;
 
   return (
     <AppShell me={me}>
       <main className="page-wide studio-page stack account-page">
         <PageHeader
           eyebrow="You"
-          title="Linked accounts"
-          description="Your accounts in the tools your company connected. Handbook uses these to know which Slack messages, documents and pull requests are yours. Linking never changes what you or anyone else can see."
+          title="Your account"
+          description="Your name, the accounts in each tool that are yours, and your settings."
         />
 
         {linked && (
@@ -103,7 +109,8 @@ function AccountContent() {
         )}
         {linkFailed && (
           <div className="banner banner-warn" role="alert">
-            GitHub didn’t confirm your account, so nothing was linked. You can try again.
+            GitHub didn’t confirm your account, so nothing was linked. You can
+            try again.
           </div>
         )}
         {error && (
@@ -112,19 +119,49 @@ function AccountContent() {
           </div>
         )}
 
-        {me && <YourName current={me.name} />}
+        <section
+          className="studio-panel account-profile"
+          aria-labelledby="name-title"
+        >
+          <span
+            className="account-avatar"
+            style={spaceStyle(me.email)}
+            aria-hidden
+          >
+            {(me.name || me.email || "?").trim().charAt(0).toUpperCase()}
+          </span>
+          <div className="account-profile-body">
+            <h2 id="name-title" className="sr-only">
+              Your name
+            </h2>
+            <YourName current={me.name} />
+            <p className="account-profile-meta">
+              <span>{me.email}</span>
+              <span className={`role-chip role-${me.role}`}>
+                {me.role === "admin" ? "Admin" : "Member"}
+              </span>
+              {me.org_name && <span>{me.org_name}</span>}
+            </p>
+          </div>
+        </section>
 
-        <section className="studio-panel stack account-identities" aria-labelledby="linked-title">
+        <section
+          className="studio-panel stack account-identities"
+          aria-labelledby="linked-title"
+        >
           <div className="account-identities-head">
             <div className="studio-section-head">
               <h2 id="linked-title">Your accounts</h2>
               <p className="muted">
-                Slack, Google Drive, Notion and Linear link automatically when they use your
-                sign-in email.
+                Handbook uses these to know which messages, documents and pull
+                requests are yours. Linking never changes what anyone can see.
               </p>
             </div>
             {data?.github_link_available && (
-              <a className="button button-secondary button-sm account-github-link" href={api.githubLinkUrl()}>
+              <a
+                className="button button-secondary button-sm account-github-link"
+                href={api.githubLinkUrl()}
+              >
                 {hasGitHub ? "Link another GitHub" : "Link GitHub"}
               </a>
             )}
@@ -134,33 +171,46 @@ function AccountContent() {
             <p className="muted">Loading…</p>
           ) : data.identities.length === 0 ? (
             <p className="muted">
-              Nothing is linked yet. If your tools use a different email from the one you sign
-              in with, they won’t link on their own.
+              Nothing is linked yet. If your tools use a different email from
+              the one you sign in with, they won’t link on their own.
             </p>
           ) : (
             <ul className="account-identity-list">
               {data.identities.map((identity) => (
-                <li key={identity.id} className="account-identity-row">
+                <li
+                  key={identity.id}
+                  className={`account-identity-row is-${identity.provider}`}
+                >
                   <span className="account-identity-mark" aria-hidden="true">
-                    <BrandGlyph name={TOOL_BRANDS[identity.provider] ?? "document"} size={26} />
+                    <BrandGlyph
+                      name={TOOL_BRANDS[identity.provider] ?? "document"}
+                      size={26}
+                    />
                   </span>
                   <div className="account-identity-copy">
                     <strong>{toolName(identity.provider)}</strong>
                     <span>{accountLabel(identity)}</span>
                   </div>
-                  <span className="account-identity-method">
-                    {identity.verified_by === "oauth" ? "Signed in by you" : "Matched by email"}
-                  </span>
-                  {identity.can_unlink && (
-                    <button
-                      type="button"
-                      className="account-identity-unlink"
-                      disabled={busy === identity.id}
-                      onClick={() => unlink(identity)}
+                  <div className="account-identity-foot">
+                    <span
+                      className="account-identity-method"
+                      data-oauth={identity.verified_by === "oauth"}
                     >
-                      {busy === identity.id ? "Unlinking…" : "Unlink"}
-                    </button>
-                  )}
+                      {identity.verified_by === "oauth"
+                        ? "Signed in by you"
+                        : "Matched by email"}
+                    </span>
+                    {identity.can_unlink && (
+                      <button
+                        type="button"
+                        className="account-identity-unlink"
+                        disabled={busy === identity.id}
+                        onClick={() => unlink(identity)}
+                      >
+                        {busy === identity.id ? "Unlinking…" : "Unlink"}
+                      </button>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>
@@ -198,11 +248,7 @@ function YourName({ current }: { current: string | null }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   return (
-    <section className="studio-panel stack" aria-labelledby="name-title">
-      <div className="studio-section-head">
-        <h2 id="name-title">Your name</h2>
-        <p className="muted">How your name shows in Handbook.</p>
-      </div>
+    <div className="account-name">
       <form
         className="account-name-form"
         onSubmit={(e) => {
@@ -217,7 +263,13 @@ function YourName({ current }: { current: string | null }) {
               setNote("Saved.");
               clearMeCache();
             })
-            .catch((err) => setNote(err instanceof ApiError ? err.message : "Could not save. Try again."))
+            .catch((err) =>
+              setNote(
+                err instanceof ApiError
+                  ? err.message
+                  : "Could not save. Try again.",
+              ),
+            )
             .finally(() => setBusy(false));
         }}
       >
@@ -237,7 +289,11 @@ function YourName({ current }: { current: string | null }) {
           {busy ? "Saving…" : "Save"}
         </button>
       </form>
-      {note && <p className="muted" role="status">{note}</p>}
-    </section>
+      {note && (
+        <p className="muted account-name-note" role="status">
+          {note}
+        </p>
+      )}
+    </div>
   );
 }

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import { ActionCard } from "@/components/ActionCard";
+import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { ApiError, api, type ActCard, type ActStatus, type McpServerMine } from "@/lib/api";
 
 /** Why a sign-in was refused: Handbook only writes into the company's own
@@ -22,6 +23,20 @@ const CONNECT_ERROR: Record<string, string> = {
   workspace:
     "That account isn't your company's workspace or your work account. Sign in with the one you use for work.",
 };
+
+/** A tool's logo from its name ("Google Sheets", "GitHub", "Linear"). */
+function brandFor(name: string): BrandName {
+  const n = name.toLowerCase();
+  if (n.includes("github")) return "github";
+  if (n.includes("linear")) return "linear";
+  if (n.includes("notion")) return "notion";
+  if (n.includes("slack")) return "slack";
+  if (n.includes("google") || n.includes("sheet") || n.includes("doc")) return "google";
+  return "model";
+}
+
+/** Rows shown before "Show all". */
+const RECENT_SHOWN = 5;
 
 const HISTORY_STATUS: Record<ActCard["status"], string> = {
   proposed: "Waiting",
@@ -40,8 +55,10 @@ function ActionHistoryRow({ action }: { action: ActCard }) {
   const actionName = action.label.replace(/^.*?:\s*/, "");
   return (
     <article className="account-action-row">
+      <span className="account-action-mark" aria-hidden>
+        <BrandGlyph name={brandFor(provider)} size={18} />
+      </span>
       <div className="account-action-copy">
-        <span className="account-action-provider">{provider}</span>
         <strong>{actionName}</strong>
         <span className="account-action-target">
           {action.payload.title || action.target.name}
@@ -80,6 +97,7 @@ export function ActPanel() {
   const [recent, setRecent] = useState<ActCard[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [allRecent, setAllRecent] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -170,7 +188,10 @@ export function ActPanel() {
             <ul className="act-providers">
               {/* Each tool an admin added (an MCP server), signed in to apart. */}
               {mcp.map((m) => (
-                <li key={m.id} className="act-provider">
+                <li key={m.id} className="act-provider" data-connected={m.connected}>
+                  <span className="act-provider-mark" aria-hidden>
+                    <BrandGlyph name={brandFor(m.name)} size={20} />
+                  </span>
                   <div className="act-provider-copy">
                     <span className="act-provider-name">{m.name}</span>
                     {m.connected ? (
@@ -204,7 +225,7 @@ export function ActPanel() {
                 <p>What Handbook prepared or sent for you.</p>
               </div>
               <div className="account-actions-list">
-                {recent.map((r) =>
+                {(allRecent ? recent : recent.slice(0, RECENT_SHOWN)).map((r) =>
                   // A draft past its expiry can no longer be approved, so it is
                   // history, not a live card in the middle of the list.
                   r.status === "executing" ||
@@ -223,6 +244,11 @@ export function ActPanel() {
                   ),
                 )}
               </div>
+              {recent.length > RECENT_SHOWN && (
+                <button type="button" className="report-items-more" onClick={() => setAllRecent((v) => !v)}>
+                  {allRecent ? "Show fewer" : `Show all ${recent.length}`}
+                </button>
+              )}
             </div>
           )}
         </>

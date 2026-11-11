@@ -616,3 +616,14 @@ def test_invite_refuses_an_address_outside_the_company_domain(client, admin_org)
     assert sub.status_code == 400
     same = client.post("/admin/members", json={"email": f"x-{uuid.uuid4().hex[:8]}@Example.com"}, cookies=cookies)
     assert same.status_code == 200
+
+
+@requires_db
+def test_connect_without_the_tools_keys_lands_on_the_setup_guide(client, admin_org, monkeypatch):
+    """A browser navigation: a JSON 400 showed as a blank page."""
+    _, cookies = admin_org
+    monkeypatch.delenv("NOTION_CLIENT_ID", raising=False)
+    monkeypatch.delenv("NOTION_CLIENT_SECRET", raising=False)
+    response = client.get("/auth/notion/authorize", cookies=cookies, follow_redirects=False)
+    assert response.status_code in (302, 307)
+    assert response.headers["location"].endswith("/connect/setup?provider=notion")

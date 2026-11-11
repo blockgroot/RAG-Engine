@@ -400,7 +400,9 @@ non-admin account the Google connection fails, so the feature stays off.
 
 Handbook charts the sentiment of chosen surveys. Responses are never searchable, results are
 shown to owners only, and groups under 5 responses are hidden. It has never run on a real form,
-and switching it on makes every company reconnect Google.
+and switching it on makes every company reconnect Google. Since 11 Nov 2026 the Sources pages no
+longer show the survey picker, so new surveys cannot be chosen in the app; the backend is
+unchanged.
 
 **Code:** `app/sources/google_forms.py`, `app/insights/sentiment.py` (flag `GOOGLE_FORMS_ENABLED`)
 

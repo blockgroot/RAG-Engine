@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
+import { BrandGlyph } from "@/components/BrandGlyph";
 import { McpServersAdmin } from "@/components/McpServersAdmin";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
@@ -21,13 +22,11 @@ import { ApiError, api, type AdminActions } from "@/lib/api";
 
 type Mode = "off" | "on";
 
-const MODES: { value: Mode; label: string; hint: string }[] = [
-  { value: "off", label: "Off", hint: "Handbook only reads." },
-  {
-    value: "on",
-    label: "On",
-    hint: "On company-wide and in every space. A space's owner can turn it off for their space.",
-  },
+/** What happens to every request, said once, as three steps. */
+const FLOW = [
+  { n: "1", title: "Someone asks", text: "“File a bug for this”, in chat or Slack." },
+  { n: "2", title: "Handbook drafts it", text: "Using only the tools you turn on below." },
+  { n: "3", title: "They approve it", text: "From their own account. Nothing runs by itself." },
 ];
 
 const SURFACE_COPY: Record<string, string> = {
@@ -91,11 +90,11 @@ export default function AdminActionsPage() {
 
   return (
     <AppShell me={me} variant="admin">
-      <main className="page-wide studio-page stack actions-admin-page">
+      <main className="page-wide studio-page stack actions-admin-page" data-off={data ? !data.enabled : undefined}>
         <PageHeader
           eyebrow="Company"
-          title="Action permissions"
-          description="Choose where Handbook may write. These settings allow requests—not automatic changes."
+          title="Agent mode"
+          description="What Handbook may do for people. Always with their approval."
         />
 
         {error && (
@@ -105,40 +104,47 @@ export default function AdminActionsPage() {
         )}
 
         {data && (
-          <section className="studio-panel stack" aria-labelledby="actions-allow">
-            <div className="studio-section-head">
-              <h2 id="actions-allow">Agent mode for your company</h2>
-              <p className="muted">
-                People ask Handbook to file issues, comment and post, using their own accounts, and
-                approve each one. Space owners can only narrow what you allow here.
-              </p>
+          <section className="studio-panel agent-master" data-on={mode === "on"} aria-labelledby="actions-allow">
+            <div className="agent-master-head">
+              <span className="agent-master-icon" aria-hidden>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                  <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <div className="agent-master-copy">
+                <h2 id="actions-allow">
+                  Agent mode is {mode === "on" ? "on" : "off"}
+                </h2>
+                <p>
+                  {mode === "on"
+                    ? "People can ask Handbook to file issues, comment and post. A space's owner can turn it off for their space."
+                    : "Handbook only reads. Turn it on to let people ask it to file issues, comment and post."}
+                </p>
+              </div>
+              <label className="agent-switch">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={mode === "on"}
+                  disabled={busy === "act"}
+                  onChange={(e) => setMode(e.target.checked ? "on" : "off")}
+                  aria-label="Agent mode for your company"
+                />
+                <span aria-hidden />
+              </label>
             </div>
-            <div className="act-mode-options" role="radiogroup" aria-label="Agent mode for your company">
-              {MODES.map((m) => (
-                <label key={m.value} className="act-mode-option" data-checked={mode === m.value}>
-                  <input
-                    type="radio"
-                    name="act-mode"
-                    value={m.value}
-                    checked={mode === m.value}
-                    disabled={busy === "act"}
-                    onChange={() => setMode(m.value)}
-                  />
+            <ol className="agent-flow">
+              {FLOW.map((step) => (
+                <li key={step.n}>
+                  <b>{step.n}</b>
                   <span>
-                    <strong>{m.label}</strong>
-                    <small>{m.hint}</small>
+                    <strong>{step.title}</strong>
+                    <small>{step.text}</small>
                   </span>
-                </label>
+                </li>
               ))}
-            </div>
+            </ol>
           </section>
-        )}
-
-        {data && (
-          <div className="action-safety-note" role="note">
-            <strong>People stay in control.</strong>
-            <span>Every draft is reviewed and approved by the person who requested it, using their own connected account.</span>
-          </div>
         )}
 
         {data && <McpServersAdmin disabled={!data.enabled} />}
@@ -152,6 +158,9 @@ export default function AdminActionsPage() {
             <div className="actions-surface-list">
               {data.surfaces.map((surface) => (
                 <label key={surface.name} className="action-surface">
+                  <span className="action-surface-mark" aria-hidden>
+                    <BrandGlyph name="slack" size={18} />
+                  </span>
                   <span>
                     <strong>{surface.label.replace(/^Allow (Agent mode|Act) from /, "")}</strong>
                     <small>{SURFACE_COPY[surface.name]}</small>
@@ -167,6 +176,10 @@ export default function AdminActionsPage() {
               ))}
             </div>
             <p className="actions-privacy-note">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="2" />
+              </svg>
               <strong>Private content stays protected.</strong>{" "}
               {data.block_wider
                 ? "A draft is refused when its destination may include people who cannot see its private sources."

@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { BrandGlyph } from "@/components/BrandGlyph";
 import { api, ApiError } from "@/lib/api";
 
 type InstallChoice = {
@@ -22,7 +23,7 @@ type PendingDetail = {
 };
 
 /**
- * After GitHub user OAuth, pick which App installation binds to this Folio
+ * After GitHub user OAuth, pick which App installation binds to this Handbook
  * surface (Company Sources vs a space). Auto-pick used to link the same
  * personal account on both — this page is the explicit separation step.
  */
@@ -76,75 +77,91 @@ function ChooseGitHubInstallInner() {
       ? "Connect a different account on GitHub"
       : "Install on a company Organization on GitHub";
 
+  const back = detail?.scope === "workspace" && detail.workspace_id ? `/workspaces/${detail.workspace_id}` : "/admin/connections";
+
   return (
-    <main className="page" style={{ maxWidth: "36rem", margin: "0 auto", padding: "2.5rem 1.25rem" }}>
-      <p className="eyebrow" style={{ marginBottom: "0.35rem" }}>
-        GitHub
-      </p>
-      <h1 style={{ fontSize: "1.65rem", margin: "0 0 0.5rem" }}>{title}</h1>
-      <p className="muted" style={{ marginTop: 0 }}>
-        {detail?.hint ||
-          "Company Sources and each space must use different GitHub accounts so code access stays separate."}
-      </p>
+    <main className="gh-choose">
+      <section className="gh-choose-card">
+        <span className="gh-choose-badge" aria-hidden>
+          <BrandGlyph name="github" size={30} />
+        </span>
+        <p className="gh-choose-eyebrow">Connect GitHub</p>
+        <h1>{title}</h1>
+        <p className="gh-choose-hint">
+          {detail?.hint ||
+            "Company Sources and each space must use different GitHub accounts so code access stays separate."}
+        </p>
 
-      {error && (
-        <div className="banner banner-warn" role="alert" style={{ marginTop: "1.25rem" }}>
-          {error}
-        </div>
-      )}
+        {error && (
+          <div className="banner banner-warn" role="alert">
+            {error}
+          </div>
+        )}
 
-      {!detail && !error && <p className="muted">Loading accounts…</p>}
+        {!detail && !error && (
+          <ul className="gh-choose-list" aria-hidden>
+            <li className="gh-choose-row is-loading" />
+            <li className="gh-choose-row is-loading" />
+          </ul>
+        )}
 
-      {detail && detail.installations.length === 0 && (
-        <div className="banner banner-warn" style={{ marginTop: "1.25rem" }}>
-          No GitHub App installations found for this login yet.
-        </div>
-      )}
+        {detail && detail.installations.length === 0 && (
+          <p className="gh-choose-empty">No GitHub accounts have Handbook installed yet. Install it below.</p>
+        )}
 
-      {detail && detail.installations.length > 0 && (
-        <ul className="stack" style={{ listStyle: "none", padding: 0, marginTop: "1.5rem" }}>
-          {detail.installations.map((inst) => (
-            <li key={inst.id} className="card" style={{ padding: "1rem 1.1rem" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "center" }}>
-                <div>
-                  <strong style={{ display: "block" }}>{inst.login || "Unknown"}</strong>
-                  <span className="muted" style={{ fontSize: "0.85rem" }}>
-                    {inst.account_type === "Organization"
-                      ? "GitHub Organization — typical for company code"
-                      : inst.account_type === "User"
-                        ? "Personal GitHub account — typical for a space"
-                        : inst.account_type || "GitHub account"}
-                  </span>
-                  {!inst.available && inst.unavailable_reason && (
-                    <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>
-                      {inst.unavailable_reason}
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={!inst.available || busyId !== null}
-                  onClick={() => choose(inst.id)}
+        {detail && detail.installations.length > 0 && (
+          <ul className="gh-choose-list">
+            {detail.installations.map((inst, i) => {
+              const org = inst.account_type === "Organization";
+              return (
+                <li
+                  key={inst.id}
+                  className="gh-choose-row"
+                  data-available={inst.available}
+                  style={{ ["--i" as string]: i }}
                 >
-                  {busyId === inst.id ? "Connecting…" : inst.available ? "Use this" : "Unavailable"}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+                  <span className="gh-choose-avatar" aria-hidden>
+                    {(inst.login || "?").charAt(0).toUpperCase()}
+                  </span>
+                  <span className="gh-choose-copy">
+                    <strong>{inst.login || "Unknown"}</strong>
+                    <span className={`gh-choose-type${org ? " is-org" : ""}`}>
+                      {org ? "Organization · usual for company code" : inst.account_type === "User" ? "Personal · usual for a space" : inst.account_type || "GitHub account"}
+                    </span>
+                    {!inst.available && inst.unavailable_reason && (
+                      <small className="gh-choose-why">{inst.unavailable_reason}</small>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={!inst.available || busyId !== null}
+                    onClick={() => choose(inst.id)}
+                  >
+                    {busyId === inst.id ? "Connecting…" : inst.available ? "Use this" : "In use"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
 
-      {detail?.install_another_url && (
-        <div className="stack" style={{ marginTop: "1.5rem", gap: "0.75rem" }}>
-          <a className="button" href={detail.install_another_url}>
-            {installLabel}
-          </a>
-          <a className="button button-secondary" href={detail.switch_account_url}>
-            Sign in to GitHub as someone else
-          </a>
-        </div>
-      )}
+        {detail?.install_another_url && (
+          <div className="gh-choose-other">
+            <p>Not listed?</p>
+            <a className="button button-secondary" href={detail.install_another_url}>
+              {installLabel}
+            </a>
+            <a className="gh-choose-link" href={detail.switch_account_url}>
+              Sign in to GitHub as someone else
+            </a>
+          </div>
+        )}
+
+        <a className="gh-choose-back" href={back}>
+          ← Back
+        </a>
+      </section>
     </main>
   );
 }

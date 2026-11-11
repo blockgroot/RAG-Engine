@@ -25,7 +25,7 @@ type Step = {
   form?: boolean;
 };
 
-function CopyField({ label, value }: { label: string; value: string }) {
+export function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="own-app-copy">

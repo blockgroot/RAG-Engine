@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
-import { FormsCard } from "@/components/FormsCard";
 import { OwnAppSetup } from "@/components/OwnAppSetup";
 import { useMe } from "@/lib/useMe";
 import { api, ApiError, ConnectionRecord, ConnectorApp, JobRecord, SyncChanges } from "@/lib/api";
@@ -230,7 +229,9 @@ function ConnectionsPageInner() {
       const prev = prevStatuses.current[connectionId];
       const curr = job.status;
       if (ACTIVE_STATUSES.has(curr)) {
-        setMessage(`${syncPhaseHeadline(job)} ${syncPagesDetail(job)}`);
+        setMessage(
+          `${syncPhaseHeadline(job)} ${syncPagesDetail(job, connections.find((c) => c.id === connectionId)?.provider)}`,
+        );
         setError(null);
       } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
@@ -360,7 +361,7 @@ function ConnectionsPageInner() {
         <PageHeader
           eyebrow="Company"
           title="Sources"
-          description="Connect Notion, Google Drive, Slack, Linear, and company GitHub. Spaces need their own GitHub account — never the same install as here."
+          description="Where Handbook reads from. Connect a tool once and it stays in sync."
           meta={
             loadingConnections ? (
               <span className="hero-facts">Loading…</span>
@@ -395,7 +396,7 @@ function ConnectionsPageInner() {
             <div className="studio-section-head">
               <h2>Your company&apos;s apps</h2>
               <p className="muted">
-                Google Drive and Slack connect through an app your company owns. Set each one up once, then connect below.
+                Drive and Slack connect through an app your company owns. Set it up once.
               </p>
             </div>
             <div className="own-apps-grid">
@@ -417,7 +418,6 @@ function ConnectionsPageInner() {
         <section className="studio-section room-sources" aria-label="Source connections">
           <div className="studio-section-head">
             <h2>Your connections</h2>
-            <p className="muted">Each source keeps its own sync boundary — never mixed across providers.</p>
           </div>
           <div className="source-bento">
             {loadingConnections
@@ -432,19 +432,6 @@ function ConnectionsPageInner() {
                     <div className="room-add-grid">{unlinked.map(renderSource)}</div>
                   </>
                 )}
-            {/* Surveys ride the same Google connection but are shown apart:
-                indexing a folder and reading a survey once have different
-                consequences, and one card made them look like one decision. */}
-            {!loadingConnections && (
-              <FormsCard
-                connection={connections.find((c) => c.provider === "google")}
-                onConfigSaved={(updated) =>
-                  setConnections((prev) =>
-                    prev.map((c) => (c.id === updated.id ? updated : c))
-                  )
-                }
-              />
-            )}
           </div>
         </section>
       </main>
