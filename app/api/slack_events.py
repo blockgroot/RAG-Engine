@@ -650,7 +650,7 @@ def _handle(event: dict, team_id: str) -> None:
 
     allowance = question_decision(user.id, org_id)
     if not allowance.allowed:
-        post_message(token, channel, refusal_message(allowance.retry_after), thread_ts)
+        post_message(token, channel, refusal_message(allowance.retry_after, allowance.refused_by), thread_ts)
         return
 
     # Act: a message that ASKS for something to be done (plain words, checked

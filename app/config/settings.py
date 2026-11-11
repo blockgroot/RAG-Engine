@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field, replace
 
@@ -131,6 +132,20 @@ DEFAULT_RATE_LIMIT_EMAIL_BURST = 10
 # page load sends many calls at once, and this exists only to stop scripts.
 DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE = 120.0
 DEFAULT_RATE_LIMIT_REQUEST_BURST = 40
+
+# AI spend, in dollars, on answering models only (docs/plans/2026-11-11-ai-spend-limits.md).
+# Sized for a $100/month Claude credit and 30 people, with $10 kept as margin.
+DEFAULT_AI_COMPANY_DOLLARS_PER_DAY = 3.00
+DEFAULT_AI_PERSON_DOLLARS_PER_DAY = 0.30
+DEFAULT_AI_PERSON_DOLLARS_BURST = 0.15
+DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE = 0.08
+# Dollars per million input / output tokens, by model id (a dated or vendor-
+# prefixed id matches its base). A model not listed (Gemini, Ollama) is not
+# counted: only these are paid from the credit.
+DEFAULT_AI_PRICES = (
+    "claude-sonnet-5-5=2:10,claude-sonnet-5=2:10,"
+    "claude-haiku-5-5=0.10:0.50,claude-haiku-4-5=1:5"
+)
 # Answers written at once, across every server when REDIS_URL is set (per
 # process otherwise); the rest wait for a slot, then are told "busy". Measured locally with the outside APIs replayed: 20 slots on the
 # 10-connection pool answered 50 askers with no one turned away and no pool
@@ -1616,9 +1631,22 @@ class RateLimitSettings:
     chat_max_concurrent: int = DEFAULT_CHAT_MAX_CONCURRENT
     chat_queue_wait_seconds: float = DEFAULT_CHAT_QUEUE_WAIT_SECONDS
     chat_max_concurrent_per_person: int = DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
+    # AI spend in dollars (security/ai_spend.py). 0 turns that limit off.
+    ai_company_dollars_per_day: float = DEFAULT_AI_COMPANY_DOLLARS_PER_DAY
+    ai_person_dollars_per_day: float = DEFAULT_AI_PERSON_DOLLARS_PER_DAY
+    ai_person_dollars_burst: float = DEFAULT_AI_PERSON_DOLLARS_BURST
+    ai_person_dollars_per_minute: float = DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE
+    # (model id, $ per million input, $ per million output)
+    ai_prices: tuple[tuple[str, float, float], ...] = ()
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
+        def dollars(name: str, default: float) -> float:
+            try:
+                value = float(os.getenv(name) or default)
+            except ValueError:
+                return default
+            return max(0.0, value)
         def rate(name: str, default: float) -> float:
             try:
                 value = float(os.getenv(name) or default)
@@ -1664,7 +1692,37 @@ class RateLimitSettings:
                 os.getenv("CHAT_MAX_CONCURRENT_PER_PERSON")
                 or DEFAULT_CHAT_MAX_CONCURRENT_PER_PERSON
             ),
+            ai_company_dollars_per_day=dollars(
+                "AI_COMPANY_DOLLARS_PER_DAY", DEFAULT_AI_COMPANY_DOLLARS_PER_DAY
+            ),
+            ai_person_dollars_per_day=dollars(
+                "AI_PERSON_DOLLARS_PER_DAY", DEFAULT_AI_PERSON_DOLLARS_PER_DAY
+            ),
+            ai_person_dollars_burst=dollars(
+                "AI_PERSON_DOLLARS_BURST", DEFAULT_AI_PERSON_DOLLARS_BURST
+            ),
+            ai_person_dollars_per_minute=dollars(
+                "AI_PERSON_DOLLARS_PER_MINUTE", DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE
+            ),
+            ai_prices=_parse_ai_prices(os.getenv("AI_PRICES") or DEFAULT_AI_PRICES),
         )
+
+
+def _parse_ai_prices(raw: str) -> tuple[tuple[str, float, float], ...]:
+    """``model=in:out,…`` in dollars per million tokens. A malformed entry is
+    skipped and logged, never guessed: an unpriced model is simply not counted."""
+    prices = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            model, cost = entry.split("=", 1)
+            inp, out = cost.split(":", 1)
+            prices.append((model.strip().lower(), float(inp), float(out)))
+        except ValueError:
+            logging.getLogger(__name__).warning("AI_PRICES: ignoring %r (want model=in:out)", entry)
+    return tuple(prices)
 
 
 @dataclass(frozen=True)

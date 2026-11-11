@@ -72,6 +72,7 @@ from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
+from ..security.ai_spend import charge_to
 from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
@@ -1618,6 +1619,8 @@ def _stream_answer_body(
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
     use_model(model, org_id=org_id)
+    # Who pays for this answer's model calls, for the same reason.
+    charge_to(session.user_id if session else None, org_id)
     # Logged, never refused (see guard/live.py for the measured reason).
     watch_question(question)
 
