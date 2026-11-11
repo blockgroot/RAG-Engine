@@ -72,7 +72,9 @@ def test_no_button_without_the_updater(feed):
     assert not status.can_update and "updater is not set up" in status.blocked_reason
 
 
-def test_check_off_or_unknown_version_shows_nothing(feed):
+def test_check_off_or_unknown_version_shows_nothing(feed, monkeypatch):
+    # A checkout sitting on a release tag would read a real version from git.
+    monkeypatch.setattr(check, "source_version", lambda: None)
     assert check.update_status(settings(check_enabled=False)).newer == []
     assert check.update_status(settings(current_version=None)).newer == []
 
@@ -159,14 +161,19 @@ def test_a_source_checkout_shows_its_git_version_but_is_not_checked(monkeypatch)
     assert status.current == "0.2.1-66-g732955e" and status.newer == []
 
 
-def test_a_main_build_with_no_version_shows_its_commit(monkeypatch):
-    """Cloud built from main has no tag and no git: the deploy's commit is
-    shown, and never compared with the release feed."""
+def test_cloud_built_from_main_never_says_a_release_is_available(monkeypatch):
+    """Cloud runs main, which holds every tagged release. A HANDBOOK_VERSION left
+    on the host (0.2.1) made it offer 0.3.0 while running it: the commit is
+    shown, nothing is "available", and the newest release is what's new."""
     from app.config.settings import UpdateSettings
     from app.updates import check
 
-    monkeypatch.setattr(check, "source_version", lambda: None)
-    monkeypatch.setattr(check, "fetch_releases", lambda s: (_ for _ in ()).throw(AssertionError("fetched")))
+    today = date.today().isoformat()
+    releases = [check.Release("0.2.1", today), check.Release("0.3.0", today, notes=["New look"])]
+    monkeypatch.setattr(check, "fetch_releases", lambda s: releases)
+    monkeypatch.setenv("HANDBOOK_DEPLOYMENT", "cloud")
+    monkeypatch.setenv("HANDBOOK_VERSION", "0.2.1")
     monkeypatch.setenv("RENDER_GIT_COMMIT", "0b1c2d3e4f5a6b7c")
     status = check.update_status(UpdateSettings.from_env())
-    assert status.current == "main@0b1c2d3" and status.newer == []
+    assert status.current == "main@0b1c2d3" and status.newer == [] and not status.can_update
+    assert status.whats_new.version == "0.3.0"

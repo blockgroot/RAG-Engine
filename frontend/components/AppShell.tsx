@@ -1,5 +1,6 @@
 "use client";
 
+import { NewVersionPill } from "./NewVersionPill";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -474,6 +475,7 @@ export function AppShell({
           {children}
         </div>
       </div>
+      <NewVersionPill admin={me?.role === "admin"} />
       {me && me.name === null && savedName === null && (
         <NamePrompt
           guess={guessedName ?? ""}

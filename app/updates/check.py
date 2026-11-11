@@ -161,10 +161,21 @@ def source_version() -> str | None:
 
 def update_status(settings: UpdateSettings | None = None) -> UpdateStatus:
     settings = settings or UpdateSettings.from_env()
+    selfhosted = settings.deployment == "selfhosted"
+    if not selfhosted and settings.build_commit:
+        # Cloud built from main runs the newest code, which holds every tagged
+        # release: a HANDBOOK_VERSION left on the host goes stale on the next
+        # push and made Cloud say "0.3.0 is available" while running it. Its
+        # admins have nothing to update, so they are shown the newest notes.
+        latest = max(fetch_releases(settings), key=lambda r: version_key(r.version), default=None) \
+            if settings.check_enabled else None
+        whats_new = latest if latest and _is_recent(latest.date) else None
+        return UpdateStatus(
+            settings.deployment, f"main@{settings.build_commit[:7]}", [], whats_new, False, None
+        )
     current = settings.current_version or source_version()
     if not current and settings.build_commit:
         current = f"main@{settings.build_commit[:7]}"
-    selfhosted = settings.deployment == "selfhosted"
     if not settings.check_enabled or not current or not VERSION_RE.match(current):
         return UpdateStatus(settings.deployment, current, [], None, False, None)
 

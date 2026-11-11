@@ -293,6 +293,13 @@ scored by the safety model; the answer fact-checker is off (§11).
   `git describe` ("0.2.1, 66 changes after it"), which is shown but never checked against the
   release feed. Cloud deployed straight from main has none of these, so it shows "Latest build
   from main" and the deploy's commit (`RENDER_GIT_COMMIT`), also never checked.
+  Cloud built from git (a commit known) ignores `HANDBOOK_VERSION`: a value left on the host went
+  stale on the next push and made Cloud say "0.3.0 is available" while running it. It never offers
+  a release and shows the newest release's notes as what's new (11 Nov 2026).
+- **"A new version is ready"** (11 Nov 2026): every build has an id (`NEXT_PUBLIC_BUILD_ID`: the
+  commit on Vercel, the image version, else the build time); `/build-id` serves the live one. An
+  open tab from an older build shows a pill with Refresh (and What's new for admins), checked
+  every 5 minutes and when the tab comes back into view.
 
 - **Company email domain** (6 Nov 2026): a company's domain is its first admin's
   (`organizations.email_domain`, existing companies filled from their earliest admin). Inviting
