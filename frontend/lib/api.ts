@@ -198,6 +198,8 @@ export interface Me {
   github_connected: boolean;
   /** Act (writes into connected tools) is switched on for Handbook. */
   act_enabled?: boolean;
+  /** A self-hosted copy: the only kind with an Updates page. */
+  selfhosted?: boolean;
   slack_ready: boolean;
   linear_ready: boolean;
   notion_ready: boolean;

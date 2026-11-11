@@ -296,6 +296,14 @@ scored by the safety model; the answer fact-checker is off (§11).
   Cloud built from git (a commit known) ignores `HANDBOOK_VERSION`: a value left on the host went
   stale on the next push and made Cloud say "0.3.0 is available" while running it. It never offers
   a release and shows the newest release's notes as what's new (11 Nov 2026).
+- **Updates is self-hosted only** (11 Nov 2026): Cloud is kept current for its companies, so
+  there it has no Updates link, the page sends you to Ask, the bell has no version items, and the
+  new-version pill offers only Refresh. `GET /me` says `selfhosted`. Releases are cut for
+  self-hosted copies.
+- **Release email to self-hosted admins** (11 Nov 2026): the worker's hourly pass reads the release
+  list and emails every admin about the newest release once (`update_notices` holds the versions
+  announced, claimed before sending; released again if every send failed), with the notes, a
+  security flag in the subject, and a link to Updates. Cloud sends none (`app/updates/announce.py`).
 - **"A new version is ready"** (11 Nov 2026): every build has an id (`NEXT_PUBLIC_BUILD_ID`: the
   commit on Vercel, the image version, else the build time); `/build-id` serves the live one. An
   open tab from an older build shows a pill with Refresh (and What's new for admins), checked

@@ -177,3 +177,71 @@ def test_cloud_built_from_main_never_says_a_release_is_available(monkeypatch):
     status = check.update_status(UpdateSettings.from_env())
     assert status.current == "main@0b1c2d3" and status.newer == [] and not status.can_update
     assert status.whats_new.version == "0.3.0"
+
+
+def test_cloud_bell_has_no_update_items(monkeypatch):
+    """Cloud is kept current for its companies: the bell never mentions versions."""
+    from app.api import notifications
+
+    monkeypatch.setenv("HANDBOOK_DEPLOYMENT", "cloud")
+    monkeypatch.setattr(notifications, "update_status", lambda: (_ for _ in ()).throw(AssertionError("read")))
+    assert notifications._update_items() == []
+
+
+def _announce_env(monkeypatch, *, deployment="selfhosted", sends=True):
+    """The announcer with its database and mail replaced: what it claimed and sent."""
+    from app.updates import announce
+
+    today = date.today().isoformat()
+    monkeypatch.setattr(
+        check, "fetch_releases",
+        lambda s: [check.Release("0.2.1", today), check.Release("0.3.0", today, notes=["New look"])],
+    )
+    monkeypatch.setenv("HANDBOOK_DEPLOYMENT", deployment)
+    monkeypatch.setenv("HANDBOOK_VERSION", "0.2.1")
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    claimed: set[str] = set()
+    sent: list[tuple[str, str]] = []
+
+    def claim(version):
+        if version in claimed:
+            return False
+        claimed.add(version)
+        return True
+
+    monkeypatch.setattr(announce, "_claim", claim)
+    monkeypatch.setattr(announce, "_release_claim", claimed.discard)
+    monkeypatch.setattr(announce, "_admin_emails", lambda: ["a@acme.example", "b@acme.example"])
+    monkeypatch.setattr(
+        announce, "_send", lambda to, release, current, link: sent.append((to, release.version)) or sends
+    )
+    return announce, claimed, sent
+
+
+def test_admins_are_emailed_once_per_new_release(monkeypatch):
+    announce, _, sent = _announce_env(monkeypatch)
+    assert announce.announce_new_release() == 2
+    assert announce.announce_new_release() == 0  # the next hourly pass sends nothing
+    assert sent == [("a@acme.example", "0.3.0"), ("b@acme.example", "0.3.0")]
+
+
+def test_a_failed_send_is_tried_again_next_pass(monkeypatch):
+    announce, claimed, _ = _announce_env(monkeypatch, sends=False)
+    assert announce.announce_new_release() == 0
+    assert claimed == set()  # released, so the next pass retries
+
+
+def test_cloud_sends_no_release_email(monkeypatch):
+    announce, _, sent = _announce_env(monkeypatch, deployment="cloud")
+    assert announce.announce_new_release() == 0 and sent == []
+
+
+def test_release_email_says_what_changed_and_where_to_update(monkeypatch):
+    from app.auth import email as mail
+
+    out = {}
+    monkeypatch.setattr(mail, "_dispatch", lambda to, subject, body, settings, **k: out.update(subject=subject, body=body))
+    release = check.Release("0.3.0", "2026-11-11", security=True, notes=["New look"])
+    mail.send_release_email("a@acme.example", release=release, current="0.2.1", link="https://hb.acme.example/admin/updates")
+    assert out["subject"] == "Security update: Handbook 0.3.0 is available"
+    assert "New look" in out["body"] and "https://hb.acme.example/admin/updates" in out["body"]

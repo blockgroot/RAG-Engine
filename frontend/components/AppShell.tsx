@@ -14,122 +14,100 @@ import { clearMeCache } from "@/lib/useMe";
 
 type Variant = "app" | "onboarding" | "admin";
 
-function IconAsk() {
+/* Rail icons: one set. 24-unit box, 1.75 stroke, and a soft fill of the
+   same colour so each reads as a shape, not a hairline, in the dark rail. */
+const SOFT = { fill: "currentColor", fillOpacity: 0.24 } as const;
+const LINE = { stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+
+function RailIcon({ children }: { children: React.ReactNode }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M16.5 16.5 21 21" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+      {children}
     </svg>
+  );
+}
+
+function IconAsk() {
+  // A speech bubble with a spark: ask, and get an answer.
+  return (
+    <RailIcon>
+      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V17h0A2.5 2.5 0 0 1 4 14.5v-8Z" {...SOFT} {...LINE} />
+      <path d="M12 7.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1Z" fill="currentColor" />
+    </RailIcon>
   );
 }
 
 function IconSpaces() {
+  // Rooms: four tiles, one lit.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <rect x="3" y="3" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.75" />
-      <rect x="13" y="3" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.75" />
-      <rect x="3" y="13" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.75" />
-      <rect x="13" y="13" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.75" />
-    </svg>
+    <RailIcon>
+      <rect x="3.5" y="3.5" width="7.5" height="7.5" rx="2" {...SOFT} {...LINE} />
+      <rect x="13" y="3.5" width="7.5" height="7.5" rx="2" {...LINE} />
+      <rect x="3.5" y="13" width="7.5" height="7.5" rx="2" {...LINE} />
+      <rect x="13" y="13" width="7.5" height="7.5" rx="2" {...LINE} />
+    </RailIcon>
   );
 }
 
 function IconReports() {
-  // Calendar + clock: what the section is (something that runs on a cadence),
-  // not a generic document. Monochrome `currentColor` like every other rail
-  // icon — the colour version of this mark lives in BrandGlyph for the
-  // marketing pages.
+  // A page with bars: a report that arrives on a schedule.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <rect x="3" y="5" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M3 9h14M7.5 3v3.5M12.5 3v3.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-      <circle cx="17.5" cy="16.5" r="4" fill="var(--surface, #fff)" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M17.5 14.7v1.9h1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
+    <RailIcon>
+      <path d="M6.5 3.5h7l4.5 4.5v10a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 18V6a2.5 2.5 0 0 1 2.5-2.5Z" {...SOFT} {...LINE} />
+      <path d="M13.5 3.5V8H18" {...LINE} />
+      <path d="M8 17v-3M11 17v-5M14 17v-2" {...LINE} />
+    </RailIcon>
   );
 }
 
 function IconAct() {
   // A bolt: Handbook doing something in a tool, not only reading it.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M13 2.75 4.75 13.5H11l-1 7.75 8.25-10.75H12l1-7.75Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
-    </svg>
+    <RailIcon>
+      <path d="M13 2.75 4.75 13.5H11l-1 7.75 8.25-10.75H12l1-7.75Z" {...SOFT} {...LINE} />
+    </RailIcon>
   );
 }
 
 function IconSources() {
+  // Plugged-in apps: two linked blocks.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M4 7.5C4 6.12 7.58 5 12 5s8 1.12 8 2.5S16.42 10 12 10 4 8.88 4 7.5Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-      />
-      <path
-        d="M4 7.5V12c0 1.38 3.58 2.5 8 2.5s8-1.12 8-2.5V7.5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-      />
-      <path
-        d="M4 12v4.5c0 1.38 3.58 2.5 8 2.5s8-1.12 8-2.5V12"
-        stroke="currentColor"
-        strokeWidth="1.75"
-      />
-    </svg>
+    <RailIcon>
+      <rect x="3.5" y="3.5" width="9" height="9" rx="2.5" {...SOFT} {...LINE} />
+      <rect x="11.5" y="11.5" width="9" height="9" rx="2.5" {...LINE} />
+      <path d="M15 8h2.5A1.5 1.5 0 0 1 19 9.5V11M9 16H6.5A1.5 1.5 0 0 1 5 14.5V13" {...LINE} />
+    </RailIcon>
   );
 }
 
 function IconModel() {
-  // A chip: the model itself. Sized and stroked exactly like IconSources and
-  // IconPeople (18px, 24-unit viewBox, 1.75 stroke) so the rail reads as one
-  // set — and geometric rather than pictorial, like its neighbours.
+  // Sparkles: the AI model that writes the answers.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <rect x="7" y="7" width="10" height="10" rx="2.5" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
+    <RailIcon>
+      <path d="M10 3.5l1.6 4.4 4.4 1.6-4.4 1.6L10 15.5l-1.6-4.4L4 9.5l4.4-1.6L10 3.5Z" {...SOFT} {...LINE} />
+      <path d="M17.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" fill="currentColor" />
+    </RailIcon>
   );
 }
 
 function IconUpdates() {
-  // A circular arrow: a new version coming round. Same 18px / 1.75 stroke set.
+  // An arrow rising out of a circle: a newer version.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <RailIcon>
+      <circle cx="12" cy="12" r="8.5" {...SOFT} {...LINE} />
+      <path d="M12 16.5v-9M8.5 11 12 7.5l3.5 3.5" {...LINE} />
+    </RailIcon>
   );
 }
 
 function IconPeople() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="9" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M3.5 19c.6-3.1 2.9-5 5.5-5s4.9 1.9 5.5 5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <circle cx="17" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.75" />
-      <path
-        d="M15.2 19c.35-1.7 1.4-3 2.8-3 1.2 0 2.15.85 2.7 2.2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
+    <RailIcon>
+      <circle cx="9" cy="8" r="3.25" {...SOFT} {...LINE} />
+      <path d="M3.5 19c.6-3.1 2.9-5 5.5-5s4.9 1.9 5.5 5" {...LINE} />
+      <circle cx="17" cy="9" r="2.5" {...LINE} />
+      <path d="M15.2 15.6c.8-.4 1.6-.6 2.3-.6 1.7 0 3 1.4 3.5 3.6" {...LINE} />
+    </RailIcon>
   );
 }
 
@@ -383,6 +361,7 @@ export function AppShell({
                     <span className="rail-link-hint">What Handbook may do</span>
                   </span>
                 </Link>
+                {me?.selfhosted && (
                 <Link
                   href="/admin/updates"
                   className="rail-link"
@@ -397,6 +376,7 @@ export function AppShell({
                     <span className="rail-link-hint">Handbook versions</span>
                   </span>
                 </Link>
+                )}
               </>
             )}
           </nav>
@@ -475,7 +455,7 @@ export function AppShell({
           {children}
         </div>
       </div>
-      <NewVersionPill admin={me?.role === "admin"} />
+      <NewVersionPill admin={me?.role === "admin" && Boolean(me?.selfhosted)} />
       {me && me.name === null && savedName === null && (
         <NamePrompt
           guess={guessedName ?? ""}

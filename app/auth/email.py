@@ -275,6 +275,45 @@ def send_email_changed_notice_safe(to: str, new_email: str) -> None:
         logger.warning("Email-changed notice to %s failed: %s", to, exc)
 
 
+def send_release_email(
+    to: str, *, release, current: str | None, link: str, settings: EmailSettings | None = None
+) -> None:
+    """A newer Handbook is out: what changed, what to do, where to do it."""
+    urgent = bool(getattr(release, "security", False))
+    subject = (
+        f"Security update: Handbook {release.version} is available"
+        if urgent
+        else f"Handbook {release.version} is available"
+    )
+    points = "\n".join(f"  - {p}" for p in (release.notes or [])[:8])
+    lines = [
+        f"A new version of Handbook, {release.version}, is out."
+        + (f" This server runs {current}." if current else ""),
+        "",
+    ]
+    if urgent:
+        lines += ["It includes a security fix. Please update soon.", ""]
+    if points:
+        lines += ["What's new:", points, ""]
+    if getattr(release, "manual_steps", False):
+        lines += ["This update needs a few steps on your server first; the release notes list them.", ""]
+    lines += [f"Read the notes and update from Handbook:\n{link}"]
+    if getattr(release, "notes_url", None):
+        lines += ["", f"Full release notes: {release.notes_url}"]
+    lines += ["", "You get this once per version because you are a Handbook admin."]
+    _dispatch(to, subject, "\n".join(lines) + "\n", settings)
+
+
+def send_release_email_safe(to: str, *, release, current: str | None, link: str) -> bool:
+    """Never raises; says whether the mail went."""
+    try:
+        send_release_email(to, release=release, current=current, link=link)
+        return True
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Release email to %s failed: %s", to, exc)
+        return False
+
+
 def send_workspace_invite_email(
     to: str,
     link: str,

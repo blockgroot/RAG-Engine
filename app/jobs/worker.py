@@ -288,6 +288,14 @@ def run_maintenance() -> None:
     except Exception:  # noqa: BLE001 - housekeeping must never break the worker
         logger.debug("Slack channel-name refresh failed", exc_info=True)
 
+    # A newer Handbook: email this server's admins once (self-hosted only).
+    try:
+        from ..updates.announce import announce_new_release
+
+        announce_new_release()
+    except Exception:  # noqa: BLE001 - a missed email, never a stopped worker
+        logger.exception("Release announcement failed")
+
 
 def run_sync_tick() -> int:
     """Enqueue any due connection syncs. Never raises. Returns how many.

@@ -60,9 +60,17 @@ export function SignInEmailPanel() {
         <span className="account-setting-kicker">Identity</span>
         <h2 id="email-title">Sign-in email</h2>
         <p className="muted">
-          Current address: <strong>{data?.email ?? "…"}</strong>. Changing it requires
-          confirmation, and your earlier shared documents stay visible.
+          Changing it needs a confirmation link. Documents shared with your old address stay
+          visible to you.
         </p>
+      </div>
+
+      <div className="account-email-current">
+        <span className="account-email-icon" aria-hidden>@</span>
+        <span>
+          <small>Signed in as</small>
+          <strong>{data?.email ?? "…"}</strong>
+        </span>
       </div>
 
       <form className="account-email-form" onSubmit={submit}>
@@ -70,6 +78,7 @@ export function SignInEmailPanel() {
           <label htmlFor="new-email">New email</label>
           <input
             id="new-email"
+            placeholder="name@company.com"
             className="input"
             type="email"
             required

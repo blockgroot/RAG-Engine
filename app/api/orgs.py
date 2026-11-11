@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from ..config.settings import UpdateSettings
 from ..db.connection import get_connection
 from .deps import SessionClaims, get_session
 from .setup_status import content_setup_status
@@ -105,6 +106,9 @@ def me(session: SessionClaims = Depends(get_session)):
         # Whether to show Act (writes into connected tools): the company's
         # admins allowed it. The Act page itself says what is switched on.
         "act_enabled": _act_on(session.org_id),
+        # Only a self-hosted copy has versions to install; Cloud is kept
+        # current for its companies, so it shows no Updates page.
+        "selfhosted": UpdateSettings.from_env().deployment == "selfhosted",
         # Whether the chat UI should offer its "Slack" tab. Deliberately keyed on
         # ingested Slack *documents*, not on the connection existing: unlike
         # GitHub (live reads, answerable the moment it is linked) Slack is a

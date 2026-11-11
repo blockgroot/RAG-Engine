@@ -956,6 +956,13 @@ CREATE INDEX IF NOT EXISTS idx_documents_tables_unchecked
 
 -- One-time data fixes that must run ONCE, not on every deploy (this file is
 -- re-applied at each one). Each is guarded by its own row here.
+-- Versions this server has already emailed its admins about
+-- (app/updates/announce.py). Not tenant data: one row per release.
+CREATE TABLE IF NOT EXISTS update_notices (
+    version     TEXT PRIMARY KEY,
+    notified_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS schema_marks (
     name       TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()

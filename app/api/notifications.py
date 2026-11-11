@@ -32,6 +32,7 @@ from ..guard.flagged import MAX_LISTED, flagged_documents
 from ..auth.session import SessionClaims
 from ..auth.user_connections import list_user_connections
 from ..jobs.autosync import SCOPE_KEYS
+from ..config.settings import UpdateSettings
 from ..updates import update_status
 from ..workspaces.store import list_my_workspaces
 from .deps import get_session
@@ -110,8 +111,11 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
 
 
 def _update_items() -> list[dict]:
-    """A newer version (self-hosted) or what the last update changed. Admins
-    only, and never fails the bell: an unreachable feed is no item."""
+    """A newer version or what the last update changed, on a self-hosted copy.
+    Admins only, and never fails the bell: an unreachable feed is no item.
+    Cloud is kept current for its companies: nothing to tell them."""
+    if UpdateSettings.from_env().deployment != "selfhosted":
+        return []
     try:
         status = update_status()
     except Exception:  # noqa: BLE001 - a missing item, never a broken bell

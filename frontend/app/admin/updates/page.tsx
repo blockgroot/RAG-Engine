@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -54,6 +55,11 @@ function ReleaseNotes({ release }: { release: Release }) {
 
 export default function AdminUpdatesPage() {
   const { me, loading } = useMe({ requireAdmin: true });
+  const router = useRouter();
+  // Cloud is kept current for its companies: there is nothing here for them.
+  useEffect(() => {
+    if (me && !me.selfhosted) router.replace("/chat");
+  }, [me, router]);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [restarting, setRestarting] = useState(false);

@@ -4,7 +4,7 @@ New features and fixes arrive as new versions. Your data is never inside the ima
 
 ## Hearing about new versions
 
-When a new version is out, Handbook tells your admins: an entry in the bell and on **Updates** (sidebar), with what changed. A security fix is marked as urgent. To do this, Handbook reads our public list of releases a few times a day; nothing about your company is sent. To turn it off, set `UPDATE_CHECK_ENABLED=false` in `.env`.
+When a new version is out, Handbook tells your admins: an email to every admin (once per version, sent with your email settings), an entry in the bell, and the notes on **Updates** (sidebar). A security fix is marked as urgent. To do this, Handbook reads our public list of releases a few times a day; nothing about your company is sent. To turn it off, set `UPDATE_CHECK_ENABLED=false` in `.env`.
 
 We also email every release, with its notes, to the contact on your license. Nothing upgrades by itself: you choose when.
 

@@ -35,8 +35,8 @@ function brandFor(name: string): BrandName {
   return "model";
 }
 
-/** Rows shown before "Show all". */
-const RECENT_SHOWN = 5;
+/** History rows per page of the slider. */
+const PAGE_SIZE = 5;
 
 const HISTORY_STATUS: Record<ActCard["status"], string> = {
   proposed: "Waiting",
@@ -71,22 +71,23 @@ function ActionHistoryRow({ action }: { action: ActCard }) {
           year: "numeric",
         })}
       </time>
-      <div className="account-action-outcome">
-        <span className="account-action-status" data-status={action.status}>
-          {HISTORY_STATUS[action.status]}
-        </span>
-        {action.status === "succeeded" && action.result?.url ? (
-          <a
-            className="account-action-link"
-            href={action.result.url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open in {provider}
-            <span aria-hidden="true">↗</span>
-          </a>
-        ) : null}
-      </div>
+      <span className="account-action-status" data-status={action.status}>
+        {HISTORY_STATUS[action.status]}
+      </span>
+      {action.status === "succeeded" && action.result?.url ? (
+        <a
+          className="account-action-open"
+          href={action.result.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`Open in ${provider}`}
+          aria-label={`Open in ${provider}`}
+        >
+          ↗
+        </a>
+      ) : (
+        <span aria-hidden />
+      )}
     </article>
   );
 }
@@ -97,7 +98,7 @@ export function ActPanel() {
   const [recent, setRecent] = useState<ActCard[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [allRecent, setAllRecent] = useState(false);
+  const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -140,6 +141,15 @@ export function ActPanel() {
   }
 
   if (status && !status.enabled) return null;
+
+  // A draft still open (or sending) is a live card above the history.
+  const isLive = (r: ActCard) =>
+    r.status === "executing" || (r.status === "proposed" && Date.parse(r.expires_at) > Date.now());
+  const live = recent.filter(isLive);
+  const history = recent.filter((r) => !isLive(r));
+  const pages: ActCard[][] = [];
+  for (let i = 0; i < history.length; i += PAGE_SIZE) pages.push(history.slice(i, i + PAGE_SIZE));
+  const shown = Math.min(page, Math.max(pages.length - 1, 0));
 
   return (
     <section
@@ -224,30 +234,47 @@ export function ActPanel() {
                 <h3 className="act-recent-title">Recent actions</h3>
                 <p>What Handbook prepared or sent for you.</p>
               </div>
-              <div className="account-actions-list">
-                {(allRecent ? recent : recent.slice(0, RECENT_SHOWN)).map((r) =>
-                  // A draft past its expiry can no longer be approved, so it is
-                  // history, not a live card in the middle of the list.
-                  r.status === "executing" ||
-                  (r.status === "proposed" && Date.parse(r.expires_at) > Date.now()) ? (
+              {live.length > 0 && (
+                <div className="account-actions-live">
+                  {live.map((r) => (
                     <ActionCard
                       key={r.id}
                       card={r}
                       onChange={updated}
                       onNext={(next) => setRecent((all) => [...next.actions, ...all])}
                     />
-                  ) : (
-                    <ActionHistoryRow
-                      key={r.id}
-                      action={r.status === "proposed" ? { ...r, status: "expired" } : r}
-                    />
-                  ),
-                )}
-              </div>
-              {recent.length > RECENT_SHOWN && (
-                <button type="button" className="report-items-more" onClick={() => setAllRecent((v) => !v)}>
-                  {allRecent ? "Show fewer" : `Show all ${recent.length}`}
-                </button>
+                  ))}
+                </div>
+              )}
+              {history.length > 0 && (
+                <div className="account-actions-slider">
+                  <div className="account-actions-viewport">
+                    <div className="account-actions-track" style={{ transform: `translateX(-${shown * 100}%)` }}>
+                      {pages.map((rows, i) => (
+                        <div key={i} className="account-actions-page" aria-hidden={i !== shown}>
+                          {rows.map((r) => (
+                            // A draft past its expiry can no longer be approved: history.
+                            <ActionHistoryRow key={r.id} action={r.status === "proposed" ? { ...r, status: "expired" } : r} />
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {pages.length > 1 && (
+                    <div className="account-actions-pager">
+                      <button type="button" aria-label="Newer" disabled={shown === 0} onClick={() => setPage(shown - 1)}>‹</button>
+                      <span className="account-actions-dots">
+                        {pages.map((_, i) => (
+                          <button key={i} type="button" aria-label={`Page ${i + 1}`} aria-current={i === shown} onClick={() => setPage(i)} />
+                        ))}
+                      </span>
+                      <span className="account-actions-count">
+                        {shown * PAGE_SIZE + 1}–{Math.min((shown + 1) * PAGE_SIZE, history.length)} of {history.length}
+                      </span>
+                      <button type="button" aria-label="Older" disabled={shown === pages.length - 1} onClick={() => setPage(shown + 1)}>›</button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
