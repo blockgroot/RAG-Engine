@@ -147,7 +147,10 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # byte-identical to pre-feature behaviour, so only the label moves.
     from ..config.settings import LLMSettings
 
-    models = catalog.as_dicts(backends)
+    default_model = LLMSettings.from_env().model
+    # The default is already the first option; listing it again under its
+    # catalog label would offer one model twice.
+    models = [m for m in catalog.as_dicts(backends) if m["id"] != default_model]
 
     # The org's own model, if an admin configured one. Appended rather than
     # replacing the built-ins: their key WILL break eventually (quota, rotation,
@@ -171,7 +174,8 @@ def list_models(session: SessionClaims = Depends(get_session)):
 
     return {
         "default": catalog.AUTO,
-        "default_label": LLMSettings.from_env().model or "Auto",
+        "default_label": getattr(catalog.get(default_model or ""), "label", None)
+        or default_model or "Auto",
         # The default model builds charts; Chart mode always offers it.
         "default_charts": True,
         "models": models,

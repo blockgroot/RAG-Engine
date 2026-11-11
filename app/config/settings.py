@@ -143,8 +143,7 @@ DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE = 0.08
 # prefixed id matches its base). A model not listed (Gemini, Ollama) is not
 # counted: only these are paid from the credit.
 DEFAULT_AI_PRICES = (
-    "claude-sonnet-5-5=2:10,claude-sonnet-5=2:10,"
-    "claude-haiku-5-5=0.10:0.50,claude-haiku-4-5=1:5"
+    "claude-sonnet-5-5=2:10,claude-haiku-5-5=0.10:0.50"
 )
 # Answers written at once, across every server when REDIS_URL is set (per
 # process otherwise); the rest wait for a slot, then are told "busy". Measured locally with the outside APIs replayed: 20 slots on the
@@ -190,6 +189,7 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DEFAULT_CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -356,6 +356,32 @@ class GroqSettings:
             api_key=os.getenv("GROQ_API_KEY") or None,
             base_url=os.getenv("GROQ_BASE_URL") or DEFAULT_GROQ_BASE_URL,
             timeout=float(os.getenv("GROQ_TIMEOUT") or DEFAULT_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class ClaudeSettings:
+    """Credentials for the Claude models in the picker (Sonnet and Haiku).
+
+    ``CLAUDE_API_KEY``, else the main ``LLM_API_KEY`` when the default model is
+    already Claude (``LLM_ADAPTER=anthropic``): one Claude key, one credit.
+    """
+
+    api_key: str | None
+    base_url: str = DEFAULT_CLAUDE_BASE_URL
+    timeout: float = DEFAULT_TIMEOUT
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    @classmethod
+    def from_env(cls) -> "ClaudeSettings":
+        adapter = (os.getenv("LLM_ADAPTER") or "").strip().lower()
+        main_key = os.getenv("LLM_API_KEY") if adapter in ("anthropic", "claude") else None
+        return cls(
+            api_key=os.getenv("CLAUDE_API_KEY") or main_key or None,
+            timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
         )
 
 

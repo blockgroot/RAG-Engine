@@ -35,10 +35,8 @@ def ids(monkeypatch):
 
 @pytest.mark.parametrize("model, price", [
     ("claude-sonnet-5-5", (2.0, 10.0)),
-    ("claude-sonnet-5", (2.0, 10.0)),
     ("claude-haiku-5-5", (0.10, 0.50)),
-    ("claude-haiku-4-5", (1.0, 5.0)),
-    ("claude-haiku-4-5-20251001", (1.0, 5.0)),      # dated id
+    ("claude-haiku-5-5-20261001", (0.10, 0.50)),    # dated id
     ("anthropic/claude-sonnet-5.5", (2.0, 10.0)),   # vendor prefix, dotted version
     ("CLAUDE-HAIKU-5-5", (0.10, 0.50)),
 ])
@@ -46,7 +44,7 @@ def test_each_answering_model_has_its_price(model, price):
     assert price_of(model, S) == price
 
 
-@pytest.mark.parametrize("model", ["gemini-3.1-flash-lite", "gpt-oss:120b", "claude-sonnet-55", "", None])
+@pytest.mark.parametrize("model", ["gemini-3.1-flash-lite", "gpt-oss:120b", "claude-sonnet-55", "claude-sonnet-5", "", None])
 def test_a_model_not_paid_from_the_credit_costs_nothing(model):
     assert price_of(model, S) is None
     assert cost_of(model, 10_000, 1_000, S) == 0.0

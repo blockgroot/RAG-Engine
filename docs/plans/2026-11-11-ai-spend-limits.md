@@ -9,7 +9,7 @@ Request limits count questions, but questions do not cost the same:
 
 - On Claude, a typical Handbook answer is about **6k tokens**, a heavy one about **15k**, and
   the largest measured about **33k** (bench3 Haiku and bench4 Sonnet, 300+ answers).
-- The four answering models differ **20x** in price.
+- The two answering models (Claude Sonnet 5.5 and Haiku 5.5, the only picks) differ **20x** in price.
 
 So "10 questions a minute" can mean very different spend. The constraint is a **$100 Claude
 credit** for Syvora's **30 people**. Background work (syncing, tables, graph) runs on Gemini
@@ -19,9 +19,7 @@ and is not paid from it.
 
 | Model | Input / output | Typical question |
 |---|---|---|
-| Sonnet 5.5 | $2 / $10 | ~$0.016 |
-| Sonnet 5 | $2 / $10 | ~$0.016 |
-| Haiku 4.5 | $1 / $5 | ~$0.008 |
+| Sonnet 5.5 (default) | $2 / $10 | ~$0.016 |
 | Haiku 5.5 | $0.10 / $0.50 | ~$0.0008 (measured end to end: $0.000713) |
 
 ## Limits
