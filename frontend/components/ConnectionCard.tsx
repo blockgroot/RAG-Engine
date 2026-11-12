@@ -123,9 +123,8 @@ const ACCESS_NOTE: Record<Provider, string> = {
 
 /** GitHub's install page opens only for the account the App is installed on
  * (a 404 for anyone else), so the button names that account. */
-function manageExternalLabel(provider: Provider, connection: ConnectionRecord): string {
-  const login = connection.source_config?.account_login;
-  return provider === "github" && login ? `Manage as ${login}` : "Manage";
+function manageExternalLabel(_provider: Provider, _connection: ConnectionRecord): string {
+  return "Manage"; // a GitHub login is on the row and in the title
 }
 
 function manageExternalTitle(provider: Provider, connection: ConnectionRecord): string {
@@ -317,12 +316,13 @@ export function ConnectionCard({
         if (!connection || needsReauth || needsFolder || needsChannels || needsTeams || syncInProgress) return null;
         const synced =
           showDocsJobBadge && lastJob?.status === "succeeded"
-            ? `Synced ${friendlyWhen(lastJob.finished_at || lastJob.created_at)}${
-                lastJob.doc_count ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"}` : ""
-              }`
+            ? `Synced ${friendlyWhen(lastJob.finished_at || lastJob.created_at)}`
             : null;
+        const pages =
+          synced && lastJob?.doc_count ? `${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"}` : null;
         const parts = [
           synced ?? (isLive ? "Read live" : "Syncs automatically"),
+          pages,
           !needsUpdate &&
             (connection.last_sync_at
               ? `checked ${checkedAgo(connection.last_sync_at)}`
@@ -332,7 +332,10 @@ export function ConnectionCard({
         return (
           <p className="source-row-foot">
             <span className="source-dot" aria-hidden />
-            {parts.join(" · ")}
+            <span>
+              {parts[0]}
+              {parts.length > 1 && <small>{parts.slice(1).join(" · ")}</small>}
+            </span>
           </p>
         );
   })();
@@ -419,78 +422,6 @@ export function ConnectionCard({
               {manageExternalLabel(provider, connection)}
             </a>
           )}
-          {provider === "google" &&
-            connection &&
-            folderConfigured &&
-            !changingFolder &&
-            !syncInProgress && (
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => {
-                  setChangingFolder(true);
-                  setFolderHint(null);
-                  setConfigError(null);
-                }}
-                title="Point this connection at a different Drive folder"
-              >
-                Change folder
-              </button>
-            )}
-          {provider === "linear" &&
-            connection &&
-            teamsConfigured &&
-            !changingTeams &&
-            !syncInProgress && (
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => {
-                  setChangingTeams(true);
-                  setFolderHint(null);
-                  setConfigError(null);
-                }}
-                title="Add or remove the Linear teams this connection reads"
-              >
-                Change teams
-              </button>
-            )}
-          {provider === "slack" &&
-            connection &&
-            channelsConfigured &&
-            !changingChannels &&
-            !syncInProgress && (
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => {
-                  setChangingChannels(true);
-                  setFolderHint(null);
-                  setConfigError(null);
-                }}
-                title="Add or remove connected Slack channels"
-              >
-                Change channels
-              </button>
-            )}
-          {provider === "slack" &&
-            workspaceId &&
-            connection &&
-            channelsConfigured &&
-            !changingChannels &&
-            !syncInProgress && (
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => {
-                  setInvitingMembers((v) => !v);
-                  setConfigError(null);
-                }}
-                title="Invite members of your connected Slack channel(s) to this space"
-              >
-                {invitingMembers ? "Hide invite" : "Invite members"}
-              </button>
-            )}
           {connection && !isLive && !needsFolder && !needsChannels && !needsTeams && needsUpdate && (
             <button
               className="button"
@@ -510,9 +441,98 @@ export function ConnectionCard({
             </a>
           )}
           {connection && (
-            <details className="source-more">
+            <details
+              className="source-more"
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest(".source-more-item")) (e.currentTarget as HTMLDetailsElement).open = false;
+              }}
+              onToggle={(e) => {
+                // One menu at a time: a click anywhere else closes it.
+                const menu = e.currentTarget;
+                if (!menu.open) return;
+                const away = (ev: MouseEvent) => {
+                  if (!menu.contains(ev.target as Node)) {
+                    menu.open = false;
+                    document.removeEventListener("mousedown", away);
+                  }
+                };
+                document.addEventListener("mousedown", away);
+              }}
+            >
               <summary aria-label="More actions" title="More actions">⋯</summary>
               <div className="source-more-menu">
+          {provider === "google" &&
+            connection &&
+            folderConfigured &&
+            !changingFolder &&
+            !syncInProgress && (
+              <button
+                className="source-more-item"
+                type="button"
+                onClick={() => {
+                  setChangingFolder(true);
+                  setFolderHint(null);
+                  setConfigError(null);
+                }}
+                title="Point this connection at a different Drive folder"
+              >
+                Change folder
+              </button>
+            )}
+          {provider === "linear" &&
+            connection &&
+            teamsConfigured &&
+            !changingTeams &&
+            !syncInProgress && (
+              <button
+                className="source-more-item"
+                type="button"
+                onClick={() => {
+                  setChangingTeams(true);
+                  setFolderHint(null);
+                  setConfigError(null);
+                }}
+                title="Add or remove the Linear teams this connection reads"
+              >
+                Change teams
+              </button>
+            )}
+          {provider === "slack" &&
+            connection &&
+            channelsConfigured &&
+            !changingChannels &&
+            !syncInProgress && (
+              <button
+                className="source-more-item"
+                type="button"
+                onClick={() => {
+                  setChangingChannels(true);
+                  setFolderHint(null);
+                  setConfigError(null);
+                }}
+                title="Add or remove connected Slack channels"
+              >
+                Change channels
+              </button>
+            )}
+          {provider === "slack" &&
+            workspaceId &&
+            connection &&
+            channelsConfigured &&
+            !changingChannels &&
+            !syncInProgress && (
+              <button
+                className="source-more-item"
+                type="button"
+                onClick={() => {
+                  setInvitingMembers((v) => !v);
+                  setConfigError(null);
+                }}
+                title="Invite members of your connected Slack channel(s) to this space"
+              >
+                {invitingMembers ? "Hide invite" : "Invite members"}
+              </button>
+            )}
           {connection && isLive && (
             <button
               className="source-more-item"

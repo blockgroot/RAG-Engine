@@ -12043,3 +12043,68 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .room-sources .room-add-grid .source-row-actions .muted { font-size: 0.72rem; text-align: right; max-width: 11rem; }
 .room-sources .room-add-grid .source-row-head { flex-wrap: nowrap; } .room-sources .room-add-grid .source-row-actions { flex-wrap: nowrap; }
 .room-sources .room-add-grid .source-row-kind { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Sources rows, balanced: wide name column, a status column, one fixed action column. */
+.room-sources .source-row.is-linked { padding: 0.9rem 1.2rem; }
+.room-sources .source-row.is-linked .source-row-head { grid-template-columns: minmax(0, 1fr) 12.5rem 8.25rem; gap: 1.5rem; align-items: center; }
+.room-sources .source-row.is-linked .source-row-actions { width: 8.25rem; justify-content: flex-end; }
+.source-row-status .source-row-foot > span:last-child { display: grid; gap: 0.1rem; color: var(--ink); font-weight: 550; }
+.source-row-status .source-row-foot small { font-size: 0.72rem; font-weight: 400; color: var(--ink-muted); }
+.source-row-status .source-dot { margin-top: 0.35rem; }
+@media (max-width: 760px) { .room-sources .source-row.is-linked .source-row-actions { width: auto; } }
+/* The ⋯ menu shows over the rows below instead of being cut off by its card. */
+.room-sources .source-bento > .source-row.is-linked { overflow: visible; position: relative; }
+.room-sources .source-bento > .source-row.is-linked:has(.source-more[open]) { z-index: 10; }
+.source-more-menu { z-index: 30; }
+
+/* Model › "Answers in chat": a light accent, not a solid block (12 Nov). */
+.model-split-card.is-yours { background: #fff; border-color: #d9e9e3; box-shadow: none; }
+.is-yours .model-split-icon { color: #0f766e; background: #e8f6f2; border: 1px solid #cfe9e1; }
+.is-yours .model-split-flow span.is-model { color: #0f766e; background: #eef8f5; border-color: #bfe3d8; }
+
+/* ===== Company app setup: a horizontal stepper and one panel ============== */
+.own-app .own-app-panel { margin-top: 1rem; padding: 0; background: none; border: 0; box-shadow: none; display: grid; gap: 1rem; }
+.own-app-stepper {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); margin: 0; padding: 0.4rem 0 0; list-style: none; counter-reset: none;
+}
+.own-app-stepper li { position: relative; }
+.own-app-stepper li + li::before {
+  content: ""; position: absolute; top: 0.95rem; right: calc(50% + 1.2rem); left: calc(-50% + 1.2rem); height: 2px;
+  border-radius: 2px; background: #e3ece8;
+}
+.own-app-stepper li.is-done + li::before, .own-app-stepper li.is-done + li.is-current::before { background: linear-gradient(90deg, #14b8a6, #0f766e); }
+.own-app-stepper button {
+  display: flex; flex-direction: column; align-items: center; gap: 0.45rem; width: 100%; padding: 0 0.25rem;
+  border: 0; background: none; font: inherit; cursor: pointer; text-align: center;
+}
+.own-app-stepper button:disabled { cursor: default; }
+.own-app-dot {
+  position: relative; z-index: 1; display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: 999px;
+  font-size: 0.78rem; font-weight: 750; color: #98a2b3; background: #fff; border: 2px solid #e3ece8;
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease), color 0.2s var(--ease);
+}
+.is-done .own-app-dot { color: #0f766e; background: #e8f6f2; border-color: #9fd9c9; }
+.is-current .own-app-dot { color: #fff; background: linear-gradient(135deg, #14b8a6, #0f766e); border-color: transparent; box-shadow: 0 0 0 4px rgba(20,184,166,0.18); }
+.own-app-dot-label { font-size: 0.72rem; font-weight: 600; line-height: 1.3; color: var(--ink-muted); max-width: 9rem; }
+.is-current .own-app-dot-label { color: var(--ink); }
+.is-done button:hover .own-app-dot-label { color: #0f766e; text-decoration: underline; }
+.own-app-current {
+  padding: 1.25rem 1.35rem; border-radius: 16px; background: #f8fbfa; border: 1px solid #e6eeeb;
+  animation: rise-in 0.25s var(--ease) both;
+}
+.own-app-current-eyebrow { margin: 0; font-size: 0.68rem; font-weight: 750; letter-spacing: 0.07em; text-transform: uppercase; color: #0f766e; }
+.own-app-current h4 { margin: 0.2rem 0 0.6rem; font-size: 1.05rem; }
+.own-app-current .own-app-step-body { display: grid; gap: 0.85rem; padding: 0; border: 0; background: none; font-size: 0.86rem; line-height: 1.55; color: var(--ink-muted); }
+.own-app-current .own-app-form { display: grid; gap: 0.85rem; max-width: none; }
+.own-app-current .own-app-form .field { display: grid; gap: 0.35rem; }
+.own-app-current .own-app-form label { font-size: 0.8rem; font-weight: 650; color: var(--ink); }
+.own-app-current .own-app-form .input { width: 100%; max-width: none; background: #fff; }
+.own-app-current .own-app-hint { font-size: 0.72rem; color: #98a2b3; }
+.own-app-current .own-app-nav { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-top: 0.3rem; padding-top: 0.9rem; border-top: 1px solid #e6eeeb; }
+@media (max-width: 640px) {
+  .own-app-dot-label { display: none; }
+  .is-current .own-app-dot-label { display: block; }
+}
+/* Add-a-source tiles: wide enough for "Connect company account" beside the name. */
+.room-sources .room-add-grid { grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); }
+.room-sources .room-add-grid .source-row-copy { min-width: 5.5rem; }

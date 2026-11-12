@@ -220,12 +220,14 @@ export function OwnAppSetup({
 
   const nav = (primary: ReactNode) => (
     <div className="own-app-nav">
-      {primary}
-      {step > 0 && (
+      {step > 0 ? (
         <button className="button button-secondary" type="button" onClick={() => setStep(step - 1)}>
-          Back
+          ← Back
         </button>
+      ) : (
+        <span />
       )}
+      {primary}
     </div>
   );
 
@@ -279,101 +281,87 @@ export function OwnAppSetup({
 
       {open && !done && (
         <div className="own-app-panel">
-        <div className="own-app-progress" aria-hidden>
-          <span>
-            Step {step + 1} of {steps.length}
-          </span>
-          <i style={{ ["--p" as string]: (step + 1) / steps.length }} />
-        </div>
-        <ol className="own-app-steps">
+        <ol className="own-app-stepper">
           {steps.map((s, i) => {
             const state = i < step ? "is-done" : i === step ? "is-current" : "is-next";
             return (
               <li key={s.title} className={state} aria-current={i === step ? "step" : undefined}>
-                <span className="own-app-marker" aria-hidden>
-                  {i < step ? "✓" : i + 1}
-                </span>
-                <div className="own-app-step">
-                  <button
-                    className="own-app-step-title"
-                    type="button"
-                    disabled={i >= step}
-                    onClick={() => setStep(i)}
-                    title={i < step ? "Go back to this step" : undefined}
-                  >
-                    {s.title}
-                  </button>
-
-                  {i === step && (
-                    <div className="own-app-step-body">
-                      {s.body}
-
-                      {s.links && s.links.length > 0 && (
-                        <div className="own-app-links">
-                          {s.links.map((l) => (
-                            <a
-                              key={l.href}
-                              className="button button-secondary"
-                              href={l.href}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              {l.label} ↗
-                            </a>
-                          ))}
-                        </div>
-                      )}
-
-                      {s.extra}
-
-                      {s.form ? (
-                        <form
-                          className="own-app-form"
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            save();
-                          }}
-                        >
-                          {fields.map(([key, label, secret]) => (
-                            <div className="field" key={key}>
-                              <label htmlFor={`${provider}-${key}`}>{label}</label>
-                              <input
-                                id={`${provider}-${key}`}
-                                className="input"
-                                type={secret ? "password" : "text"}
-                                value={values[key]}
-                                onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
-                                autoComplete="off"
-                                spellCheck={false}
-                              />
-                              <span className="own-app-hint">{HINTS[`${provider}-${key}`]}</span>
-                            </div>
-                          ))}
-                          {error && <div className="banner banner-warn">{error}</div>}
-                          {nav(
-                            <button className="button" type="submit" disabled={busy || !canSave}>
-                              {busy ? "Saving…" : "Save keys"}
-                            </button>,
-                          )}
-                        </form>
-                      ) : (
-                        nav(
-                          <button
-                            className="button"
-                            type="button"
-                            onClick={() => (last ? setDone(true) : setStep(step + 1))}
-                          >
-                            {last ? "Done" : "Next"}
-                          </button>,
-                        )
-                      )}
-                    </div>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  disabled={i >= step}
+                  onClick={() => setStep(i)}
+                  title={i < step ? `Back to: ${s.title}` : s.title}
+                >
+                  <span className="own-app-dot" aria-hidden>{i < step ? "✓" : i + 1}</span>
+                  <span className="own-app-dot-label">{s.title}</span>
+                </button>
               </li>
             );
           })}
         </ol>
+        {steps.map((s, i) =>
+          i !== step ? null : (
+            <section key={s.title} className="own-app-current" aria-label={s.title}>
+              <p className="own-app-current-eyebrow">
+                Step {i + 1} of {steps.length}
+              </p>
+              <h4>{s.title}</h4>
+              <div className="own-app-step-body">
+                {s.body}
+
+                {s.links && s.links.length > 0 && (
+                  <div className="own-app-links">
+                    {s.links.map((l) => (
+                      <a key={l.href} className="button button-secondary" href={l.href} target="_blank" rel="noreferrer">
+                        {l.label} ↗
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {s.extra}
+
+                {s.form ? (
+                  <form
+                    className="own-app-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      save();
+                    }}
+                  >
+                    {fields.map(([key, label, secret]) => (
+                      <div className="field" key={key}>
+                        <label htmlFor={`${provider}-${key}`}>{label}</label>
+                        <input
+                          id={`${provider}-${key}`}
+                          className="input"
+                          type={secret ? "password" : "text"}
+                          value={values[key]}
+                          onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                        <span className="own-app-hint">{HINTS[`${provider}-${key}`]}</span>
+                      </div>
+                    ))}
+                    {error && <div className="banner banner-warn">{error}</div>}
+                    {nav(
+                      <button className="button" type="submit" disabled={busy || !canSave}>
+                        {busy ? "Saving…" : "Save keys"}
+                      </button>,
+                    )}
+                  </form>
+                ) : (
+                  nav(
+                    <button className="button" type="button" onClick={() => (last ? setDone(true) : setStep(step + 1))}>
+                      {last ? "Done" : "Next"}
+                    </button>,
+                  )
+                )}
+              </div>
+            </section>
+          ),
+        )}
         </div>
       )}
     </div>
