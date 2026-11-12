@@ -18,9 +18,39 @@ import { formatReauthReason } from "@/lib/reauthReason";
  * the connection is fixed, so there is no read/unread state that can disagree
  * with reality. Silent on failure -- a broken bell must never be the thing
  * that breaks every page it sits on.
+ *
+ * Dismissing hides an item in this browser only, keyed by its whole text: the
+ * same problem stays hidden, a changed or new one shows again. Sources still
+ * shows the problem itself.
  */
+const DISMISSED_KEY = "bell.dismissed";
+const keyOf = (n: Notification) => [n.kind, n.provider, n.scope, n.title, n.detail].join("\u241f");
+
+function readDismissed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
 export function NotificationBell() {
-  const [items, setItems] = useState<Notification[]>([]);
+  const [all, setAll] = useState<Notification[]>([]);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  const items = all.filter((n) => !dismissed.has(keyOf(n)));
+
+  function dismiss(keys: string[]) {
+    // Only keys still current are kept, so the stored list never grows past
+    // what the bell shows.
+    const live = new Set(all.map(keyOf));
+    const next = new Set([...dismissed, ...keys].filter((k) => live.has(k)));
+    setDismissed(next);
+    try {
+      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...next]));
+    } catch {
+      /* private window: dismissed for this page view only */
+    }
+  }
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -67,7 +97,11 @@ export function NotificationBell() {
     let live = true;
     api
       .notifications()
-      .then((r) => live && setItems(r.items))
+      .then((r) => {
+        if (!live) return;
+        setDismissed(readDismissed());
+        setAll(r.items);
+      })
       .catch(() => {});
     return () => {
       live = false;
@@ -134,6 +168,11 @@ export function NotificationBell() {
         >
           <div className="bell-head-row">
             <p className="bell-head">Needs attention</p>
+            {items.length > 1 && (
+              <button type="button" className="bell-clear" onClick={() => dismiss(items.map(keyOf))}>
+                Clear all
+              </button>
+            )}
             <button
               type="button"
               className="bell-close-btn"
@@ -153,11 +192,13 @@ export function NotificationBell() {
           {items.length === 0 ? (
             /* Not an empty box: "nothing is broken" is the answer they opened
                this for, and it has to be stated to be believed. */
-            <p className="bell-empty">Everything is connected and syncing.</p>
+            <p className="bell-empty">
+              {all.length ? "Nothing new. Dismissed items still show on Sources." : "Everything is connected and syncing."}
+            </p>
           ) : (
             <ul className="bell-list">
-              {items.map((item, i) => (
-                <li key={`${item.scope}-${item.provider}-${i}`} className="bell-item">
+              {items.map((item) => (
+                <li key={keyOf(item)} className="bell-item">
                   <span className="bell-dot" data-severity={item.severity} aria-hidden />
                   <div className="bell-item-copy">
                     <span className="bell-item-title">{item.title}</span>
@@ -169,6 +210,17 @@ export function NotificationBell() {
                       {item.action}
                     </Link>
                   </div>
+                  <button
+                    type="button"
+                    className="bell-dismiss"
+                    onClick={() => dismiss([keyOf(item)])}
+                    aria-label={`Dismiss: ${item.title}`}
+                    title="Dismiss"
+                  >
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <path d="m6 6 8 8m0-8-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    </svg>
+                  </button>
                 </li>
               ))}
             </ul>

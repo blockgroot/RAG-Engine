@@ -12284,3 +12284,11 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .ask-chart-line.is-short { width: 60%; }
 @keyframes ask-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .ask-chart.is-loading .ask-chart-thumb, .ask-chart-line { animation: none; } }
+
+/* Bell: dismiss one item, or all of them */
+.bell-item-copy { flex: 1 1 auto; min-width: 0; }
+.bell-dismiss { flex: none; align-self: flex-start; display: grid; place-items: center; width: 1.6rem; height: 1.6rem; padding: 0; border: 0; border-radius: 999px; background: none; color: var(--ink-muted); cursor: pointer; opacity: 0.7; }
+.bell-dismiss svg { width: 0.85rem; height: 0.85rem; }
+.bell-dismiss:hover, .bell-dismiss:focus-visible { opacity: 1; background: var(--surface-muted, #eef2f1); color: var(--ink); }
+.bell-clear { margin-left: auto; margin-right: 0.4rem; padding: 0.2rem 0.5rem; border: 0; border-radius: 6px; background: none; font: inherit; font-size: 0.75rem; font-weight: 600; color: var(--accent-strong, #0b5f5a); cursor: pointer; }
+.bell-clear:hover { background: var(--surface-muted, #eef2f1); }
