@@ -14,7 +14,7 @@ from app.guard import moderation, safeguard
 def _reply(label: str):
     def post(url, json, headers, timeout):
         post.calls += 1
-        assert json["model"] == moderation.MODEL
+        assert json["model"] == safeguard.MODEL
         return httpx.Response(200, json={"choices": [{"message": {"content": label}}]},
                               request=httpx.Request("POST", url))
     post.calls = 0
@@ -107,5 +107,41 @@ def test_guard_backend_selects_the_safeguard(monkeypatch):
     monkeypatch.setenv("GUARD_BACKEND", "safeguard")
     assert build_injection_guard().model == safeguard.MODEL
     monkeypatch.setenv("GUARD_BACKEND", "lakera")
+    with pytest.raises(ConfigurationError):
+        GuardSettings.from_env()
+
+
+def test_the_guard_uses_its_own_account_when_given_one(monkeypatch):
+    """A separate key (e.g. Ollama Cloud) so guard calls never spend the
+    background model's quota; the model id is that endpoint's own."""
+    from app.config.settings import GuardSettings
+    from app.core.exceptions import ConfigurationError
+    from app.guard import build_injection_guard
+
+    sent = []
+
+    def post(url, json=None, headers=None, **k):
+        sent.append((url, json["model"], headers["Authorization"]))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "SAFE"}}]},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setenv("GROQ_API_KEY", "groq-key")
+    monkeypatch.setenv("GUARD_MODE", "enforce")
+    monkeypatch.setenv("GUARD_ANSWER_CHECK", "true")
+    monkeypatch.setenv("GUARD_BACKEND", "safeguard")
+    monkeypatch.setenv("GUARD_API_KEY", "guard-key")
+    monkeypatch.setenv("GUARD_BASE_URL", "https://ollama.com/v1")
+    monkeypatch.setenv("GUARD_SAFEGUARD_MODEL", "gpt-oss-safeguard:20b")
+    monkeypatch.setattr(safeguard.httpx, "post", post)
+
+    guard = build_injection_guard()
+    assert guard.model == "gpt-oss-safeguard:20b"       # stored on each scored chunk
+    guard.score(["leave is 25 days"])
+    moderation.answer_is_unsafe("leave is 25 days", org_id="o", stage="t")
+    assert sent == [("https://ollama.com/v1/chat/completions", "gpt-oss-safeguard:20b",
+                     "Bearer guard-key")] * 2
+
+    # Half-configured is refused: a key alone would be sent to Groq.
+    monkeypatch.delenv("GUARD_BASE_URL")
     with pytest.raises(ConfigurationError):
         GuardSettings.from_env()

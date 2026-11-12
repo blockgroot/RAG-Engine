@@ -123,7 +123,7 @@ def main() -> int:
 
     guard = build_injection_guard()
     if guard is None:
-        raise SystemExit("No guard: set GROQ_API_KEY (and GUARD_MODE is not 'off').")
+        raise SystemExit("No guard: set GROQ_API_KEY or GUARD_API_KEY + GUARD_BASE_URL (and GUARD_MODE is not 'off').")
     thresholds = [float(t) for t in args.thresholds.split(",")]
 
     print(f"model: {guard.model}")

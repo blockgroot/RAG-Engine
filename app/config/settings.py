@@ -1282,6 +1282,7 @@ class SecuritySettings:
 GUARD_MODES = ("off", "shadow", "enforce")
 GUARD_BACKENDS = ("prompt_guard", "safeguard")
 DEFAULT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-86m"
+DEFAULT_SAFEGUARD_MODEL = "openai/gpt-oss-safeguard-20b"
 
 
 @dataclass(frozen=True)
@@ -1311,6 +1312,13 @@ class GuardSettings:
     - ``answer_check``  `GUARD_ANSWER_CHECK`: also run the finished answer past
       `gpt-oss-safeguard-20b` (`guard/moderation.py`). Off by default: its free
       tier is 1,000 requests/day, one per answer.
+    - ``api_key``/``base_url``  `GUARD_API_KEY` + `GUARD_BASE_URL`: the guard's
+      OWN account (e.g. Ollama Cloud), so its calls never spend the background
+      model's or the picker's quota. Both or neither: a key alone would be sent
+      to Groq. Neither = Groq's key, as before.
+    - ``safeguard_model``  `GUARD_SAFEGUARD_MODEL`: the safeguard's id on that
+      endpoint (Groq: ``openai/gpt-oss-safeguard-20b``). Prompt Guard 2 is a
+      Groq model, so another endpoint uses ``GUARD_BACKEND=safeguard``.
     """
 
     mode: str = "off"
@@ -1320,6 +1328,9 @@ class GuardSettings:
     timeout: float = 5.0
     backfill_batch: int = 40
     answer_check: bool = False
+    api_key: str | None = None
+    base_url: str = DEFAULT_GROQ_BASE_URL
+    safeguard_model: str = DEFAULT_SAFEGUARD_MODEL
 
     @property
     def enabled(self) -> bool:
@@ -1337,6 +1348,15 @@ class GuardSettings:
             raise ConfigurationError(
                 f"GUARD_BACKEND={backend!r} is not one of {', '.join(GUARD_BACKENDS)}"
             )
+        own_key = os.getenv("GUARD_API_KEY") or None
+        own_url = os.getenv("GUARD_BASE_URL") or None
+        if bool(own_key) != bool(own_url):
+            raise ConfigurationError("GUARD_API_KEY and GUARD_BASE_URL are both set or neither")
+        if own_key:
+            api_key, base_url = own_key, own_url
+        else:
+            groq = GroqSettings.from_env()
+            api_key, base_url = groq.api_key, groq.base_url
         return cls(
             mode=mode,
             backend=backend,
@@ -1345,6 +1365,9 @@ class GuardSettings:
             timeout=float(os.getenv("GUARD_TIMEOUT") or 5.0),
             backfill_batch=int(os.getenv("GUARD_BACKFILL_BATCH") or 40),
             answer_check=env_bool("GUARD_ANSWER_CHECK", False),
+            api_key=api_key,
+            base_url=base_url,
+            safeguard_model=os.getenv("GUARD_SAFEGUARD_MODEL") or DEFAULT_SAFEGUARD_MODEL,
         )
 
 

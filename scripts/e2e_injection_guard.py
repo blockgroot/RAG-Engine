@@ -195,7 +195,7 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="    log: %(message)s")
 
     if build_injection_guard() is None:
-        raise SystemExit("No guard: GROQ_API_KEY is not set.")
+        raise SystemExit("No guard: set GROQ_API_KEY or GUARD_API_KEY + GUARD_BASE_URL.")
     store, embedder = build_vector_store(), build_embedding_provider()
     org_id = store.create_organization(f"InjectE2E-{uuid.uuid4().hex[:8]}")
     print(f"org={org_id}  mode=enforce backend=safeguard answer_check=on\n")
