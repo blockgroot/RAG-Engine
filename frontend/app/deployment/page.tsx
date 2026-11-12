@@ -35,11 +35,37 @@ const COMPARE: Array<[string, ReactNode, ReactNode]> = [
 ];
 
 /** How a release reaches a self-hosted install (release workflow + docs/UPGRADE.md). */
-const RELEASE: Array<[string, string]> = [
-  ["We publish a new version", "Each release comes with notes that explain what changed and whether anything needs doing on your server before you update."],
-  ["Your Handbook notices it", "Every few hours your server checks our public list of releases. It only reads that list; nothing about your company or your data is sent to us."],
-  ["Your admins are told", "Admins see the new version in the notification bell and get an email about it. A release that fixes a security problem is marked urgent."],
-  ["An admin installs it", "One click on Update starts it. Handbook backs up your data first, and if anything goes wrong it switches back to the previous version on its own."],
+const RELEASE: Array<{ who: string; title: string; text: string; icon: string }> = [
+  {
+    who: "Step 1 · Our team",
+    title: "We publish a new version",
+    text: "Each release comes with notes that explain what changed and whether anything needs doing on your server before you update.",
+    icon: "M21 8 12 3 3 8l9 5 9-5ZM3 8v8l9 5 9-5V8M12 13v8",
+  },
+  {
+    who: "Step 2 · Your server",
+    title: "Your Handbook notices it",
+    text: "Every few hours your server checks our public list of releases. It only reads that list; nothing about your company or your data is sent to us.",
+    icon: "M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4",
+  },
+  {
+    who: "Step 3 · Your admins",
+    title: "Your admins are told",
+    text: "Admins see the new version in the notification bell and get an email about it. A release that fixes a security problem is marked urgent.",
+    icon: "M6 9a6 6 0 1 1 12 0c0 3.2.7 4.9 1.5 5.9.4.5 0 1.1-.6 1.1H5.1c-.6 0-1-.6-.6-1.1C5.3 13.9 6 12.2 6 9ZM10 19a2 2 0 0 0 4 0",
+  },
+  {
+    who: "Step 4 · One click",
+    title: "An admin installs it",
+    text: "One click on Update starts it. Handbook backs up your data first, and if anything goes wrong it switches back to the previous version on its own.",
+    icon: "M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6L12 3ZM8.5 12l2.5 2.5 4.5-5",
+  },
+];
+
+const PROMISES = [
+  "A daily backup of your database can be set up with one command.",
+  "We support the current version and the one before it.",
+  "Your named contact is told about every security fix.",
 ];
 
 export default function DeploymentPage() {
@@ -161,24 +187,40 @@ export default function DeploymentPage() {
           <p className="darch-cap">Plus an updater for one-click updates, and scripts to install, upgrade and back up.</p>
         </div>
 
-        <h3 className="dep-sub">How updates reach you</h3>
-        <p className="dep-sub-lead">
-          With Self-Hosted, nothing changes on your server until an admin chooses to update. This is how a new version gets there.
-        </p>
-        <ol className="dsteps">
-          {RELEASE.map(([title, text], i) => (
-            <li key={title}>
-              <span className="dsteps-n" aria-hidden>{i + 1}</span>
-              <b>{title}</b>
-              <p>{text}</p>
-            </li>
-          ))}
-        </ol>
-        <ul className="dfacts">
-          <li>A daily backup of your database can be set up with one command.</li>
-          <li>We support the current version and the one before it.</li>
-          <li>Your named contact is told about every security fix.</li>
-        </ul>
+        <div className="dupd2">
+          <div className="dupd2-intro">
+            <h3 className="dep-sub">How updates reach you</h3>
+            <p className="dupd2-lead">
+              With Self-Hosted, nothing changes on your server until one of your admins chooses to
+              update. Here is how a new version gets from us to you.
+            </p>
+            <div className="dupd2-promise">
+              <p className="dupd2-promise-title">What you can count on</p>
+              <ul>
+              {PROMISES.map((p) => (
+                <li key={p}>
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden><path d="m5.5 10.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  {p}
+                </li>
+              ))}
+              </ul>
+            </div>
+          </div>
+          <ol className="dupd2-steps">
+            {RELEASE.map((s) => (
+              <li key={s.title} className="dupd2-step">
+                <span className="dupd2-icon" aria-hidden>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={s.icon} /></svg>
+                </span>
+                <div>
+                  <span className="dupd2-who">{s.who}</span>
+                  <h4>{s.title}</h4>
+                  <p>{s.text}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
       </section>
 
       <section className="site-wrap sec dep-close">
