@@ -4,6 +4,7 @@ import type { ActCard, TurnMeta } from "@/lib/api";
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
+import { AnswerProgress } from "./AnswerProgress";
 import { ChartIcon, DeepIcon } from "./ModeIcons";
 import { Chart } from "./Chart";
 import { ProvenanceStripe } from "./ProvenanceStripe";
@@ -92,22 +93,7 @@ export function ChatMessageView({
         />
       ) : null}
       {thinking ? (
-        <div className="chat-thinking-wrap">
-          {/* Earlier steps stay as a short trail; the live one has the dots. */}
-          {(message.steps ?? []).slice(0, -1).slice(-4).map((step, i) => (
-            <div key={i} className="chat-thinking-step">{step}</div>
-          ))}
-          <div className="chat-thinking" role="status" aria-live="polite">
-            <span className="chat-thinking-dots" aria-hidden>
-              <span />
-              <span />
-              <span />
-            </span>
-            <span className="chat-thinking-label">
-              {message.steps?.at(-1) ?? "Finding a grounded answer…"}
-            </span>
-          </div>
-        </div>
+        <AnswerProgress steps={message.steps} />
       ) : (
         <>
           <AnswerText text={message.text} cited={message.streaming ? undefined : message.done?.cited ?? message.cited} />

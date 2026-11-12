@@ -36,10 +36,10 @@ const COMPARE: Array<[string, ReactNode, ReactNode]> = [
 
 /** How a release reaches a self-hosted install (release workflow + docs/UPGRADE.md). */
 const RELEASE: Array<[string, string]> = [
-  ["We release", "Notes say what changed and anything to do first."],
-  ["Handbook spots it", "It checks a public list. Nothing about you is sent."],
-  ["Admins are told", "In the bell and by email. Security fixes marked urgent."],
-  ["You press Update", "Backs up first. Rolls back by itself if it fails."],
+  ["We publish a new version", "Each release comes with notes that explain what changed and whether anything needs doing on your server before you update."],
+  ["Your Handbook notices it", "Every few hours your server checks our public list of releases. It only reads that list; nothing about your company or your data is sent to us."],
+  ["Your admins are told", "Admins see the new version in the notification bell and get an email about it. A release that fixes a security problem is marked urgent."],
+  ["An admin installs it", "One click on Update starts it. Handbook backs up your data first, and if anything goes wrong it switches back to the previous version on its own."],
 ];
 
 export default function DeploymentPage() {
@@ -162,6 +162,9 @@ export default function DeploymentPage() {
         </div>
 
         <h3 className="dep-sub">How updates reach you</h3>
+        <p className="dep-sub-lead">
+          With Self-Hosted, nothing changes on your server until an admin chooses to update. This is how a new version gets there.
+        </p>
         <ol className="dsteps">
           {RELEASE.map(([title, text], i) => (
             <li key={title}>
@@ -172,9 +175,9 @@ export default function DeploymentPage() {
           ))}
         </ol>
         <ul className="dfacts">
-          <li>Daily database backup with one command</li>
-          <li>The current and previous version supported</li>
-          <li>Your named contact hears about every security fix</li>
+          <li>A daily backup of your database can be set up with one command.</li>
+          <li>We support the current version and the one before it.</li>
+          <li>Your named contact is told about every security fix.</li>
         </ul>
       </section>
 

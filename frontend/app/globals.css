@@ -12327,3 +12327,25 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .bell-empty-mark svg { width: 1.1rem; height: 1.1rem; }
 .bell-empty p { display: grid; gap: 0.1rem; margin: 0; font-size: 0.8rem; color: var(--ink-muted); }
 .bell-empty strong { font-size: 0.88rem; color: var(--ink); }
+
+/* Answer progress: a header with a timer, then a short timeline. Done steps
+   are checked and quiet; the live one pulses. Documents found are chips. */
+.ap { display: grid; gap: 0.6rem; }
+.ap-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.ap-title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-strong, #0b5f5a); }
+.ap-time { font-size: 0.75rem; font-variant-numeric: tabular-nums; color: var(--ink-muted); padding: 0.1rem 0.45rem; border-radius: 999px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ap-steps { position: relative; list-style: none; margin: 0; padding: 0; display: grid; gap: 0.55rem; }
+.ap-steps::before { content: ""; position: absolute; left: 0.5rem; top: 0.6rem; bottom: 0.6rem; width: 1px; background: color-mix(in srgb, var(--accent) 25%, var(--border)); }
+.ap-step { position: relative; display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: 0.65rem; align-items: start; animation: rise-in 0.3s var(--ease) both; }
+.ap-mark { position: relative; z-index: 1; display: grid; place-items: center; width: 1rem; height: 1rem; margin-top: 0.12rem; border-radius: 50%; color: #fff; background: var(--accent); }
+.ap-mark svg { width: 0.7rem; height: 0.7rem; }
+.ap-step[data-live] .ap-mark { background: var(--surface, #fff); box-shadow: inset 0 0 0 2px var(--accent); }
+.ap-pulse { width: 0.4rem; height: 0.4rem; border-radius: 50%; background: var(--accent); animation: ap-pulse 1.1s ease-in-out infinite; }
+@keyframes ap-pulse { 50% { transform: scale(0.55); opacity: 0.5; } }
+.ap-body { display: grid; gap: 0.35rem; min-width: 0; }
+.ap-text { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.84rem; line-height: 1.4; color: var(--ink-muted); }
+.ap-text img, .ap-text svg { flex: none; }
+.ap-step[data-live] .ap-text { font-size: 0.92rem; font-weight: 600; color: var(--ink); }
+.ap-docs { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.ap-doc { max-width: min(100%, 26rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0.15rem 0.5rem; border-radius: 6px; font-size: 0.74rem; color: var(--ink); background: var(--surface, #fff); border: 1px solid var(--border); }
+@media (prefers-reduced-motion: reduce) { .ap-pulse, .ap-step { animation: none; } }

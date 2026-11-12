@@ -1534,3 +1534,4 @@ img.hb-logo { display: block; flex: none; padding: 0; background: none; border-r
 
 .dep-close-contact .contact-link { color: var(--s-accent); text-decoration: none; }
 .dep-close-contact .contact-link:hover { text-decoration: underline; }
+.dep-sub + .dep-sub-lead { margin: -0.5rem 0 1.4rem; max-width: 46rem; font-size: 0.95rem; line-height: 1.55; color: var(--s-muted); }
