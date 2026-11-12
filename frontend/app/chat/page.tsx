@@ -90,6 +90,10 @@ export default function ChatPage() {
   );
 }
 
+// Chart starters per scope, kept for the visit: switching Chart off and on, or
+// coming back to the chat, shows them at once and refreshes behind.
+const chartStarterCache = new Map<string, string[]>();
+
 function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -143,7 +147,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [modelNote, setModelNote] = useState<string | null>(null);
   // Chart mode's starters come from the server: built from the metrics and
   // fields this scope actually has, so each one can be drawn.
-  const [chartStarters, setChartStarters] = useState<string[]>([]);
+  const [chartStarters, setChartStarters] = useState<string[] | null>(
+    () => chartStarterCache.get(workspaceId ?? "") ?? null,
+  );
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
@@ -197,19 +203,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // Re-read when the chat's files change: an uploaded sheet's columns
   // become the first starters.
   const attachmentKey = attachments.map((a) => a.id).join(",");
+  // Fetched when the chat opens, not when Chart is clicked: the list is
+  // ready by the time someone switches modes.
   useEffect(() => {
-    if (!chartMode) return;
     let cancelled = false;
+    const key = workspaceId ?? "";
+    if (!attachmentKey) setChartStarters(chartStarterCache.get(key) ?? null);
     api
       .chartStarters(workspaceId, attachmentKey ? conversationId.current : null)
       .then((r) => {
+        if (!attachmentKey) chartStarterCache.set(key, r.questions);
         if (!cancelled) setChartStarters(r.questions);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setChartStarters((v) => v ?? []);
+      });
     return () => {
       cancelled = true;
     };
-  }, [chartMode, workspaceId, attachmentKey]);
+  }, [workspaceId, attachmentKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -906,7 +918,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       : workspaceId
         ? "Ask anything about this space. Every answer names the document it came from."
         : "Ask anything about your company. Every answer names the document it came from.";
-  const starters = actMode ? [] : chartMode ? chartStarters : deepMode && deepQuestions.length > 0 ? deepQuestions : suggestedQuestions;
+  const starters = actMode ? [] : chartMode ? chartStarters ?? [] : deepMode && deepQuestions.length > 0 ? deepQuestions : suggestedQuestions;
   const composerPlaceholder = actMode
     ? "e.g. file a Linear issue in Platform about the login timeout"
     : chartMode
@@ -1063,6 +1075,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 />
               ) : suggestionsLoading && !chartMode ? (
                 <p className="muted suggested-loading">Loading suggestions…</p>
+              ) : chartMode && chartStarters === null ? (
+                <div className="ask-charts" aria-busy="true" aria-label="Loading chart ideas">
+                  {[0, 1, 2, 3, 4, 5].map((i) => (
+                    <div key={i} className="ask-chart is-loading" style={{ ["--i" as string]: i }} aria-hidden>
+                      <span className="ask-chart-thumb" />
+                      <span className="ask-chart-line" />
+                      <span className="ask-chart-line is-short" />
+                    </div>
+                  ))}
+                </div>
               ) : chartMode && starters.length > 0 ? (
                 <div className="ask-charts">
                   {starters.slice(0, 6).map((q, i) => (

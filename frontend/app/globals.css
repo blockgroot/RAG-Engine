@@ -12272,3 +12272,15 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
   .report-bar-open { grid-column: 3; grid-row: 1; }
   .report-bar-earlier { padding-left: 1rem; }
 }
+
+/* Chart starters loading: the tiles' own shape, shimmering, so the grid never jumps. */
+.ask-chart.is-loading { cursor: default; pointer-events: none; }
+.ask-chart.is-loading .ask-chart-thumb, .ask-chart-line {
+  display: block; border-radius: 8px;
+  background: linear-gradient(90deg, #f1f4f3 0%, #e4eae8 50%, #f1f4f3 100%); background-size: 200% 100%;
+  animation: ask-shimmer 1.2s linear infinite;
+}
+.ask-chart-line { height: 0.7rem; }
+.ask-chart-line.is-short { width: 60%; }
+@keyframes ask-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .ask-chart.is-loading .ask-chart-thumb, .ask-chart-line { animation: none; } }
