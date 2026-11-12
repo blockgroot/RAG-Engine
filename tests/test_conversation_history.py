@@ -57,8 +57,9 @@ def test_every_query_is_scoped_to_org_user_and_workspace(conn):
     store.list_conversations(**kw)
     store.get_conversation_turns(conversation_id="c", **kw)
     store.delete_conversation(conversation_id="c", **kw)
+    store.update_conversation(conversation_id="c", title="x", **kw)
 
-    assert len(conn.sql) == 3
+    assert len(conn.sql) == 4
     for sql in conn.sql:
         assert "org_id = %s::uuid" in sql, sql
         assert "user_id = %s::uuid" in sql, sql
@@ -83,6 +84,25 @@ def test_delete_reports_whether_anything_went(conn, monkeypatch):
     )
 
 
+def test_rename_and_pin(conn):
+    """A blank title resets to the first question; pinning keeps its first time."""
+    kw = {"conversation_id": "c", "org_id": "o", "user_id": "u", "workspace_id": None}
+    store.update_conversation(title="  Q3   plans ", **kw)
+    store.update_conversation(title="   ", **kw)
+    store.update_conversation(title="x" * 500, **kw)
+    store.update_conversation(pinned=True, **kw)
+    assert conn.params[0][0] == "Q3 plans"
+    assert conn.params[1][0] is None
+    assert len(conn.params[2][0]) == store.MAX_TITLE_CHARS
+    assert "coalesce(pinned_at, now())" in conn.sql[3] and conn.params[3][0] is True
+    assert store.update_conversation(**kw) is False and len(conn.sql) == 4
+
+
+def test_pinned_chats_list_first(conn):
+    store.list_conversations(org_id="o", user_id="u", workspace_id=None)
+    assert "ORDER BY c.pinned_at DESC NULLS LAST, last_activity_at DESC" in conn.sql[0]
+
+
 # --- retention ---------------------------------------------------------------
 
 
@@ -105,7 +125,7 @@ def test_there_is_no_display_cap_to_disagree_with_retention(conn):
     """
     store.list_conversations(org_id="o", user_id="u", workspace_id=None)
     # Only the OUTER query matters -- the title subquery has its own LIMIT 1.
-    tail = conn.sql[0].upper().split("ORDER BY LAST_ACTIVITY_AT DESC")[-1]
+    tail = conn.sql[0].upper().split("LAST_ACTIVITY_AT DESC")[-1]
     assert "LIMIT" not in tail, f"outer query is capped: {tail!r}"
 
 

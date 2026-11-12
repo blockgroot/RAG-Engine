@@ -88,6 +88,10 @@ export interface ConversationSummary {
   attachment_count: number;
   created_at: string;
   last_activity_at: string;
+  /** Pinned chats come first in the list. */
+  pinned?: boolean;
+  /** The title is one the person typed, not the first question. */
+  renamed?: boolean;
 }
 
 export interface ConversationTurn {
@@ -1244,6 +1248,18 @@ export const api = {
     const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
     return request<{ deleted: boolean }>(`/chat/conversations/${conversationId}${q}`, {
       method: "DELETE",
+    });
+  },
+
+  updateConversation: (
+    conversationId: string,
+    change: { title?: string | null; pinned?: boolean },
+    workspaceId?: string | null,
+  ) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{ updated: boolean }>(`/chat/conversations/${conversationId}${q}`, {
+      method: "PATCH",
+      body: JSON.stringify(change),
     });
   },
 

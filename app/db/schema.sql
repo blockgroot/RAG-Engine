@@ -418,6 +418,11 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users
 -- and silently lost the rest, so a history page would have drawn a transcript
 -- that looks complete and is not.
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS folded_through INT;
+
+-- A title the person typed (NULL = the first question, as before) and when
+-- they pinned the chat to the top of their list (NULL = not pinned).
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user_id);
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;

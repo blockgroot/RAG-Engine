@@ -429,7 +429,9 @@ def test_a_claude_pick_goes_to_claude_with_thinking_off():
         client = provider.active()
         assert client.model == model.id
         assert "api.anthropic.com" in str(client.base_url)
-        assert client._extra_body == {"thinking": {"type": "disabled"}}
+        # Each in the form it accepts (Sonnet 5.5 refuses "disabled").
+        off = "between_tools" if "sonnet" in model.id else "disabled"
+        assert client._extra_body == {"thinking": {"type": off}}
 
 
 def test_a_backend_without_a_key_falls_back_rather_than_erroring():
@@ -738,3 +740,13 @@ def test_gemini_is_asked_to_think_minimally_and_may_drop_it():
     from app.llm.routed import preset_extra_body
 
     assert preset_extra_body("google") == ({"reasoning_effort": "minimal"}, True)
+
+
+def test_each_claude_model_is_sent_the_thinking_off_it_accepts():
+    """Verified live: Sonnet 5.5 refuses "disabled", Haiku 5.5 refuses "between_tools"."""
+    from app.llm.routed import preset_extra_body
+
+    assert preset_extra_body("anthropic", "claude-sonnet-5-5")[0] == {"thinking": {"type": "between_tools"}}
+    assert preset_extra_body("anthropic", "claude-sonnet-5-5-20261001")[0] == {"thinking": {"type": "between_tools"}}
+    assert preset_extra_body("anthropic", "claude-haiku-5-5")[0] == {"thinking": {"type": "disabled"}}
+    assert preset_extra_body("openrouter", "claude-sonnet-5-5")[0] == preset_extra_body("openrouter")[0]

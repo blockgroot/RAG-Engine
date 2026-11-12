@@ -32,14 +32,17 @@ DEFAULT_CONVERSATION_TTL_DAYS = 30
 @dataclass(frozen=True)
 class ConversationSummaryRow:
     id: str
-    #: The first question asked, used as the title. No LLM and no column: a
-    #: generated title is a second thing to keep true, and the first question
-    #: is what people actually recognise a chat by.
+    #: The title the person gave it, else the first question asked. Never
+    #: generated: a model-written title is a second thing to keep true, and
+    #: the first question is what people recognise a chat by.
     title: str | None
     turn_count: int
     attachment_count: int
     created_at: datetime
     last_activity_at: datetime
+    pinned: bool = False
+    #: True when ``title`` is the person's own, so the UI can offer a reset.
+    renamed: bool = False
 
 
 #: A stored chart larger than this keeps its bars and drops its hover rows: a
@@ -184,9 +187,9 @@ def list_conversations(
         rows = conn.execute(
             """
             SELECT c.id::text,
-                   (SELECT t.question FROM conversation_turns t
+                   coalesce(c.title, (SELECT t.question FROM conversation_turns t
                      WHERE t.conversation_id = c.id
-                     ORDER BY t.turn_index LIMIT 1),
+                     ORDER BY t.turn_index LIMIT 1)),
                    (SELECT count(*) FROM conversation_turns t
                      WHERE t.conversation_id = c.id),
                    (SELECT count(*) FROM conversation_attachments a
@@ -196,19 +199,21 @@ def list_conversations(
                        (SELECT max(t.created_at) FROM conversation_turns t
                          WHERE t.conversation_id = c.id),
                        c.created_at
-                   ) AS last_activity_at
+                   ) AS last_activity_at,
+                   c.pinned_at IS NOT NULL,
+                   c.title IS NOT NULL
             FROM conversations c
             WHERE c.org_id = %s::uuid
               AND c.user_id = %s::uuid
               AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
               AND EXISTS (SELECT 1 FROM conversation_turns t
                            WHERE t.conversation_id = c.id)
-            ORDER BY last_activity_at DESC
+            ORDER BY c.pinned_at DESC NULLS LAST, last_activity_at DESC
             """,
             (org_id, user_id, workspace_id),
         ).fetchall()
     return [
-        ConversationSummaryRow(r[0], r[1], int(r[2]), int(r[3]), r[4], r[5])
+        ConversationSummaryRow(r[0], r[1], int(r[2]), int(r[3]), r[4], r[5], bool(r[6]), bool(r[7]))
         for r in rows
     ]
 
@@ -296,6 +301,48 @@ def delete_conversation(
             "AND workspace_id IS NOT DISTINCT FROM %s::uuid "
             "RETURNING 1",
             (conversation_id, org_id, user_id, workspace_id),
+        ).fetchone()
+    return row is not None
+
+
+#: Longer than any question a rail can show; a title is a label, not a note.
+MAX_TITLE_CHARS = 120
+
+_UNSET = object()
+
+
+def update_conversation(
+    *,
+    conversation_id: str,
+    org_id: str,
+    user_id: str,
+    workspace_id: str | None,
+    title: str | None | object = _UNSET,
+    pinned: bool | None = None,
+) -> bool:
+    """Rename or pin one of this person's chats. False is a 404 for the caller.
+
+    A blank title clears it, so the chat is named by its first question again.
+    Same owner predicate as ``delete_conversation``.
+    """
+    sets: list[str] = []
+    params: list = []
+    if title is not _UNSET:
+        clean = " ".join(str(title or "").split())[:MAX_TITLE_CHARS] or None
+        sets.append("title = %s")
+        params.append(clean)
+    if pinned is not None:
+        sets.append("pinned_at = CASE WHEN %s THEN coalesce(pinned_at, now()) END")
+        params.append(pinned)
+    if not sets:
+        return False
+    with get_connection() as conn:
+        row = conn.execute(
+            f"UPDATE conversations SET {', '.join(sets)} "  # only the fixed strings above
+            "WHERE id = %s::uuid AND org_id = %s::uuid AND user_id = %s::uuid "
+            "AND workspace_id IS NOT DISTINCT FROM %s::uuid "
+            "RETURNING 1",
+            (*params, conversation_id, org_id, user_id, workspace_id),
         ).fetchone()
     return row is not None
 

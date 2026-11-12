@@ -67,7 +67,7 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
     # difference between a reply and a hang on its reasoning models, AND the
     # reason every other NIM model answered "Test and save" with a 400 about a
     # field the admin never typed.
-    extra_body, extra_optional = preset_extra_body(preset.id)
+    extra_body, extra_optional = preset_extra_body(preset.id, model)
     client = OpenAICompatProvider(
         model=model,
         api_key=api_key,
@@ -129,7 +129,7 @@ def _agent_probe(preset: org_model.Preset, model: str, api_key: str) -> str:
     model may still answer questions well."""
     from ..actions.loop import _calls_in_text
 
-    extra_body, extra_optional = preset_extra_body(preset.id)
+    extra_body, extra_optional = preset_extra_body(preset.id, model)
     client = OpenAICompatProvider(model=model, api_key=api_key, base_url=preset.base_url,
                                   timeout=PROBE_TIMEOUT, max_retries=0, extra_body=extra_body,
                                   extra_body_optional=extra_optional)

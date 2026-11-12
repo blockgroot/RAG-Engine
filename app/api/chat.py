@@ -866,6 +866,8 @@ def list_conversations_route(
                 "attachment_count": r.attachment_count,
                 "created_at": r.created_at.isoformat(),
                 "last_activity_at": r.last_activity_at.isoformat(),
+                "pinned": r.pinned,
+                "renamed": r.renamed,
             }
             for r in rows
         ],
@@ -929,6 +931,36 @@ def delete_conversation_route(
     ):
         raise HTTPException(status_code=404, detail="No such conversation")
     return {"deleted": True}
+
+
+@router.patch("/conversations/{conversation_id}")
+def update_conversation_route(
+    conversation_id: str,
+    body: dict,
+    workspace_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """Rename (``title``; blank resets to the first question) or pin (``pinned``)."""
+    kwargs: dict = {}
+    if "title" in body:
+        if body["title"] is not None and not isinstance(body["title"], str):
+            raise HTTPException(status_code=400, detail="title must be text")
+        kwargs["title"] = body["title"]
+    if "pinned" in body:
+        if not isinstance(body["pinned"], bool):
+            raise HTTPException(status_code=400, detail="pinned must be true or false")
+        kwargs["pinned"] = body["pinned"]
+    if not kwargs:
+        raise HTTPException(status_code=400, detail="Nothing to change")
+    if not conversation_store.update_conversation(
+        conversation_id=conversation_id,
+        org_id=session.org_id,
+        user_id=session.user_id,
+        workspace_id=workspace_id,
+        **kwargs,
+    ):
+        raise HTTPException(status_code=404, detail="No such conversation")
+    return {"updated": True}
 
 
 @router.post("/conversations")

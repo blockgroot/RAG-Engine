@@ -119,8 +119,8 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
     # over the OpenAI-compatible endpoint that hidden reasoning fills the cap
     # (production, 9 Oct: the chart classifier's 200 tokens all spent thinking,
     # empty reply). Verified live: disabled, the same prompt answers in 61 tokens.
-    # A model that wants another form (Sonnet 5.5 names "between_tools") gets
-    # what it names, learned from its 400 (``OpenAICompatProvider._repair_extras``).
+    # A model that wants another form gets it from ``_MODEL_EXTRA_BODY``, or
+    # else learns it from its 400 (``OpenAICompatProvider._repair_extras``).
     "anthropic": {"thinking": {"type": "disabled"}},
     # Gemini Flash thinks by default, and thinking tokens are billed and
     # counted as output: the same cap problem as Claude above. "minimal" is the
@@ -150,14 +150,29 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
 _PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google", "anthropic"})
 
 
-def preset_extra_body(preset_id: str) -> tuple[dict | None, bool]:
-    """``(extra_body, may_be_dropped)`` for one BYO preset.
+#: Models whose thinking-off differs from their vendor's: preset, then id
+#: prefix (dated ids included). Per preset, so OpenRouter's extras are never
+#: changed by a model id. Verified live 12 Nov 2026: Sonnet 5.5 refuses
+#: ``disabled`` and names ``between_tools``; Haiku 5.5 refuses
+#: ``between_tools``. Sent up front so no 400 is paid after every restart; an
+#: unlisted model still learns its form from the 400.
+_MODEL_EXTRA_BODY: dict[str, dict[str, dict]] = {
+    "anthropic": {"claude-sonnet-5-5": {"thinking": {"type": "between_tools"}}},
+}
+
+
+def preset_extra_body(preset_id: str, model: str | None = None) -> tuple[dict | None, bool]:
+    """``(extra_body, may_be_dropped)`` for one BYO preset and model.
 
     One function so the admin probe and chat cannot disagree about what we send
     a provider — a probe that tests a different request than production is how
     "it tested fine and then failed in chat" happens.
     """
-    return _PRESET_EXTRA_BODY.get(preset_id), preset_id in _PRESET_EXTRA_OPTIONAL
+    extra = _PRESET_EXTRA_BODY.get(preset_id)
+    for prefix, override in _MODEL_EXTRA_BODY.get(preset_id, {}).items():
+        if model and model.startswith(prefix):
+            extra = {**extra, **override}
+    return extra, preset_id in _PRESET_EXTRA_OPTIONAL
 
 
 def use_model(model_id: str | None, org_id: str | None = None) -> None:
@@ -362,7 +377,7 @@ class RoutedLLMProvider(LLMProvider):
         if client is not None:
             return client
 
-        extra_body, extra_optional = preset_extra_body(org.preset)
+        extra_body, extra_optional = preset_extra_body(org.preset, org.model)
         client = OpenAICompatProvider(
             model=org.model,
             api_key=org.api_key,

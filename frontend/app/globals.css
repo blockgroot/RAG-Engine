@@ -12349,3 +12349,52 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .ap-docs { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .ap-doc { max-width: min(100%, 26rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0.15rem 0.5rem; border-radius: 6px; font-size: 0.74rem; color: var(--ink); background: var(--surface, #fff); border: 1px solid var(--border); }
 @media (prefers-reduced-motion: reduce) { .ap-pulse, .ap-step { animation: none; } }
+
+/* Recent chats: ⋯ on hover (Rename, Pin, Delete), a pin mark, rename in place. */
+.rail-chat-more {
+  position: absolute; right: 0.2rem; display: inline-grid; place-items: center;
+  width: 1.5rem; height: 1.5rem; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--ink-muted); cursor: pointer;
+  opacity: 0; pointer-events: none; transition: opacity 0.12s var(--ease), background 0.12s var(--ease);
+}
+.rail-chat-row:hover .rail-chat-more, .rail-chat-row:focus-within .rail-chat-more, .rail-chat-row.is-menu .rail-chat-more { opacity: 1; pointer-events: auto; }
+.rail-chat-row.is-menu .rail-chat-time { opacity: 0; }
+.rail-chat-more:hover, .rail-chat-row.is-menu .rail-chat-more { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); }
+.app-rail .rail-chat-more { color: #8fb3ac; }
+.app-rail .rail-chat-more:hover, .app-rail .rail-chat-row.is-menu .rail-chat-more { color: #fff; background: rgba(255,255,255,0.1); }
+.rail-chat-pin { flex: none; display: inline-grid; place-items: center; margin-right: -0.15rem; color: #5eead4; }
+.rail-chat-rename {
+  width: 100%; box-sizing: border-box; margin: 0.05rem 0; padding: 0.35rem 0.55rem;
+  font: inherit; font-size: 0.82rem; border-radius: 7px; outline: none;
+  color: #fff; background: rgba(255,255,255,0.08); border: 1px solid #5eead4;
+}
+.rail-chat-rename::placeholder { color: rgba(255,255,255,0.45); }
+@media (hover: none) { .rail-chat-more { opacity: 1; pointer-events: auto; } }
+
+.rail-chat-menu {
+  position: fixed; z-index: 1000; width: 11rem; padding: 0.3rem; border-radius: 10px;
+  background: var(--surface-elevated, #fff); border: 1px solid var(--border);
+  box-shadow: 0 14px 34px -10px rgba(16, 24, 40, 0.28), 0 3px 10px -3px rgba(16, 24, 40, 0.1);
+  animation: bell-in 0.14s var(--ease) both;
+}
+.rail-chat-menu button {
+  display: flex; align-items: center; gap: 0.55rem; width: 100%; padding: 0.45rem 0.6rem;
+  border: 0; border-radius: 7px; background: none; font: inherit; font-size: 0.83rem;
+  color: var(--ink); text-align: left; cursor: pointer;
+}
+.rail-chat-menu button svg { color: var(--ink-muted); }
+.rail-chat-menu button:hover, .rail-chat-menu button:focus-visible { background: var(--surface-muted, #eef2f1); outline: none; }
+.rail-chat-menu button.is-danger, .rail-chat-menu button.is-danger svg { color: #b42318; }
+.rail-chat-menu button.is-danger:hover { background: #fee4e2; }
+.rail-chat-menu hr { margin: 0.25rem 0.2rem; border: 0; border-top: 1px solid var(--border); }
+
+/* Chat ⋯ menu in the rail's own slate, so it reads as part of the sidebar
+   instead of a white card dropped on it. */
+.rail-chat-menu { background: #26343a; border-color: rgba(255,255,255,0.1); box-shadow: 0 16px 36px -12px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,0,0,0.2); }
+.rail-chat-menu button { color: rgba(255,255,255,0.88); }
+.rail-chat-menu button svg { color: rgba(255,255,255,0.5); }
+.rail-chat-menu button:hover, .rail-chat-menu button:focus-visible { background: rgba(255,255,255,0.08); color: #fff; }
+.rail-chat-menu button:hover svg { color: #5eead4; }
+.rail-chat-menu button.is-danger, .rail-chat-menu button.is-danger svg { color: #fca5a5; }
+.rail-chat-menu button.is-danger:hover { background: rgba(248,113,113,0.14); color: #fecaca; }
+.rail-chat-menu hr { border-top-color: rgba(255,255,255,0.1); }
