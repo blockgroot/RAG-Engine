@@ -311,6 +311,32 @@ export function ConnectionCard({
     return false;
   }
 
+  const statusLine = (() => {
+        // Last sync, the automatic check and "up to date" were three lines that
+        // said one thing; now they are one.
+        if (!connection || needsReauth || needsFolder || needsChannels || needsTeams || syncInProgress) return null;
+        const synced =
+          showDocsJobBadge && lastJob?.status === "succeeded"
+            ? `Synced ${friendlyWhen(lastJob.finished_at || lastJob.created_at)}${
+                lastJob.doc_count ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"}` : ""
+              }`
+            : null;
+        const parts = [
+          synced ?? (isLive ? "Read live" : "Syncs automatically"),
+          !needsUpdate &&
+            (connection.last_sync_at
+              ? `checked ${checkedAgo(connection.last_sync_at)}`
+              : "first check within the hour"),
+          (docsCheckedFresh || showGithubUpToDate) && "up to date",
+        ].filter(Boolean);
+        return (
+          <p className="source-row-foot">
+            <span className="source-dot" aria-hidden />
+            {parts.join(" · ")}
+          </p>
+        );
+  })();
+
   return (
     <div className={`card source-row source-row--${provider}${connection ? " is-linked" : ""}`}>
       <div className="source-row-head">
@@ -343,11 +369,24 @@ export function ConnectionCard({
                     : ""}
                 </>
               )}
+              {isLive && connection && repoSelection !== "all" && repos.length > 0
+                ? ` · ${repos.length} repo${repos.length === 1 ? "" : "s"}`
+                : ""}
             </p>
+            {connection && (
+              <p className="source-access">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                  <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {ACCESS_NOTE[provider]}
+              </p>
+            )}
           </div>
         </div>
 
         {!available && <span className="badge">Coming soon</span>}
+        {statusLine && <div className="source-row-status">{statusLine}</div>}
 
         <div className="source-row-actions">
           {available && !connection && setupFirst && (
@@ -452,17 +491,6 @@ export function ConnectionCard({
                 {invitingMembers ? "Hide invite" : "Invite members"}
               </button>
             )}
-          {connection && isLive && (
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={refreshScope}
-              disabled={refreshingScope}
-              title="Add or remove repos on GitHub (Manage), then pull the new list here"
-            >
-              {refreshingScope ? "Refreshing…" : "Refresh list"}
-            </button>
-          )}
           {connection && !isLive && !needsFolder && !needsChannels && !needsTeams && needsUpdate && (
             <button
               className="button"
@@ -481,9 +509,24 @@ export function ConnectionCard({
               Reconnect
             </a>
           )}
-          {connection && !syncInProgress && !disconnecting && (
+          {connection && (
+            <details className="source-more">
+              <summary aria-label="More actions" title="More actions">⋯</summary>
+              <div className="source-more-menu">
+          {connection && isLive && (
             <button
-              className="button button-secondary source-disconnect"
+              className="source-more-item"
+              type="button"
+              onClick={refreshScope}
+              disabled={refreshingScope}
+              title="Add or remove repos on GitHub (Manage), then pull the new list here"
+            >
+              {refreshingScope ? "Refreshing…" : "Refresh list"}
+            </button>
+          )}
+          {!syncInProgress && (
+            <button
+              className="source-more-item is-danger"
               type="button"
               onClick={handleDisconnect}
               disabled={disconnecting}
@@ -492,24 +535,17 @@ export function ConnectionCard({
               {disconnecting ? "Disconnecting…" : "Disconnect"}
             </button>
           )}
+              </div>
+            </details>
+          )}
         </div>
       </div>
 
-      {isLive && connection && (
+      {isLive && connection && (scopeError || (repoSelection !== "all" && repos.length === 0)) && (
         <div className="stack source-live-copy" style={{ marginTop: "0.75rem", gap: "0.4rem" }}>
-          <p className="muted" style={{ margin: 0 }}>
-            {repoSelection === "all"
-              ? "Ready to answer questions about your repos."
-              : repos.length > 0
-                ? `Ready for ${repos.length} repo${repos.length === 1 ? "" : "s"}.`
-                : "No repos linked yet — manage access on GitHub, then refresh the list."}
-          </p>
-          {repoSelection !== "all" && repos.length > 0 && (
-            <p className="source-chips">
-              {repos.slice(0, 6).map((r) => (
-                <span key={r.full_name}>{r.full_name.split("/").pop() || r.full_name}</span>
-              ))}
-              {repos.length > 6 && <span>+{repos.length - 6} more</span>}
+          {repoSelection !== "all" && repos.length === 0 && (
+            <p className="muted" style={{ margin: 0 }}>
+              No repos linked yet — manage access on GitHub, then refresh the list.
             </p>
           )}
           {scopeError && <div className="banner banner-warn">{scopeError}</div>}
@@ -680,15 +716,6 @@ export function ConnectionCard({
           </div>
         )}
 
-      {connection && (
-        <p className="source-access">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
-            <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="2" />
-          </svg>
-          {ACCESS_NOTE[provider]}
-        </p>
-      )}
 
       {folderHint && !changingFolder && !changingChannels && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
@@ -729,31 +756,6 @@ export function ConnectionCard({
         </div>
       )}
 
-      {(() => {
-        // Last sync, the automatic check and "up to date" were three lines that
-        // said one thing; now they are one.
-        if (!connection || needsReauth || needsFolder || needsChannels || needsTeams || syncInProgress) return null;
-        const synced =
-          showDocsJobBadge && lastJob?.status === "succeeded"
-            ? `Synced ${friendlyWhen(lastJob.finished_at || lastJob.created_at)}${
-                lastJob.doc_count ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"}` : ""
-              }`
-            : null;
-        const parts = [
-          synced ?? (isLive ? "Read live" : "Syncs automatically"),
-          !needsUpdate &&
-            (connection.last_sync_at
-              ? `checked ${checkedAgo(connection.last_sync_at)}`
-              : "first check within the hour"),
-          (docsCheckedFresh || showGithubUpToDate) && "up to date",
-        ].filter(Boolean);
-        return (
-          <p className="source-row-foot">
-            <span className="source-dot" aria-hidden />
-            {parts.join(" · ")}
-          </p>
-        );
-      })()}
 
       {connection && !needsFolder && !needsChannels && !needsTeams && needsUpdate && !syncInProgress && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
