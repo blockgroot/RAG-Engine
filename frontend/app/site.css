@@ -1197,7 +1197,7 @@ img.hb-logo { display: block; flex: none; padding: 0; background: none; border-r
 .dh-detail li::before { content: ""; position: absolute; left: 0.2rem; top: 0.22em; width: 0.32rem; height: 0.62rem; border: solid var(--s-accent); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .dh-go { display: inline-block; margin-top: 1.1rem; font-weight: 650; color: var(--accent-strong); text-decoration: none; }
 
-.dh-art { position: relative; height: 19.5rem; }
+.dh-art { position: relative; height: 19.5rem; align-self: start; margin-top: 2.7rem; } /* top level with the h1, under the label */
 .dh-cloud, .dh-company { position: absolute; top: 0; bottom: 0; border-radius: 26px; }
 .dh-cloud {
   right: 0; width: 44%;
@@ -1442,7 +1442,7 @@ img.hb-logo { display: block; flex: none; padding: 0; background: none; border-r
   .dep-cmp-row dd, .dep-cmp-row:last-child dd { border-radius: 12px; }
   .dep-cmp-row dd::after { display: none; }
   .dep-cmp-row dd::before { content: attr(data-label); display: block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-strong); }
-  .dh-art { height: 17rem; }
+  .dh-art { height: 21rem; margin-top: 0; }
   .dh-node, .dh-note { width: 9rem; right: 4%; }
 }
 @media (prefers-reduced-motion: reduce) { .dh-wire em, .darch-line::after { animation: none; display: none; } .dterm-cursor, .dupd-steps li.is-now::before { animation: none; } .dcs-ok, .dcs-tools em, .dcs-chips span { opacity: 1; animation: none !important; } .dcs-tabs button::after { transition: none; } }
@@ -1471,12 +1471,14 @@ img.hb-logo { display: block; flex: none; padding: 0; background: none; border-r
 
 /* Deployment › How updates reach you: the story on the left, the four steps as
    a vertical timeline on the right, so each full sentence has room to read. */
-.dupd2 { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: clamp(2rem, 5vw, 4.5rem); align-items: start; margin-top: 2.6rem; }
-.dupd2-intro { position: sticky; top: 6rem; }
-.dupd2-intro .dep-sub { margin-top: 0; }
-.dupd2-lead { margin: 0.6rem 0 1.6rem; font-size: 1rem; line-height: 1.6; color: var(--s-muted); }
-.dupd2-promise ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.9rem; }
-.dupd2-promise { padding: 1.2rem 1.3rem; border-radius: var(--s-r); background: var(--s-panel); border: 1px solid var(--s-line); }
+.dupd2-head { margin-top: 2.6rem; max-width: 46rem; }
+.dupd2-head .dep-sub { margin: 0; }
+.dupd2-lead { margin: 0.5rem 0 0; font-size: 1rem; line-height: 1.6; color: var(--s-muted); }
+.dupd2 { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: clamp(2rem, 5vw, 4rem); align-items: start; margin-top: 2rem; }
+.dupd2-promise { display: flex; flex-direction: column; padding: 1.4rem 1.5rem; border-radius: var(--s-r); background: var(--s-panel); border: 1px solid var(--s-line); }
+.dupd2-side { display: grid; gap: 1.6rem; }
+.dupd2-preview .dupd-body { min-height: 12.5rem; }
+.dupd2-promise ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 1rem; }
 .dupd2-promise-title { margin: 0 0 0.9rem; font-size: 0.7rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; color: var(--s-accent); }
 .dupd2-promise li { display: grid; grid-template-columns: 1.25rem 1fr; gap: 0.6rem; font-size: 0.88rem; line-height: 1.5; color: var(--s-ink); }
 .dupd2-promise li svg { width: 1.25rem; height: 1.25rem; color: var(--s-accent); margin-top: 0.05rem; }
@@ -1492,5 +1494,4 @@ img.hb-logo { display: block; flex: none; padding: 0; background: none; border-r
 .dupd2-step p { margin: 0; font-size: 0.92rem; line-height: 1.6; color: var(--s-muted); max-width: 34rem; }
 @media (max-width: 860px) {
   .dupd2 { grid-template-columns: 1fr; gap: 1.8rem; }
-  .dupd2-intro { position: static; }
 }

@@ -7,6 +7,7 @@ import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { DeployHero } from "@/components/site/DeployHero";
 import { DeployChecklist } from "@/components/site/DeployChecklist";
 import { CloudSetupDemo } from "@/components/site/CloudSetupDemo";
+import { UpdateDemo } from "@/components/site/UpdateDemo";
 
 export const metadata: Metadata = {
   title: "Deployment · Handbook",
@@ -187,25 +188,14 @@ export default function DeploymentPage() {
           <p className="darch-cap">Plus an updater for one-click updates, and scripts to install, upgrade and back up.</p>
         </div>
 
+        <div className="dupd2-head">
+          <h3 className="dep-sub">How updates reach you</h3>
+          <p className="dupd2-lead">
+            With Self-Hosted, nothing changes on your server until one of your admins chooses to
+            update. Here is how a new version gets from us to you.
+          </p>
+        </div>
         <div className="dupd2">
-          <div className="dupd2-intro">
-            <h3 className="dep-sub">How updates reach you</h3>
-            <p className="dupd2-lead">
-              With Self-Hosted, nothing changes on your server until one of your admins chooses to
-              update. Here is how a new version gets from us to you.
-            </p>
-            <div className="dupd2-promise">
-              <p className="dupd2-promise-title">What you can count on</p>
-              <ul>
-              {PROMISES.map((p) => (
-                <li key={p}>
-                  <svg viewBox="0 0 20 20" fill="none" aria-hidden><path d="m5.5 10.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                  {p}
-                </li>
-              ))}
-              </ul>
-            </div>
-          </div>
           <ol className="dupd2-steps">
             {RELEASE.map((s) => (
               <li key={s.title} className="dupd2-step">
@@ -220,6 +210,23 @@ export default function DeploymentPage() {
               </li>
             ))}
           </ol>
+          <div className="dupd2-side">
+          <div className="dupd2-promise">
+            <p className="dupd2-promise-title">What you can count on</p>
+            <ul>
+              {PROMISES.map((p) => (
+                <li key={p}>
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden><path d="m5.5 10.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  {p}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="dupd2-preview">
+            <p className="dupd2-promise-title">What an admin sees at step 4</p>
+            <UpdateDemo />
+          </div>
+          </div>
         </div>
       </section>
 
