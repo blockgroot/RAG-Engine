@@ -21,12 +21,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
+from ..config.settings import DEFAULT_SAFEGUARD_MODEL
 from ..core.exceptions import PrivacyError
 from ..privacy import redact
 from ..security.untrusted import normalize_untrusted
 from .base import InjectionGuard
 
-MODEL = "openai/gpt-oss-safeguard-20b"
+MODEL = DEFAULT_SAFEGUARD_MODEL  # Groq's id; GUARD_SAFEGUARD_MODEL names another endpoint's
 # Chunks are capped at 4,000 chars (CHUNK_MAX_CHARS); longer text is unscored
 # rather than scored on its head.
 MAX_CHARS = 6000
@@ -39,7 +40,7 @@ Reply with exactly one word: INJECTION or OK."""
 
 
 def groq_label(
-    *, api_key: str, base_url: str, system: str, text: str, timeout: float
+    *, api_key: str, base_url: str, system: str, text: str, timeout: float, model: str = MODEL
 ) -> str | None:
     """One safeguard call; the upper-cased first word of its reply, or ``None``."""
     try:
@@ -50,7 +51,7 @@ def groq_label(
         response = httpx.post(
             base_url.rstrip("/") + "/chat/completions",
             json={
-                "model": MODEL,
+                "model": model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}],
                 "max_tokens": 300,
                 "reasoning_effort": "low",
@@ -66,10 +67,12 @@ def groq_label(
 
 
 class GroqSafeguard(InjectionGuard):
-    model = MODEL
+    """Groq by default; any OpenAI-compatible endpoint serving the safeguard
+    (``GUARD_BASE_URL``). ``model`` is stored on each chunk it scores."""
 
-    def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
+    def __init__(self, *, api_key: str, base_url: str, timeout: float, model: str = MODEL) -> None:
         self._api_key, self._base_url, self._timeout = api_key, base_url, timeout
+        self.model = model
 
     def _one(self, text: str) -> float | None:
         text = normalize_untrusted(text or "")
@@ -78,7 +81,7 @@ class GroqSafeguard(InjectionGuard):
         if len(text) > MAX_CHARS:
             return None
         label = groq_label(api_key=self._api_key, base_url=self._base_url,
-                           system=POLICY, text=text, timeout=self._timeout)
+                           system=POLICY, text=text, timeout=self._timeout, model=self.model)
         return {"INJECTION": 1.0, "OK": 0.0}.get(label or "")
 
     def score(self, texts: list[str]) -> list[float | None]:

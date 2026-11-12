@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import logging
 
-from ..config.settings import GroqSettings, GuardSettings
-from .safeguard import MODEL, groq_label
+from ..config.settings import GuardSettings
+from .safeguard import groq_label
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,11 @@ Reply with exactly one word: SAFE or UNSAFE."""
 def answer_is_unsafe(answer: str, *, org_id: str | None, stage: str) -> bool:
     """True only when the check is on, ``GUARD_MODE=enforce``, and it says UNSAFE."""
     settings = GuardSettings.from_env()
-    groq = GroqSettings.from_env()
-    if not settings.answer_check or not settings.enabled or not groq.api_key:
+    if not settings.answer_check or not settings.enabled or not settings.api_key:
         return False
     label = groq_label(
-        api_key=groq.api_key, base_url=groq.base_url, system=POLICY,
-        text=answer[:MAX_ANSWER_CHARS], timeout=settings.timeout,
+        api_key=settings.api_key, base_url=settings.base_url, system=POLICY,
+        text=answer[:MAX_ANSWER_CHARS], timeout=settings.timeout, model=settings.safeguard_model,
     )
     if label != "UNSAFE":
         return False
