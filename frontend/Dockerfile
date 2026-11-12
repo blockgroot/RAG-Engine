@@ -11,7 +11,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 ARG API_PROXY_TARGET=http://api:8000
+# The release this image is (from the tag): the "new version is ready" id.
+ARG HANDBOOK_IMAGE_VERSION=
 ENV API_PROXY_TARGET=$API_PROXY_TARGET \
+    HANDBOOK_IMAGE_VERSION=$HANDBOOK_IMAGE_VERSION \
     NEXT_STANDALONE=1 \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build

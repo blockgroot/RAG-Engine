@@ -4,6 +4,23 @@ import { useEffect, useRef, useState } from "react";
 
 export type ModelOption = { value: string; label: string; hint?: string };
 
+/** The maker's logo for a model name (public/providers); none for an unknown one. */
+function logoFor(label = ""): string | null {
+  const n = label.toLowerCase();
+  if (n.includes("claude")) return "claude";
+  if (n.includes("gemini")) return "google";
+  if (n.includes("gpt") || /\bo\d/.test(n)) return "openai";
+  if (n.includes("mistral")) return "mistral";
+  if (n.includes("deepseek")) return "deepseek";
+  if (n.includes("grok")) return "xai";
+  return null;
+}
+
+function Logo({ label }: { label?: string }) {
+  const id = logoFor(label);
+  return id ? <img className="model-picker-logo" src={`/providers/${id}.svg`} alt="" width={14} height={14} /> : null;
+}
+
 /**
  * The composer's model choice. Our own menu, not a native <select>: macOS draws
  * that list grey and see-through over the composer, and the choice got lost.
@@ -59,7 +76,7 @@ export function ModelPicker({
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="model-picker-spark" aria-hidden>✦</span>
+        <Logo label={current?.label} />
         <span className="model-picker-name">{current?.label}</span>
         <span className="model-picker-chevron" aria-hidden />
       </button>
@@ -76,6 +93,7 @@ export function ModelPicker({
                   setOpen(false);
                 }}
               >
+                <Logo label={o.label} />
                 <span>
                   <strong>{o.label}</strong>
                   {o.hint && <small>{o.hint}</small>}

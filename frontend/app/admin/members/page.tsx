@@ -3,13 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
-import { spaceStyle } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
 import { api, MemberRecord } from "@/lib/api";
 
+/** Ten distinct colours, given out in joining order: the first ten people never share one. */
+const FACE_HUES = [168, 262, 24, 340, 204, 142, 290, 48, 0, 226];
 
-/** Faces shown before "+N": the card keeps one row however big the company gets. */
-const FACES = 4;
+/** "sana.asiwal@x.com" → "Sana Asiwal": a readable name until people set one here. */
+function nameFrom(email: string): string {
+  return (email.split("@")[0] || email)
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 export default function MembersPage() {
   const { me, loading } = useMe({ requireAdmin: true });
   const [members, setMembers] = useState<MemberRecord[]>([]);
@@ -136,6 +144,10 @@ export default function MembersPage() {
   }
 
   const adminCount = members.filter((m) => m.role === "admin").length;
+  const joinOrder = new Map(
+    [...members].sort((x, y) => x.created_at.localeCompare(y.created_at)).map((m, i) => [m.id, i]),
+  );
+  const faceStyle = (id: string) => ({ ["--face-h" as string]: FACE_HUES[(joinOrder.get(id) ?? 0) % FACE_HUES.length] });
   const memberCount = members.length - adminCount;
 
   return (
@@ -145,36 +157,20 @@ export default function MembersPage() {
           eyebrow="Company"
           title="People"
           description="Invite teammates, make admins for succession, and remove people who leave. Always keep at least one other admin before you leave."
-          meta={
-            <span className="hero-facts">
-              <b>{members.length}</b> {members.length === 1 ? "person" : "people"} in {me.org_name ?? "the company"}
-            </span>
-          }
         />
 
-        <div className="people-layout">
-          <section className="people-invite" aria-labelledby="invite-title">
-            <div className="team-faces" aria-hidden>
-              {members.slice(0, FACES).map((m, i) => (
-                <i key={m.id} style={{ ...spaceStyle(m.email), ["--i" as string]: i }}>
-                  {(m.email || "?").charAt(0).toUpperCase()}
-                </i>
-              ))}
-              {members.length > FACES && <i className="team-faces-more">+{members.length - FACES}</i>}
-              <i className="team-faces-add">+</i>
-            </div>
-            <p className="team-split-key">
-              <span><i className="is-admin" />{adminCount} admin{adminCount === 1 ? "" : "s"}</span>
-              <span><i />{memberCount} member{memberCount === 1 ? "" : "s"}</span>
-            </p>
-            <div className="studio-section-head">
-              <h2 id="invite-title">Invite someone</h2>
-              <p className="muted">They get a sign-in link by email. No password to set up.</p>
-            </div>
-            <form onSubmit={handleInvite} className="spaces-new space-invite">
-              <label className="sr-only" htmlFor="email">Work email</label>
+        <section className="people-bar" aria-labelledby="invite-title">
+          <dl className="people-stats">
+            <div><dt>People</dt><dd>{members.length}</dd></div>
+            <div><dt>Admins</dt><dd>{adminCount}</dd></div>
+            <div><dt>Members</dt><dd>{memberCount}</dd></div>
+          </dl>
+          <form onSubmit={handleInvite} className="people-invite-form">
+            <label id="invite-title" htmlFor="email">Invite someone</label>
+            <div>
               <input
                 id="email"
+                className="input"
                 type="email"
                 placeholder="teammate@company.com"
                 value={email}
@@ -185,122 +181,112 @@ export default function MembersPage() {
               <button className="button" type="submit" disabled={sending || !email.trim()}>
                 {sending ? "Sending…" : "Send invite"}
               </button>
-            </form>
-            {inviteError && (
-              <div className="banner banner-warn" role="alert">
-                {inviteError}
-              </div>
-            )}
-            {inviteMessage && (
-              <div className="banner banner-ok" role="status">
-                {inviteMessage}
-              </div>
-            )}
-          </section>
+            </div>
+            <small>They get a sign-in link by email. No password to set up.</small>
+          </form>
+        </section>
+        {inviteError && (
+          <div className="banner banner-warn" role="alert">
+            {inviteError}
+          </div>
+        )}
+        {inviteMessage && (
+          <div className="banner banner-ok" role="status">
+            {inviteMessage}
+          </div>
+        )}
 
-          <section className="room-section people-roster" aria-labelledby="roster-title">
-            <div className="studio-section-head">
+        <section className="people-table" aria-labelledby="roster-title">
+          <header className="people-table-head">
+            <div>
               <h2 id="roster-title">Everyone in the company</h2>
-              <p className="muted">Admins manage sources, the model, people and actions. Members ask.</p>
+              <p>Admins manage sources, the model, people and actions. Members ask.</p>
             </div>
-            {rosterError && (
-              <div className="banner banner-warn" role="alert" style={{ marginBottom: "0.75rem" }}>
-                {rosterError}
-              </div>
-            )}
-            {rosterMessage && (
-              <div className="banner banner-ok" role="status" style={{ marginBottom: "0.75rem" }}>
-                {rosterMessage}
-              </div>
-            )}
-            <div className="roster-scroll">
-            {members.length === 0 ? (
-              <div className="studio-empty">
-                <div className="studio-empty-mark" aria-hidden />
-                <h3>No one here yet</h3>
-                <p className="muted">Send an invite to bring in your first teammate.</p>
-              </div>
-            ) : (
-              (["admin", "member"] as const).map((role) => {
-                const group = members.filter((m) => m.role === role);
-                if (!group.length) return null;
-                return (
-              <div key={role} className="roster-group">
-              <p className="room-sub">{role === "admin" ? "Admins" : "Members"} · {group.length}</p>
-              <ul className="roster-list">
-                {group.map((m, i) => {
-                  const initial = (m.email || "?").trim().charAt(0).toUpperCase();
-                  return (
-                    <li
-                      key={m.id}
-                      className="roster-row"
-                      style={{ ["--i" as string]: i }}
-                    >
-                      <span className="people-avatar" style={spaceStyle(m.email)} aria-hidden>
-                        {initial}
-                      </span>
-                      <div className="people-card-copy">
-                        <strong>
-                          {m.email}
-                          {m.id === me.user_id && <em className="roster-you">you</em>}
-                        </strong>
-                        <span className="muted">
-                          Joined {new Date(m.created_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <div className="roster-actions">
-                        {m.role === "member" && (
-                          <button
-                            type="button"
-                            className="button button-secondary"
-                            disabled={busyId === m.id}
-                            onClick={() => handlePromote(m.id, m.email)}
-                          >
-                            {busyId === m.id ? "…" : "Make admin"}
-                          </button>
-                        )}
-                        {m.role === "admin" && m.id !== me.user_id && (
-                          <button
-                            type="button"
-                            className="button button-secondary"
-                            disabled={busyId === m.id || adminCount <= 1}
-                            title={
-                              adminCount <= 1
-                                ? "Promote someone else before demoting the last admin"
-                                : undefined
-                            }
-                            onClick={() => handleDemote(m.id, m.email)}
-                          >
-                            {busyId === m.id ? "…" : "Demote"}
-                          </button>
-                        )}
-                        {m.id !== me.user_id && (
-                          <button
-                            type="button"
-                            className="button button-secondary"
-                            disabled={busyId === m.id || (m.role === "admin" && adminCount <= 1)}
-                            title={
-                              m.role === "admin" && adminCount <= 1
-                                ? "Promote someone else before removing the last admin"
-                                : undefined
-                            }
-                            onClick={() => handleRemove(m.id, m.email)}
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-              </div>
-                );
-              })
-            )}
+          </header>
+          {rosterError && (
+            <div className="banner banner-warn" role="alert">
+              {rosterError}
             </div>
-          </section>
-        </div>
+          )}
+          {rosterMessage && (
+            <div className="banner banner-ok" role="status">
+              {rosterMessage}
+            </div>
+          )}
+          {members.length === 0 ? (
+            <div className="studio-empty">
+              <div className="studio-empty-mark" aria-hidden />
+              <h3>No one here yet</h3>
+              <p className="muted">Send an invite to bring in your first teammate.</p>
+            </div>
+          ) : (
+            (["admin", "member"] as const).map((role) => {
+              const group = members.filter((m) => m.role === role);
+              if (!group.length) return null;
+              return (
+                <div key={role} className="people-group">
+                  <p className="people-group-title">
+                    {role === "admin" ? "Admins" : "Members"} <span>{group.length}</span>
+                  </p>
+                  <ul className="people-cards">
+                    {group.map((m, i) => {
+                      const self = m.id === me.user_id;
+                      const lastAdmin = m.role === "admin" && adminCount <= 1;
+                      return (
+                        <li key={m.id} className="person-card" style={{ ...faceStyle(m.id), ["--i" as string]: i }}>
+                          <div className="person-card-top">
+                            <span className="person-face" aria-hidden>
+                              {(m.email || "?").trim().charAt(0).toUpperCase()}
+                            </span>
+                            <span className="people-role" data-role={m.role}>
+                              {m.role === "admin" ? "Admin" : "Member"}
+                            </span>
+                          </div>
+                          <strong className="person-name">
+                            {nameFrom(m.email)}
+                            {self && <em className="roster-you">you</em>}
+                          </strong>
+                          <span className="person-email">{m.email}</span>
+                          <span className="person-joined">
+                            Joined{" "}
+                            {new Date(m.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                          </span>
+                          {!self && (
+                            <span className="people-actions">
+                              {m.role === "member" ? (
+                                <button type="button" disabled={busyId === m.id} onClick={() => handlePromote(m.id, m.email)}>
+                                  {busyId === m.id ? "…" : "Make admin"}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={busyId === m.id || lastAdmin}
+                                  title={lastAdmin ? "Promote someone else before demoting the last admin" : undefined}
+                                  onClick={() => handleDemote(m.id, m.email)}
+                                >
+                                  {busyId === m.id ? "…" : "Demote"}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="is-danger"
+                                disabled={busyId === m.id || lastAdmin}
+                                title={lastAdmin ? "Promote someone else before removing the last admin" : undefined}
+                                onClick={() => handleRemove(m.id, m.email)}
+                              >
+                                Remove
+                              </button>
+                            </span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })
+          )}
+        </section>
       </main>
     </AppShell>
   );

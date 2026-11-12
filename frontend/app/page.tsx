@@ -106,7 +106,7 @@ export default function RootPage() {
           <p className="site-label">Four modes, one chat</p>
           <h2 id="modes-title" className="sec-title">Answer, investigate, chart or act.</h2>
           <p className="sec-lead">
-            Pick a mode from the plus menu in the chat. Each one returns a
+            Switch modes right above the message box. Each one returns a
             different kind of result, and every result shows where it came from.
           </p>
         </div>

@@ -3,7 +3,7 @@
 import { NewVersionPill } from "./NewVersionPill";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BrandMark } from "@/components/BrandMark";
 import { NamePrompt } from "@/components/NamePrompt";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -136,6 +136,7 @@ export function AppShell({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [navOpen]);
+  const [confirmOut, setConfirmOut] = useState(false);
   async function handleSignOut() {
     try {
       await api.logout();
@@ -407,7 +408,7 @@ export function AppShell({
                   </svg>
                   <span>Account</span>
                 </Link>
-                <button type="button" className="rail-user-action rail-user-signout" title="Sign out" onClick={handleSignOut}>
+                <button type="button" className="rail-user-action rail-user-signout" title="Sign out" onClick={() => setConfirmOut(true)}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
                     <path d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4M14 8l4 4-4 4M9 12h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
@@ -442,7 +443,7 @@ export function AppShell({
                 active={me.has_connection && me.ready_to_ask}
               />
             </div>
-            <button type="button" className="button button-secondary button-sm" onClick={handleSignOut}>
+            <button type="button" className="button button-secondary button-sm" onClick={() => setConfirmOut(true)}>
               Sign out
             </button>
           </header>
@@ -465,6 +466,7 @@ export function AppShell({
           }}
         />
       )}
+      {confirmOut && <SignOutDialog onCancel={() => setConfirmOut(false)} onConfirm={handleSignOut} />}
     </div>
   );
 }
@@ -487,5 +489,50 @@ function Step({
       </span>
       <span>{label}</span>
     </div>
+  );
+}
+
+/** "Sign out of Handbook?": a modal (native <dialog>: focus stays inside, Esc cancels). */
+function SignOutDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    ref.current?.showModal();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className="signout-dialog"
+      aria-labelledby="signout-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        onCancel();
+      }}
+      onClick={(e) => e.target === ref.current && onCancel()}
+    >
+      <span className="signout-dialog-icon" aria-hidden>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14M10 8l-4 4 4 4M6 12h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+      <h2 id="signout-title">Sign out of Handbook?</h2>
+      <p>You will need to sign in again to ask questions or see your spaces.</p>
+      <div className="signout-dialog-actions">
+        <button type="button" className="button button-secondary" onClick={onCancel} autoFocus>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="button signout-dialog-go"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            onConfirm();
+          }}
+        >
+          {busy ? "Signing out…" : "Sign out"}
+        </button>
+      </div>
+    </dialog>
   );
 }

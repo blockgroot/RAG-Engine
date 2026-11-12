@@ -304,9 +304,10 @@ scored by the safety model; the answer fact-checker is off (§11).
   list and emails every admin about the newest release once (`update_notices` holds the versions
   announced, claimed before sending; released again if every send failed), with the notes, a
   security flag in the subject, and a link to Updates. Cloud sends none (`app/updates/announce.py`).
-- **"A new version is ready"** (11 Nov 2026): every build has an id (`NEXT_PUBLIC_BUILD_ID`: the
-  commit on Vercel, the image version, else the build time); `/build-id` serves the live one. An
-  open tab from an older build shows a pill with Refresh (and What's new for admins), checked
+- **"A new version is ready"** (11 Nov 2026): every build has an id (`NEXT_PUBLIC_BUILD_ID`): the
+  RELEASE it carries, never the commit (12 Nov: the image's tag, else the newest
+  `release-notes/<version>.md`), so an ordinary Cloud deploy of main shows nothing; `/build-id`
+  serves the live one. An open tab from an older release shows a pill with Refresh (and What's new for admins), checked
   every 5 minutes and when the tab comes back into view.
 
 - **Company email domain** (6 Nov 2026): a company's domain is its first admin's

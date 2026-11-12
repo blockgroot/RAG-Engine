@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * "A new version is ready": the tab was loaded from an older build than the one
- * now live (each build has an id, app/build-id). Checked every few minutes and
- * when the tab comes back into view; Refresh loads the new version.
+ * "A new version is ready": the tab was loaded from an older RELEASE than the
+ * one now live (the build id is the newest release, next.config.js; an ordinary
+ * deploy of main keeps it). Checked every few minutes and when the tab comes
+ * back into view; Refresh loads the new version.
  */
 
 import Link from "next/link";

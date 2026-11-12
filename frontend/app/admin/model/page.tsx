@@ -26,6 +26,18 @@ const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
 };
 
 /** The provider list as a menu: each one with its letter mark, the chosen one ticked. */
+/** Provider logos (public/providers, from the MIT-licensed lobehub icon set).
+ *  An id without a file falls back to its first letter. */
+const LOGOS = new Set(["openai", "anthropic", "openrouter", "nvidia", "google", "mistral", "deepseek", "xai", "together", "fireworks", "cerebras", "perplexity", "cohere", "groq"]);
+
+function ProviderLogo({ id, label }: { id?: string; label?: string }) {
+  return (
+    <i aria-hidden className="provider-logo">
+      {id && LOGOS.has(id) ? <img src={`/providers/${id}.svg`} alt="" width={18} height={18} /> : (label ?? "?").charAt(0)}
+    </i>
+  );
+}
+
 function ProviderPicker({
   presets,
   value,
@@ -56,7 +68,7 @@ function ProviderPicker({
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
       >
-        <i aria-hidden>{(picked?.label ?? "?").charAt(0)}</i>
+        <ProviderLogo id={picked?.id} label={picked?.label} />
         <span>{picked?.label ?? "Choose a provider"}</span>
         <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden>
           <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -75,7 +87,7 @@ function ProviderPicker({
                 setOpen(false);
               }}
             >
-              <i aria-hidden>{p.label.charAt(0)}</i>
+              <ProviderLogo id={p.id} label={p.label} />
               <span>{p.label}</span>
               {p.id === value && (
                 <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
@@ -294,31 +306,58 @@ export default function AdminModelPage() {
             <h2 id="usage-title">How your model is used</h2>
             <p className="muted">Connecting a key changes one part of Handbook, not all of it.</p>
           </div>
-          <div className="model-lanes">
-            <div className="model-lane is-yours">
-              <span className="model-lane-end">A question in chat</span>
-              <i aria-hidden />
-              <span className="model-lane-node">
-                <b>Your model</b>
-                <small>Your key, billed by {activePreset?.label ?? "your provider"}</small>
-              </span>
-              <i aria-hidden />
-              <span className="model-lane-end">The answer</span>
-            </div>
-            <div className="model-lane">
-              <span className="model-lane-end">Your documents</span>
-              <i aria-hidden />
-              <span className="model-lane-node">
-                <b>Handbook&rsquo;s model</b>
-                <small>Your key is never used here</small>
-              </span>
-              <i aria-hidden />
-              <span className="model-lane-end">Indexing and quality checks</span>
-            </div>
+          <div className="model-split">
+            <article className="model-split-card is-yours">
+              <header>
+                <span className="model-split-icon" aria-hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V17A2.5 2.5 0 0 1 4 14.5v-8Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                <div>
+                  <span className="model-split-tag">Your key</span>
+                  <h3>Answers in chat</h3>
+                </div>
+              </header>
+              <ol className="model-split-flow">
+                <li><span>Question</span></li>
+                <li><span className="is-model">{activePreset?.label ?? "Your model"}</span></li>
+                <li><span>Answer</span></li>
+              </ol>
+              <p>Every chat answer uses your model. Billed by {activePreset?.label ?? "your provider"}.</p>
+            </article>
+            <article className="model-split-card">
+              <header>
+                <span className="model-split-icon" aria-hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M6.5 3.5h7l4.5 4.5v10a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 18V6a2.5 2.5 0 0 1 2.5-2.5Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
+                    <path d="M13.5 3.5V8H18M8 13h7M8 16.5h5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <div>
+                  <span className="model-split-tag">Handbook&rsquo;s model</span>
+                  <h3>Indexing and checks</h3>
+                </div>
+              </header>
+              <ol className="model-split-flow">
+                <li><span>Your documents</span></li>
+                <li><span className="is-model">Handbook</span></li>
+                <li><span>Search index</span></li>
+              </ol>
+              <p>Reading, indexing and quality checks. Your key is never used here.</p>
+            </article>
           </div>
-          <footer>
-            <strong>Built-in fallback stays available.</strong>
-            <span>If your key stops working, members can switch models and keep working.</span>
+          <footer className="model-split-note">
+            <span aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-2.5Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
+                <path d="m9 12 2 2 4-4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <p>
+              <strong>Built-in fallback stays available.</strong> If your key stops working, members can switch
+              models and keep working.
+            </p>
           </footer>
         </section>
 
