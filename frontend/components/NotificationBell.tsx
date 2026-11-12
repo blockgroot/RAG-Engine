@@ -5,6 +5,30 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { api, Notification } from "@/lib/api";
 import { formatReauthReason } from "@/lib/reauthReason";
+import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
+
+const BRANDS: Record<string, BrandName> = {
+  google: "drive",
+  slack: "slack",
+  notion: "notion",
+  linear: "linear",
+  github: "github",
+};
+
+/** An item with no tool behind it (a question gap, a new version). */
+function KindIcon({ kind }: { kind: Notification["kind"] }) {
+  const d =
+    kind === "update"
+      ? "M10 15V5m0 0-4 4m4-4 4 4"
+      : kind === "gap"
+        ? "M7.5 7.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M10 14.5v.01"
+        : "M10 6v4.5M10 14v.01";
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" fill="none">
+      <path d={d} stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 /**
  * What needs this person's attention, on every page of the app.
@@ -167,7 +191,10 @@ export function NotificationBell() {
           style={{ top: at.top, left: at.left }}
         >
           <div className="bell-head-row">
-            <p className="bell-head">Needs attention</p>
+            <p className="bell-head">
+              Notifications
+              {items.length > 0 && <span className="bell-head-count">{items.length}</span>}
+            </p>
             {items.length > 1 && (
               <button type="button" className="bell-clear" onClick={() => dismiss(items.map(keyOf))}>
                 Clear all
@@ -180,56 +207,66 @@ export function NotificationBell() {
               aria-label="Close notifications"
             >
               <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path
-                  d="m5.5 5.5 9 9m0-9-9 9"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
+                <path d="m5.5 5.5 9 9m0-9-9 9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
               </svg>
             </button>
           </div>
           {items.length === 0 ? (
             /* Not an empty box: "nothing is broken" is the answer they opened
                this for, and it has to be stated to be believed. */
-            <p className="bell-empty">
-              {all.length ? "Nothing new. Dismissed items still show on Sources." : "Everything is connected and syncing."}
-            </p>
+            <div className="bell-empty">
+              <span className="bell-empty-mark" aria-hidden>
+                <svg viewBox="0 0 20 20" fill="none"><path d="m5.5 10.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </span>
+              <p>
+                <strong>You&rsquo;re all caught up</strong>
+                {all.length ? "Dismissed items still show on Sources." : "Everything is connected and syncing."}
+              </p>
+            </div>
           ) : (
             <ul className="bell-list">
-              {items.map((item) => (
-                <li key={keyOf(item)} className="bell-item">
-                  <span className="bell-dot" data-severity={item.severity} aria-hidden />
-                  <div className="bell-item-copy">
-                    <span className="bell-item-title">{item.title}</span>
-                    <span className="bell-item-scope">{item.scope}</span>
-                    <span className="bell-item-detail">
-                      {item.kind === "reauth" ? formatReauthReason(item.provider, item.detail) : item.detail}
+              {items.map((item) => {
+                const brand = BRANDS[item.provider];
+                const action = /^https?:\/\//.test(item.href) ? (
+                  <a href={item.href} target="_blank" rel="noopener noreferrer"
+                     className="bell-item-action" onClick={() => setOpen(false)}>
+                    {item.action} <span aria-hidden>&rarr;</span>
+                  </a>
+                ) : (
+                  <Link href={item.href} className="bell-item-action" onClick={() => setOpen(false)}>
+                    {item.action} <span aria-hidden>&rarr;</span>
+                  </Link>
+                );
+                return (
+                  <li key={keyOf(item)} className="bell-item" data-severity={item.severity}>
+                    <span className="bell-item-icon" aria-hidden>
+                      {brand ? <BrandGlyph name={brand} size={18} /> : <KindIcon kind={item.kind} />}
+                      <i className="bell-dot" data-severity={item.severity} />
                     </span>
-                    {/^https?:\/\//.test(item.href) ? (
-                      <a href={item.href} target="_blank" rel="noopener noreferrer"
-                         className="bell-item-action" onClick={() => setOpen(false)}>
-                        {item.action}
-                      </a>
-                    ) : (
-                      <Link href={item.href} className="bell-item-action" onClick={() => setOpen(false)}>
-                        {item.action}
-                      </Link>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    className="bell-dismiss"
-                    onClick={() => dismiss([keyOf(item)])}
-                    aria-label={`Dismiss: ${item.title}`}
-                    title="Dismiss"
-                  >
-                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                      <path d="m6 6 8 8m0-8-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                </li>
-              ))}
+                    <div className="bell-item-copy">
+                      <span className="bell-item-title">{item.title}</span>
+                      <span className="bell-item-detail">
+                        {item.kind === "reauth" ? formatReauthReason(item.provider, item.detail) : item.detail}
+                      </span>
+                      <span className="bell-item-foot">
+                        {action}
+                        <span className="bell-item-scope">{item.scope}</span>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="bell-dismiss"
+                      onClick={() => dismiss([keyOf(item)])}
+                      aria-label={`Dismiss: ${item.title}`}
+                      title="Dismiss"
+                    >
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <path d="m6 6 8 8m0-8-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      </svg>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>,

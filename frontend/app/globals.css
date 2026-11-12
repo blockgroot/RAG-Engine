@@ -12285,10 +12285,45 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 @keyframes ask-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .ask-chart.is-loading .ask-chart-thumb, .ask-chart-line { animation: none; } }
 
-/* Bell: dismiss one item, or all of them */
-.bell-item-copy { flex: 1 1 auto; min-width: 0; }
-.bell-dismiss { flex: none; align-self: flex-start; display: grid; place-items: center; width: 1.6rem; height: 1.6rem; padding: 0; border: 0; border-radius: 999px; background: none; color: var(--ink-muted); cursor: pointer; opacity: 0.7; }
+/* Bell panel v2: a titled header, one card per item with its tool's icon,
+   the action as a link and the scope beside it, dismiss on the right. */
+.bell-panel { width: min(24rem, calc(100vw - 1.5rem)); max-height: min(30rem, 75vh); padding: 0; border-radius: 14px; }
+.bell-head-row { position: sticky; top: 0; z-index: 1; margin: 0; padding: 0.8rem 0.85rem 0.7rem 1rem; gap: 0.35rem; background: var(--surface-elevated, #fff); border-bottom: 1px solid var(--border); }
+.bell-head { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 auto 0 0; font-size: 0.92rem; font-weight: 700; letter-spacing: 0; text-transform: none; color: var(--ink); }
+.bell-head-count { display: inline-grid; place-items: center; min-width: 1.25rem; height: 1.25rem; padding: 0 0.35rem; border-radius: 999px; font-size: 0.7rem; font-weight: 700; color: #b42318; background: #fee4e2; }
+.bell-clear { padding: 0.25rem 0.55rem; border: 0; border-radius: 7px; background: none; font: inherit; font-size: 0.76rem; font-weight: 600; color: var(--ink-muted); cursor: pointer; }
+.bell-clear:hover { color: var(--ink); background: var(--surface-muted, #eef2f1); }
+.bell-close-btn { width: 1.6rem; height: 1.6rem; background: none; }
+.bell-close-btn:hover { background: var(--surface-muted, #eef2f1); color: var(--ink); }
+
+.bell-list { gap: 0; padding: 0.4rem; }
+.bell-item { position: relative; gap: 0.75rem; padding: 0.75rem 0.6rem; border-radius: 10px; transition: background 0.15s var(--ease); }
+.bell-item + .bell-item { border-top: 0; }
+.bell-item + .bell-item::before { content: ""; position: absolute; top: 0; left: 3.4rem; right: 0.6rem; height: 1px; background: var(--border); }
+.bell-item:hover { background: #f6f8f8; }
+.bell-item:hover + .bell-item::before, .bell-item:hover::before { opacity: 0; }
+
+.bell-item-icon { position: relative; flex: none; display: grid; place-items: center; width: 2.2rem; height: 2.2rem; border-radius: 9px; background: #fff; border: 1px solid var(--border); color: #b54708; }
+.bell-item[data-severity="high"] .bell-item-icon { color: #b42318; }
+.bell-item-icon img, .bell-item-icon svg { display: block; }
+.bell-item-icon .bell-dot { position: absolute; top: -3px; right: -3px; margin: 0; width: 0.6rem; height: 0.6rem; box-shadow: 0 0 0 2px var(--surface-elevated, #fff); }
+
+.bell-item-copy { flex: 1 1 auto; min-width: 0; gap: 0.2rem; }
+.bell-item-title { font-size: 0.86rem; font-weight: 600; line-height: 1.35; padding-right: 0.25rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.bell-item-detail { font-size: 0.79rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.bell-item-foot { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.3rem; }
+.bell-item-action { margin: 0; font-size: 0.79rem; font-weight: 600; color: var(--accent-strong, #0b5f5a); text-decoration: none; }
+.bell-item-action:hover { text-decoration: underline; }
+.bell-item-scope { padding: 0.08rem 0.45rem; border-radius: 999px; font-size: 0.68rem; font-weight: 600; color: var(--ink-muted); background: var(--surface-muted, #eef2f1); }
+
+.bell-dismiss { flex: none; align-self: flex-start; display: grid; place-items: center; width: 1.6rem; height: 1.6rem; margin: -0.15rem -0.2rem 0 0; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--ink-muted); cursor: pointer; opacity: 0; transition: opacity 0.15s var(--ease), background 0.15s var(--ease); }
 .bell-dismiss svg { width: 0.85rem; height: 0.85rem; }
-.bell-dismiss:hover, .bell-dismiss:focus-visible { opacity: 1; background: var(--surface-muted, #eef2f1); color: var(--ink); }
-.bell-clear { margin-left: auto; margin-right: 0.4rem; padding: 0.2rem 0.5rem; border: 0; border-radius: 6px; background: none; font: inherit; font-size: 0.75rem; font-weight: 600; color: var(--accent-strong, #0b5f5a); cursor: pointer; }
-.bell-clear:hover { background: var(--surface-muted, #eef2f1); }
+.bell-item:hover .bell-dismiss, .bell-dismiss:focus-visible { opacity: 1; }
+.bell-dismiss:hover { background: #fff; color: var(--ink); box-shadow: 0 0 0 1px var(--border); }
+@media (hover: none) { .bell-dismiss { opacity: 0.7; } }
+
+.bell-empty { display: flex; align-items: center; gap: 0.75rem; margin: 0; padding: 1.1rem 1rem 1.2rem; }
+.bell-empty-mark { flex: none; display: grid; place-items: center; width: 2.2rem; height: 2.2rem; border-radius: 999px; color: #067647; background: #dcfae6; }
+.bell-empty-mark svg { width: 1.1rem; height: 1.1rem; }
+.bell-empty p { display: grid; gap: 0.1rem; margin: 0; font-size: 0.8rem; color: var(--ink-muted); }
+.bell-empty strong { font-size: 0.88rem; color: var(--ink); }
