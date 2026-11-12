@@ -11900,3 +11900,55 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .people-invite-form small { color: var(--ink-muted); }
 .people-invite-form .input { background: #fff; border: 1px solid #dfe8e4; }
 .people-invite-form .button { background: linear-gradient(135deg, #14b8a6, #0f766e); color: #fff; }
+
+/* ===== One page frame everywhere: admin pages match Spaces and Reports ======
+   Same 920px column, title block centred, so moving between pages never
+   shifts the content or flips the heading from centre to left. */
+.studio-page.page-wide { max-width: 920px; padding-left: var(--space-4); padding-right: var(--space-4); }
+.page-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.9rem; }
+.page-hero .space-hero-copy { justify-items: center; }
+.page-hero .ask-hello-copy { max-width: 40rem; margin-inline: auto; }
+.page-hero .space-hero-chips { justify-content: center; }
+.page-hero .page-hero-actions { justify-content: center; }
+
+/* ===== People v5: a compact directory (search, filter, one row each) ======
+   Spaces keeps its big cards; people are a list to scan, sized for 50+. */
+.people-tools { display: flex; align-items: center; gap: 0.75rem; padding: 0 1.4rem 0.9rem; flex-wrap: wrap; }
+.people-search { flex: 1 1 14rem; min-height: 2.4rem; border-radius: 999px; padding-left: 1rem; }
+.people-filter { display: inline-flex; padding: 0.2rem; border-radius: 999px; background: #f2f5f4; border: 1px solid #e6edea; }
+.people-filter button {
+  padding: 0.35rem 0.85rem; border: 0; border-radius: 999px; background: transparent; cursor: pointer;
+  font: inherit; font-size: 0.78rem; font-weight: 600; color: var(--ink-muted); transition: background 0.2s var(--ease), color 0.2s var(--ease);
+}
+.people-filter button[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(15,42,38,0.12); }
+.people-none { margin: 0; padding: 1.2rem 1.4rem; color: var(--ink-muted); font-size: 0.86rem; }
+.people-dir { margin: 0; padding: 0; list-style: none; border-top: 1px solid #eef3f1; }
+.people-dir-row {
+  display: grid; grid-template-columns: 2.4rem minmax(0, 1fr) 5.5rem 7.5rem 11.5rem; align-items: center; gap: 0.9rem;
+  padding: 0.65rem 1.4rem; border-bottom: 1px solid #f0f4f2; transition: background 0.15s var(--ease);
+  animation: rise-in 0.3s var(--ease) both; animation-delay: calc(var(--i, 0) * 0.025s);
+}
+.people-dir-row:last-child { border-bottom: 0; }
+.people-dir-row:hover { background: hsl(var(--face-h, 168) 60% 98%); }
+.people-dir-row .person-face { width: 2.4rem; height: 2.4rem; font-size: 0.92rem; box-shadow: 0 4px 10px -6px hsl(var(--face-h, 168) 60% 35% / 0.7); }
+.people-dir-who { display: grid; min-width: 0; }
+.people-dir-who strong { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; font-weight: 650; }
+.people-dir-who > span { font-size: 0.76rem; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.people-dir-row .people-role { justify-self: start; }
+.people-dir-row .people-role[data-role="admin"] { color: #0f766e; background: color-mix(in srgb, var(--accent) 12%, white); }
+.people-dir-row .people-joined { font-size: 0.78rem; }
+.people-dir-row .people-actions { opacity: 0; transition: opacity 0.15s var(--ease); }
+.people-dir-row:hover .people-actions, .people-dir-row:focus-within .people-actions { opacity: 1; }
+@media (hover: none), (max-width: 860px) {
+  .people-dir-row .people-actions { opacity: 1; }
+}
+@media (max-width: 860px) {
+  .people-dir-row { grid-template-columns: 2.4rem minmax(0, 1fr) auto; row-gap: 0.35rem; padding-inline: 1rem; }
+  .people-dir-row .people-joined { display: none; }
+  .people-dir-row .people-actions { grid-column: 2 / -1; justify-content: flex-start; }
+  .people-tools { padding-inline: 1rem; }
+  .people-filter { width: 100%; }
+  .people-filter button { flex: 1; }
+}
+.studio-page .people-search { border-radius: 999px; min-height: 2.4rem; height: 2.4rem; padding: 0 1rem; font-size: 0.86rem; }
+.people-dir-row .people-actions, .people-dir-row:hover .people-actions { opacity: 1; }

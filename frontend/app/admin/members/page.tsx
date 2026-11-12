@@ -28,6 +28,8 @@ export default function MembersPage() {
   const [rosterError, setRosterError] = useState<string | null>(null);
   const [rosterMessage, setRosterMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [show, setShow] = useState<"all" | "admin" | "member">("all");
   const clearRosterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function refresh() {
@@ -147,6 +149,11 @@ export default function MembersPage() {
   const joinOrder = new Map(
     [...members].sort((x, y) => x.created_at.localeCompare(y.created_at)).map((m, i) => [m.id, i]),
   );
+  const q = query.trim().toLowerCase();
+  const shown = members
+    .filter((m) => show === "all" || m.role === show)
+    .filter((m) => !q || m.email.toLowerCase().includes(q) || nameFrom(m.email).toLowerCase().includes(q))
+    .sort((x, y) => (x.role === y.role ? x.email.localeCompare(y.email) : x.role === "admin" ? -1 : 1));
   const faceStyle = (id: string) => ({ ["--face-h" as string]: FACE_HUES[(joinOrder.get(id) ?? 0) % FACE_HUES.length] });
   const memberCount = members.length - adminCount;
 
@@ -220,39 +227,56 @@ export default function MembersPage() {
               <p className="muted">Send an invite to bring in your first teammate.</p>
             </div>
           ) : (
-            (["admin", "member"] as const).map((role) => {
-              const group = members.filter((m) => m.role === role);
-              if (!group.length) return null;
-              return (
-                <div key={role} className="people-group">
-                  <p className="people-group-title">
-                    {role === "admin" ? "Admins" : "Members"} <span>{group.length}</span>
-                  </p>
-                  <ul className="people-cards">
-                    {group.map((m, i) => {
-                      const self = m.id === me.user_id;
-                      const lastAdmin = m.role === "admin" && adminCount <= 1;
-                      return (
-                        <li key={m.id} className="person-card" style={{ ...faceStyle(m.id), ["--i" as string]: i }}>
-                          <div className="person-card-top">
-                            <span className="person-face" aria-hidden>
-                              {(m.email || "?").trim().charAt(0).toUpperCase()}
-                            </span>
-                            <span className="people-role" data-role={m.role}>
-                              {m.role === "admin" ? "Admin" : "Member"}
-                            </span>
-                          </div>
-                          <strong className="person-name">
+            <>
+              <div className="people-tools">
+                <input
+                  className="input people-search"
+                  type="search"
+                  placeholder="Search by name or email"
+                  aria-label="Search people"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+                <div className="people-filter" role="tablist" aria-label="Show">
+                  {([
+                    ["all", `All ${members.length}`],
+                    ["admin", `Admins ${adminCount}`],
+                    ["member", `Members ${memberCount}`],
+                  ] as const).map(([key, label]) => (
+                    <button key={key} type="button" role="tab" aria-selected={show === key} onClick={() => setShow(key)}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {shown.length === 0 ? (
+                <p className="people-none">No one matches “{query}”.</p>
+              ) : (
+                <ul className="people-dir">
+                  {shown.map((m, i) => {
+                    const self = m.id === me.user_id;
+                    const lastAdmin = m.role === "admin" && adminCount <= 1;
+                    return (
+                      <li key={m.id} className="people-dir-row" style={{ ...faceStyle(m.id), ["--i" as string]: Math.min(i, 12) }}>
+                        <span className="person-face" aria-hidden>
+                          {(m.email || "?").trim().charAt(0).toUpperCase()}
+                        </span>
+                        <span className="people-dir-who">
+                          <strong>
                             {nameFrom(m.email)}
                             {self && <em className="roster-you">you</em>}
                           </strong>
-                          <span className="person-email">{m.email}</span>
-                          <span className="person-joined">
-                            Joined{" "}
-                            {new Date(m.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
-                          </span>
+                          <span>{m.email}</span>
+                        </span>
+                        <span className="people-role" data-role={m.role}>
+                          {m.role === "admin" ? "Admin" : "Member"}
+                        </span>
+                        <span className="people-joined">
+                          {new Date(m.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                        </span>
+                        <span className="people-actions">
                           {!self && (
-                            <span className="people-actions">
+                            <>
                               {m.role === "member" ? (
                                 <button type="button" disabled={busyId === m.id} onClick={() => handlePromote(m.id, m.email)}>
                                   {busyId === m.id ? "…" : "Make admin"}
@@ -276,15 +300,15 @@ export default function MembersPage() {
                               >
                                 Remove
                               </button>
-                            </span>
+                            </>
                           )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              );
-            })
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </>
           )}
         </section>
       </main>
