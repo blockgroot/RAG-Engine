@@ -18,7 +18,7 @@ as personal as the schedule that produced it.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..db.connection import get_connection
@@ -54,6 +54,9 @@ class Report:
     #: report itself is still readable — that is the point of storing it.
     delivered_to: str | None
     created_at: datetime
+    #: How many reports this schedule has in all, set by ``list_reports`` so a
+    #: list that shows only the latest runs can say how many it left out.
+    runs_total: int | None = None
 
 
 def _loads(value) -> list:
@@ -146,21 +149,35 @@ def mark_delivered(report_id: str, to: str) -> None:
         )
 
 
-def list_reports(org_id: str, user_id: str, limit: int = 50) -> list[Report]:
-    """This person's reports, newest first.
+#: Latest reports listed per schedule. Per schedule, not overall: a cap of 50
+#: in all let five daily schedules push a weekly one's history off the page.
+PER_SCHEDULE = 12
 
-    Bounded rather than "all": a monthly scheduler running for two years is
-    24 rows, but nothing stops someone keeping twenty schedulers, and an
-    unbounded list is the kind of page that is fine until it isn't.
+
+def list_reports(
+    org_id: str, user_id: str, per_schedule: int = PER_SCHEDULE, limit: int = 300
+) -> list[Report]:
+    """This person's reports, newest first: each schedule's latest ``per_schedule``.
+
+    Bounded twice (per schedule, and ``limit`` in all, for someone keeping
+    dozens of schedules). Each report carries ``runs_total`` so the page says
+    when a schedule has older reports than it shows. A report whose schedule
+    is gone (``scheduler_id`` NULL) is its own group.
     """
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT {COLUMNS} FROM scheduler_reports "
-            "WHERE org_id = %s AND user_id = %s "
+            f"SELECT {COLUMNS}, runs_total FROM ("
+            f"  SELECT {COLUMNS},"
+            "   row_number() OVER w AS rn,"
+            "   count(*) OVER (PARTITION BY COALESCE(scheduler_id::text, id::text)) AS runs_total"
+            "  FROM scheduler_reports"
+            "  WHERE org_id = %s AND user_id = %s"
+            "  WINDOW w AS (PARTITION BY COALESCE(scheduler_id::text, id::text) ORDER BY created_at DESC)"
+            ") latest WHERE rn <= %s "
             "ORDER BY created_at DESC LIMIT %s",
-            (org_id, user_id, max(1, min(limit, 200))),
+            (org_id, user_id, max(1, per_schedule), max(1, min(limit, 1000))),
         ).fetchall()
-    return [row_to_report(row) for row in rows]
+    return [replace(row_to_report(row), runs_total=row[15]) for row in rows]
 
 
 def get_report(org_id: str, user_id: str, report_id: str) -> Report | None:

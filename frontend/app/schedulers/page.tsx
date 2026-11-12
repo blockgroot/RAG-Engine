@@ -332,6 +332,8 @@ export default function SchedulersPage() {
    * Keyed by scheduler_id, falling back to the title so reports whose
    * schedule was deleted still group together instead of scattering.
    */
+  const [openEarlier, setOpenEarlier] = useState<Set<string>>(new Set());
+  const [reportQuery, setReportQuery] = useState("");
   const reportGroups = useMemo(() => {
     const groups = new Map<string, ReportRow[]>();
     for (const report of reports) {
@@ -344,6 +346,14 @@ export default function SchedulersPage() {
     // the map preserves first-seen (= newest) order across groups.
     return [...groups.values()];
   }, [reports]);
+  const shownGroups = useMemo(() => {
+    const q = reportQuery.trim().toLowerCase();
+    if (!q) return reportGroups;
+    return reportGroups.filter(([r]) =>
+      [r.title, PROVIDER_LABEL[r.provider] ?? r.provider, r.space_name ?? "Company-wide", r.frequency]
+        .some((v) => v.toLowerCase().includes(q)),
+    );
+  }, [reportGroups, reportQuery]);
 
   /**
    * Suggestions across EVERY source in the chosen scope.
@@ -807,8 +817,7 @@ export default function SchedulersPage() {
           <div className="studio-section-head">
             <h2 id="delivered-title">Delivered reports</h2>
             <p className="muted">
-              Every report that has been generated for you. The email is just the
-              nudge — the full report lives here.
+              Every report made for you. The email is a nudge; the full report is here.
             </p>
           </div>
 
@@ -822,66 +831,87 @@ export default function SchedulersPage() {
               </p>
             </div>
           ) : (
-            <ul className="report-list">
-              {reportGroups.map((group) => {
-                const [latest, ...earlier] = group;
-                return (
-                  <li key={latest.scheduler_id ?? latest.id}>
-                    <Link
-                      className="report-row"
-                      href={`/schedulers/reports/${latest.id}`}
-                    >
-                      {/* Title = the standing request, which is what tells two
-                          schedules on the same service in the same space apart. */}
-                      <span className="report-row-title">{latest.title}</span>
-                      <span className="report-row-labels">
-                        <span className="studio-chip">
-                          {FREQUENCY_LABEL[latest.frequency] ?? latest.frequency}
-                        </span>
-                        <span className="studio-chip">
-                          {PROVIDER_LABEL[latest.provider] ?? latest.provider}
-                        </span>
-                        <span className="studio-chip">
-                          {latest.space_name ?? "Company-wide"}
-                        </span>
-                        {!latest.delivered && (
-                          <span className="studio-chip studio-chip-warn">Email failed</span>
-                        )}
-                      </span>
-                      <span className="muted report-row-when">
-                        {whenLabel(latest.created_at)}
-                      </span>
-                    </Link>
-
-                    {/* <details>, not a dropdown with state: the browser owns
-                        open/closed, it is keyboard- and screen-reader-correct
-                        for free, and nothing is hidden behind a control the
-                        reader has to discover. */}
-                    {earlier.length > 0 && (
-                      <details className="report-history">
-                        <summary>
-                          {earlier.length} earlier report
-                          {earlier.length === 1 ? "" : "s"}
-                        </summary>
-                        <ul>
-                          {earlier.map((report) => (
-                            <li key={report.id}>
-                              <Link href={`/schedulers/reports/${report.id}`}>
-                                <span>{whenLabel(report.created_at)}</span>
-                                <span className="muted">
-                                  {report.item_count} item
-                                  {report.item_count === 1 ? "" : "s"}
-                                </span>
+            <>
+              <input
+                className="input report-search"
+                type="search"
+                placeholder="Search reports by topic, tool or space"
+                aria-label="Search reports"
+                value={reportQuery}
+                onChange={(e) => setReportQuery(e.target.value)}
+              />
+              {shownGroups.length === 0 ? (
+                <p className="report-none">No report matches “{reportQuery}”.</p>
+              ) : (
+                <ul className="report-bars">
+                  {shownGroups.map((group, gi) => {
+                    const [latest, ...earlier] = group;
+                    const glyph = PROVIDER_GLYPH[latest.provider];
+                    const notListed = (latest.runs_total ?? 0) - group.length;
+                    const open = openEarlier.has(latest.id);
+                    return (
+                      <li key={latest.scheduler_id ?? latest.id} className="report-bar" style={{ ["--i" as string]: Math.min(gi, 12) }}>
+                        <div className="report-bar-row">
+                          <span className="report-bar-mark" aria-hidden>
+                            {glyph ? <BrandGlyph name={glyph} size={18} /> : null}
+                          </span>
+                          {/* Title = the standing request, which is what tells two
+                              schedules on the same service in the same space apart. */}
+                          <Link className="report-bar-copy" href={`/schedulers/reports/${latest.id}`}>
+                            <strong>{latest.title}</strong>
+                            <span>
+                              {FREQUENCY_LABEL[latest.frequency] ?? latest.frequency} · {latest.space_name ?? "Company-wide"}
+                              {!latest.delivered && <em className="report-bar-warn">Email failed</em>}
+                            </span>
+                          </Link>
+                          <span className="report-bar-when">{whenLabel(latest.created_at)}</span>
+                          {earlier.length > 0 ? (
+                            <button
+                              type="button"
+                              className="report-bar-runs"
+                              aria-expanded={open}
+                              onClick={() =>
+                                setOpenEarlier((all) => {
+                                  const next = new Set(all);
+                                  if (next.has(latest.id)) next.delete(latest.id);
+                                  else next.add(latest.id);
+                                  return next;
+                                })
+                              }
+                            >
+                              +{earlier.length + Math.max(notListed, 0)} run{earlier.length + Math.max(notListed, 0) === 1 ? "" : "s"}
+                            </button>
+                          ) : (
+                            <span />
+                          )}
+                          <Link className="report-bar-open" href={`/schedulers/reports/${latest.id}`}>
+                            Open <span aria-hidden>→</span>
+                          </Link>
+                        </div>
+                        {open && (
+                          <div className="report-bar-earlier">
+                            {earlier.map((report) => (
+                              <Link
+                                key={report.id}
+                                href={`/schedulers/reports/${report.id}`}
+                                title={`${report.item_count} item${report.item_count === 1 ? "" : "s"}`}
+                              >
+                                {whenLabel(report.created_at)}
                               </Link>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+                            ))}
+                            {notListed > 0 && (
+                              <small>
+                                {notListed} older report{notListed === 1 ? "" : "s"} not listed. Their email links still open them.
+                              </small>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </>
           )}
         </section>
       </main>

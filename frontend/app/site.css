@@ -1446,3 +1446,88 @@ img.hb-logo { display: block; flex: none; padding: 0; background: none; border-r
   .dh-node, .dh-note { width: 9rem; right: 4%; }
 }
 @media (prefers-reduced-motion: reduce) { .dh-wire em, .darch-line::after { animation: none; display: none; } .dterm-cursor, .dupd-steps li.is-now::before { animation: none; } .dcs-ok, .dcs-tools em, .dcs-chips span { opacity: 1; animation: none !important; } .dcs-tabs button::after { transition: none; } }
+
+/* Deployment › How updates reach you: steps in a row, the preview, three facts. */
+.dsteps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin: 0; padding: 0; list-style: none; position: relative; }
+.dsteps li {
+  position: relative; display: grid; align-content: start; gap: 0.3rem; padding: 1rem 1rem 1.05rem;
+  border-radius: 16px; background: var(--s-bg, #fff); border: 1px solid var(--s-line);
+}
+.dsteps li:last-child { border-color: color-mix(in srgb, var(--s-accent) 45%, var(--s-line)); background: color-mix(in srgb, var(--s-accent) 6%, var(--s-bg, #fff)); }
+.dsteps-n {
+  display: grid; place-items: center; width: 1.7rem; height: 1.7rem; margin-bottom: 0.25rem; border-radius: 999px;
+  font-size: 0.78rem; font-weight: 750; color: var(--s-accent); border: 1.5px solid var(--s-accent);
+}
+.dsteps li:last-child .dsteps-n { color: #fff; background: var(--s-accent); }
+.dsteps b { font-size: 0.92rem; }
+.dsteps p { margin: 0; font-size: 0.8rem; line-height: 1.45; color: var(--s-muted); }
+.dsteps-demo { max-width: 34rem; margin: 1.5rem auto 0; }
+.dfacts { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem 1.4rem; margin: 1.5rem 0 0; padding: 0; list-style: none; }
+.dfacts li { display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; color: var(--s-muted); }
+.dfacts li::before { content: "✓"; font-weight: 800; color: var(--s-accent); }
+@media (max-width: 760px) { .dsteps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .dsteps { grid-template-columns: 1fr; } }
+
+/* Updates section, one width for every layer: steps (4), preview (2 halves), facts (3). */
+.dsteps-demo { max-width: none; margin: 0.75rem 0 0; }
+.dsteps-demo .dupd { width: 100%; max-width: none; }
+.dsteps-demo .dupd-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 2rem; align-items: start;
+}
+.dsteps-demo .dupd-body > :not(.dupd-steps):not(.dupd-btn) { grid-column: 1; }
+.dsteps-demo .dupd-steps, .dsteps-demo .dupd-btn { grid-column: 2; grid-row: 1 / span 3; align-self: center; margin: 0; }
+.dsteps-demo .dupd-btn { justify-self: start; }
+.dfacts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; justify-content: stretch; margin: 0.75rem 0 0; }
+.dfacts li {
+  align-items: flex-start; padding: 0.85rem 1rem; border-radius: 14px; background: var(--s-bg, #fff); border: 1px solid var(--s-line);
+  font-size: 0.82rem; line-height: 1.45;
+}
+@media (max-width: 760px) {
+  .dsteps-demo .dupd-body { grid-template-columns: 1fr; }
+  .dsteps-demo .dupd-steps, .dsteps-demo .dupd-btn { grid-column: 1; grid-row: auto; margin-top: 0.75rem; }
+  .dfacts { grid-template-columns: 1fr; }
+}
+.dsteps-demo .dupd-body { min-height: 0; padding: 1.1rem 1.4rem 1.2rem; } .dsteps-demo .dupd-steps { min-height: 6.2rem; align-content: center; }
+
+/* Updates section v3: a timeline (no boxes), one visual, one quiet line of facts.
+   Research: 3–5 steps as light markers on a line, one focus per section. */
+.dsteps { gap: 1.25rem; padding-top: 0.25rem; }
+.dsteps::before {
+  content: ""; position: absolute; left: 0.85rem; right: calc(25% - 0.4rem); top: calc(0.25rem + 0.85rem); height: 2px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--s-accent) 35%, var(--s-line)), var(--s-accent));
+}
+.dsteps li, .dsteps li:last-child { padding: 0; border: 0; border-radius: 0; background: none; gap: 0.3rem; }
+.dsteps-n { position: relative; z-index: 1; width: 1.7rem; height: 1.7rem; margin-bottom: 0.45rem; background: var(--s-bg, #f5f9f7); }
+.dsteps b { font-size: 0.95rem; }
+.dsteps p { font-size: 0.82rem; max-width: 15rem; }
+.dsteps-demo { margin-top: 1.6rem; }
+.dfacts { display: flex; flex-wrap: wrap; gap: 0.4rem 1.6rem; margin-top: 1rem; }
+.dfacts li, .dfacts li:last-child { padding: 0; border: 0; border-radius: 0; background: none; font-size: 0.8rem; align-items: center; }
+@media (max-width: 760px) {
+  .dsteps { grid-template-columns: 1fr; gap: 1rem; padding-left: 0; }
+  .dsteps::before { left: 0.85rem; right: auto; top: 0.5rem; bottom: 0.5rem; width: 2px; height: auto; background: linear-gradient(180deg, color-mix(in srgb, var(--s-accent) 35%, var(--s-line)), var(--s-accent)); }
+  .dsteps li { grid-template-columns: 1.7rem 1fr; column-gap: 0.8rem; }
+  .dsteps-n { grid-row: 1 / span 2; margin: 0; }
+  .dsteps p { max-width: none; }
+  .dfacts { flex-direction: column; }
+}
+
+/* Home → dedicated pages: a "learn more" link, the deployment teaser, page tops. */
+.sec-more { display: inline-flex; margin-top: 1.1rem; font-size: 0.92rem; font-weight: 650; color: var(--s-accent); text-decoration: none; }
+.sec-more:hover { text-decoration: underline; text-underline-offset: 3px; }
+.deploy-teaser {
+  display: flex; align-items: center; justify-content: space-between; gap: 2rem; flex-wrap: wrap;
+  padding: clamp(1.4rem, 3vw, 2rem) clamp(1.4rem, 3vw, 2.2rem); border-radius: 22px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--s-accent) 8%, #fff), #fff); border: 1px solid var(--s-line);
+}
+.deploy-teaser .sec-title { margin-bottom: 0.4rem; }
+.deploy-teaser .sec-lead { margin: 0; }
+.sec-page-top { padding-bottom: 0; }
+.sec-page-title { font-size: clamp(2.2rem, 5vw, 3.4rem); max-width: 18ch; }
+.dsteps + .dfacts { margin-top: 1.6rem; padding-top: 1.1rem; border-top: 1px solid var(--s-line); }
+
+.site-foot-base a { color: #5eead4; text-decoration: none; }
+.site-foot-base a:hover { text-decoration: underline; }
+.dep-close-contact { margin: 1.2rem 0 0; font-size: 0.88rem; color: var(--s-muted); }
+.dep-close-contact a { color: var(--s-accent); font-weight: 600; text-decoration: none; }
+.dep-close-contact a:hover { text-decoration: underline; }

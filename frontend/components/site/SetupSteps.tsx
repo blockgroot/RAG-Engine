@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 const STEPS: Array<[string, string]> = [
-  ["Connect your tools", "Notion, Drive, Slack, Linear, GitHub or Google Forms. Choose what Handbook may read."],
+  ["Connect your tools", "Notion, Drive, Slack, Linear or GitHub. Choose what Handbook may read."],
   ["Invite your team", "By email. People sign in with a secure link, so there is no password to manage."],
   ["Add spaces, if you need them", "A project or department gets its own members and tools, kept apart from the rest."],
   ["Pick a model, or use ours", "Use the built-in model or your company’s own provider. The connection is tested first."],

@@ -836,3 +836,34 @@ def test_an_explicit_provider_is_still_honoured(client, member_org):
     )
     assert created.status_code == 201, created.text
     assert created.json()["provider"] == "slack"
+
+
+@requires_db
+def test_reports_list_each_schedules_latest_and_say_how_many_exist(client, member_org):
+    """A busy schedule cannot push another's history off the page, and the
+    list says how many runs a schedule has beyond the ones it shows."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.schedulers import reports as sched_reports
+
+    org_id, member, cookies = member_org
+    busy = client.post(
+        "/schedulers", json={"provider": "slack", "frequency": "daily", "prompt": "Daily digest"}, cookies=cookies
+    ).json()
+    quiet = client.post(
+        "/schedulers", json={"provider": "slack", "frequency": "monthly", "prompt": "Monthly recap"}, cookies=cookies
+    ).json()
+    now = datetime.now(timezone.utc)
+    _save_report(org_id, member.id, quiet["id"], prompt="Monthly recap", window_end=now - timedelta(days=40))
+    for day in range(sched_reports.PER_SCHEDULE + 2):
+        _save_report(org_id, member.id, busy["id"], prompt="Daily digest", window_end=now - timedelta(days=day))
+
+    rows = client.get("/schedulers/reports", cookies=cookies).json()["reports"]
+    by_schedule = {}
+    for row in rows:
+        by_schedule.setdefault(row["scheduler_id"], []).append(row)
+
+    assert len(by_schedule[busy["id"]]) == sched_reports.PER_SCHEDULE
+    assert {r["runs_total"] for r in by_schedule[busy["id"]]} == {sched_reports.PER_SCHEDULE + 2}
+    assert [r["runs_total"] for r in by_schedule[quiet["id"]]] == [1]
+    assert [r["created_at"] for r in rows] == sorted((r["created_at"] for r in rows), reverse=True)

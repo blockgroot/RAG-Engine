@@ -8,15 +8,11 @@ import { AnswerFigure, AskSteps } from "@/components/site/AnswerFigure";
 import { HeroFigure } from "@/components/site/HeroFigure";
 import { HeroFacts } from "@/components/site/HeroFacts";
 import { ModesFigure } from "@/components/site/ModesFigure";
-import { Surfaces } from "@/components/site/Surfaces";
 import { AccessFigure } from "@/components/site/AccessFigure";
-import { Background } from "@/components/site/Background";
 import { CloseFigure } from "@/components/site/CloseFigure";
-import { ControlPanel } from "@/components/site/ControlPanel";
 import { Receipts, Scoreboard } from "@/components/site/Proof";
-import { SetupSteps } from "@/components/site/SetupSteps";
 import { TrustList } from "@/components/site/TrustList";
-import { OwnAppsFigure } from "@/components/site/OwnAppsFigure";
+import { SetupSteps } from "@/components/site/SetupSteps";
 import { api } from "@/lib/api";
 import { homePathFor } from "@/lib/routing";
 
@@ -93,8 +89,8 @@ export default function RootPage() {
           <h2 id="how-title" className="sec-title">One answer, not a list of links.</h2>
           <p className="sec-lead">
             Ask the way you would ask a colleague. Handbook reads across your
-            tools and replies with the answer and where it came from, so you
-            never have to open five tabs to find it.
+            tools and replies with the answer and where it came from, in the
+            web app or right in Slack.
           </p>
         </div>
         <AnswerFigure />
@@ -113,14 +109,6 @@ export default function RootPage() {
         <ModesFigure />
       </section>
 
-      <section id="surfaces" className="site-wrap sec" aria-labelledby="surfaces-title">
-        <div className="sec-head">
-          <p className="site-label">Where you use it</p>
-          <h2 id="surfaces-title" className="sec-title">In the places your team already works.</h2>
-        </div>
-        <Surfaces />
-      </section>
-
       <section id="security" className="site-wrap sec" aria-labelledby="security-title">
         <div className="sec-split">
           <AccessFigure />
@@ -134,51 +122,9 @@ export default function RootPage() {
               different documents.
             </p>
             <TrustList />
+            <Link href="/security" className="sec-more">How Handbook keeps data private &rarr;</Link>
           </div>
         </div>
-      </section>
-
-      <section id="control" className="site-wrap sec" aria-labelledby="control-title">
-        <div className="sec-head">
-          <p className="site-label">Under your control</p>
-          <h2 id="control-title" className="sec-title">Admins set the boundaries.</h2>
-          <p className="sec-lead">
-            Choose the model, separate teams into spaces, and decide what Agent
-            mode may do. Everything can be changed later.
-          </p>
-        </div>
-        <ControlPanel />
-      </section>
-
-      <section id="own-apps" className="site-wrap sec" aria-labelledby="own-apps-title">
-        <div className="oa">
-          <div className="sec-head">
-            <p className="site-label">Google and Slack</p>
-            <h2 id="own-apps-title" className="sec-title">Connected through your own app.</h2>
-            <p className="sec-lead">
-              Your company creates its own Google and Slack app once, in about 10 and 5 minutes.
-              Handbook walks you through each step, with every value ready to copy.
-            </p>
-            <ul className="oa-why">
-              <li>Everyone in your company can sign in, with no Google review</li>
-              <li>Slack is read at full speed</li>
-              <li>Your data travels only between your company and Handbook</li>
-            </ul>
-          </div>
-          <OwnAppsFigure />
-        </div>
-      </section>
-
-      <section id="background" className="site-wrap sec" aria-labelledby="background-title">
-        <div className="sec-head">
-          <p className="site-label">In the background</p>
-          <h2 id="background-title" className="sec-title">Keeps working after you ask.</h2>
-          <p className="sec-lead">
-            Handbook stays up to date on its own, and notices what people
-            could not find.
-          </p>
-        </div>
-        <Background />
       </section>
 
       <section id="results" className="site-wrap sec" aria-labelledby="results-title">
@@ -208,13 +154,26 @@ export default function RootPage() {
         </div>
       </section>
 
-      <section id="start" className="site-wrap sec" aria-labelledby="start-title">
+      <section id="deploy" className="site-wrap sec" aria-labelledby="deploy-title">
+        <div className="deploy-teaser">
+          <div>
+            <p className="site-label">Deployment</p>
+            <h2 id="deploy-title" className="sec-title">Our cloud, or your own servers.</h2>
+            <p className="sec-lead">
+              Start on Cloud with nothing to install, or run the same Handbook inside your company.
+            </p>
+          </div>
+          <Link href="/deployment" className="site-btn site-btn-ghost">Compare the two &rarr;</Link>
+        </div>
+      </section>
+
+      <section className="site-wrap sec" id="start" aria-labelledby="start-title">
         <div className="sec-head">
           <p className="site-label">Get started</p>
           <h2 id="start-title" className="sec-title">Set up what your team needs.</h2>
           <p className="sec-lead">
-            An admin connects the tools and invites the team. Everything else is
-            optional and can be changed later.
+            An admin connects the tools and invites the team. Everything else is optional and can be
+            changed later.
           </p>
         </div>
         <SetupSteps />

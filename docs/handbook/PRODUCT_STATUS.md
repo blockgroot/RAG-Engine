@@ -304,6 +304,10 @@ scored by the safety model; the answer fact-checker is off (§11).
   list and emails every admin about the newest release once (`update_notices` holds the versions
   announced, claimed before sending; released again if every send failed), with the notes, a
   security flag in the subject, and a link to Updates. Cloud sends none (`app/updates/announce.py`).
+- **Delivered reports, per schedule** (12 Nov 2026): the list holds each schedule's latest
+  `reports.PER_SCHEDULE` (12) reports, not 50 in all (five daily schedules pushed a weekly one
+  off the page); each row carries `runs_total`, and a card says how many older reports it does
+  not list. Cards show four earlier dates, then "+N more".
 - **"A new version is ready"** (11 Nov 2026): every build has an id (`NEXT_PUBLIC_BUILD_ID`): the
   RELEASE it carries, never the commit (12 Nov: the image's tag, else the newest
   `release-notes/<version>.md`), so an ordinary Cloud deploy of main shows nothing; `/build-id`

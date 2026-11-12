@@ -581,6 +581,8 @@ export interface ReportRow {
   window_start: string;
   window_end: string;
   created_at: string;
+  /** All of this schedule's reports; the list holds only the latest few. */
+  runs_total?: number | null;
 }
 
 /** A report plus its body. Only the detail route returns these three fields. */

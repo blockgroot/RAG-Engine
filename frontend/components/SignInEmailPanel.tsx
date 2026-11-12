@@ -17,6 +17,7 @@ export function SignInEmailPanel() {
     null
   );
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -35,6 +36,7 @@ export function SignInEmailPanel() {
       const sent = await api.requestEmailChange(email.trim());
       setStatus({ ok: true, text: sent.message, link: sent.dev_link });
       setEmail("");
+      setEditing(false);
     } catch (err) {
       setStatus({
         ok: false,
@@ -57,42 +59,51 @@ export function SignInEmailPanel() {
   return (
     <section className="studio-panel account-setting-card email-setting-card" aria-labelledby="email-title">
       <div className="studio-section-head">
-        <span className="account-setting-kicker">Identity</span>
         <h2 id="email-title">Sign-in email</h2>
-        <p className="muted">
-          Changing it needs a confirmation link. Documents shared with your old address stay
-          visible to you.
-        </p>
+        <p className="muted">Documents shared with an old address stay visible to you.</p>
       </div>
 
       <div className="account-email-current">
         <span className="account-email-icon" aria-hidden>@</span>
-        <span>
-          <small>Signed in as</small>
-          <strong>{data?.email ?? "…"}</strong>
-        </span>
+        <strong>{data?.email ?? "…"}</strong>
+        {!editing && (
+          <button type="button" className="account-email-change" onClick={() => setEditing(true)}>
+            Change
+          </button>
+        )}
       </div>
 
-      <form className="account-email-form" onSubmit={submit}>
-        <div className="field">
-          <label htmlFor="new-email">New email</label>
+      {editing && (
+        <form className="account-email-form" onSubmit={submit}>
+          <label className="sr-only" htmlFor="new-email">New email</label>
           <input
             id="new-email"
-            placeholder="name@company.com"
+            placeholder="New email, e.g. name@company.com"
             className="input"
             type="email"
             required
+            autoFocus
             autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
-        </div>
-        <div className="account-email-submit">
-          <button className="button button-sm" type="submit" disabled={busy || !email.trim()}>
-            {busy ? "Sending…" : "Send confirmation link"}
-          </button>
-        </div>
-      </form>
+          <div className="account-email-submit">
+            <button
+              className="button button-secondary button-sm"
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setEmail("");
+              }}
+            >
+              Cancel
+            </button>
+            <button className="button button-sm" type="submit" disabled={busy || !email.trim()}>
+              {busy ? "Sending…" : "Send confirmation link"}
+            </button>
+          </div>
+        </form>
+      )}
 
       {status && (
         <div className={status.ok ? "banner banner-ok" : "banner banner-warn"} role="status">

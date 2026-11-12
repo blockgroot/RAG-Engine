@@ -53,12 +53,8 @@ export function MemoryPanel() {
   return (
     <section id="memory" className="studio-panel account-setting-card memory-setting-card" aria-labelledby="memory-title">
       <div className="studio-section-head">
-        <span className="account-setting-kicker">Personalisation</span>
         <h2 id="memory-title">What Handbook remembers about you</h2>
-        <p className="muted">
-          Small details from your questions help new chats understand you. They are private to
-          you and are never used as answer sources.
-        </p>
+        <p className="muted">Private to you, and never used as an answer source.</p>
       </div>
 
       {error && (

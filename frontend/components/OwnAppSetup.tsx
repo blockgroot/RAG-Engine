@@ -288,7 +288,8 @@ export function OwnAppSetup({
               <li key={s.title} className={state} aria-current={i === step ? "step" : undefined}>
                 <button
                   type="button"
-                  disabled={i >= step}
+                  // A first setup goes in order; an app already saved can open any step.
+                  disabled={i === step || (i > step && !app.configured)}
                   onClick={() => setStep(i)}
                   title={i < step ? `Back to: ${s.title}` : s.title}
                 >

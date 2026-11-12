@@ -461,6 +461,8 @@ def _report_row(report) -> dict:
         "window_start": report.window_start,
         "window_end": report.window_end,
         "created_at": report.created_at,
+        # All of this schedule's reports, of which the list shows the latest.
+        "runs_total": report.runs_total,
     }
 
 

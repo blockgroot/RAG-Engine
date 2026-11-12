@@ -3,6 +3,9 @@ import Link from "next/link";
 import { BrandMark } from "@/components/BrandMark";
 import "@/app/site.css";
 
+/** Where visitors send questions; shown in every public page's footer. */
+export const CONTACT_EMAIL = "hbook1809@gmail.com";
+
 /**
  * Public chrome for the marketing page. White, hairline rules, square
  * buttons: the product figures carry the colour, the frame stays quiet.
@@ -20,7 +23,7 @@ export function LandingShell({ children }: { children: ReactNode }) {
           <nav className="site-nav-links" aria-label="Page">
             <Link href="/#how" className="site-nav-link">How it works</Link>
             <Link href="/#modes" className="site-nav-link">Modes</Link>
-            <Link href="/#security" className="site-nav-link">Security</Link>
+            <Link href="/security" className="site-nav-link">Security</Link>
             <Link href="/#results" className="site-nav-link">Results</Link>
             <Link href="/deployment" className="site-nav-link">Deployment</Link>
           </nav>
@@ -50,14 +53,16 @@ export function LandingShell({ children }: { children: ReactNode }) {
             <nav className="site-foot-links" aria-label="Footer">
               <Link href="/#how">How it works</Link>
               <Link href="/#modes">Modes</Link>
-              <Link href="/#security">Security</Link>
+              <Link href="/security">Security</Link>
               <Link href="/#results">Results</Link>
               <Link href="/deployment">Deployment</Link>
               <Link href="/login">Sign in</Link>
               <Link href="/signup" className="site-foot-cta">Request access</Link>
             </nav>
           </div>
-          <p className="site-foot-base">&copy; 2026 Handbook</p>
+          <p className="site-foot-base">
+            &copy; 2026 Handbook · <a href={`mailto:${CONTACT_EMAIL}`}>Contact us</a>
+          </p>
         </div>
       </footer>
     </main>

@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { LandingShell } from "@/components/LandingShell";
+import { CONTACT_EMAIL, LandingShell } from "@/components/LandingShell";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { DeployHero } from "@/components/site/DeployHero";
 import { DeployChecklist } from "@/components/site/DeployChecklist";
-import { UpdateDemo } from "@/components/site/UpdateDemo";
 import { CloudSetupDemo } from "@/components/site/CloudSetupDemo";
 
 export const metadata: Metadata = {
@@ -36,10 +35,10 @@ const COMPARE: Array<[string, ReactNode, ReactNode]> = [
 
 /** How a release reaches a self-hosted install (release workflow + docs/UPGRADE.md). */
 const RELEASE: Array<[string, string]> = [
-  ["We release a new version", "With notes on what changed and anything you need to do first."],
-  ["Your Handbook spots it", "It checks our public list of releases a few times a day. Nothing about your company is sent."],
-  ["Your admins are told", "In the bell and by email. Security fixes are marked urgent."],
-  ["You press Update", "It backs up first, and goes back to the old version by itself if the new one does not start."],
+  ["We release", "Notes say what changed and anything to do first."],
+  ["Handbook spots it", "It checks a public list. Nothing about you is sent."],
+  ["Admins are told", "In the bell and by email. Security fixes marked urgent."],
+  ["You press Update", "Backs up first. Rolls back by itself if it fails."],
 ];
 
 export default function DeploymentPage() {
@@ -162,21 +161,20 @@ export default function DeploymentPage() {
         </div>
 
         <h3 className="dep-sub">How updates reach you</h3>
-        <div className="dupdates">
-          <ol className="dflow">
-            {RELEASE.map(([title, text]) => (
-              <li key={title}>
-                <b>{title}</b>
-                <p>{text}</p>
-              </li>
-            ))}
-          </ol>
-          <UpdateDemo />
-        </div>
-        <p className="dupdates-foot">
-          Back up the database daily with one command, and keep a copy off the server. We support the current
-          version and the one before it, and tell your named contact about every security fix.
-        </p>
+        <ol className="dsteps">
+          {RELEASE.map(([title, text], i) => (
+            <li key={title}>
+              <span className="dsteps-n" aria-hidden>{i + 1}</span>
+              <b>{title}</b>
+              <p>{text}</p>
+            </li>
+          ))}
+        </ol>
+        <ul className="dfacts">
+          <li>Daily database backup with one command</li>
+          <li>The current and previous version supported</li>
+          <li>Your named contact hears about every security fix</li>
+        </ul>
       </section>
 
       <section className="site-wrap sec dep-close">
@@ -186,6 +184,9 @@ export default function DeploymentPage() {
           <Link href="/signup" className="site-btn site-btn-solid">Request access</Link>
           <Link href="/" className="site-btn site-btn-ghost">Back to the home page</Link>
         </div>
+        <p className="dep-close-contact">
+          Questions first? <a href={`mailto:${CONTACT_EMAIL}`}>Contact us</a>
+        </p>
       </section>
     </LandingShell>
   );
