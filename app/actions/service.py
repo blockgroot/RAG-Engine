@@ -43,6 +43,7 @@ from ..core.exceptions import (
 )
 from ..db.connection import DatabaseError, get_connection
 from ..rag import progress
+from ..security.ai_spend import charge_to
 from ..security.untrusted import scrub_untrusted_text
 from ..security.visibility import viewer_clause
 from . import policy, store
@@ -299,6 +300,7 @@ def propose(
     # None is the default model (Slack, or no pick). Set here, not by the
     # caller, so a request never inherits another request's choice.
     use_model(model, org_id=org_id)
+    charge_to(user_id, org_id)
     offered = _fit_tools(offered, question, embedder, settings.mcp_max_tools)
     tools = [a.tool for a in offered]
     progress.report("Reading your request")
@@ -495,6 +497,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
         if why_not:
             return ActOutcome(why_not), run.surface
         use_model(run.model, org_id=org_id)
+        charge_to(user_id, org_id)
         offered = _fit_tools(offered, run.question, embedder, settings.mcp_max_tools)
         found, sources, messages, statuses = list(run.found), run.source_list(), list(run.messages), []
         for aid, name, status, result in cards:
@@ -645,6 +648,7 @@ def revise(
     from ..llm.routed import use_model
 
     use_model(model, org_id=org_id)
+    charge_to(user_id, org_id)
     reply = llm.generate(build_revise_prompt(current, instruction), max_tokens=4000)
     try:
         data = json.loads(re.search(r"\{.*\}", reply or "", re.S).group(0))

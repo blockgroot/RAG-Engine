@@ -39,6 +39,21 @@ from .usage import TokenUsage
 
 logger = logging.getLogger(__name__)
 
+
+def _charge(model: str, usage: TokenUsage) -> None:
+    """Charge the asker for a finished call (``security/ai_spend.py``).
+
+    Here, not in the callers: every model call in Handbook passes through this
+    provider, so no new call site can forget to be paid for. Before the reply
+    is checked, because a reply we reject was still billed.
+    """
+    try:
+        from ..security.ai_spend import charge_call
+
+        charge_call(model, usage.input_tokens, usage.output_tokens)
+    except Exception:  # noqa: BLE001 - accounting must never fail a real call
+        logger.warning("Could not charge AI spend", exc_info=True)
+
 DEFAULT_TIMEOUT = 60.0
 
 
@@ -290,6 +305,7 @@ class OpenAICompatProvider(LLMProvider):
             input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
         )
+        _charge(self.model, self.last_usage)
 
         choice = response.choices[0]
         content = choice.message.content
@@ -374,6 +390,7 @@ class OpenAICompatProvider(LLMProvider):
             input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
         )
+        _charge(self.model, self.last_usage)
 
         message = response.choices[0].message
         tool_calls = [

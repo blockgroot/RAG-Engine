@@ -31,6 +31,7 @@ BACKEND_OPENROUTER = "openrouter"
 BACKEND_GROQ = "groq"
 BACKEND_OLLAMA = "ollama"
 BACKEND_GEMINI = "gemini"
+BACKEND_CLAUDE = "claude"
 
 
 @dataclass(frozen=True)
@@ -98,81 +99,36 @@ class ModelChoice:
 #: account-wide). The backend stays for an org's own OpenRouter model.
 MODELS: tuple[ModelChoice, ...] = ()
 
-#: Groq-hosted models, each VERIFIED by scripts/verify_models.py against a
-#: live key: grounds (Mode A), refuses VERBATIM on unanswerable context,
-#: resists an injection planted in retrieved content, and makes a real tool
-#: call — all under production's RAG_MAX_ANSWER_TOKENS cap.
-#:
-#: Rejected here, and why (re-probe before re-adding any of them):
-#:   - llama-3.3-70b-versatile, llama-3.1-8b-instant: 404, no longer served.
-#:     They were my guess from documentation, which is exactly the mistake
-#:     that put five dead OpenRouter ids in the first version of this file.
-#:   - qwen/qwen3.6-27b: refuses and resists correctly but emits NO MODE tag,
-#:     so the groundedness audit would silently never run for it.
-#:   - groq/compound-mini: 400 "`tool calling` is not supported" — it is an
-#:     agentic system with its own built-in tools, so GitHubAgent would return
-#:     the fixed fallback for every question.
-#:   - whisper-*/orpheus-*/prompt-guard-*: not chat models.
-GROQ_MODELS: tuple[ModelChoice, ...] = (
+#: Groq, Gemini and Ollama models: none offered since 11 Nov 2026. Production
+#: answers on Claude only (below); background work runs on Gemini as the AUX
+#: model, which is never picked here. The backends stay for re-adding a model
+#: verified by scripts/verify_models.py (the removed ids and why each was
+#: admitted or rejected are in git history).
+GROQ_MODELS: tuple[ModelChoice, ...] = ()
+GEMINI_MODELS: tuple[ModelChoice, ...] = ()
+OLLAMA_MODELS: tuple[ModelChoice, ...] = ()
+
+#: Claude, on the deployment's own Claude key (``ClaudeSettings``). Both build
+#: charts, and both are paid from the Claude credit, so both are priced in
+#: ``AI_PRICES`` (``security/ai_spend.py``).
+CLAUDE_MODELS: tuple[ModelChoice, ...] = (
     ModelChoice(
-        id="qwen/qwen3.8-27b",
-        label="Qwen 3.8 27B",
-        note="Strong general reasoning at low latency.",
-        backend=BACKEND_GROQ,
+        id="claude-sonnet-5-5",
+        label="Claude Sonnet 5.5",
+        note="Strongest answers.",
+        backend=BACKEND_CLAUDE,
         charts=True,
     ),
-)
-
-#: Gemini, selectable when the deployment's default is another vendor's
-#: (Claude Haiku since 9 Oct 2026). It was the default before, and built charts.
-GEMINI_MODELS: tuple[ModelChoice, ...] = (
     ModelChoice(
-        id="gemini-3.1-flash-lite",
-        label="Gemini 3.1 Flash Lite",
+        id="claude-haiku-5-5",
+        label="Claude Haiku 5.5",
         note="Fast and low cost.",
-        backend=BACKEND_GEMINI,
+        backend=BACKEND_CLAUDE,
         charts=True,
     ),
 )
 
-#: Ollama Cloud-hosted models, each VERIFIED by scripts/verify_models.py on
-#: 9 Oct 2026 under the 700-token answer cap: grounds with a MODE tag, refuses
-#: verbatim, resists an injection, makes a tool call. Reasoning is low (GPT-OSS)
-#: or off (Nemotron) so the cap is not spent thinking -- the GPT-OSS models
-#: moved here from Groq after "empty message content, finish_reason=length".
-#: Rejected: nemotron-3-nano:30b paraphrased the fixed refusal, which the
-#: pipeline would count as an answer.
-OLLAMA_MODELS: tuple[ModelChoice, ...] = (
-    ModelChoice(
-        id="gpt-oss:120b",
-        label="GPT-OSS 120B",
-        note="Strongest on multi-part questions.",
-        backend=BACKEND_OLLAMA,
-        extra_body={"reasoning_effort": "low"},
-    ),
-    ModelChoice(
-        id="gpt-oss:20b",
-        label="GPT-OSS 20B",
-        note="Faster, same family.",
-        backend=BACKEND_OLLAMA,
-        extra_body={"reasoning_effort": "low"},
-    ),
-    ModelChoice(
-        id="gemma4:31b",
-        label="Gemma 4 31B",
-        note="Fast, no hidden reasoning.",
-        backend=BACKEND_OLLAMA,
-    ),
-    ModelChoice(
-        id="nemotron-3-super",
-        label="Nemotron 3 Super",
-        note="Reasoning off for quick answers.",
-        backend=BACKEND_OLLAMA,
-        extra_body={"reasoning_effort": "none"},
-    ),
-)
-
-ALL_MODELS: tuple[ModelChoice, ...] = GEMINI_MODELS + OLLAMA_MODELS + MODELS + GROQ_MODELS
+ALL_MODELS: tuple[ModelChoice, ...] = CLAUDE_MODELS + GEMINI_MODELS + OLLAMA_MODELS + MODELS + GROQ_MODELS
 
 _BY_ID = {m.id: m for m in ALL_MODELS}
 

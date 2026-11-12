@@ -7,6 +7,9 @@
   (``limit_question``). The company's grows with its members: every company
   shares one AI account, and per-person limits alone let a large company use
   all of it.
+* AI spend, in dollars (``ai_spend.py``): a question is refused once the
+  person's or the company's spend bucket is empty; what each model call really
+  cost is charged afterwards, at the provider.
 * Anything that sends an email (login link, email change): its own small
   bucket, per IP or person (``limit_email``).
 
@@ -33,6 +36,7 @@ from ..config.settings import RateLimitSettings
 from ..core.exceptions import AuthError, RateLimiterError
 from ..db.connection import get_connection
 from ..ratelimit import Bucket, Decision, build_rate_limiter
+from .ai_spend import charge_to, spend_buckets
 from .client_ip import resolve_client_ip
 
 logger = logging.getLogger(__name__)
@@ -47,21 +51,45 @@ _MEMBER_COUNT_TTL_SECONDS = 300
 _member_counts: dict[str, tuple[float, int]] = {}
 
 
-def refusal_message(retry_after: float) -> str:
+# A spend bucket must hold more than this to start a question: "not empty".
+_SPEND_NEED = 0.0001
+
+
+def refusal_message(retry_after: float, refused_by: str = "") -> str:
+    if refused_by.startswith("ai:"):
+        return f"You've reached the AI usage limit for now. Please try again in {_wait(retry_after)}."
     seconds = max(1, math.ceil(retry_after))
     unit = "second" if seconds == 1 else "seconds"
     return f"Too many requests. Please try again in {seconds} {unit}."
 
 
+def _wait(seconds: float) -> str:
+    """A spend limit refills over minutes or hours, so say it in those."""
+    if seconds < 90:
+        n, unit = max(1, math.ceil(seconds)), "second"
+    elif seconds < 90 * 60:
+        n, unit = math.ceil(seconds / 60), "minute"
+    else:
+        n, unit = math.ceil(seconds / 3600), "hour"
+    return f"{n} {unit}" + ("" if n == 1 else "s")
+
+
 def question_decision(
     user_id: str, org_id: str, *, settings: RateLimitSettings | None = None
 ) -> Decision:
-    """The person's and the company's question buckets, taken together.
+    """The person's and the company's AI spend, then their question buckets.
 
-    Returns the decision rather than raising, for Slack, which answers in the
-    thread instead of with an HTTP status.
+    Spend is only checked here (not taken): the answer is charged what it
+    really cost as it runs. Returns the decision rather than raising, for
+    Slack, which answers in the thread instead of with an HTTP status.
     """
     settings = settings or RateLimitSettings.from_env()
+    # Routes that answer in this context (charts, scheduler setup, Slack) are
+    # charged to this person; streams set it again where they answer.
+    charge_to(user_id, org_id)
+    spend = _take(spend_buckets(user_id, org_id, settings), settings, need=_SPEND_NEED, spend=0.0)
+    if not spend.allowed:
+        return spend
     org_rate = max(
         float(settings.org_questions_min),
         settings.org_questions_per_member * _member_count(org_id),
@@ -168,11 +196,13 @@ def give_back_place(key: str, token: str | None, settings: RateLimitSettings) ->
         logger.warning("Could not release rate-limit place %s: %s", _describe(key), exc)
 
 
-def _take(buckets: list[Bucket], settings: RateLimitSettings) -> Decision:
-    if not settings.enabled:
+def _take(
+    buckets: list[Bucket], settings: RateLimitSettings, *, need: float = 1.0, spend: float = 1.0
+) -> Decision:
+    if not settings.enabled or not buckets:
         return Decision(allowed=True)
     try:
-        decision = build_rate_limiter(settings).take(buckets)
+        decision = build_rate_limiter(settings).take(buckets, need=need, spend=spend)
     except RateLimiterError as exc:
         logger.error("Rate limiter unavailable, request let through: %s", exc.cause or exc)
         return Decision(allowed=True)
@@ -194,6 +224,9 @@ _LIMIT_NAMES = {
     "req:user": "request:person",
     "req:ip": "request:ip",
     "answers:user": "answers-at-once:person",
+    "ai:user:min": "ai-spend:person-minute",
+    "ai:user:day": "ai-spend:person-day",
+    "ai:org:day": "ai-spend:company-day",
 }
 
 
@@ -216,7 +249,7 @@ def _raise_if_refused(decision: Decision) -> None:
         return
     raise HTTPException(
         status_code=429,
-        detail=refusal_message(decision.retry_after),
+        detail=refusal_message(decision.retry_after, decision.refused_by),
         headers={"Retry-After": str(max(1, math.ceil(decision.retry_after)))},
     )
 

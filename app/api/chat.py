@@ -72,6 +72,7 @@ from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
+from ..security.ai_spend import charge_to
 from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
@@ -146,7 +147,10 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # byte-identical to pre-feature behaviour, so only the label moves.
     from ..config.settings import LLMSettings
 
-    models = catalog.as_dicts(backends)
+    default_model = LLMSettings.from_env().model
+    # The default is already the first option; listing it again under its
+    # catalog label would offer one model twice.
+    models = [m for m in catalog.as_dicts(backends) if m["id"] != default_model]
 
     # The org's own model, if an admin configured one. Appended rather than
     # replacing the built-ins: their key WILL break eventually (quota, rotation,
@@ -170,7 +174,8 @@ def list_models(session: SessionClaims = Depends(get_session)):
 
     return {
         "default": catalog.AUTO,
-        "default_label": LLMSettings.from_env().model or "Auto",
+        "default_label": getattr(catalog.get(default_model or ""), "label", None)
+        or default_model or "Auto",
         # The default model builds charts; Chart mode always offers it.
         "default_charts": True,
         "models": models,
@@ -1618,6 +1623,8 @@ def _stream_answer_body(
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
     use_model(model, org_id=org_id)
+    # Who pays for this answer's model calls, for the same reason.
+    charge_to(session.user_id if session else None, org_id)
     # Logged, never refused (see guard/live.py for the measured reason).
     watch_question(question)
 

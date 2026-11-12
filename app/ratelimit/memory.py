@@ -27,18 +27,20 @@ class MemoryRateLimiter(RateLimiter):
         self._state: dict[str, tuple[float, float]] = {}  # key -> (tokens, at)
         self._places: dict[str, dict[str, float]] = {}  # key -> {token: expires}
 
-    def take(self, buckets: Sequence[Bucket]) -> Decision:
+    def take(
+        self, buckets: Sequence[Bucket], *, need: float | None = 1.0, spend: float = 1.0
+    ) -> Decision:
         with self._lock:
             now = self._clock()
             tokens = [self._refilled(b, now) for b in buckets]
             waits = [
-                ((1 - t) * 60 / b.per_minute if t < 1 else 0.0, b.key)
+                ((need - t) * 60 / b.per_minute if need is not None and t < need else 0.0, b.key)
                 for b, t in zip(buckets, tokens)
             ]
             wait, refused_by = max(waits, default=(0.0, ""))
-            spend = 1 if wait == 0 else 0
+            spent = spend if wait == 0 else 0.0
             for b, t in zip(buckets, tokens):
-                self._state[b.key] = (t - spend, now)
+                self._state[b.key] = (t - spent, now)
             if len(self._state) > _MAX_KEYS:
                 self._prune(now)
             if wait == 0:
@@ -68,6 +70,6 @@ class MemoryRateLimiter(RateLimiter):
     def _prune(self, now: float) -> None:
         # ponytail: assumes the default request bucket's refill time; a bucket
         # dropped early only forgets a partly used allowance.
-        stale = [k for k, (_, at) in self._state.items() if now - at > 60]
+        stale = [k for k, (t, at) in self._state.items() if now - at > 60 and t >= 0]
         for key in stale:
             del self._state[key]

@@ -41,11 +41,15 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from ..config.settings import GeminiSettings, GroqSettings, OllamaSettings, OpenRouterSettings
+from ..config.settings import (
+    ClaudeSettings, GeminiSettings, GroqSettings, OllamaSettings, OpenRouterSettings,
+)
 from ..core.exceptions import ConfigurationError
 from .base import ChatResult, LLMProvider
 from . import catalog
-from .catalog import BACKEND_GEMINI, BACKEND_GROQ, BACKEND_OLLAMA, BACKEND_OPENROUTER, normalize
+from .catalog import (
+    BACKEND_CLAUDE, BACKEND_GEMINI, BACKEND_GROQ, BACKEND_OLLAMA, BACKEND_OPENROUTER, normalize,
+)
 from .openai_provider import OpenAICompatProvider
 
 logger = logging.getLogger(__name__)
@@ -227,6 +231,7 @@ class RoutedLLMProvider(LLMProvider):
         groq: GroqSettings | None = None,
         ollama: OllamaSettings | None = None,
         gemini: GeminiSettings | None = None,
+        claude: ClaudeSettings | None = None,
     ) -> None:
         self._default = default
         self._settings = settings or OpenRouterSettings.from_env()
@@ -237,6 +242,7 @@ class RoutedLLMProvider(LLMProvider):
             BACKEND_GROQ: self._groq,
             BACKEND_OLLAMA: ollama or OllamaSettings.from_env(),
             BACKEND_GEMINI: gemini or GeminiSettings.from_env(),
+            BACKEND_CLAUDE: claude or ClaudeSettings.from_env(),
         }
         # Keyed by (org_id, model_id, config_version), NOT by model id alone.
         #
@@ -298,6 +304,17 @@ class RoutedLLMProvider(LLMProvider):
             )
             return self._default
         api_key, base_url, timeout = creds.api_key, creds.base_url, creds.timeout
+        if backend == BACKEND_CLAUDE:
+            # Built exactly as a Claude default model is (thinking off, and the
+            # form a model names in its 400), so a pick and the default agree.
+            from .adapters import Endpoint, build_provider
+
+            client = build_provider(
+                Endpoint(adapter="anthropic", base_url=base_url, model=model_id, api_key=api_key),
+                timeout=timeout,
+            )
+            self._clients[cache_key] = client
+            return client
         headers: dict[str, str] = {}
         if backend == BACKEND_OPENROUTER:
             # OpenRouter's own request extensions (data policy, tool support,

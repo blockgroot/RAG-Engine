@@ -518,6 +518,14 @@ refused at once, the shared cap waits. Every refusal is logged with the limit's
 name, never the question or an IP. A limiter fault lets the request through.
 Redis (Valkey, `maxmemory-policy volatile-lru`) holds rate limits only, and every key
 we write has a TTL.
+AI spend is limited in DOLLARS, not tokens (`security/ai_spend.py`): the answering models
+differ 20x in price. Every paid call is charged where it is made (`OpenAICompatProvider`,
+never per caller) to whoever `charge_to` names, set where the model is chosen (inside the
+answering stream); a question is refused once the person's or company's bucket is empty,
+so one request may overdraw. A model missing from `AI_PRICES` is not charged.
+The picker offers Claude Sonnet 5.5 and Haiku 5.5 only (`catalog.CLAUDE_MODELS`); every
+model a person can pick must be priced (`test_production_offers_claude_sonnet_and_haiku_only`).
+Background work runs on the Gemini AUX model, never pickable and never charged.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

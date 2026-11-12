@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config.settings import OllamaSettings, OpenRouterSettings
+from app.config.settings import ClaudeSettings, OllamaSettings, OpenRouterSettings
 from app.llm import catalog
 from app.llm.base import ChatResult, LLMProvider
 from app.llm.routed import (
@@ -55,6 +55,7 @@ def routed():
         default,
         settings=OpenRouterSettings(api_key="test-key", base_url="http://openrouter.test"),
         ollama=OllamaSettings(api_key="test-key", base_url="http://ollama.test"),
+        claude=ClaudeSettings(api_key="test-key", base_url="http://claude.test"),
     )
     return provider, default
 
@@ -79,7 +80,7 @@ def test_auto_is_identical_to_no_selection(routed):
 def test_selection_routes_away_from_the_default(routed):
     """A picked model must not quietly answer from the default anyway."""
     provider, default = routed
-    picked = catalog.OLLAMA_MODELS[0].id
+    picked = catalog.CLAUDE_MODELS[1].id
     use_model(picked)
     assert provider.active().model == picked
     assert default.calls == []
@@ -88,7 +89,7 @@ def test_selection_routes_away_from_the_default(routed):
 def test_client_is_built_once_per_model(routed):
     """Cached per model — a new client per request would leak connections."""
     provider, _ = routed
-    use_model(catalog.OLLAMA_MODELS[0].id)
+    use_model(catalog.CLAUDE_MODELS[1].id)
     first = provider.active()
     second = provider.active()
     assert first is second
@@ -97,8 +98,8 @@ def test_client_is_built_once_per_model(routed):
 def test_falls_back_to_default_when_its_backend_is_unconfigured():
     """A stray model on a deployment without a key must not break chat."""
     default = _Recording("default-model")
-    provider = RoutedLLMProvider(default, ollama=OllamaSettings(api_key=None))
-    use_model(catalog.OLLAMA_MODELS[0].id)
+    provider = RoutedLLMProvider(default, claude=ClaudeSettings(api_key=None))
+    use_model(catalog.CLAUDE_MODELS[1].id)
     assert provider.generate("hi") == "answered by default-model"
 
 
@@ -126,7 +127,7 @@ def test_answering_model_resets_between_requests(routed):
 # --------------------------------------------------------------------------
 # Validation at the trust boundary
 # --------------------------------------------------------------------------
-@pytest.mark.parametrize("value", [None, "", "auto", catalog.OLLAMA_MODELS[0].id])
+@pytest.mark.parametrize("value", [None, "", "auto", catalog.CLAUDE_MODELS[1].id])
 def test_selectable_accepts_auto_blank_and_catalogued_ids(value):
     assert catalog.is_selectable(value)
 
@@ -199,7 +200,7 @@ def test_scheduler_reports_always_use_the_configured_model(monkeypatch):
     )
 
     # Deliberately hostile: a selection is live when the run starts.
-    use_model(catalog.OLLAMA_MODELS[0].id)
+    use_model(catalog.CLAUDE_MODELS[1].id)
     runner.run_scheduler_once(scheduler, llm=_Probe())
 
     assert seen == [None], "a report must generate on the configured model"
@@ -318,7 +319,7 @@ def test_only_user_facing_stages_follow_the_selected_model():
     pipeline._llm = probe
     pipeline._llm_aux = probe
 
-    picked = catalog.OLLAMA_MODELS[0].id
+    picked = catalog.CLAUDE_MODELS[1].id
     use_model(picked)
 
     every_stage = sorted(AUX_LLM_STAGES | USER_FACING_LLM_STAGES | {"web-decision"})
@@ -394,7 +395,7 @@ def test_ingestion_and_setup_chat_use_the_unrouted_aux_provider():
 # --------------------------------------------------------------------------
 # Multiple backends (Ollama, Gemini, Groq, OpenRouter)
 # --------------------------------------------------------------------------
-def _routed(openrouter_key=None, groq_key=None, ollama_key=None, gemini_key=None):
+def _routed(openrouter_key=None, groq_key=None, ollama_key=None, gemini_key=None, claude_key=None):
     from app.config.settings import GeminiSettings, GroqSettings, OpenRouterSettings
 
     return RoutedLLMProvider(
@@ -403,40 +404,38 @@ def _routed(openrouter_key=None, groq_key=None, ollama_key=None, gemini_key=None
         groq=GroqSettings(api_key=groq_key),
         ollama=OllamaSettings(api_key=ollama_key),
         gemini=GeminiSettings(api_key=gemini_key),
+        claude=ClaudeSettings(api_key=claude_key),
     )
 
 
-def test_a_model_is_sent_to_its_own_backend():
-    """The id alone cannot say where to send it."""
-    from app.llm.catalog import GEMINI_MODELS, GROQ_MODELS, OLLAMA_MODELS
+def test_production_offers_claude_sonnet_and_haiku_only():
+    """11 Nov 2026: two answering models, both paid from the Claude credit and
+    both priced for the AI spend limits. Gemini runs background work only."""
+    from app.config.settings import RateLimitSettings
+    from app.security.ai_spend import price_of
 
-    provider = _routed(groq_key="g", ollama_key="o", gemini_key="m")
-
-    use_model(OLLAMA_MODELS[0].id)
-    assert "ollama.com" in provider.active().base_url
-    use_model(GEMINI_MODELS[0].id)
-    assert "googleapis.com" in provider.active().base_url
-    use_model(GROQ_MODELS[0].id)
-    assert "groq.com" in provider.active().base_url
+    assert [m.id for m in catalog.ALL_MODELS] == ["claude-sonnet-5-5", "claude-haiku-5-5"]
+    assert all(m.charts for m in catalog.ALL_MODELS)
+    settings = RateLimitSettings.from_env()
+    assert all(price_of(m.id, settings) for m in catalog.ALL_MODELS)
 
 
-def test_reasoning_models_send_their_own_low_reasoning_and_no_openrouter_prefs():
-    """A reasoning model under the 700-token answer cap must not spend it
-    thinking (production: "empty message content, finish_reason=length"), and
-    OpenRouter's routing extensions are never sent to another backend."""
-    from app.llm.catalog import GROQ_MODELS
-
-    provider = _routed(groq_key="g", ollama_key="o")
-    use_model("gpt-oss:120b")
-    assert provider.active()._extra_body == {"reasoning_effort": "low"}
-    use_model(GROQ_MODELS[0].id)
-    assert provider.active()._extra_body is None
+def test_a_claude_pick_goes_to_claude_with_thinking_off():
+    """Built as a Claude default model is: no OpenRouter routing prefs, and
+    thinking off so the answer cap is not spent on hidden reasoning."""
+    provider = _routed(claude_key="c")
+    for model in catalog.CLAUDE_MODELS:
+        use_model(model.id)
+        client = provider.active()
+        assert client.model == model.id
+        assert "api.anthropic.com" in str(client.base_url)
+        assert client._extra_body == {"thinking": {"type": "disabled"}}
 
 
 def test_a_backend_without_a_key_falls_back_rather_than_erroring():
     """Offering a model whose backend is unconfigured must not break chat."""
-    provider = _routed(groq_key="g", ollama_key=None)
-    use_model(catalog.OLLAMA_MODELS[0].id)
+    provider = _routed(groq_key="g", claude_key=None)
+    use_model(catalog.CLAUDE_MODELS[1].id)
     assert provider.generate("hi") == "answered by default-model"
 
 
@@ -448,11 +447,11 @@ def test_picker_only_offers_models_whose_backend_is_configured():
     """
     from app.llm import catalog as cat
 
-    every = _routed("r", "g", "o", "m").configured_backends()
+    every = _routed("r", "g", "o", "m", "c").configured_backends()
     assert len(cat.as_dicts(every)) == len(cat.ALL_MODELS)
 
-    ollama_only = _routed(ollama_key="o").configured_backends()
-    assert {d["backend"] for d in cat.as_dicts(ollama_only)} == {"ollama"}
+    claude_only = _routed(claude_key="c").configured_backends()
+    assert {d["backend"] for d in cat.as_dicts(claude_only)} == {"claude"}
 
     assert cat.as_dicts(_routed().configured_backends()) == []
 
@@ -483,6 +482,13 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
 
     assert payload["default"] == catalog.AUTO == "auto"
     assert payload["default_label"] == "gemini-3.1-flash-lite"
+
+    # A catalogued default shows its label and is not offered a second time.
+    monkeypatch.setenv("LLM_MODEL", "claude-sonnet-5-5")
+    monkeypatch.setenv("CLAUDE_API_KEY", "c")
+    payload = list_models(session=SimpleNamespace(org_id="org-1"))
+    assert payload["default_label"] == "Claude Sonnet 5.5"
+    assert [m["id"] for m in payload["models"]] == ["claude-haiku-5-5"]
     # Not asserted here: the LLM_MODEL-unset case. ``build_llm_provider()``
     # raises ConfigurationError before this route can render a label, so the
     # ``or "Auto"`` fallback is unreachable belt-and-braces, not a branch.

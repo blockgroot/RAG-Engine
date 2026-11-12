@@ -1052,6 +1052,12 @@ def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatc
     _stub(monkeypatch, connected={"linear"})
     monkeypatch.setattr("app.insights.resolve.classify_question", boom)
     monkeypatch.setenv("LLM_MODEL", "gemini-2.5-flash")
+    # Every catalogued model builds charts today; one that does not is added here.
+    from app.llm import catalog
+
+    no_charts = catalog.ModelChoice(id="gemma4:31b", label="Gemma 4 31B")
+    monkeypatch.setattr(catalog, "ALL_MODELS", catalog.ALL_MODELS + (no_charts,))
+    monkeypatch.setitem(catalog._BY_ID, no_charts.id, no_charts)
     use_model("gemma4:31b")
     try:
         decision = routing.choose_agent("Linear issues by priority", ORG, chart_mode=True)
@@ -1059,10 +1065,10 @@ def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatc
         use_model(None)
     assert decision.reason == "chart-model-unsupported"
     assert decision.chart_refusal.startswith("**Gemma 4 31B doesn't support charts**")
-    assert "gemini-2.5-flash, Gemini 3.1 Flash Lite or Qwen 3.8 27B" in decision.chart_refusal
+    assert "gemini-2.5-flash, Claude Sonnet 5.5 or Claude Haiku 5.5" in decision.chart_refusal
 
 
-@pytest.mark.parametrize("model", [None, "qwen/qwen3.8-27b", "acme-own-model"])
+@pytest.mark.parametrize("model", [None, "claude-haiku-5-5", "acme-own-model"])
 def test_models_that_build_charts_are_not_stopped(model):
     from app.llm.routed import use_model
 

@@ -18,35 +18,41 @@ from .base import Bucket, Decision, RateLimiter
 
 _KEY_PREFIX = "rl:"
 
-# KEYS: bucket keys. ARGV: burst, per_minute for each key, in order.
-# Returns {allowed (1/0), retry_after seconds as a string, index of the bucket
-# that refused (0 when allowed)} (a Lua number in a reply is cut to an integer).
+# KEYS: bucket keys. ARGV: need ("" = always spend), spend, then burst and
+# per_minute for each key, in order. Returns {allowed (1/0), retry_after
+# seconds as a string, index of the bucket that refused (0 when allowed)}
+# (a Lua number in a reply is cut to an integer).
 _TAKE = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+local need = tonumber(ARGV[1])
 local tokens, wait, worst = {}, 0, 0
 for i = 1, #KEYS do
-  local burst = tonumber(ARGV[2 * i - 1])
-  local rate = tonumber(ARGV[2 * i]) / 60
+  local burst = tonumber(ARGV[2 * i + 1])
+  local rate = tonumber(ARGV[2 * i + 2]) / 60
   local v = redis.call('HMGET', KEYS[i], 'tokens', 'ts')
   local tk = tonumber(v[1]) or burst
   local ts = tonumber(v[2]) or now
   tk = math.min(burst, tk + math.max(0, now - ts) * rate)
   tokens[i] = tk
-  if tk < 1 and (1 - tk) / rate > wait then
-    wait = (1 - tk) / rate
+  if need and tk < need and (need - tk) / rate > wait then
+    wait = (need - tk) / rate
     worst = i
   end
 end
 local spend = 0
-if wait == 0 then spend = 1 end
+if wait == 0 then spend = tonumber(ARGV[2]) end
 for i = 1, #KEYS do
-  local burst = tonumber(ARGV[2 * i - 1])
-  local rate = tonumber(ARGV[2 * i]) / 60
-  redis.call('HSET', KEYS[i], 'tokens', tostring(tokens[i] - spend), 'ts', tostring(now))
-  redis.call('EXPIRE', KEYS[i], math.ceil(burst / rate) + 1)
+  local burst = tonumber(ARGV[2 * i + 1])
+  local rate = tonumber(ARGV[2 * i + 2]) / 60
+  local left = tokens[i] - spend
+  redis.call('HSET', KEYS[i], 'tokens', tostring(left), 'ts', tostring(now))
+  -- Expires once full again; an overdrawn bucket stays until it has refilled.
+  redis.call('EXPIRE', KEYS[i], math.ceil((burst - left) / rate) + 1)
 end
-return {spend, tostring(wait), worst}
+local allowed = 0
+if wait == 0 then allowed = 1 end
+return {allowed, tostring(wait), worst}
 """
 
 # A place is a member of a sorted set scored by when its lease runs out.
@@ -74,13 +80,15 @@ class RedisRateLimiter(RateLimiter):
         self._take = self._client.register_script(_TAKE)
         self._acquire = self._client.register_script(_ACQUIRE)
 
-    def take(self, buckets: Sequence[Bucket]) -> Decision:
+    def take(
+        self, buckets: Sequence[Bucket], *, need: float | None = 1.0, spend: float = 1.0
+    ) -> Decision:
         if not buckets:
             return Decision(allowed=True)
         # ponytail: several keys in one script need one Redis node; a Redis
         # Cluster would need a shared {hash tag} per request.
         keys = [_KEY_PREFIX + b.key for b in buckets]
-        args: list[float] = []
+        args: list[float | str] = ["" if need is None else need, spend]
         for b in buckets:
             args += [b.burst, b.per_minute]
         try:
