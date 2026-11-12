@@ -206,9 +206,16 @@ export function NotificationBell() {
                     <span className="bell-item-detail">
                       {item.kind === "reauth" ? formatReauthReason(item.provider, item.detail) : item.detail}
                     </span>
-                    <Link href={item.href} className="bell-item-action" onClick={() => setOpen(false)}>
-                      {item.action}
-                    </Link>
+                    {/^https?:\/\//.test(item.href) ? (
+                      <a href={item.href} target="_blank" rel="noopener noreferrer"
+                         className="bell-item-action" onClick={() => setOpen(false)}>
+                        {item.action}
+                      </a>
+                    ) : (
+                      <Link href={item.href} className="bell-item-action" onClick={() => setOpen(false)}>
+                        {item.action}
+                      </Link>
+                    )}
                   </div>
                   <button
                     type="button"

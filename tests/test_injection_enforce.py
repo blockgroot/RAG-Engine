@@ -120,13 +120,18 @@ def test_the_bell_names_flagged_documents_only_in_enforce(monkeypatch):
     from app.api import notifications
 
     monkeypatch.setattr(notifications, "flagged_documents",
-                        lambda *a: [("Onboarding", "notion")])
+                        lambda *a: [("Onboarding", "notion", None),
+                                    ("BEN-3", "linear", "https://linear.app/x/issue/BEN-3"),
+                                    ("Bad", "linear", "javascript:alert(1)")])
     monkeypatch.setenv("GUARD_MODE", "shadow")
     assert notifications._flagged_items("org", None, "Company", "/admin/connections") == []
     monkeypatch.setenv("GUARD_MODE", "enforce")
-    [item] = notifications._flagged_items("org", None, "Company", "/admin/connections")
+    item, issue, bad = notifications._flagged_items("org", None, "Company", "/admin/connections")
     assert item["kind"] == "injection" and "Onboarding" in item["title"]
-    assert "Notion" in item["detail"]
+    assert "Notion" in item["detail"] and item["href"] == "/admin/connections"
+    # The bell opens the flagged page itself, never a non-web address.
+    assert issue["href"] == "https://linear.app/x/issue/BEN-3" and issue["action"] == "Open in Linear"
+    assert bad["href"] == "/admin/connections"
 
 
 # --- Task 3.2: the question (logged, never refused) ---------------------------------

@@ -16,22 +16,23 @@ MAX_LISTED = 5
 
 def flagged_documents(
     org_id: str, workspace_id: str | None, threshold: float
-) -> list[tuple[str, str | None]]:
-    """``(title, provider)`` of documents in exactly this scope with a flagged chunk."""
+) -> list[tuple[str, str | None, str | None]]:
+    """``(title, provider, source_uri)`` of documents in exactly this scope with a flagged chunk."""
     with get_connection(org_id=org_id) as conn:
         rows = conn.execute(
             """
-            SELECT d.title, d.source_provider
+            SELECT d.title, d.source_provider, d.source_uri
             FROM documents d
             WHERE d.org_id = %s::uuid
               AND d.workspace_id IS NOT DISTINCT FROM %s::uuid
               AND EXISTS (
                 SELECT 1 FROM chunks c
-                WHERE c.document_id = d.id AND c.injection_score >= %s
+                WHERE c.org_id = d.org_id AND c.document_id = d.id
+                  AND c.injection_score >= %s
               )
             ORDER BY d.title
             LIMIT %s
             """,
             (org_id, workspace_id, threshold, MAX_LISTED + 1),
         ).fetchall()
-    return [(str(t or "Untitled"), p) for t, p in rows]
+    return [(str(t or "Untitled"), p, u) for t, p, u in rows]

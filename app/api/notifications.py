@@ -213,6 +213,10 @@ def _gap_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> 
     return items
 
 
+def _is_web(uri: str | None) -> bool:
+    return bool(uri) and uri.lower().startswith(("https://", "http://"))
+
+
 def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
     """Documents enforce mode is leaving out of answers. Never fails the bell."""
     guard = GuardSettings.from_env()
@@ -235,10 +239,12 @@ def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str)
                 f"Handbook leaves it out of answers until it changes. Open it in "
                 f"{_label(provider or '')} and remove the instruction-like or hidden text."
             ),
-            "action": "Review sources",
-            "href": href,
+            # The page itself, so they land on the text to fix; http(s) only
+            # (as for citations), else the Sources page.
+            "action": f"Open in {_label(provider or '')}" if _is_web(uri) else "Review sources",
+            "href": uri if _is_web(uri) else href,
         }
-        for title, provider in docs[:MAX_LISTED]
+        for title, provider, uri in docs[:MAX_LISTED]
     ]
     if len(docs) > MAX_LISTED:
         items[-1]["detail"] += " More documents are affected."
