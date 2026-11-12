@@ -1,10 +1,9 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { BrandMark } from "@/components/BrandMark";
+import { ContactLink } from "@/components/site/ContactLink";
 import "@/app/site.css";
 
-/** Where visitors send questions; shown in every public page's footer. */
-export const CONTACT_EMAIL = "hbook1809@gmail.com";
 
 /**
  * Public chrome for the marketing page. White, hairline rules, square
@@ -61,7 +60,7 @@ export function LandingShell({ children }: { children: ReactNode }) {
             </nav>
           </div>
           <p className="site-foot-base">
-            &copy; 2026 Handbook · <a href={`mailto:${CONTACT_EMAIL}`}>Contact us</a>
+            &copy; 2026 Handbook · <ContactLink />
           </p>
         </div>
       </footer>

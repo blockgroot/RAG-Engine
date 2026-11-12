@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { CONTACT_EMAIL, LandingShell } from "@/components/LandingShell";
+import { LandingShell } from "@/components/LandingShell";
+import { ContactLink } from "@/components/site/ContactLink";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { DeployHero } from "@/components/site/DeployHero";
 import { DeployChecklist } from "@/components/site/DeployChecklist";
@@ -185,7 +186,7 @@ export default function DeploymentPage() {
           <Link href="/" className="site-btn site-btn-ghost">Back to the home page</Link>
         </div>
         <p className="dep-close-contact">
-          Questions first? <a href={`mailto:${CONTACT_EMAIL}`}>Contact us</a>
+          Questions first? <ContactLink />
         </p>
       </section>
     </LandingShell>

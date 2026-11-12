@@ -213,6 +213,10 @@ def _send_sendgrid(
         "from": sender,
         "subject": subject,
         "content": content,
+        # Off: click tracking rewrites every link through sendgrid.net, so a
+        # sign-in link showed as a 300-character tracker URL and its single-use
+        # token passed through a third party first.
+        "tracking_settings": {"click_tracking": {"enable": False, "enable_text": False}},
     }
     try:
         with httpx.Client(timeout=_SENDGRID_TIMEOUT_SECONDS) as client:
@@ -230,9 +234,33 @@ def _send_sendgrid(
         )
 
 
+def _link_email(*, title: str, lead: str, button: str, link: str, note: str) -> str:
+    """One button, not a bare URL: the address is long and means nothing to a
+    reader. The URL is still written small underneath for a client that drops
+    the button."""
+    href = html.escape(link, quote=True)
+    return f"""\
+<div style="font-family:-apple-system,'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#12201e;">
+  <p style="font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#0b5f5a;margin:0 0 8px;">Handbook</p>
+  <h2 style="margin:0 0 12px;font-size:20px;">{html.escape(title)}</h2>
+  <p style="margin:0 0 20px;font-size:14px;line-height:1.5;color:#3d4f4b;">{html.escape(lead)}</p>
+  <a href="{href}" style="{_EMAIL_APPROVE_BUTTON_STYLE}">{html.escape(button)}</a>
+  <p style="margin:20px 0 0;font-size:12px;line-height:1.5;color:#8a9a95;">{html.escape(note)}</p>
+  <p style="margin:12px 0 0;font-size:11px;line-height:1.4;color:#8a9a95;word-break:break-all;">Button not working? Paste this into your browser:<br><a href="{href}" style="color:#0b5f5a;">{html.escape(link)}</a></p>
+</div>
+"""
+
+
 def send_magic_link_email(to: str, link: str, *, settings: EmailSettings | None = None) -> None:
     body = f"Click to sign in (expires shortly, single use):\n\n{link}\n"
-    _dispatch(to, "Your sign-in link", body, settings)
+    html_body = _link_email(
+        title="Sign in to Handbook",
+        lead="Use the button below to sign in. The link works once and expires shortly.",
+        button="Sign in",
+        link=link,
+        note="If you didn't ask to sign in, ignore this email. Nobody can sign in without this link.",
+    )
+    _dispatch(to, "Your sign-in link", body, settings, html_body=html_body)
 
 
 def send_magic_link_email_safe(to: str, link: str) -> None:
@@ -250,7 +278,14 @@ def send_email_change_verification(to: str, link: str, *, settings: EmailSetting
         f"If it was you, confirm here (expires shortly, single use):\n\n{link}\n\n"
         "If it wasn't, ignore this email -- nothing changes until the link is used.\n"
     )
-    _dispatch(to, "Confirm your new sign-in email", body, settings)
+    html_body = _link_email(
+        title="Confirm your new sign-in email",
+        lead="Someone asked to change their Handbook sign-in email to this address. If it was you, confirm below. The link works once and expires shortly.",
+        button="Confirm email",
+        link=link,
+        note="If it wasn't you, ignore this email. Nothing changes until the link is used.",
+    )
+    _dispatch(to, "Confirm your new sign-in email", body, settings, html_body=html_body)
 
 
 def send_email_change_verification_safe(to: str, link: str) -> None:
@@ -336,7 +371,14 @@ def send_workspace_invite_email(
         "If this link has expired, just sign in normally from the login "
         "page — the workspace will already be there.\n"
     )
-    _dispatch(to, f'You’ve been added to "{workspace_name}"', body, settings)
+    html_body = _link_email(
+        title=f'{who} to "{workspace_name}"',
+        lead="Sign in to open the space. The link works once and expires shortly.",
+        button="Open the space",
+        link=link,
+        note="If the link has expired, sign in from the login page. The space will already be there.",
+    )
+    _dispatch(to, f'You’ve been added to "{workspace_name}"', body, settings, html_body=html_body)
 
 
 def send_workspace_invite_email_safe(
@@ -458,7 +500,14 @@ def send_signup_approved_email(
         "Good news — your organization has been approved and is ready.\n\n"
         f"Click to sign in (expires shortly, single use):\n\n{link}\n"
     )
-    _dispatch(to, "Your organization is ready", body, settings)
+    html_body = _link_email(
+        title="Your organization is ready",
+        lead="Your request was approved. Sign in to connect your first tool. The link works once and expires shortly.",
+        button="Sign in",
+        link=link,
+        note="If the link has expired, request a new one from the login page.",
+    )
+    _dispatch(to, "Your organization is ready", body, settings, html_body=html_body)
 
 
 def send_signup_approved_email_safe(to: str, link: str) -> None:

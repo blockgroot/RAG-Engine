@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CONTACT_EMAIL, LandingShell } from "@/components/LandingShell";
+import { LandingShell } from "@/components/LandingShell";
+import { ContactLink } from "@/components/site/ContactLink";
 import { AccessFigure } from "@/components/site/AccessFigure";
 import { Background } from "@/components/site/Background";
 import { ControlPanel } from "@/components/site/ControlPanel";
@@ -97,7 +98,7 @@ export default function SecurityPage() {
           <Link href="/signup" className="site-btn site-btn-ghost">Request access</Link>
         </div>
         <p className="dep-close-contact">
-          Questions first? <a href={`mailto:${CONTACT_EMAIL}`}>Contact us</a>
+          Questions first? <ContactLink />
         </p>
       </section>
     </LandingShell>
