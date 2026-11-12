@@ -1,5 +1,6 @@
 "use client";
 
+import { ModelPicker } from "@/components/ModelPicker";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
@@ -1295,33 +1296,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           />
           {models.length > 0 && (
             <>
-              <label className="sr-only" htmlFor="model-select">
-                Model
-              </label>
-              <span className="composer-model-wrap">
-              <select
-                id="model-select"
-                className="composer-model"
+              <ModelPicker
                 value={model}
-                onChange={(e) => {
-                  setModel(e.target.value);
-                  setModelNote(null);
-                  localStorage.setItem("chat.model", e.target.value);
-                }}
                 disabled={busy}
-                title={
-                  models.find((m) => m.id === model)?.note ??
-                  `Answer with the default model (${defaultLabel})`
-                }
-              >
-                <option value="auto">{modelName(defaultLabel)}</option>
-                {pickerModels.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {chartMode && m.charts == null ? `${modelName(m.label)} (may not support charts)` : modelName(m.label)}
-                  </option>
-                ))}
-              </select>
-              </span>
+                title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
+                options={[
+                  { value: "auto", label: modelName(defaultLabel), hint: "Default" },
+                  ...pickerModels.map((m) => ({
+                    value: m.id,
+                    label: modelName(m.label),
+                    hint: chartMode && m.charts == null ? "May not support charts" : undefined,
+                  })),
+                ]}
+                onChange={(next) => {
+                  setModel(next);
+                  setModelNote(null);
+                  localStorage.setItem("chat.model", next);
+                }}
+              />
             </>
           )}
           <button

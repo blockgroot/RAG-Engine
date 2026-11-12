@@ -11602,3 +11602,58 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .account-page .account-actions { grid-template-columns: minmax(0, 1fr); }
 .account-actions-slider, .account-actions-viewport { min-width: 0; }
 .account-page .account-action-target { max-width: 100%; }
+
+/* ===== Composer model picker: our own menu ================================
+   The native list was OS-drawn (grey, see-through) over a pale pill. */
+.model-picker { position: relative; flex: none; display: inline-flex; min-width: 0; }
+.model-picker-button {
+  display: inline-flex; align-items: center; gap: 0.45rem; max-width: 13rem; min-width: 0;
+  padding: 0.42rem 0.75rem 0.42rem 0.5rem; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 0.82rem; font-weight: 650; color: var(--ink);
+  background: #fff; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  box-shadow: 0 1px 2px rgba(15, 42, 38, 0.06);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), background 0.2s var(--ease);
+}
+.model-picker-button:hover:not(:disabled), .model-picker-button[aria-expanded="true"] {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.model-picker-button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.model-picker-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.model-picker-spark {
+  display: grid; place-items: center; flex: none; width: 1.45rem; height: 1.45rem; border-radius: 999px;
+  font-size: 0.72rem; color: #fff; background: linear-gradient(135deg, #2dd4bf, #0f766e);
+}
+.model-picker-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-picker-chevron {
+  flex: none; width: 0.4rem; height: 0.4rem; margin: 0 0.1rem 0.15rem 0.1rem;
+  border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor;
+  transform: rotate(45deg); color: var(--ink-muted); transition: transform 0.2s var(--ease);
+}
+.model-picker-button[aria-expanded="true"] .model-picker-chevron { transform: translateY(0.15rem) rotate(-135deg); }
+.model-picker-menu {
+  position: absolute; right: 0; bottom: calc(100% + 0.6rem); z-index: 40; min-width: 15.5rem; margin: 0;
+  padding: 0.4rem; list-style: none; border-radius: 16px; background: #fff;
+  border: 1px solid #e3ece8; box-shadow: 0 24px 48px -18px rgba(15, 42, 38, 0.35), 0 2px 6px rgba(15, 42, 38, 0.06);
+  animation: rise-in 0.18s var(--ease) both;
+}
+.model-picker-head {
+  padding: 0.4rem 0.6rem 0.3rem; font-size: 0.66rem; font-weight: 750; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--accent-strong);
+}
+.model-picker-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; width: 100%;
+  padding: 0.55rem 0.6rem; border: 0; border-radius: 10px; background: transparent; cursor: pointer;
+  font: inherit; text-align: left; color: var(--ink);
+}
+.model-picker-menu button:hover, .model-picker-menu button:focus-visible { outline: none; background: #f1f8f5; }
+.model-picker-menu [aria-selected="true"] button { background: color-mix(in srgb, var(--accent) 10%, white); }
+.model-picker-menu button > span:first-child { display: grid; gap: 0.1rem; }
+.model-picker-menu strong { font-size: 0.86rem; font-weight: 650; }
+.model-picker-menu small { font-size: 0.72rem; color: var(--ink-muted); }
+.model-picker-check { color: var(--accent-strong); font-weight: 800; }
+@media (max-width: 640px) {
+  .model-picker { margin-left: auto; }
+  .model-picker-button { max-width: 9rem; }
+  .chat-composer:has(.composer-mode-chip) .model-picker { grid-column: 3; grid-row: 2; }
+  .model-picker-menu { min-width: min(15.5rem, calc(100vw - 3rem)); }
+}
