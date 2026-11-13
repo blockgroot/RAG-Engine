@@ -12398,3 +12398,29 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .rail-chat-menu button.is-danger, .rail-chat-menu button.is-danger svg { color: #fca5a5; }
 .rail-chat-menu button.is-danger:hover { background: rgba(248,113,113,0.14); color: #fecaca; }
 .rail-chat-menu hr { border-top-color: rgba(255,255,255,0.1); }
+
+/* A new release, beside the mode switch (admins): a quiet line of text, no
+   box, so it never competes with the switch. */
+.release-chip { display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.8rem; animation: rise-in 0.5s var(--ease) 0.15s both; }
+.release-chip-link { display: inline-flex; align-items: center; gap: 0.45rem; min-width: 0; color: var(--muted, #667085); text-decoration: none; white-space: nowrap; }
+.release-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.release-chip-sep { opacity: 0.6; }
+.release-chip-cta { flex: none; font-weight: 650; color: var(--accent-strong); }
+.release-chip-link:hover .release-chip-cta { text-decoration: underline; text-underline-offset: 3px; }
+.release-chip-dot { flex: none; position: relative; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: #14b8a6; }
+.release-chip-dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: release-ping 2s ease-out infinite; }
+@keyframes release-ping { 0% { transform: scale(1); opacity: 0.6; } 80%, 100% { transform: scale(2.6); opacity: 0; } }
+.release-chip[data-urgent] .release-chip-dot { background: #f04438; }
+.release-chip[data-urgent] .release-chip-cta { color: #d92d20; }
+.release-chip-x { display: grid; place-items: center; width: 1.3rem; height: 1.3rem; border: 0; border-radius: 50%; background: none; color: var(--muted, #667085); opacity: 0; cursor: pointer; transition: opacity 0.15s; }
+.release-chip:hover .release-chip-x, .release-chip-x:focus-visible { opacity: 0.7; }
+.release-chip-x:hover { opacity: 1; background: rgba(16,24,40,0.06); }
+@media (hover: none) { .release-chip-x { opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .release-chip-dot::after { animation: none; } }
+@media (min-width: 900px) {
+  .ask-compose-head { position: relative; align-self: stretch; width: 100%; }
+  .ask-compose-head .release-chip { position: absolute; right: 0; top: 50%; transform: translateY(-50%); animation: none; max-width: calc(50% - 12rem); }
+  .release-chip-link { min-width: 0; }
+  /* Deep's Extra effort widens the centred group; no room beside it. */
+  .ask-compose-head:has(.ask-effort) .release-chip { display: none; }
+}

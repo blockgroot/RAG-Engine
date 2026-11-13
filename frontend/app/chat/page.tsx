@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { ReleaseChip } from "@/components/ReleaseChip";
 import { AgentIntro, AskGreeting, ChartThumb, chartKind, ModeSwitch, SOURCE_GLYPH, modelName, useTypedPlaceholder, type AskMode } from "@/components/AskHome";
 import { BrandGlyph } from "@/components/BrandGlyph";
 import { ActionCard } from "@/components/ActionCard";
@@ -1260,6 +1261,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               Extra effort
             </button>
           )}
+          <ReleaseChip admin={me.role === "admin"} />
         </div>
         <form onSubmit={handleSubmit} className={`chat-composer is-${mode}${extraEffort ? " is-extra" : ""}`} aria-label="Ask a question">
           <label className="sr-only" htmlFor="ask-input">
