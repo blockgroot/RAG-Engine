@@ -1,12 +1,8 @@
-"""What a chart's numbers MEAN, in words, for every chart: title, unit, and a
-one-line explanation of what each bar, point or slice is.
+"""What a chart's numbers MEAN, in words: title, unit, and a one-line
+explanation of what each bar, point or slice is.
 
-"130 Salary (₹ lakh)" was a correct number nobody could read: the unit was
-the column's whole header, and nothing said a bar was a SUM of that column
-over a team's rows. Everything here is built from what the chart already
-knows -- the measure that ran, the column's own header and parsed unit, the
-breakdown's label, the period -- never from a list of words, so a new column
-or a new metric reads correctly without anyone writing copy for it.
+Built from what the chart knows (measure, header, parsed unit, breakdown,
+period), never a word list, so a new column reads correctly with no copy.
 """
 
 from __future__ import annotations

@@ -122,9 +122,7 @@ function ConnectionsPageInner() {
         if (c.provider === "slack" && !c.source_config?.channel_ids?.length) return;
         try {
           next[c.id] = await api.checkConnectionChanges(c.id);
-          // A rename changes no content, so it never shows up as "1 updated" —
-          // but the stored channel labels the suggestion chips were built from
-          // are now wrong, and those are cached client-side.
+          // A rename changes no content but stales the cached chip labels.
           if (next[c.id].renamed?.length) {
             const moved = next[c.id]
               .renamed!.map((r) => `#${r.from} → #${r.to}`)
@@ -166,10 +164,8 @@ function ConnectionsPageInner() {
     });
   }, []);
 
-  /** Re-read jobs and adopt any already running. See the space page's copy:
-   *  the server queues the first ingest itself on connect / scope-save
-   *  (``autosync.sync_now``), so a page that only knows about jobs it started
-   *  shows "first check due within the hour" over a running ingest. */
+  /** Re-read jobs and adopt running ones: the server queues the first ingest
+   *  itself (`autosync.sync_now`). */
   const adoptJobs = useCallback(async () => {
     const list = await api.listJobs().catch(() => null);
     if (!list) return;

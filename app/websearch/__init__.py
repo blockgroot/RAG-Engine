@@ -1,4 +1,4 @@
-"""Web search tool (Phase 5).
+"""Web search tool.
 
 Public API:
     from app.websearch import build_web_search_provider

@@ -4,11 +4,8 @@
  * Admin-only: whether the company uses Agent mode, which tools it may use
  * (each through its MCP server), and where people may ask from.
  *
- * Everything starts off. Turning a tool on lets people ASK for it; each write
- * still needs that person's own approval and their own sign-in, so this page
- * never grants anyone more than they already have in the tool. There is no log
- * here on purpose: what a person drafted is theirs, and each tool records what
- * was created, by whom.
+ * Everything starts off. Each write still needs the person's own approval and
+ * sign-in, so this grants no one more than they have. No log: drafts are theirs.
  */
 
 import { useCallback, useEffect, useState } from "react";

@@ -1,9 +1,5 @@
-"""The Slack thread a request was asked in, read live (``thread_context``).
-
-Agent mode writes through MCP only; this is what is left of Slack here: a
-request made inside a channel thread drafts from THAT thread, read with the
-bot's token, as one source exactly as visible as its channel.
-"""
+"""The Slack thread (or channel) a request was asked in, read live with the
+bot's token, as one source exactly as visible as its channel."""
 
 from __future__ import annotations
 
@@ -14,8 +10,7 @@ from .base import Audience, Source
 
 API = "https://slack.com/api"
 _TIMEOUT = 15.0
-#: Pages read when finding a channel or its members (200 per page). Past this
-#: the answer is "can't check", never a guess.
+#: Pages read when finding a channel or its members; past this, "can't check".
 MAX_PAGES = 10
 #: Members whose emails are read for an audience. Larger rooms are unknown.
 MEMBER_LIMIT = 500
@@ -76,13 +71,9 @@ def _is_bot(users: list[dict], member_id: str) -> bool:
 def thread_context(token: str, channel_id: str, thread_ts: str) -> tuple[list[Source], str]:
     """The thread a request was asked in, read live, as ``(sources, passages)``.
 
-    Searching the channel for "about this thread" matched whatever else was
-    discussed there, and a thread started minutes ago is not synced at all. So
-    a request made inside a thread drafts from THAT thread: at most
-    ``THREAD_LIMIT`` messages, the bot's own left out, and a cut-off said so.
-    It is one source, as visible as its channel: public, or its members
-    (unknown members count as nobody, so every reader is an outsider).
-    Nothing readable is ``([], "")``.
+    Searching the channel matched other talk and missed unsynced threads. At most
+    ``THREAD_LIMIT`` messages, the bot's own left out, a cut said. Visible as its
+    channel: public or its members (unknown members = nobody). Nothing: ``([], "")``.
     """
     from ..security.untrusted import scrub_untrusted_text
 
@@ -119,16 +110,12 @@ MAX_CHANNEL_DAYS = 30
 
 
 def channel_context(token: str, name: str, days: int, email: str) -> tuple[list[Source], str] | None:
-    """A channel's messages over the last ``days``, read live, as
-    ``(sources, passages)``: "summarise what was discussed in #hb-testing
-    today" searched the index by meaning, found one message of five, and
-    missed what was posted after the last sync. At most ``CHANNEL_LIMIT``
-    messages, oldest first, the bot's own left out, and a cut-off said so.
+    """A channel's messages over the last ``days``, read live, as ``(sources,
+    passages)``: an index search misses recent and most messages. At most
+    ``CHANNEL_LIMIT``, oldest first, the bot's own left out, a cut said.
 
-    Read only when the asker may: a public channel, or a private one they
-    are a member of (by email); otherwise ``([], "")``. ``None`` when the
-    channel cannot be read here (no such channel, the bot is not in it): the
-    caller falls back to the indexed search."""
+    Only when the asker may read it (public, or a member by email); else
+    ``([], "")``. ``None`` when unreadable here: the caller falls back to search."""
     import time
 
     from ..security.untrusted import scrub_untrusted_text

@@ -1,10 +1,7 @@
-"""Opaque handles for mode B (plan D4, D4a).
+"""Opaque handles for mode B: the model sees ``[L1]``, never a real id.
 
-The model never sees a document id, an issue UUID, a channel id or a file id:
-it sees ``[L1]`` beside a title and names that when it wants a live read. The
-map lives only in this request, so a handle from another request -- or an
-invented one -- resolves to nothing. ``strip_handles`` removes any the model
-echoes into an answer, before it is streamed, cached, stored or logged.
+The map lives only in this request, so a foreign or invented handle resolves to
+nothing. ``strip_handles`` removes echoed ones before streaming, storing or logging.
 """
 
 from __future__ import annotations

@@ -32,13 +32,8 @@ const PROVIDER_LABEL: Record<string, string> = {
   google: "Google Drive",
 };
 
-/**
- * Glyphs for the providers a report can read. Kept as a lookup rather than a
- * switch so adding a source is one line here — the same reason
- * ConnectionCard is table-driven. The backend decides what is *offered*
- * (`GET /schedulers/connections`); an unmapped provider still renders, just
- * with an initial instead of a mark.
- */
+/** Provider glyphs. The backend decides what is offered; an unmapped provider
+ *  renders with an initial. */
 const PROVIDER_GLYPH: Record<string, BrandName> = {
   github: "github",
   slack: "slack",
@@ -47,34 +42,19 @@ const PROVIDER_GLYPH: Record<string, BrandName> = {
   google: "drive",
 };
 
-/**
- * "GitHub, Slack or Linear" — derived, not written out, so this copy cannot
- * drift the next time a source is added (it already had, once).
- */
+/** "GitHub, Slack or Linear", derived so the copy cannot drift. */
 const SCHEDULABLE_LABELS = (() => {
   const names = Object.values(PROVIDER_LABEL);
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
 })();
 
-/**
- * Labels for the sources a space can have connected. Every provider is now
- * schedulable, so this is just PROVIDER_LABEL — kept as its own name because
- * it answers a different question (what a space HAS, in the chip after its
- * name) and the two would diverge again the moment a non-schedulable source
- * is added.
- */
+/** What a space HAS connected. Same as PROVIDER_LABEL today; kept apart in
+ *  case a source is not schedulable. */
 const SOURCE_LABEL: Record<string, string> = { ...PROVIDER_LABEL };
 
-/**
- * Report intents built from what a connection actually covers, so the prompt
- * field starts from a real channel or repo rather than a blank box. One
- * template per topic name, plus a scope-wide one that needs no topic — Linear
- * has no stored subset to name, so it only ever gets the latter.
- *
- * These are starting points a person then edits: the field stays free text,
- * because the whole feature is a standing question in the user's own words.
- */
+/** Editable starter prompts from a connection's real channels or repos, plus a
+ *  scope-wide one (Linear only gets that: it stores no subset). */
 function promptSuggestions(provider: string, topics: string[]): string[] {
   const perTopic: Record<string, (t: string) => string> = {
     slack: (t) => `Summarise what was discussed in #${t.replace(/^#/, "")} and flag anything urgent`,
@@ -107,12 +87,8 @@ function Logos({ providers }: { providers: string[] }) {
   );
 }
 
-/**
- * Where a report reads from: the company's apps, or one space's. A menu of
- * rows with each scope's logos, in place of a native select that could show
- * only text. Labelled by which APPS get read, never by audience: a schedule
- * is personal and only its creator is emailed (`schedulers/runner.py`).
- */
+/** Where a report reads from: the company's apps or one space's. Labelled by
+ *  apps, never audience: only the creator is emailed. */
 function ScopePicker({
   value,
   onChange,
@@ -209,11 +185,6 @@ function ScopePicker({
   );
 }
 
-/**
- * Human timestamp for a run. Inlined rather than imported: there is no shared
- * date helper in this app (ConnectionCard has its own copy too), and adding a
- * date library for two labels would be the wrong trade.
- */
 /** The next run as a date block for the timeline: "13 Nov" over "5:06 pm". */
 function runDate(iso: string | null): [string, string] {
   if (!iso) return ["—", ""];
@@ -229,9 +200,7 @@ function whenLabel(iso: string | null): string {
   const when = new Date(iso);
   const today = new Date();
   const sameDay = when.toDateString() === today.toDateString();
-  // hour12 forced rather than left to the locale: the browser's locale decides
-  // 12h vs 24h otherwise, so an en-GB reader saw "15:02" while en-US saw
-  // "3:02 PM" on the same page. ConnectionCard already pins it the same way.
+  // hour12 pinned so every locale reads the same page alike.
   const time = when.toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
@@ -257,15 +226,8 @@ export default function SchedulersPage() {
   const [draftFrequency, setDraftFrequency] = useState("weekly");
   const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // New-report form: WHERE to read from, WHAT to cover, HOW OFTEN. The
-  // service is no longer asked — it is classified from the prompt server-side
-  // (`_classify_provider`), because "which app holds this?" is our data model
-  // showing through, not a question the reader has.
-  //
-  // One picker, not the old scope-then-which-one pair. Two steps made the
-  // distinction *worse*: "Organisation" and "Personal space" were abstract
-  // category names, and the real one ("Company" vs a space you can name) only
-  // appeared after a second choice. An <optgroup> states both at once.
+  // New-report form: WHERE, WHAT, HOW OFTEN. The service is classified from
+  // the prompt server-side (`_classify_provider`).
   // "" = nothing picked yet, "org" = company-wide, otherwise a workspace id.
   const [scope, setScope] = useState("");
   const [frequency, setFrequency] = useState("weekly");
@@ -321,17 +283,8 @@ export default function SchedulersPage() {
     };
   }, [me]);
 
-  /**
-   * Reports grouped by the schedule that produced them, newest group first.
-   *
-   * A flat list was the wrong shape: the question a reader has is "what does
-   * the latest X say", and one row per run buries that under history —
-   * twenty schedules times a year of weeks is a thousand rows. Grouping
-   * answers it directly and keeps the history one click away.
-   *
-   * Keyed by scheduler_id, falling back to the title so reports whose
-   * schedule was deleted still group together instead of scattering.
-   */
+  /** Reports grouped by schedule, newest first. Keyed by scheduler_id, else the
+   *  title, so a deleted schedule's reports still group. */
   const [openEarlier, setOpenEarlier] = useState<Set<string>>(new Set());
   const [reportQuery, setReportQuery] = useState("");
   const reportGroups = useMemo(() => {
@@ -355,16 +308,8 @@ export default function SchedulersPage() {
     );
   }, [reportGroups, reportQuery]);
 
-  /**
-   * Suggestions across EVERY source in the chosen scope.
-   *
-   * They used to be filtered to the picked service; with no service picked
-   * they have to span the scope, which is also the honest shape — the point
-   * of a suggestion here is to show what this scope can report on. Round-robin
-   * rather than concatenated, for the same reason the chat chips are
-   * (`build_combined_suggestions`): with a cap, concatenation means the last
-   * source never appears.
-   */
+  /** Suggestions across EVERY source in the scope, round-robin so a cap never
+   *  hides the last source. */
   const suggestions = useMemo(() => {
     if (!selectedSpace) return [];
     const perProvider = selectedSpace.providers.map((name) => {
@@ -395,16 +340,11 @@ export default function SchedulersPage() {
         prompt.trim(),
         selectedSpace.id
       );
-      // Reset every slot, not just the prompt: the form is the "add another"
-      // surface, and a half-filled one reads as "this is still being edited"
-      // right after the thing was created.
+      // Reset every slot: a half-filled form reads as still being edited.
       setPrompt("");
       setFrequency("weekly");
       setScope("");
-      // Naming the detected service is not a nicety: with no dropdown, this
-      // confirmation and the chip on the row below are the ONLY places a
-      // member can see which source was chosen, and therefore the only way
-      // they can catch a misclassification.
+      // Name the detected service: the only way to catch a misclassification.
       flash(
         `Reading ${PROVIDER_LABEL[created.provider] ?? created.provider}${
           created.workspace_name ? ` in ${created.workspace_name}` : " company-wide"

@@ -1,17 +1,7 @@
-"""Ingestion-time content safeguards (Phase 21).
+"""Ingest-time content safeguards, before chunking.
 
-Complements prompt-injection mitigation at generation time (Phase 16). This
-layer runs once when raw document text enters the pipeline — before chunking —
-and rejects or normalizes content that is clearly out of bounds for a policy
-store at this scale.
-
-Checks (proportionate for self-hosted HR/policy text):
-- Maximum document size (characters) — prevents accidental huge dumps.
-- Strip NUL bytes and other C0 control characters (except tab/newline).
-- Reject documents that are mostly non-text (high ratio of disallowed controls).
-
-Does not attempt malware scanning or HTML/script stripping — Markdown/text
-sources only (see preprocessing scope).
+Caps document size, strips NUL and C0 controls (tab/newline kept), and
+rejects mostly non-text documents. No malware or HTML stripping.
 """
 
 from __future__ import annotations

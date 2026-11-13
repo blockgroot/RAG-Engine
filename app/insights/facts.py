@@ -1,14 +1,8 @@
 """Derive countable facts from what ingest already stored.
 
-One ``INSERT ... SELECT`` over ``documents``: the rows are already in this
-database, so pulling them into Python to push them back would be slower and
-would invent a failure mode (a half-written batch) that a single statement does
-not have.
-
-Idempotent by design, because every sync re-lists every document. The partial
-unique indexes on ``activity_facts`` are the guard, and an edit *moves* the
-existing fact rather than adding a second one -- a page edited five times is
-one page.
+One ``INSERT ... SELECT`` over ``documents`` (no half-written batch).
+Idempotent: the partial unique indexes guard it, and an edit MOVES the fact,
+so a page edited five times is one page.
 """
 
 from __future__ import annotations
@@ -21,21 +15,13 @@ from ..sources.factory import INDEXED_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
-#: Providers that have ``documents`` rows to derive facts from.
-#:
-#: GitHub is absent on purpose: it embeds nothing, so it has no documents and
-#: no chunks. Reading them for GitHub would return zero forever, which on a
-#: chart is indistinguishable from "no activity" -- so ``record_document_facts``
-#: raises instead of quietly succeeding. GitHub's facts come from
-#: ``github_facts.py`` and its own live reads.
-#: Imported, not restated: a second copy of this list is what let a
-#: disconnected Linear keep its documents (see connection_ops).
+#: Providers with ``documents`` rows. GitHub is absent (it embeds nothing), and
+#: ``record_document_facts`` raises for it rather than return a silent zero.
+#: Imported, not restated: a second copy let a disconnected Linear keep its rows.
 DOCUMENT_PROVIDERS = INDEXED_PROVIDERS
 
-#: The one ``activity_facts.kind`` this module writes. Notion pages, Drive
-#: files, Slack threads and Linear issues all arrive as documents, so they
-#: share a kind and are separated by ``provider`` -- which is why every query
-#: in ``store.py`` filters on both.
+#: The one kind this module writes, shared by every document provider, so
+#: every query in ``store.py`` filters on kind AND provider.
 _KIND = "doc_changed"
 
 
@@ -44,11 +30,8 @@ def record_form_facts_if_enabled(
 ) -> int:
     """Classify new form responses, if Forms reading is switched on.
 
-    Rides the GOOGLE ingest job rather than the sync tick, for the same reason
-    Linear's issue facts do: Google also ingests, so on the tick the ingest
-    path's stamp would already have made the connection not-due. Returns 0
-    silently when disabled -- the flag being off is a configuration state, not
-    an error.
+    Rides the Google ingest job (the tick would find it not-due). Returns 0
+    when disabled: a configuration state, not an error.
     """
     from ..config.settings import GoogleSettings
 
@@ -61,11 +44,8 @@ def record_form_facts_if_enabled(
 
         from .sentiment import record_form_sentiment
 
-        # The ALLOW-LIST an admin picked (`connection_ops.set_google_form_ids`).
-        # Empty means read nothing, never "read everything": a Drive token can
-        # see every form in the account, including an admin's unrelated
-        # personal surveys, and turning those into company charts is not a
-        # thing anyone opted into.
+        # The admin's ALLOW-LIST (`connection_ops.set_google_form_ids`). Empty
+        # reads nothing: a Drive token sees every form, including personal ones.
         from ..auth import get_connection_config
 
         config = get_connection_config(org_id, "google", workspace_id=workspace_id) or {}
@@ -94,12 +74,9 @@ def record_document_facts(
 ) -> int:
     """Record one ``doc_changed`` fact per indexed document in this scope.
 
-    ``source_last_modified`` is the fact's date. Documents without one are
-    skipped rather than stamped ``now()``: stamping would invent an edit that
-    never happened and pile every undated document onto today's bar.
-
-    Returns the number of rows inserted or moved. Raises ``ValueError`` for a
-    provider that has no documents -- see ``DOCUMENT_PROVIDERS``.
+    Dated by ``source_last_modified``; undated documents are skipped, never
+    stamped ``now()``. Returns rows inserted or moved. Raises ``ValueError``
+    for a provider without documents (``DOCUMENT_PROVIDERS``).
     """
     if provider not in DOCUMENT_PROVIDERS:
         raise ValueError(
@@ -107,10 +84,8 @@ def record_document_facts(
             f"expected one of {DOCUMENT_PROVIDERS}"
         )
 
-    # The conflict target must match one of the two PARTIAL unique indexes, and
-    # which one applies depends on the scope -- Postgres treats NULLs as
-    # distinct in a plain UNIQUE, which is why they are partial in the first
-    # place. DO UPDATE, not DO NOTHING: an edit moves the fact's date forward.
+    # Conflict target must match the scope's PARTIAL unique index (NULLs are
+    # distinct in a plain UNIQUE). DO UPDATE: an edit moves the date forward.
     if workspace_id is None:
         conflict = """
             ON CONFLICT (org_id, provider, kind, external_id)
@@ -124,12 +99,8 @@ def record_document_facts(
         """
         scope = "AND d.workspace_id = %(workspace_id)s"
 
-    # `subject` is what a chart groups by, so it carries the most useful
-    # dimension per provider: the page or file title for Notion/Drive, and the
-    # CHANNEL for Slack. A Slack document is a thread titled "#general:
-    # snippet…", and grouping by that truncated snippet would give one bar per
-    # thread -- useless. The channel is already in the title, so extracting it
-    # needs no second column and no second query.
+    # `subject`: the title for Notion/Drive, the CHANNEL for Slack (taken from
+    # the "#general: snippet" title; one bar per thread would be useless).
     subject = (
         "split_part(d.title, ':', 1)" if provider == "slack" else "d.title"
     )
@@ -188,15 +159,9 @@ _BACKFILL_SCOPE_CAP = 200
 def backfill_all_document_facts() -> int:
     """Copy existing documents into ``activity_facts`` without waiting for a sync.
 
-    The ingest hook is self-backfilling only on the *next* successful job.
-    Tenants that connected before charts shipped — or whose tick has been
-    503ing — have a full ``documents`` table and an empty ``activity_facts``
-    table, which in Ask looks like "I don't know". This is the same
-    ``INSERT ... SELECT``, run for every distinct (org, provider, space)
-    that already has dated documents.
-
-    Idempotent. Authors stay NULL where they were never captured; we do
-    not invent them.
+    For tenants with documents but no facts (connected before charts, or a
+    failing tick). Same ``INSERT ... SELECT`` for every (org, provider, space)
+    with dated documents. Idempotent; missing authors stay NULL.
     """
     try:
         with get_connection() as conn:

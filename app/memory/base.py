@@ -1,19 +1,9 @@
-"""The conversation-memory contract (Phase 5).
+"""The conversation-memory contract.
 
-Groups a sequence of question/answer turns under a ``conversation_id`` so a
-follow-up ("what about part-timers?") can be resolved against prior context
-before retrieval. Kept behind an interface + factory like every other capability,
-so the backing store (Postgres now) can be swapped without touching callers.
-
-Storage split, mirroring the summarization design: recent turns are kept verbatim
-(``get_context`` returns them), older turns get compressed into a running
-``summary``, with `folded_through` marking how far it reaches
-(``set_summary_folded_through``) -- the turns themselves are KEPT, so the
-transcript survives for history. Everything is org-scoped.
-
-Phase 8 adds ``set_last_retrieval`` / ``get_last_retrieval`` so the pipeline can
-remember one turn's retrieved chunks and cheaply decide, on the next turn, whether
-to reuse them instead of retrieving again.
+Turns grouped under a ``conversation_id`` so a follow-up resolves against
+prior context. Recent turns verbatim; older ones folded into ``summary``
+(``folded_through`` marks how far), but kept as the transcript. Org-scoped.
+``set_last_retrieval``/``get_last_retrieval`` let the next turn reuse chunks.
 """
 
 from __future__ import annotations
@@ -24,11 +14,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Turn:
-    """One question + its answer within a conversation.
-
-    ``cited`` is the source list the web chat drew under the answer, and
-    ``chart`` the chart drawn with it. The rewriter reads neither. Empty on a
-    turn saved before they were kept.
+    """One question + its answer. ``cited`` and ``chart`` are what the web chat
+    drew; the rewriter reads neither.
     """
 
     turn_index: int
@@ -51,14 +38,10 @@ class ConversationContext:
 
 @dataclass(frozen=True)
 class RetrievedChunkRecord:
-    """A retrieved chunk remembered from a turn, for the Phase 8 reuse check.
+    """A retrieved chunk remembered from a turn, for the reuse check.
 
-    Deliberately *not* the vectorstore's ``RetrievedChunk`` — the memory layer
-    stays ignorant of the retrieval layer. It holds only what the next turn needs
-    to (a) re-embed the chunk and re-score it against the new question and (b)
-    reconstruct a citation: the text plus its stable locator. Embeddings are NOT
-    stored — they are cheaply recomputed from ``content`` when needed (see
-    ``app/rag/pipeline.py`` for that tradeoff), so no vector columns are added.
+    Not ``RetrievedChunk``: memory stays ignorant of retrieval. Holds text and
+    locator only; embeddings are recomputed when needed.
     """
 
     content: str
@@ -80,17 +63,9 @@ class ConversationStore(ABC):
     ) -> str:
         """Create a conversation for a tenant and return its ``conversation_id``.
 
-        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
-        creates an org-wide conversation, unchanged from every prior caller.
-        A non-``None`` value stamps which sub-workspace this conversation
-        belongs to, so the API layer can later verify a client-supplied
-        ``conversation_id`` actually belongs to the caller's workspace.
-
-        ``user_id`` stamps the OWNER. A conversation is personal like a
-        scheduler or a pin, and chat history is the most sensitive of those,
-        so the API layer requires it to match on resume. ``None`` keeps every
-        non-API caller (tests, scripts) working and leaves the row ownerless,
-        which is what a pre-existing row looks like.
+        ``workspace_id`` stamps the space (None = org-wide) so the API can
+        check a resumed id. ``user_id`` is the owner, required to match on
+        resume; None (tests, scripts) leaves it ownerless.
         """
         raise NotImplementedError
 
@@ -99,11 +74,8 @@ class ConversationStore(ABC):
         self, conversation_id: str, question: str, answer: str, cited: list | None = None,
         chart: dict | None = None,
     ) -> int:
-        """Append a turn; return its 0-based ``turn_index``.
-
-        ``cited`` is the source list for that answer, ``chart`` the chart
-        drawn with it (``{"panel", "period"}``). None stores nothing, which is
-        what a turn without them looks like.
+        """Append a turn; return its 0-based ``turn_index``. ``cited`` and
+        ``chart`` (``{"panel", "period"}``) are optional.
         """
         raise NotImplementedError
 
@@ -131,13 +103,8 @@ class ConversationStore(ABC):
     def set_summary_folded_through(
         self, conversation_id: str, summary: str, folded_through: int
     ) -> None:
-        """Store ``summary`` and record how far it has folded.
-
-        Turns are **kept**. This replaced ``set_summary_and_prune``, which
-        deleted them: the marker is what stops the fold re-reading the whole
-        history, and deleting was only ever a way of achieving that. The rows
-        are also the person's transcript, and ``get_context`` already limits
-        what the model sees, so nothing needed them gone.
+        """Store ``summary`` and record how far it has folded. Turns are kept:
+        they are the person's transcript; the marker stops re-folding.
         """
         raise NotImplementedError
 
@@ -147,11 +114,8 @@ class ConversationStore(ABC):
     def set_last_retrieval(
         self, conversation_id: str, org_id: str, chunks: list[RetrievedChunkRecord]
     ) -> None:
-        """Remember the chunks retrieved on the latest turn (replacing any prior).
-
-        Only the most recent turn's chunks are kept — the reuse check only ever
-        looks one turn back. An empty ``chunks`` list clears the memory (so a turn
-        that retrieved nothing, or a web/fallback answer, can't be reused).
+        """Remember the latest turn's chunks (the reuse check looks one turn
+        back). An empty list clears it, so a fallback answer is never reused.
         """
         raise NotImplementedError
 

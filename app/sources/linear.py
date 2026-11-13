@@ -1,16 +1,7 @@
-"""Linear implementation of the ``SourceAdapter`` interface.
+"""Linear ``SourceAdapter``: one issue (title, description, comments) is one document.
 
-Linear's API is GraphQL-only over plain HTTP, so this uses ``httpx`` directly
-(already a dependency) instead of pulling in a dedicated SDK — same
-dependency-light reasoning as every other adapter here. Auth is a personal
-API key (``Authorization: <key>``, no "Bearer" prefix), the simplest viable
-auth given there's no OAuth app to review yet — same tradeoff Notion made in
-Phase 4, and the same per-org env-var discovery Notion got in Phase 9
-(``LINEAR_TOKEN_<NAME>``): a key can only see the workspace it was issued in,
-so the tenant boundary is enforced by Linear itself.
-
-Each Linear *issue* (title + description + comments, flattened to text) is
-one document — the natural unit, same role a Notion page plays.
+GraphQL over plain ``httpx``, no SDK. A token sees only its own workspace, so
+Linear itself enforces the tenant boundary.
 """
 
 from __future__ import annotations
@@ -30,17 +21,12 @@ logger = logging.getLogger(__name__)
 _API_URL = "https://api.linear.app/graphql"
 _TIMEOUT = 30.0
 
-# Same pagination cap discipline as the Notion/Drive/GitHub fetch bounds
-# elsewhere in app/sources and app/githublive: bound the walk, don't trust an
-# external API to paginate forever without a ceiling.
+# Bound the walk; never trust an API to stop paginating.
 _MAX_ISSUES = 2000
 _PAGE_SIZE = 100
 
-# The listing carries each issue's TEAM and its per-issue SHARING, because
-# revocation rides the listing (`ingestion.pipeline._restamp_unchanged_access`):
-# a change in who may read an issue moves no `updatedAt`, so an issue whose
-# audience changed is "unchanged" and is never re-fetched. Both ride the query
-# already being made -- the only new calls are per TEAM (`_team_access`).
+# The listing carries TEAM and per-issue SHARING because revocation rides the
+# listing (`_restamp_unchanged_access`): an audience change moves no `updatedAt`.
 _ISSUES_QUERY = """
 query Issues($after: String, $filter: IssueFilter) {
   issues(first: %d, after: $after, filter: $filter, orderBy: updatedAt) {
@@ -54,9 +40,7 @@ query Issues($after: String, $filter: IssueFilter) {
 }
 """ % _PAGE_SIZE
 
-# `teams` returns "all teams whose issues the user can access", so every team an
-# issue in the listing belongs to is in here. `visibility` replaced the
-# deprecated `private` flag: public | private | restricted.
+# Every team whose issues the token can read. `visibility`: public | private | restricted.
 _TEAMS_QUERY = """
 query Teams($after: String) {
   teams(first: 100, after: $after) {
@@ -66,9 +50,7 @@ query Teams($after: String) {
 }
 """
 
-# A team's members ARE its ACL for a non-public team. Disabled/suspended users
-# are excluded by default (`includeDisabled: false`), which is what we want: a
-# suspended account cannot sign in to Linear either.
+# A non-public team's members are its ACL. Disabled users are excluded by default.
 _TEAM_MEMBERS_QUERY = """
 query TeamMembers($id: String!, $after: String) {
   team(id: $id) {
@@ -80,9 +62,7 @@ query TeamMembers($id: String!, $after: String) {
 }
 """
 
-# Linear: "Private teams are visible only to team members and workspace admins"
-# (team-creation screen). Owners rank above admins. Disabled accounts are
-# excluded by default, as for team members.
+# Admins and owners also see every private team (Linear's own rule).
 _ADMINS_QUERY = """
 query Admins($after: String) {
   users(first: 100, after: $after, filter: {or: [{admin: {eq: true}}, {owner: {eq: true}}]}) {
@@ -99,11 +79,7 @@ _VIEWER_QUERY = "query { viewer { email } }"
 _MAX_TEAM_PAGES = 5
 _MAX_MEMBER_PAGES = 10
 
-# Asks for the fields that answer the questions people actually ask about an
-# issue. The description and comments alone cannot answer "what's the status of
-# ENG-142?", "who's it assigned to?" or "is it done?" -- the identifier, state
-# and assignee were fetched for the ACTIVITY feed and never for the indexed
-# document, so those questions refused against data one field away.
+# Identifier, state and assignee are fetched so "status of ENG-142?" is answerable.
 _ISSUE_QUERY = """
 query Issue($id: String!) {
   issue(id: $id) {
@@ -122,20 +98,9 @@ query Issue($id: String!) {
 }
 """
 
-# Issues touched since a caller-supplied instant, for activity reports (NOT
-# ingestion). Two differences from _ISSUES_QUERY that both matter:
-#
-# 1. It filters server-side on ``updatedAt``. Linear supports this natively;
-#    the listing query above simply never asked, which is why the ingestion
-#    path walks every issue every time.
-# 2. It asks for ``identifier``/``state``/``assignee``. A report needs to say
-#    "ENG-142 moved to Done, assigned to Priya" — the issue's UUID and title
-#    alone can't answer "what shipped" or "what's stuck".
-#
-# The whole filter is passed as one ``IssueFilter`` variable rather than
-# naming the inner comparator's scalar type: Linear has renamed that scalar
-# (DateTime -> DateTimeOrDuration) across API versions, and referencing the
-# input object by name keeps this query working across both.
+# Issues updated since an instant, for activity facts (not ingestion), filtered
+# server-side. The filter is one ``IssueFilter`` variable because Linear renamed
+# the inner scalar type (DateTime -> DateTimeOrDuration) across versions.
 _RECENT_ISSUES_QUERY = """
 query RecentIssues($after: String, $filter: IssueFilter) {
   issues(first: %d, after: $after, filter: $filter, orderBy: updatedAt) {
@@ -175,23 +140,14 @@ def _chart_fields(node: dict) -> dict:
 
 
 def _issue_title(node: dict) -> str:
-    """``ENG-142 — Fix login``, falling back to the bare title.
-
-    The identifier is how humans refer to an issue; without it in the title,
-    "what's the status of ENG-142?" has nothing to match on.
-    """
+    """``ENG-142 - Fix login``: people ask by identifier, so it must be in the title."""
     title = (node.get("title") or "Untitled issue").strip()
     identifier = (node.get("identifier") or "").strip()
     return f"{identifier} - {title}" if identifier else title
 
 
 def _issue_preamble(issue: dict) -> str:
-    """One prose line of issue metadata, for the top of the document.
-
-    Only states what Linear told us -- an unset assignee is omitted rather than
-    described as "unassigned", because retrieval would then happily answer
-    "who is this assigned to?" with a word we invented.
-    """
+    """One prose line of issue metadata. An unset field is omitted, never invented."""
     state = (issue.get("state") or {}).get("name") or ""
     assignee = (issue.get("assignee") or {}).get("name") or ""
     team = (issue.get("team") or {}).get("name") or ""
@@ -216,12 +172,9 @@ def _issue_preamble(issue: dict) -> str:
 
 
 def _issue_meta(issue: dict) -> dict | None:
-    """People, team and attached links — extra fields in the one issue query.
+    """People, team and attached links for the graph.
 
-    `id`/`email` on assignee, creator and commenters and the `attachments`
-    list cost nothing but bytes: they ride the `issue` query `fetch_document`
-    already sends (Second Brain 1.1). An attachment is how Linear records a
-    linked pull request, which is the Linear→GitHub edge the graph needs.
+    An attachment is how Linear records a linked pull request (the Linear->GitHub edge).
     """
     people = []
     for field, role in (("assignee", "assignee"), ("creator", "creator")):
@@ -254,12 +207,9 @@ _UNRESOLVED = object()
 def _shared_emails(node: dict) -> list[str]:
     """Who this issue was shared with individually, outside its team.
 
-    Linear's per-issue sharing (Enterprise, 2026-02): a private team's issue can
-    be shared with a named user who is not in the team. Empty everywhere else.
-    ponytail: an issue that INHERITS sharing from its parent
-    (`inheritsSharedAccess`) is trusted to report the inherited users here too;
-    if it does not, those users are withheld (fail closed). Read the parent's
-    `sharedAccess` in the same query if that turns out to be the case.
+    ponytail: an issue that inherits sharing from its parent is trusted to list
+    those users here; if not, they are withheld (fail closed). Read the parent's
+    `sharedAccess` if that turns out to be the case.
     """
     shared = (node.get("sharedAccess") or {}).get("sharedWithUsers") or []
     return [str(u.get("email") or "").strip() for u in shared if (u.get("email") or "").strip()]
@@ -275,14 +225,9 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 class LinearAdapter(SourceAdapter):
-    """Fetches issues from a Linear workspace via its GraphQL API.
+    """Fetches issues from a Linear workspace.
 
-    Linear sends the ``Authorization`` header differently depending on the
-    credential type: a personal API key is sent RAW (no scheme prefix), while
-    an OAuth access token needs ``Bearer <token>``. ``oauth`` tells this
-    adapter which one ``token`` is — set by ``app/sources/factory.py`` based
-    on which credential path resolved it (a directly-passed ``token=`` means
-    OAuth; a ``token_name``/default lookup means the legacy personal key).
+    ``oauth``: an OAuth token is sent as ``Bearer <token>``; a personal API key raw.
     """
 
     def __init__(
@@ -305,9 +250,7 @@ class LinearAdapter(SourceAdapter):
         #: The teams picked for this connection; ``None`` reads every team the
         #: token can see (only the legacy env-key path, never a connection).
         self._team_ids = list(team_ids) if team_ids is not None else None
-        #: team id -> visibility, filled by ONE `teams` walk per adapter (i.e.
-        #: per sync). `None` until first needed, so a listing with no team ids
-        #: at all (a fixture, an empty workspace) costs nothing.
+        #: team id -> visibility, one `teams` walk per sync, lazily.
         self._team_visibility: dict[str, str] | None = None
         #: team id -> member emails, or None when they could not be read.
         self._team_members: dict[str, tuple[str, ...] | None] = {}
@@ -405,12 +348,7 @@ class LinearAdapter(SourceAdapter):
         return members
 
     def _admins(self) -> tuple[str, ...]:
-        """Workspace admins and owners, who see every private team in Linear.
-
-        A failure means NO admins, never a failed listing: the members are
-        still a correct (narrower) audience, so an unreadable admin list locks
-        admins out rather than letting anyone else in.
-        """
+        """Workspace admins and owners. Unreadable means none (fails closed), not a failed listing."""
         if self._workspace_admins is None:
             emails: list[str] = []
             cursor: str | None = None
@@ -440,19 +378,8 @@ class LinearAdapter(SourceAdapter):
     def _access_for(self, node: dict) -> DocAccess | None:
         """Who may read one issue. ``None`` = could not tell AND no fallback.
 
-        A PUBLIC team's issues are visible to every workspace member, so they are
-        scope-public -- the Slack public-channel rule, and it keeps this to
-        private teams only. A PRIVATE team's issues are visible to its members
-        and to workspace admins (Linear: "Private teams are visible only to team
-        members and workspace admins"), plus whoever the issue was individually
-        shared with. RESTRICTED (a non-private team inside a
-        private-team boundary) is treated like private: its parent's members can
-        discover and join it, and until they join we do not grant them.
-
-        Unreadable membership falls back to OWNER-ONLY, exactly as Drive does:
-        the connected account can demonstrably read the issue, nobody else is
-        granted it, and the pipeline freezes an already-indexed issue instead of
-        narrowing it.
+        Public team: scope-public. Private or restricted team: members + admins +
+        individually shared users. Unreadable membership: owner-only, as Drive.
         """
         team_id = ((node.get("team") or {}).get("id") or "").strip()
         if not team_id:
@@ -478,11 +405,7 @@ class LinearAdapter(SourceAdapter):
                 refs.append(
                     SourceRef(
                         external_id=node["id"],
-                        # "ENG-142 — Fix login" rather than "Fix login": the
-                        # identifier is how people refer to an issue, and it is
-                        # what makes "what's the status of ENG-142?" retrievable
-                        # at all. Retrieval sees the title via the context
-                        # header, so this is the cheapest place to put it.
+                        # With the identifier, so "status of ENG-142?" retrieves it.
                         title=_issue_title(node),
                         last_modified=_parse_dt(node["updatedAt"]),
                         source_uri=node["url"],
@@ -498,22 +421,12 @@ class LinearAdapter(SourceAdapter):
     def fetch_recent_issues(
         self, since: datetime, *, max_issues: int = 300
     ) -> list[dict]:
-        """Issues updated since ``since``, as an activity feed.
+        """Issues updated since ``since``, as an activity feed (not ingestion).
 
-        Deliberately NOT ``list_documents``: that returns every issue as a
-        ``SourceRef`` for the ingestion pipeline to chunk and embed. A
-        scheduled report wants only what moved, with the state and assignee
-        that make it a *report* rather than a list of titles — and stores
-        nothing.
-
-        Bounded by ``max_issues`` on top of Linear's own pagination, for the
-        same reason ``_MAX_ISSUES`` bounds the listing: a busy workspace's
-        month of activity must not build an unbounded prompt.
+        Bounded by ``max_issues`` so a busy workspace cannot grow it unbounded.
         """
         collected: list[dict] = []
         cursor: str | None = None
-        # Linear's comparators take an ISO-8601 instant; normalise to UTC "Z"
-        # so a naive/offset-aware datetime from the caller behaves the same.
         variables_filter = {"updatedAt": {"gt": since.isoformat()}, **self._team_filter()}
         while len(collected) < max_issues:
             data = self._query(
@@ -532,18 +445,9 @@ class LinearAdapter(SourceAdapter):
                         # backlog | unstarted | started | completed | canceled
                         "state_type": state.get("type") or "",
                         "assignee": assignee.get("name") or "",
-                        # Team and the two lifecycle dates are what turn
-                        # this feed into countable facts: "completed per
-                        # week by team" and cycle time are impossible
-                        # without them, and they ride along in a query we
-                        # already make.
+                        # Team and lifecycle dates make "completed per week by team" countable.
                         "team": (node.get("team") or {}).get("name") or "",
-                        # Every simple field of the node, for charts
-                        # (insights/fields.py): priority, estimate, labels,
-                        # project, cycle, milestone... -- whatever the query
-                        # returns, with no list kept here. The columns the
-                        # facts already have (state, assignee, team) are not
-                        # stored twice.
+                        # Every simple field for charts (insights/fields.py), minus columns stored above.
                         "fields": _chart_fields(node),
                         "created_at": _parse_dt(node.get("createdAt")),
                         "completed_at": _parse_dt(node.get("completedAt")),
@@ -563,10 +467,7 @@ class LinearAdapter(SourceAdapter):
         if issue is None:
             raise SourceError(f"Linear issue {external_id} not found or not accessible")
 
-        # A metadata preamble, first, so it survives chunking: chunk 1 of a
-        # long issue is the one retrieval usually returns, and status/assignee
-        # are what gets asked about. Written as prose rather than a table
-        # because the embedder scores prose.
+        # Metadata first, as prose, so it lands in chunk 1 and embeds well.
         parts = [_issue_preamble(issue), issue.get("description") or ""]
         for comment in issue["comments"]["nodes"]:
             author = (comment.get("user") or {}).get("name") or "someone"
@@ -579,12 +480,7 @@ class LinearAdapter(SourceAdapter):
             content=content,
             source_uri=issue["url"],
             last_modified=_parse_dt(issue["updatedAt"]),
-            # The assignee, which is who the issue BELONGS to -- Linear's API
-            # has no "last edited by" on an issue at all. It is the nearest
-            # true statement, and provenance renders it as the editor line, so
-            # "whose ticket is this?" is answerable from the context. Omitted
-            # when unset, never "unassigned": an unknown editor must not reach
-            # the prompt as a placeholder.
+            # Linear has no "last edited by"; the assignee is the nearest truth. Omitted when unset.
             last_editor=(issue.get("assignee") or {}).get("name") or None,
             meta=_issue_meta(issue),
         )

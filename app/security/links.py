@@ -1,17 +1,12 @@
 """Link provenance: an answer may only carry a link its sources carried.
 
-Every real prompt-injection leak from a RAG assistant went out through a URL:
-EchoLeak (an image URL the client fetched), Slack AI (a "click here to
-reauthenticate" link), ChatGPT and Bard (image URLs on an allowlisted domain).
-The model writes the URL, so the model can be steered into putting a tenant's
-data in its query string. This is the deterministic answer to all of them: a
-URL survives only if it appears VERBATIM in the text the model was shown, so
-the model can repeat a link but never compose one. No model call, no latency.
+Real RAG data leaks went out through model-composed URLs (EchoLeak, Slack
+AI). A URL survives only if it appears VERBATIM in the text the model was
+shown: it can repeat a link, never compose one. No model call.
 
-A host on the allowlist (the connected tools' own domains) is also kept, but
-cut to scheme+host+path: a Notion or GitHub link the model recalls is useful,
-while a query string on it (a prefilled Google Form, `?title=<secret>`) is
-exactly where data rides out. Everything else becomes ``[link removed]``.
+An allowlisted host (the connected tools' domains) is kept but cut to
+scheme+host+path: a query string is where data rides out. Everything else
+becomes ``[link removed]``.
 """
 
 from __future__ import annotations
@@ -26,14 +21,11 @@ logger = logging.getLogger(__name__)
 
 REMOVED = "[link removed]"
 
-# Absolute URLs, `www.` hosts, and the schemes that act on a click
-# (`mailto:attacker?body=<secret>`, `javascript:`, `data:`). The URL itself is
-# what gets replaced, so inline `[t](url)`, reference-style `[ref]: url`
-# (EchoLeak's bypass), images `![a](url)` and bare links are all covered by the
-# one pattern: every form contains the URL.
+# Absolute URLs, `www.` hosts, and click-acting schemes (`mailto:`,
+# `javascript:`, `data:`). The URL itself is replaced, so inline, reference
+# (EchoLeak's bypass), image and bare links are all covered.
 URL_PATTERN = re.compile(
-    # `javascript:`/`data:` carry code, and their arguments (parens, quotes) are
-    # part of them, so they run to the next whitespace.
+    # `javascript:`/`data:` run to the next whitespace (their arguments are code).
     r"(?i)\b(?:javascript|data):\S+"
     r"|\b(?:https?://|www\.|mailto:)[^\s<>()\[\]{}\"'`]+"
     # Slack links a bare `host.tld/path` too, so a scheme-less URL with a path
@@ -85,11 +77,7 @@ def enforce_link_provenance(
 
 
 def strip_links(text: str) -> str:
-    """Every URL in ``text`` replaced with ``[link removed]``.
-
-    For model-written text that is STORED and read back as context (the
-    running conversation summary): it resolves "what about that one?", which
-    never needs a URL, and a stored URL is one a later answer could repeat as
-    if a source had carried it.
-    """
+    """Every URL in ``text`` replaced with ``[link removed]``, for model-written
+    text that is STORED and read back (the running summary), so a later answer
+    cannot repeat it as sourced."""
     return URL_PATTERN.sub(REMOVED, text) if text else text

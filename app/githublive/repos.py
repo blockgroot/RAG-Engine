@@ -1,29 +1,13 @@
-"""The authorized repo scope of one GitHub App installation (Plan Phase 4).
+"""The authorized repo scope of one GitHub App installation.
 
-Two responsibilities, deliberately together because they are two halves of one
-idea — *what did the admin actually authorize, and does this request stay inside
-it*:
+- ``fetch_installation_repos`` records, at connect, what the admin chose on
+  GitHub's install screen (``all`` or ``selected`` repos), never assuming all.
+- ``resolve_repo`` is the **allowlist**: every live read's ``repo`` is filled by
+  an LLM, so it is untrusted, like a client ``org_id``. It refuses anything
+  outside the installation BEFORE any authenticated request.
 
-- ``fetch_installation_repos`` reads ``GET /installation/repositories``, which
-  reports ``repository_selection`` (``all`` or ``selected``) plus the repos
-  themselves. This is recorded at connect time (decision D5b) because
-  "Connect GitHub" does **not** imply every repo: the admin chooses on GitHub's
-  own install screen, and our stored view should reflect that choice rather
-  than assume the widest one. It mirrors a Drive connection storing its picked
-  folder id.
-
-- ``resolve_repo`` is the **allowlist**. Every live read takes a ``repo``
-  argument that was filled in by an LLM, which makes it untrusted input in
-  exactly the way a user-supplied ``org_id`` would be. This function is the
-  live path's equivalent of ``WHERE org_id = ...``: it normalizes the name and
-  refuses anything outside the installation *before* any authenticated request
-  is sent. Skipping it would let a hallucinated or coaxed repo name reach
-  GitHub as a real request for someone else's repository.
-
-Each repo's ``description`` and ``topics`` are kept on purpose. Since nothing is
-embedded (decision D5), they are the only signal the model has for resolving a
-vague question ("which service handles payments?") to a concrete repo — they do
-the job retrieval would otherwise do, at zero storage cost.
+``description`` and ``topics`` are kept: with nothing embedded, they are how
+the model picks a repo for a vague question.
 """
 
 from __future__ import annotations
@@ -45,17 +29,12 @@ SELECTION_SELECTED = "selected"
 
 @dataclass(frozen=True)
 class RepoRef:
-    """One repository the installation can see.
-
-    ``description``/``topics`` exist to help the model choose a repo without
-    retrieval (see module docstring), not for display alone.
-    """
+    """One repository the installation can see; ``description``/``topics`` help the model pick it."""
 
     full_name: str
     description: str | None = None
     topics: tuple[str, ...] = ()
-    #: GitHub's `private` flag. ``None`` = not recorded (a scope stored before
-    #: per-asker access existed), which `githublive.access` treats as private.
+    #: GitHub's `private` flag. ``None`` = not recorded; `githublive.access` treats it as private.
     private: bool | None = None
 
 
@@ -72,11 +51,8 @@ class InstallationScope:
 def fetch_installation_repos(
     token: str, *, timeout: float = _TIMEOUT
 ) -> tuple[str, list[RepoRef]]:
-    """List the repos this installation token can access, following pagination.
-
-    Returns ``(repository_selection, repos)``. Raises ``SourceError`` on any
-    failure, per the provider-error convention.
-    """
+    """List the repos this installation token can access: ``(repository_selection,
+    repos)``. Raises ``SourceError`` on any failure."""
     repos: list[RepoRef] = []
     selection = SELECTION_SELECTED  # conservative default; see scope_from_config
     total_count: int | None = None
@@ -112,8 +88,7 @@ def fetch_installation_repos(
             if item.get("full_name")
         )
 
-        # Stop when the page came back short, or we've collected everything the
-        # first response said existed.
+        # Stop on a short page or once everything announced is collected.
         if len(batch) < _PER_PAGE:
             break
         if total_count is not None and len(repos) >= total_count:
@@ -141,13 +116,8 @@ def scope_to_config(scope: InstallationScope) -> dict:
 
 
 def scope_from_config(config: dict | None) -> InstallationScope:
-    """Rebuild a scope from stored config.
-
-    Tolerates a config written before Phase 4 (installation id only). Such a row
-    gets ``repository_selection = "selected"`` with an empty repo list, so
-    ``resolve_repo`` refuses everything until the scope is refreshed — failing
-    closed rather than silently assuming the widest possible access.
-    """
+    """Rebuild a scope from stored config. An installation-id-only row gets
+    ``selected`` with no repos, so ``resolve_repo`` refuses everything (fails closed)."""
     config = config or {}
     return InstallationScope(
         installation_id=str(config.get("installation_id") or ""),
@@ -167,17 +137,12 @@ def scope_from_config(config: dict | None) -> InstallationScope:
 
 
 def resolve_repo(scope: InstallationScope, repo: str) -> str:
-    """Normalize and authorize a model-supplied repo name, or raise.
+    """Normalize and authorize a model-supplied repo name, or raise ``SourceError``.
 
-    Accepts ``owner/name`` or a bare ``name`` (qualified with the connection's
-    own account). Comparison is case-insensitive, matching GitHub. Raises
-    ``SourceError`` — never returns a value the caller must remember to check —
-    so a missed call site fails loudly instead of leaking access.
+    ``owner/name`` or bare ``name`` (the connection's account), case-insensitive.
+    Raising (never a value to check) makes a missed call site fail loudly.
     """
-    # Whitespace only. Deliberately NOT ``.strip("/")``: silently rewriting
-    # "/handbook" into a valid name would be lenient normalization of a value an
-    # LLM produced, and a stray slash is a signal the model emitted something
-    # malformed. Failing is more predictable than guessing what it meant.
+    # Whitespace only: never strip "/" from model output; malformed fails.
     candidate = (repo or "").strip()
     if not candidate:
         raise SourceError("No repository was named, so nothing can be looked up.")
@@ -202,10 +167,8 @@ def resolve_repo(scope: InstallationScope, repo: str) -> str:
 
     full_name = f"{owner}/{name}"
 
-    # Under "all", every repo of the connected account is in scope — including
-    # ones created after connect, which is the point of choosing "all". But the
-    # OWNER is still checked: "all repositories" means all of this account's,
-    # never any account's.
+    # Under "all", any repo of the connected account (incl. new ones), but the
+    # OWNER is still checked.
     if scope.repository_selection == SELECTION_ALL:
         if owner.lower() != scope.account_login.lower():
             raise SourceError(

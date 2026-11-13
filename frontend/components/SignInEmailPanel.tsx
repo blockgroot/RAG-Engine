@@ -5,10 +5,7 @@ import { ApiError, SignInEmails, api } from "@/lib/api";
 
 /**
  * Your sign-in email, and the ones you used before.
- *
- * Documents are shared with an email address, so changing yours would lose
- * everything shared with the old one. Handbook keeps the old address as a
- * prior email instead, and it keeps matching those documents for you.
+ * The old address stays as an alias, so documents shared with it still match.
  */
 export function SignInEmailPanel() {
   const [data, setData] = useState<SignInEmails | null>(null);

@@ -105,15 +105,10 @@ function formatRelativeTime(dateStr: string): string {
   }
 }
 
-// One key for every scope: "do I want this section open?" is a preference
-// about the RAIL, not about which space you are standing in, and keying it per
-// workspace would make the section collapse and reappear as you move around.
+// One key for every scope: open/closed is a rail preference, not per space.
 const COLLAPSED_KEY = "rail.chats.collapsed";
 
-/**
- * Minimalist recent chats list in the left rail under Explore.
- * Displays only the user's top-5 conversations with 1-click access.
- */
+/** Recent chats in the left rail: the person's top five. */
 export function RailChats() {
   const params = useParams<{ id?: string }>();
   const pathname = usePathname();
@@ -125,9 +120,7 @@ export function RailChats() {
     pathname === "/chat" ||
     (Boolean(workspaceId) && pathname === `/workspaces/${workspaceId}/ask`);
 
-  // Seeded from the cache so a remount renders the list it already had rather
-  // than blanking and re-fetching. `loaded` starts true when there IS a cached
-  // list, because there is nothing to wait for.
+  // Seeded from the cache so a remount does not blank the list.
   const cacheKey = chatsCacheKey(workspaceId);
   const cached = getCachedChats(cacheKey);
   const [items, setItems] = useState<ConversationSummary[]>(cached ?? []);
@@ -140,12 +133,8 @@ export function RailChats() {
   const menuRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  // Collapsed is a per-viewer CONVENIENCE, so it lives in localStorage rather
-  // than on the server: it is not content, nobody else needs to see it, and
-  // losing it costs one click. Read lazily so the first paint is already in
-  // the remembered state -- initialising to `false` and correcting in an
-  // effect would make the list flash open on every navigation, and this
-  // component remounts on each one (`AppShell` is rendered per page).
+  // Per-viewer convenience, so localStorage. Read lazily so the list does not
+  // flash open on each navigation (this remounts per page).
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(COLLAPSED_KEY) === "1";
@@ -175,9 +164,7 @@ export function RailChats() {
         setItems(conversations);
         setCachedChats(chatsCacheKey(workspaceId), conversations);
       })
-      // A failed refetch keeps whatever is on screen. The list is navigation,
-      // not content: emptying it because one poll failed would take away the
-      // way back to a chat over a blip.
+      // A failed refetch keeps what is on screen: one blip must not hide the way back.
       .catch(() => undefined)
       .finally(() => setLoaded(true));
   }, [workspaceId]);
@@ -215,15 +202,8 @@ export function RailChats() {
   }, [workspaceId]);
 
   function handleOpen(id: string) {
-    // ALWAYS through the URL, including when already on the chat page. The
-    // in-place branch that used to live here fired a window event instead, so
-    // switching chats left the address bar reading "/chat" — no back button
-    // between conversations, nothing to bookmark or paste to a colleague, and
-    // a refresh that could not restore the thread. `?c=` is now the single
-    // source of truth and the page's existing param effect opens it.
-    //
-    // `push`, not `replace`: moving from one chat to another IS somewhere you
-    // came from, so Back should return you to it.
+    // ALWAYS through the URL (`?c=` is the source of truth). `push`: Back
+    // returns to the previous chat.
     router.push(`${targetChatPath}?c=${encodeURIComponent(id)}`);
   }
 
@@ -314,9 +294,7 @@ export function RailChats() {
         setCachedChats(chatsCacheKey(workspaceId), next);
         return next;
       });
-      // Deleting the chat you are READING has to clear the transcript too --
-      // otherwise the page goes on showing messages that no longer exist and
-      // the next question posts to a conversation the server 404s.
+      // Deleting the open chat clears the transcript, or the next question 404s.
       if (id === activeId) {
         try {
           sessionStorage.removeItem(`chat.conversation.${workspaceId ?? "org"}`);

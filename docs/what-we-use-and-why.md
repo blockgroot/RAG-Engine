@@ -13,9 +13,9 @@
 
 The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for company question-and-answer.
 
-Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts add up stored rows in SQL: recorded tool activity, and tables and paragraph figures read from documents and uploads. Current product status is `docs/handbook/PRODUCT_STATUS.md`.
+Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts add up stored rows in SQL: recorded tool activity, and tables and paragraph figures read from documents and uploads. Agent mode drafts writes into the connected tools, each approved on a card and sent through an MCP server an admin added (`app/actions/`). Current product status is `docs/handbook/PRODUCT_STATUS.md`.
 
-The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. Default components are therefore local, inexpensive, and keep policy text off third-party embedding APIs unless remote inference is explicitly configured.
+The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. The code's defaults are local (BGE-M3 and its reranker in-process). The hosted service and the self-hosted package (`deploy/selfhost/docker-compose.yml`) both default to remote Jina embeddings and reranking and to Claude for answers, because those boxes do not hold multi-GB weights. Identifiers (Aadhaar, PAN, card, mobile and others) are masked before any text leaves for those services (`app/privacy/`).
 
 RAG is used in preference to fine-tuning because policies are facts that change. A policy update is a re-ingestion, not a retraining cycle. The answer names the page it used: one page as a line under the answer, two or more as a number on the sentence. The link is the address stored at sync.
 
@@ -39,10 +39,11 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 
 | Layer | Selection | Rationale |
 | --- | --- | --- |
-| Language model | Official OpenAI client; any OpenAI-compatible endpoint | Provider and host are swapped by configuration. LiteLLM and LangChain are not required. |
-| Embeddings | BGE-M3 (1024 dimensions), local or remote | Strong retrieval quality. Local inference is free of API cost and can retain text on-host. |
-| Reranker | BGE-reranker-v2-m3, or remote Jina | Same model family as the embedder. No additional library. |
-| Database | PostgreSQL 17 with pgvector | Vectors, full-text search, identity, jobs, and conversation state share one store. |
+| Language model | Official OpenAI client; any OpenAI-compatible endpoint. Production answers on Claude Sonnet 5.5 or Haiku 5.5 (the picker); background work on a Gemini aux model | Provider and host are swapped by configuration. LiteLLM and LangChain are not required. |
+| Embeddings | BGE-M3 (1024 dimensions) locally by default; remote Jina on the hosted and self-hosted deploys (`jina-embeddings-v3` in the self-hosted package, also 1024) | Strong retrieval quality. Local inference is free of API cost and can retain text on-host. |
+| Reranker | bge-reranker-v2-m3 locally; remote `jina-reranker-v3` with the remote backend | Same family as the embedder in each case. One Jina key covers both. |
+| Database | PostgreSQL 17 with pgvector 0.8+ (`halfvec(1024)`, HNSW) | Vectors, full-text search, identity, jobs, and conversation state share one store. |
+| Rate limits | Token buckets in Redis (Valkey) when `REDIS_URL` is set, else per process | Redis holds rate limits only. Nothing else depends on it. |
 | Keyword search | Full-text filter plus Okapi BM25 | Recovers exact terms that cosine similarity under-weights. |
 | Fusion | Reciprocal Rank Fusion (k = 60) | Rank-based merge; cosine and BM25 scores need not be calibrated. |
 | Chunking | 256 tokens with 40-token overlap | Approximately one policy proposition per chunk. |
@@ -59,6 +60,10 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 | Content sources | Notion, Drive, Slack, Linear (indexed); GitHub live; Forms labels only | Sharing from Drive, Slack, Linear and GitHub is applied in the query. Notion is per space. |
 | API and interface | FastAPI and Next.js 15 | Organisation identity is taken only from the signed session cookie. |
 | Charts | Model fills a spec; SQL adds up stored rows; ECharts on the web, matplotlib PNG in Slack | The model never emits a number. Tables in documents and uploads are read without AI (openpyxl, pdfplumber); figures in paragraphs are listed by the background model and checked against their quotes. |
+| Agent mode (writes) | MCP servers an admin adds; the five connectors are presets (`app/actions/mcp_presets.py`) | No hand-written per-tool actions. Each person signs in with their own account; every write waits for their approval on a card. |
+| Identifier masking | Format and check-digit detectors (`app/privacy/`) | Masks identifiers before text reaches the models, Jina or the guard; the reply is restored for the reader. |
+| Injection guard | Llama Prompt Guard 2 or gpt-oss-safeguard (`app/guard/`), on its own account (`GUARD_API_KEY`, `GUARD_BASE_URL`) when set | Scores untrusted text (`GUARD_MODE`, off by default). A flagged question is logged, never refused. Its calls do not spend the answering or background model's quota. |
+| AI usage limits | Tokens a minute per model, and dollars a day (`app/security/ai_spend.py`) | Input and output tokens apart, per person and per company (`AI_TOKEN_LIMITS`); one dollar wallet across models (`AI_*_DOLLARS_PER_DAY`). |
 | Evaluation | Golden path checks, retrieval rank, optional RAGAS | Continuous integration remains fast; LLM-as-judge runs on a slower cadence. |
 
 ---
@@ -74,7 +79,7 @@ The source adapter fetches a changed page, thread, or issue. Text is preprocesse
 1. Conversational follow-ups are rewritten into a standalone question.
 2. SymSpell normalises the retrieval key only.
 3. The question is embedded once.
-4. Previous-turn chunks are reused if cosine similarity is at least 0.72; otherwise vector search and BM25 are fused with RRF, reranked, and truncated to five chunks.
+4. Previous-turn chunks are reused if cosine similarity is at least 0.72; otherwise vector search and BM25 are fused with RRF, reranked, and truncated to five chunks (`RAG_TOP_K`). When several documents score close to the best, up to ten passages are read, one per document first (`RAG_WIDE_MAX_HITS`); each kept hit also brings one neighbouring chunk (`RAG_NEIGHBOR_CHUNKS`).
 5. Compound questions may be decomposed. At most one recovery expansion is permitted.
 6. The confidence gate requires a best cosine of at least 0.35.
 7. Generation uses one of three modes: explicitly supported, related but not explicit, or no supporting evidence.
@@ -89,7 +94,13 @@ The GitHub path does not retrieve embeddings. An answer is composed from a singl
 
 ## 5. Language model
 
-The implementation uses the official OpenAI Python client. `LLM_ADAPTER` names the provider from a fixed list (Gemini, Groq, OpenAI, Anthropic, OpenRouter and others, or `custom` with `LLM_BASE_URL`), `LLM_MODEL` is the model, and a boot check refuses an unknown adapter or model. Members can also pick a model per question (OpenRouter and Groq), and admins can bring their own provider. Auxiliary stages (rewrite, recovery, summarisation, ingest context) may use a cheaper `LLM_AUX_MODEL`.
+The implementation uses the official OpenAI Python client. `LLM_ADAPTER` names the provider from a fixed list (Gemini, Groq, OpenAI, Anthropic, OpenRouter and others, or `custom` with `LLM_BASE_URL`), `LLM_MODEL` is the model, and a boot check refuses an unknown adapter or model. Claude is reached through Anthropic's OpenAI-compatible endpoint with the same client.
+
+In production (since 11 Nov 2026) Claude Sonnet 5.5 answers by default and Haiku 5.5 is the other pick; the picker offers those two only (`app/llm/catalog.py::CLAUDE_MODELS`), and every pickable model must be priced. Background work (rewrite, recovery, summarisation, ingest context, classifiers, tables, graph) runs on a Gemini aux model (`LLM_AUX_ADAPTER`, `LLM_AUX_MODEL`), which is never pickable and never charged. Admins can still bring their own provider (`app/llm/org_model.py`).
+
+Reasoning is off on every call, or at the lowest effort a model accepts (`app/llm/routed.py`): Anthropic gets thinking disabled, Sonnet 5.5 the form it names, Gemini `reasoning_effort: minimal`. Hidden reasoning spent the token cap and pushed the `MODE:` tag off the front of the reply, which silently skipped the audit.
+
+Every provider either factory builds is wrapped in `MaskingLLMProvider` (`app/llm/masking.py`), so identifiers are replaced with placeholders before a call and restored in the reply.
 
 **LiteLLM was not adopted.** The required capability is the OpenAI wire format, which most hosts already expose. LiteLLM would add a dependency for native features that are unused today. Should Anthropic prompt caching become necessary, a LiteLLM-backed class can be introduced behind the existing `LLMProvider` interface.
 
@@ -110,13 +121,15 @@ The embedding model is `BAAI/bge-m3` (1024 dimensions, L2-normalised). The local
 | E5 / GTE | Strong retrieval, but no matching cross-encoder in the same family. |
 | BGE-M3 | Local, multilingual, designed for retrieval, and paired with the chosen reranker. |
 
-At ingest, chunks are embedded in batches of 16. At query time the question is embedded once; that vector is reused for the reuse check and for vector search. A model change requires updating both `vector(1024)` in the schema and `EMBEDDING_DIM`, followed by re-ingestion.
+At ingest, chunks are embedded in batches of 16. At query time the question is embedded once; that vector is reused for the reuse check and for vector search. Vectors are stored as `halfvec(1024)` (half precision, a third of the old index size). A model change requires updating both `halfvec(1024)` in the schema and `EMBEDDING_DIM`, followed by re-ingestion; `scripts/check_embedding_config.py` refuses a mismatch. Same width is not same vectors: moving between BGE-M3 and Jina also needs re-ingestion.
 
 ---
 
 ## 7. PostgreSQL and pgvector
 
-A single PostgreSQL instance stores users, OAuth tokens, documents, 1024-dimensional vectors with an HNSW cosine index, full-text search, conversations, ingestion jobs, and the answer cache.
+A single PostgreSQL instance stores users, OAuth tokens, documents, 1024-dimensional `halfvec` vectors with an HNSW cosine index, full-text search, conversations, and ingestion jobs. There is no answer cache: every question is answered fresh.
+
+`chunks` has one partition per organisation (created and dropped by triggers on `organizations`) and row-level security. Pooled connections act as the `handbook_app` role and see only the rows of the organisation passed to `get_connection(org_id=...)`. Queries still filter on `org_id`, which is also what prunes to the partition. Every pooled connection sets `hnsw.iterative_scan = strict_order`, because tenants share one index: without it, at 1.1M vectors a tenant's search returned 3.9 of 10 rows.
 
 The governing requirement is not maximum approximate-nearest-neighbour throughput. It is that **a query omitting `org_id` must not exist as a normal path**.
 
@@ -128,7 +141,7 @@ The governing requirement is not maximum approximate-nearest-neighbour throughpu
 | FAISS | High speed, but no durable multi-tenant metadata; PostgreSQL would still be required. |
 | pgvector | Vectors reside beside the rows that own them. Isolation, search, and jobs share transactions and backups. |
 
-At approximately 400 chunks the planner correctly omits HNSW (exact scan is faster). At approximately 20,000 chunks it uses the index. A feared under-return for a small tenant in a large shared table did not reproduce.
+At approximately 400 chunks the planner correctly omits HNSW (exact scan is faster). At approximately 20,000 chunks it uses the index. A feared under-return for a small tenant in a large shared table did not reproduce at that size. It did at 1.1M vectors (3.9 of 10 rows), which is why every connection now sets `hnsw.iterative_scan`.
 
 If a single tenant later reaches millions of chunks, self-hosted Qdrant is the first dedicated index consistent with self-hosting. PostgreSQL would remain the source of truth, and the `org_id` filter would remain mandatory.
 
@@ -156,7 +169,7 @@ Prefixes are **deferred**: raw chunks are stored first so that chat becomes avai
 
 Plain cosine similarity recovers paraphrases and misses exact terms (for example “part-time” or a form code). Hybrid retrieval surrounds cosine similarity; it does not replace it.
 
-**Stage 1.** Vector search over a pool of 16 candidates, in parallel with keyword search. PostgreSQL full-text search bounds the candidate set; Okapi BM25, scored in-process, supplies rank order. PostgreSQL `ts_rank` is not BM25. A BM25 extension such as ParadeDB would require a different PostgreSQL image. Per-tenant corpora are hundreds of chunks, so in-process BM25 is sufficient.
+**Stage 1.** Vector search over a pool of 40 candidates (`RETRIEVAL_CANDIDATE_POOL`), in parallel with keyword search. PostgreSQL full-text search bounds the candidate set; Okapi BM25, scored in-process, supplies rank order. PostgreSQL `ts_rank` is not BM25. A BM25 extension such as ParadeDB would require a different PostgreSQL image. Per-tenant corpora are hundreds of chunks, so in-process BM25 is sufficient.
 
 **Stage 2.** Reciprocal Rank Fusion with k = 60. Cosine similarity and BM25 occupy incompatible numeric scales. A weighted sum would require retuning whenever the corpus or model changed. RRF requires no calibration.
 
@@ -168,7 +181,7 @@ Plain cosine similarity recovers paraphrases and misses exact terms (for example
 | MiniLM | Low latency; weaker on long policy pairs. |
 | bge-reranker-v2-m3 | Same family as BGE-M3; already available via `sentence-transformers`. |
 
-A pool of 16 balances recall against approximately 0.3 seconds of rerank latency. A remote Jina backend exists for hosts that cannot hold the 2.2 GB weights.
+The pool was 16 (about 0.3 seconds of local rerank latency) until the Benchmark 2 follow-up raised the default to 40 for recall. A reranked hit scoring below 0.2 of the best hit's reranker score is dropped (`RETRIEVAL_RERANK_MIN_RATIO`). The remote Jina backend (`jina-reranker-v3`) serves hosts that cannot hold the 2.2 GB weights; the hosted and self-hosted deploys use it.
 
 **The confidence gate continues to use cosine 0.35.** RRF scores and reranker logits are never the gate signal. Hybrid search and reranking change only which chunks, and in what order, reach the prompt.
 
@@ -188,7 +201,6 @@ These stages sit before or beside retrieval. None of them replace the gate. Gene
 | Decomposition | Heuristic indicates two distinct asks | A single embedding under-represents the second ask. The heuristic avoids splitting coordinated noun phrases such as “full-time and part-time leave”. |
 | Retrieval reuse | Follow-up cosine ≥ 0.72 | Skips hybrid search and reranking for near-verbatim repeats. Reused chunks still pass through the same gate. |
 | Bounded recovery | Gate miss or one generation refusal | At most one expansion, re-retrieval, and the same gate. Recovery never answers the question and runs before web search. |
-| Answer cache | Identical standalone question within five minutes | The cache key includes workspace identity so org-wide and workspace entries cannot collide. |
 
 Reuse is conservative. On this corpus a legitimate same-chunk follow-up can score below an adjacent-topic follow-up (approximately 0.63 versus 0.67). An incorrect reuse produces an incorrect refusal; a missed reuse costs only one retrieval.
 
@@ -206,7 +218,9 @@ Reuse is conservative. On this corpus a legitimate same-chunk follow-up can scor
 
 **Web search** is not a general search escape. The model is offered a tool only after internal evidence has failed, and only for a named external entity (for example an insurer or a public product). Internal company questions remain on the fallback. The default provider is DuckDuckGo (`ddgs`). Tavily is the documented production alternative. Web answers carry a visible banner and `source=web`. Exactly one tool round is permitted.
 
-**Conversation memory.** Follow-ups such as “what about part-timers?” are rewritten using the last three turns and a running summary, then processed by the unchanged retrieve–gate–generate path. Summaries fold one turn at a time (`existing summary + that turn`) off the critical path. State is stored in PostgreSQL. Redis is not used.
+**Conversation memory.** Follow-ups such as “what about part-timers?” are rewritten using the last three turns and a running summary, then processed by the unchanged retrieve–gate–generate path. Summaries fold one turn at a time (`existing summary + that turn`) off the critical path. State is stored in PostgreSQL. A conversation belongs to one person (`conversations.user_id`).
+
+There is **no answer cache** (removed 6 Nov 2026). A cache keyed on the scope would serve one person's answer to the next asker, whose access may differ.
 
 ---
 
@@ -218,9 +232,13 @@ Ingestible sources implement `SourceAdapter`. Format conversion occurs inside th
 | --- | --- | --- |
 | Notion | Official SDK; per-organisation OAuth | The integration sees only pages shared with it, which is an external tenant boundary. |
 | Google Drive | httpx and native Docs export | OAuth only. There is no environment-token path that could be confused with Notion. |
+| Slack | OAuth; channels picked before sync. The Slack bot also answers questions | A public channel is open to the company; a private channel's members are its ACL. |
+| Linear | OAuth; teams picked in Handbook | A team's membership is its issues' ACL. |
 | GitHub | Live tools; not ingested | Source code is a poor embedding target. README indexing would introduce staleness. `resolve_repo` is the analogue of `org_id` for model-supplied repository names. |
 
-`PolicyAgent` and `WorkspaceAgent` are thin adapters over `RagPipeline`. `GitHubAgent` implements `Agent` directly. Routing is a deterministic user-interface selection (`policy` or `github`), not an LLM classifier in front of the tenant-scoped path.
+Google and Slack (sync, sign-in and Agent mode) use each company's **own** app (`app/auth/org_apps.py`), else the one in `.env`. Hosted Handbook leaves `.env`'s unset, so there the company's own app is required.
+
+There is one agent per source (`app/agent/`). The retrieval agents are thin adapters over `RagPipeline`; `GitHubAgent` implements `Agent` directly. Routing (`app/agent/routing.py`) is a measurement, not an LLM classifier: one embedding of the question against each provider's content picks the source. A tool the question names decides; GitHub is reached when the question names an authorised repository or shows code intent.
 
 A workspace without a GitHub connection must not fall back to the organisation installation. That fallback would convert a workspace invitation into unintended repository access.
 
@@ -230,9 +248,11 @@ A workspace without a GitHub connection must not fall back to the organisation i
 
 **HTTP API.** FastAPI. Organisation identity is taken only from the signed session cookie. Chat streaming delivers an already-decided answer in chunks. Streaming raw tokens from a generation that may still be discarded (recovery, then web search) would leak a draft.
 
-**Authentication.** Magic-link sign-in (delivered through SendGrid in production) and administrator-invited members. Creation of a new organisation is gated by a human-reviewed email queue: GET renders a confirmation page; POST performs the action, so mail scanners cannot approve a request. Tokens at rest are encrypted with MultiFernet; there is no external KMS.
+**Authentication.** Magic-link sign-in (delivered through SendGrid in production), Google and Slack sign-in through the company's own app, and administrator-invited members. Invites and email changes must match the company's email domain (`organizations.email_domain`). Creation of a new organisation is gated by a human-reviewed email queue: GET renders a confirmation page; POST performs the action, so mail scanners cannot approve a request. Tokens at rest are encrypted with MultiFernet; there is no external KMS.
 
 **Ingestion jobs.** PostgreSQL `FOR UPDATE SKIP LOCKED`, not Redis or Celery. Stuck jobs are reaped by silence (`progress_at`), not by elapsed start time. A job that repeatedly terminates the process is abandoned after a bounded number of attempts rather than restarting the entire service.
+
+**Rate limits.** Token buckets (`app/ratelimit/`), in Redis when `REDIS_URL` is set (production runs Valkey with `volatile-lru`), else per process. Redis holds rate limits only, and every key has a TTL. A question takes the person's and the company's bucket in one step. AI usage has two more layers (`app/security/ai_spend.py`): tokens a minute per answering model, input and output apart, per person and per company (`AI_TOKEN_LIMITS`); and dollars a day, one wallet whichever model answers (`AI_COMPANY_DOLLARS_PER_DAY`, `AI_PERSON_DOLLARS_PER_DAY`, priced by `AI_PRICES`). Each paid call is charged where it is made. A limiter fault lets the request through.
 
 **Frontend.** Next.js 15 with application CSS. The browser calls same-origin `/api`, rewritten to FastAPI, so `SameSite=Lax` cookies remain first-party on a split Vercel and Render deployment. Directing the browser at the API host is the configuration that makes a successful login appear as an immediate logout.
 
@@ -241,10 +261,10 @@ A workspace without a GitHub connection must not fall back to the organisation i
 | Tier | What it establishes | Cadence |
 | --- | --- | --- |
 | Retrieval rank | The correct chunk appears in the top band, without an LLM. | Fast. |
-| Golden path set | Approximately 17 cases covering policy, fallback, web, and conversation. | Every push. |
+| Golden path set | 29 cases (`evaluation/golden_set.py`) covering policy, fallback, web, and conversation. | Every push. |
 | RAGAS | Faithfulness and related scores against a baseline. | Nightly, using this system’s LLM and local BGE-M3. |
 
-A small, hand-selected set that fails loudly is preferred to a large, noisy synthetic set. On the golden set the 0.35 gate produced no false negatives (lowest answerable score 0.652). Unanswerable cases were refused by the prompt. The threshold should not be raised into a gap observed on seventeen cases.
+A small, hand-selected set that fails loudly is preferred to a large, noisy synthetic set. On the golden set the 0.35 gate produced no false negatives (lowest answerable score 0.652). Unanswerable cases were refused by the prompt. The threshold should not be raised into a gap observed on seventeen cases (the set's size when this was measured).
 
 ---
 
@@ -256,11 +276,11 @@ A small, hand-selected set that fails loudly is preferred to a large, noisy synt
 | LangChain as the application spine | The framework would own too much of the path. | Unlikely. |
 | LiteLLM | Native features are unused. | Prompt caching on a commercial host. |
 | Pinecone | Additional vendor; isolation is split across systems. | Extreme scale with managed ANN. |
-| Redis / Celery | A second datastore. | Ingestion volume that PostgreSQL cannot absorb. |
+| Redis / Celery for jobs or answers | Jobs use `SKIP LOCKED`; an answer cache would cross people's access. Redis holds rate limits only. | Ingestion volume that PostgreSQL cannot absorb. |
 | Maximal Marginal Relevance | Incorrect objective for policy answering. | Survey-style handbook queries. |
 | Always-on LLM query rewrite | Permanent latency on every request. | Production logs show SymSpell and recovery are insufficient. |
 | Embedding GitHub | Code is not prose; indexed READMEs go stale. | Fuzzy search across many repositories. |
-| LLM agent router | Non-determinism in front of the tenant path. | Many agents and no user-interface tab. |
+| LLM agent router | Non-determinism in front of the tenant path. The embedding probe measures instead. | The probe stops separating sources. |
 
 ---
 
@@ -275,4 +295,4 @@ Each layer addresses a failure the previous layer cannot:
 - **Gate and prompt** prevent fluent unsupported answers; **labelled web search** covers questions that internal policy will never contain.
 - **pgvector in the application database** keeps isolation, jobs, memory, and vectors in one operational unit.
 
-Current defaults: chunk size 256 with overlap 40; gate 0.35; reuse 0.72; candidate pool 16; RRF k = 60; BGE-M3 and bge-reranker-v2-m3; PostgreSQL with pgvector. If implementation and this document diverge, the implementation is authoritative.
+Current defaults: chunk size 256 with overlap 40; gate 0.35; reuse 0.72; candidate pool 40; RRF k = 60; top five, up to ten on a wide read; BGE-M3 and bge-reranker-v2-m3 locally, Jina remotely; PostgreSQL with pgvector (`halfvec(1024)`, one `chunks` partition per organisation). If implementation and this document diverge, the implementation is authoritative.

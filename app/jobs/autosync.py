@@ -1,40 +1,13 @@
-"""Background connection syncing — freshness with nobody pressing a button.
+"""Background connection syncing.
 
-Before this, nothing in the codebase ever ingested unless a human opened
-Sources and pressed Check → Update. That made staleness a *user chore*: the
-answer to "is this answer current?" was "only if someone remembered", and the
-Activity Scheduler inherited the same gap for any source read from the index
-rather than live.
+Two reasons to sync, two columns:
+``sync_requested_at`` (a webhook said something changed) and ``last_sync_at``
+(``interval_hours`` passed). The poll is the floor: Linear's webhook covers
+public teams only, Drive watch channels lapse, and a push to a cold box is lost.
 
-Two reasons to sync, and exactly two columns for them
------------------------------------------------------
-``oauth_connections.sync_requested_at``
-    A service TOLD us something changed. Stamped by a webhook handler
-    (``app/api/webhooks.py``), never by this module.
-
-``oauth_connections.last_sync_at``
-    Nothing told us anything, but ``interval_hours`` has passed and we should
-    look anyway.
-
-The poll is the FLOOR, not the plan. It exists because push is not universally
-available on a free deployment:
-
-* Slack / Linear / Notion push an event, and Drive pushes through a
-  ``changes.watch`` channel we must renew (``sources/drive_watch.py``), so a
-  change syncs within one tick. (Drive used to be poll-only because Google
-  required a verified push domain; Google has since dropped that requirement.)
-* Linear's app webhook covers PUBLIC teams only, and every channel can lapse,
-  so private-team issues and missed pushes still rely on the interval.
-* A webhook delivered while the free-tier box was cold-started is simply
-  lost. The interval is what makes that a delay instead of a permanent hole.
-
-Why the flag is a flag and not a queue
---------------------------------------
-A busy Slack channel stamps ``sync_requested_at`` once per message. Fifty
-messages produce ONE job, because the tick reads the column and clears it —
-the coalescing is the data model, not a debounce timer. This is also why the
-webhook handler must never ingest inline: Slack requires a 3-second ack, and
-an ingest is minutes.
+``sync_requested_at`` is a flag, not a queue: fifty messages make one job,
+because the tick reads and clears it. Webhooks never ingest inline (Slack's
+3-second ack).
 """
 
 from __future__ import annotations
@@ -51,15 +24,8 @@ logger = logging.getLogger(__name__)
 def request_sync(org_id: str, provider: str, workspace_id: str | None = None) -> int:
     """Mark a connection as having pending changes. Returns rows stamped.
 
-    Called by webhook handlers. Deliberately does NOT enqueue: stamping is a
-    single indexed UPDATE that answers inside a provider's ack deadline,
-    whereas ``queue.enqueue`` competes with an already-active job and would
-    make a webhook's success depend on scheduling state.
-
-    ``workspace_id=None`` here means "org-wide connection only", matching
-    every other scope-paired read. A webhook usually cannot tell which of an
-    org's scopes it belongs to, so callers that only know the external
-    workspace should resolve the connection first and pass its scope.
+    Does not enqueue: one UPDATE fits a provider's ack deadline.
+    ``workspace_id=None`` means the org-wide connection only.
     """
     with get_connection() as conn:
         rows = conn.execute(
@@ -72,11 +38,9 @@ def request_sync(org_id: str, provider: str, workspace_id: str | None = None) ->
     return len(rows)
 
 
-#: A push starts its sync at once only if the connection has not synced in this
-#: many minutes; otherwise the flag waits for the next tick. A busy Slack
-#: channel pushes once per message, and Slack allows our app about one history
-#: read a minute, so syncing on EVERY push would run syncs back to back into
-#: that limit. Inside the gap the change still lands, one tick later.
+#: A push syncs at once only if the connection has not synced in this many
+#: minutes; Slack allows about one history read a minute, and a busy channel
+#: pushes per message. Inside the gap the flag waits.
 PUSH_SYNC_COOLDOWN_MINUTES = 3
 
 _FLAG_RETURNING = (
@@ -86,16 +50,10 @@ _FLAG_RETURNING = (
 
 
 def _flag_and_start(sql: str, params: list) -> int:
-    """Stamp the flag, then queue a sync right away where the cooldown allows.
+    """Stamp the flag, then ``sync_now`` where the cooldown allows.
 
-    The flag used to be ALL a push did, so a change waited for the next tick
-    (~10 min) even though the in-API worker runs a queued job within seconds
-    and the push itself has just woken the instance. Queuing here is
-    ``sync_now``: a no-op while a sync is already active (a burst still makes
-    one job), and on success it clears the flag. When it does not queue -- an
-    active job, the cooldown, a failure -- the flag stays for the tick, which
-    is what makes this an addition and never the only path. Callers run it
-    AFTER the provider has been answered, so the ack deadline is unaffected.
+    When it does not queue, the flag stays for the tick. Callers run this
+    after answering the provider, so the ack deadline is unaffected.
     """
     with get_connection() as conn:
         rows = conn.execute(sql + _FLAG_RETURNING, [*params, PUSH_SYNC_COOLDOWN_MINUTES]).fetchall()
@@ -108,12 +66,9 @@ def _flag_and_start(sql: str, params: list) -> int:
 def start_cooled_down_pushes() -> int:
     """Start every flagged connection whose cooldown has just ended.
 
-    A push inside the cooldown only flags, and the flag used to wait for the
-    tick (~10 min) though the cooldown ends after 3. The in-API worker calls
-    this every few seconds, so the second message of a burst syncs ~3 min
-    later -- still at most one sync per cooldown, which is Slack's limit.
-    Connections with a job already queued/running are left out, so this never
-    retries an enqueue the unique index would refuse. Never raises.
+    Called every few seconds, so a burst's later messages sync once the
+    cooldown ends, not at the next tick. Skips connections with an active job.
+    Never raises.
     """
     try:
         with get_connection() as conn:
@@ -144,12 +99,8 @@ def start_cooled_down_pushes() -> int:
 def request_sync_connection(connection_id: str) -> int:
     """Flag every Drive folder on the Google account a channel belongs to.
 
-    A Drive notification only says the ACCOUNT's change log moved, never which
-    folder, and each connection opens its own channel on that same log. In
-    production Google delivered to two of three channels on one account, so the
-    folder that actually changed (Meeting-Notes) never synced. Any proven
-    notification therefore flags all scoped Google connections in the same org
-    on the same account; a folder with nothing new is a cheap listing diff.
+    A notification names the account, not the folder, and Google skipped
+    some channels in production; a folder with nothing new is a cheap diff.
     """
     return _flag_and_start(
         """
@@ -169,17 +120,9 @@ def request_sync_external(
 ) -> int:
     """Flag every connection a webhook is about, and start their syncs. Returns rows.
 
-    A webhook names the PROVIDER'S workspace (a Slack team, a Notion
-    workspace, a Linear organization), never our org or space -- and one
-    external workspace can back several connections (org-wide plus a space).
-    All of them are flagged: a spurious sync is one cheap listing diff, a
-    missed one is an hour of staleness. Each then starts at once unless it
-    synced within ``PUSH_SYNC_COOLDOWN_MINUTES`` (see ``_flag_and_start``).
-
-    ``slack_channel`` narrows a Slack event to connections that actually
-    index that channel, so a message in #random does not sync a space that
-    only connected #engineering. ``needs_reauth`` rows are left alone: the
-    tick skips them anyway, and a flag nobody will clear is noise.
+    A webhook names the provider's workspace, which may back several
+    connections; all are flagged (a spurious sync is a cheap diff).
+    ``slack_channel`` keeps it to connections indexing that channel.
     """
     if not external_workspace_id:
         return 0
@@ -194,34 +137,20 @@ def request_sync_external(
     return _flag_and_start(sql, params)
 
 
-#: Providers with an ``oauth_connections`` row but no ingestion path at all.
-#: GitHub deliberately embeds nothing (``app/githublive/``) — it has no
-#: ``SourceAdapter``, so queueing one costs a guaranteed "Unknown source type"
-#: failure on every single tick. Excluded here rather than at the worker
-#: because a job that can only ever fail should never reach the queue.
+#: Connections with no ingestion path (GitHub embeds nothing); a job for one
+#: could only fail.
 UNSYNCABLE_PROVIDERS = ("github",)
 
-#: Providers that sync by recording COUNTABLE FACTS rather than by ingesting.
-#:
-#: GitHub only. It embeds nothing, so there is nothing to chunk -- but its pull
-#: requests are countable, and charts need them from a background sync rather
-#: than from a page load (see ``app/insights/github_facts.py``). This is a
-#: SEPARATE path on purpose: it never touches ``ingestion_jobs``, so the
-#: "Unknown source type: 'github'" failure that ``UNSYNCABLE_PROVIDERS``
-#: prevents stays impossible. Both constants name github, and both are right.
+#: Synced by recording chart facts (``insights/github_facts.py``), never
+#: through ``ingestion_jobs``.
 FACTS_ONLY_PROVIDERS = ("github",)
 
 
 def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, str]]:
     """Connections that should be synced now: ``(id, org_id, workspace_id, why)``.
 
-    Providers in ``UNSYNCABLE_PROVIDERS`` are skipped because they have no
-    ingestion path; ``needs_reauth`` rows are skipped because a dead token
-    cannot be fixed by retrying it, and hammering one is how an org gets
-    rate-limited for a problem only a reconnect solves.
-
-    Ordered oldest-first so a starved connection cannot be permanently
-    overtaken by a chattier one when ``batch_size`` truncates the list.
+    Skips ``needs_reauth`` (retrying a dead token only gets rate-limited).
+    Oldest first, so ``batch_size`` never starves a connection.
     """
     with get_connection() as conn:
         rows = conn.execute(
@@ -250,13 +179,7 @@ def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, st
 def _due_facts_connections(
     settings: AutoSyncSettings,
 ) -> list[tuple[str, str, str, str]]:
-    """Facts-only connections due now: ``(id, org_id, workspace_id, why)``.
-
-    The same freshness predicate as ``_due_connections`` -- webhook flag, or
-    the interval elapsed -- against the opposite provider set. ``needs_reauth``
-    rows are skipped for the same reason: a dead token cannot be fixed by
-    retrying it.
-    """
+    """Facts-only connections due now, by ``_due_connections``'s predicate."""
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -284,13 +207,8 @@ def _due_facts_connections(
 def record_due_facts(settings: AutoSyncSettings | None = None) -> int:
     """Record facts for every due facts-only connection. Returns how many ran.
 
-    Runs INLINE rather than through the queue, which is the whole point: there
-    is no ingestion job to enqueue, and inventing one would need a source
-    adapter that deliberately does not exist. Bounded by ``batch_size`` and by
-    the reader's own per-repo caps.
-
-    Never raises, like ``enqueue_due_syncs`` -- this shares the worker tick
-    with the ingestion queue and the activity scheduler.
+    Inline, not queued (there is no source adapter). Bounded by
+    ``batch_size`` and per-repo caps. Never raises: it shares the worker tick.
     """
     settings = settings or AutoSyncSettings.from_env()
     if not settings.enabled:
@@ -321,9 +239,7 @@ def record_due_facts(settings: AutoSyncSettings | None = None) -> int:
             )
         except Exception:  # noqa: BLE001 - the recorder is already broad
             logger.exception("Auto-sync: could not record facts for %s", connection_id)
-        # Stamped even on failure, exactly like an ingest attempt: one failed
-        # sync costs one interval of freshness, which is visible, while a hot
-        # retry loop against a provider's rate limit is not.
+        # Stamped on attempt: no hot retry loop against a rate limit.
         try:
             _stamp_attempted(connection_id)
         except Exception:  # noqa: BLE001
@@ -335,15 +251,8 @@ def record_due_facts(settings: AutoSyncSettings | None = None) -> int:
 def _stamp_attempted(connection_id: str) -> None:
     """Record that we tried, and clear the webhook flag.
 
-    Stamped on ATTEMPT, not on ingest success — deliberately. A connection
-    whose ingest keeps failing must not be retried every single tick forever;
-    the interval throttles it, and ``needs_reauth`` catches the auth case. The
-    cost of the choice is that one failed sync delays freshness by one
-    interval, which is visible, whereas a hot retry loop against a provider's
-    rate limit is not.
-
-    Clearing ``sync_requested_at`` in the same statement is what collapses a
-    burst: anything stamped after this read simply lands in the next tick.
+    On attempt, not success: a failing connection waits an interval instead
+    of retrying every tick. Clearing the flag here collapses a burst.
     """
     with get_connection() as conn:
         conn.execute(
@@ -353,15 +262,8 @@ def _stamp_attempted(connection_id: str) -> None:
         )
 
 
-#: Providers whose ingestion needs a SCOPE the admin picks after connecting,
-#: and the ``source_config`` key that holds it. Their adapters raise without one
-#: (``GoogleDriveAdapter`` on an empty ``folder_id``, ``SlackAdapter`` on empty
-#: ``channel_ids``, a connected ``LinearAdapter`` on empty ``team_ids``), so a FIRST connect is not yet the moment to ingest --
-#: saving the scope is, and that is where ``sync_now`` is called from instead.
-#:
-#: One dict rather than a set plus a hand-kept copy of the keys: `api/
-#: notifications.py` needed exactly this mapping to report "connected but
-#: indexing nothing", and two lists of the same fact drift.
+#: Providers whose adapters need a picked scope, and its ``source_config`` key.
+#: A first connect does not ingest; saving the scope calls ``sync_now``.
 SCOPE_KEYS: dict[str, str] = {"google": "folder_id", "slack": "channel_ids", "linear": "team_ids"}
 SCOPED_PROVIDERS = tuple(SCOPE_KEYS)
 
@@ -369,10 +271,8 @@ SCOPED_PROVIDERS = tuple(SCOPE_KEYS)
 def scope_is_configured(
     org_id: str, provider: str, workspace_id: str | None = None
 ) -> bool:
-    """Does this connection already know WHAT to read?
-
-    True for any provider that needs no scope at all. Never raises: an
-    unreadable config means we simply do not claim the scope is there.
+    """Does this connection know what to read? True when no scope is needed;
+    False on an unreadable config. Never raises.
     """
     key = SCOPE_KEYS.get(provider)
     if key is None:
@@ -395,19 +295,8 @@ def sync_after_connect(
 ) -> str | None:
     """Queue the ingest an OAuth callback should trigger, if any.
 
-    RECONNECTING is not the same event as connecting, and treating them alike
-    is what this exists to fix. ``save_connection`` upserts the tokens and
-    deliberately leaves ``source_config`` alone, so a Drive folder or a Slack
-    channel list SURVIVES a reconnect -- which means the reason
-    ``SCOPED_PROVIDERS`` skip the callback ("the adapter raises without a
-    scope") is true on a first connect and false on every one after it.
-
-    The cost of the old blanket skip was the case people actually hit: a token
-    expires, the connector stops syncing, someone reconnects to fix exactly
-    that, and nothing happens for up to an interval -- on the one screen where
-    they are watching for it to. Linear reconnected and immediately indexed
-    because it is not scoped; Drive sat silent, and the difference read as Drive
-    being broken.
+    A reconnect keeps ``source_config``, so a scoped provider whose scope
+    survived syncs at once; only a first connect waits for the picker.
     """
     if provider in SCOPE_KEYS and not scope_is_configured(org_id, provider, workspace_id):
         logger.info(
@@ -427,18 +316,9 @@ def sync_now(
 ) -> str | None:
     """Ingest this connection immediately. Returns the job id, or None.
 
-    Connecting a source, or naming the folder or channels it should read, IS
-    the request to index it — waiting for the next tick makes a working
-    connection look broken for up to an interval, and the whole point of
-    automatic freshness was to delete that chore rather than move it.
-
-    Stamps ``last_sync_at`` exactly as the tick does, so this connection does
-    not immediately re-qualify as due and get a second job behind this one.
-
-    Never raises: an already-active job is a no-op (the work is happening), and
-    a failure to queue must not fail the connect or the scope save that just
-    succeeded — the tick still picks it up, which is the behaviour this
-    replaces rather than depends on.
+    Stamps ``last_sync_at`` like the tick, so it is not due again at once.
+    Never raises: an active job is a no-op, and a failure must not fail the
+    connect or scope save (the tick still picks it up).
     """
     if provider in UNSYNCABLE_PROVIDERS:
         return None
@@ -461,13 +341,7 @@ def sync_now(
 def enqueue_due_syncs(settings: AutoSyncSettings | None = None) -> int:
     """Enqueue an ingest for every due connection. Returns how many.
 
-    Never raises: this runs on a shared worker tick alongside the ingestion
-    queue and the activity scheduler, and a broken sync must not take those
-    down with it.
-
-    An already-active job for the same connection is a NO-OP, not an error —
-    ``queue.enqueue``'s unique partial index refuses the duplicate, which is
-    the correct outcome: the work is already happening.
+    Never raises (shared worker tick). An already-active job is a no-op.
     """
     settings = settings or AutoSyncSettings.from_env()
     if not settings.enabled:
@@ -488,8 +362,7 @@ def enqueue_due_syncs(settings: AutoSyncSettings | None = None) -> int:
                 "Auto-sync: queued %s (%s, org %s)", connection_id, why, org_id
             )
         except queue.JobAlreadyActiveError:
-            # Already syncing. Still stamp, so a long-running job does not make
-            # this connection re-qualify on every tick for its whole duration.
+            # Still stamp, or a long job re-qualifies every tick.
             logger.debug("Auto-sync: %s already has an active job", connection_id)
         except Exception:  # noqa: BLE001
             logger.exception("Auto-sync: could not queue %s", connection_id)

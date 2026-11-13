@@ -1,10 +1,7 @@
-"""Short-lived GitHub install-picker state (user OAuth → choose account).
+"""Short-lived GitHub install-picker state (user OAuth, then choose an install).
 
-After ``/auth/github/callback`` exchanges the code, we often know *who*
-authorized but not *which App installation* should bind to Company Sources
-vs a personal space. Auto-picking silently mixed those surfaces (same personal
-install on both). This module parks the user token server-side so the
-frontend can show every installation and the user picks one explicitly.
+The user token is parked server-side so the person picks the installation
+explicitly: auto-picking bound one personal install to Company and a space.
 """
 
 from __future__ import annotations

@@ -1,8 +1,5 @@
-"""What a live read returns, and the constants that bound it.
-
-Constants, not settings (plan D15): configuration nobody tunes is
-configuration that drifts. ``live_tool_calls`` will say if any needs to move.
-"""
+"""What a live read returns, and the constants that bound it (constants, not
+settings: nobody tunes them)."""
 
 from __future__ import annotations
 
@@ -19,12 +16,10 @@ MAX_CHARS = 6000
 LINEAR_COMMENTS = 5
 #: How many distinct documents at the top of the hits are considered at all.
 CANDIDATE_DOCUMENTS = 5
-#: A tool whose last SUCCESSFUL sync is younger than this is not read live:
-#: its synced copy is already fresh, and the read would only cost ~2 s.
+#: A tool synced successfully more recently than this is not read live.
 FRESH_SECONDS = 15 * 60
 
-# Outcomes (the audit row's `outcome`). Only NOT_ACCESSIBLE withholds the
-# indexed copy; every other failure falls back to it (plan D16, §5).
+# Audit outcomes. Only NOT_ACCESSIBLE withholds the indexed copy; others fall back to it.
 OK = "ok"
 NOT_ACCESSIBLE = "not_accessible"
 NOT_CONNECTED = "not_connected"
@@ -41,8 +36,7 @@ class ProviderRead:
 
     outcome: str
     text: str = ""
-    #: The provider's own reason for a failure (a GraphQL code, a 403 reason),
-    #: logged so an unrecognised one can be mapped. Never contains the token.
+    #: The provider's own failure reason, logged for mapping. Never the token.
     reason: str | None = None
 
 
@@ -57,8 +51,7 @@ class LiveRead:
     text: str = ""
     fetched_at: datetime | None = None
     truncated: bool = False
-    #: From the indexed ``documents`` row, so a citation opens the same address
-    #: a synced answer would. Never taken from the live text.
+    #: From the indexed ``documents`` row, never the live text, so citations match.
     title: str = ""
     source_uri: str | None = None
 
@@ -93,8 +86,8 @@ class LiveRefresh:
 
     @property
     def refreshed(self) -> frozenset[str]:
-        """Documents whose live block is in the prompt: their synced chunks
-        are superseded and must not ride along beside it (plan D5)."""
+        """Documents whose live block is in the prompt: their synced chunks are
+        superseded and must not ride along beside it."""
         return frozenset(r.document_id for r in self.reads if r.outcome == OK and r.text)
 
     @property
@@ -106,11 +99,8 @@ class LiveRefresh:
     @property
     def sources(self) -> list[dict]:
         """``done.live_sources``: which connectors answered live, and when.
-
-        ``document_id`` says WHICH document was read, so the chat can claim
-        "live" only for a read the answer actually cites
-        (``api.chat._shown_live``); it is dropped before the browser sees it.
-        """
+        ``document_id`` lets the chat show "live" only for a cited read
+        (``api.chat._shown_live``); it is dropped before the browser."""
         return [
             {"provider": r.provider, "fetched_at": r.fetched_at.isoformat(),
              "document_id": r.document_id}

@@ -1,15 +1,8 @@
-"""Signed session tokens (Phase 13).
+"""Signed session tokens: a JWT with ``sub`` (user id), ``org_id`` and ``role``.
 
-A session is a JWT carrying ``sub`` (user id), ``org_id``, and ``role`` —
-issued ONLY after a user's org is already resolved (magic-link verify, or an
-admin's own org at signup). There is no authenticated state with a null
-``org_id``: every request handler trusts the session's ``org_id`` exclusively,
-never a header/body/query value, so a request can only ever act on the tenant
-baked into its own signed session.
-
-``role`` in the JWT is a snapshot at issue time. ``get_session`` re-reads the
-live ``users.role`` on every request so promote/demote take effect under the
-long (default 30-day) session TTL without forcing a re-login.
+Issued only once the org is resolved; handlers trust only the session's
+``org_id``, never client input. ``role`` is a snapshot: ``get_session``
+re-reads ``users.role`` so promote/demote apply without a re-login.
 """
 
 from __future__ import annotations

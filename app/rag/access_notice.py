@@ -1,28 +1,14 @@
 """The refusal a member gets when documents were WITHHELD, not missing.
 
-Document-level access filtering removes documents the asker cannot open
-*before* ranking, so a question those documents would have answered fails the
-confidence gate and comes back as the ordinary "I don't know". That is a wrong
-answer in the only way this codebase minds: it is indistinguishable from
-"nobody has written that down", and it sends someone off to write a document
-that already exists one permission away.
+Access filtering runs before ranking, so a withheld answer looks like "I
+don't know" and sends people to write a document that already exists.
 
-What may be said, and what may not, is the whole design of this module:
-
-* NAMING THE SOURCE AND ITS SCOPE IS SAFE. ``GET /workspaces/{id}/connections``
-  returns ``source_config`` to every MEMBER of a space (``get_workspace_role``,
-  not owner-only), so the connected Drive folder's name is already on the space
-  page in front of them. Repeating it discloses nothing.
-* NAMING THE DOCUMENT IS NOT. The title of a file they have not been given
-  access to is exactly the thing the filter exists to withhold — "you can't see
-  *Q3 Redundancies*" tells them what is in it. So nothing here ever touches the
-  matched document: ``VectorStore.restricted_match`` deliberately returns only
-  a score and a provider.
-* SAYING IT WHEN IT IS NOT TRUE IS WORSE THAN SILENCE. This message is built
-  only after a second query has CONFIRMED that a document in scope matched the
-  question and is unreadable by this person. A question nobody's documents
-  answer must keep the ordinary refusal, or we send people to ask an admin for
-  access to something that does not exist.
+* Naming the source and its connected folder is safe: every space member
+  already sees them on the space page.
+* Naming the DOCUMENT is not: its title is what the filter withholds, so
+  ``VectorStore.restricted_match`` returns only a score and a provider.
+* Said only after a second query CONFIRMED a readable-to-others match;
+  otherwise the ordinary refusal stands.
 """
 
 from __future__ import annotations
@@ -42,9 +28,8 @@ _PROVIDER_LABELS: dict[str, str] = {
     "github": "GitHub",
 }
 
-# Where each provider keeps the human name of the thing an admin connected.
-# Only providers that are actually scope-configured appear; anything else
-# falls back to the provider's own name, which is still true.
+# Where each provider keeps the name of what an admin connected; others fall
+# back to the provider's own name.
 _SCOPE_NAME_KEYS: dict[str, str] = {"google": "folder_name"}
 
 
@@ -83,12 +68,9 @@ def restricted_notice(
 ) -> str:
     """Tell the asker their answer exists but is not shared with them.
 
-    Names the connector and (when we have it) the connected folder — both
-    already visible to them — plus who can grant access. Never the document.
-
-    ``in_channel``: the reply is posted to a Slack channel, which reads as the
-    ROOM, not the asker -- "shared with you" is false there (the asker may well
-    have access) and "ask for access" is the wrong fix. A DM answers as them.
+    Names the connector and connected folder (already visible) and who can
+    grant access, never the document. ``in_channel``: the reply speaks for the
+    ROOM, so "shared with you" and "ask for access" do not apply.
     """
     if in_channel:
         return (
@@ -110,14 +92,9 @@ def restricted_notice(
 
 
 def live_withheld_notice(provider: str | None) -> str:
-    """The item behind this answer is gone, or no longer readable (a live read said so).
-
-    A live read just told us, so -- unlike ``restricted_notice`` -- nothing has
-    to be re-confirmed. "Not found or not accessible", never "deleted": a 404
-    and Linear's ``Entity not found`` mean either, and we cannot tell which.
-    Names the connector, never the item: its title is the stale copy we just
-    decided not to use.
-    """
+    """The item behind this answer is gone or no longer readable (a live read
+    said so). "Not found or not accessible", never "deleted": a 404 means
+    either. Names the connector, never the item."""
     source = _PROVIDER_LABELS.get(provider or "", "connected")
     return (
         f"The {source} item that matched this question is no longer available — "

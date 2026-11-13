@@ -1,10 +1,4 @@
-"""Sub-workspace ("workspace-within-a-workspace") CRUD + membership.
-
-Deliberately a single-implementation package like ``app/jobs/`` — no
-``base.py``/factory, since there is exactly one storage backend (Postgres)
-and no second one planned; see CLAUDE.md's convention that only genuinely
-swappable capabilities get an interface.
-"""
+"""Sub-workspace (space) CRUD + membership. One backend, so no base.py/factory."""
 
 from __future__ import annotations
 

@@ -69,10 +69,8 @@ class _Drafting:
 
 
 def _did(action, args: dict, request_words=None) -> str:
-    """One action of the request: the tool, the words that asked for it and
-    where it goes (every value but the drafted text). After "Post in
-    #hb-testing the pointers from …" was approved, GPT-OSS posted the issue's
-    link there too, quoting the same words: the same action, done twice."""
+    """One action: the tool, the asking words and where it goes (every value but
+    drafted text), so an approved action is not drafted again in other words."""
     from .mcp import _prose
 
     words = " ".join(str(request_words or args.get("request_words") or "").casefold().split())
@@ -82,9 +80,7 @@ def _did(action, args: dict, request_words=None) -> str:
 
 
 def _form_key(action, args: dict) -> str:
-    """The same form twice is one card, whatever words asked for it. An empty
-    value is "not given", as ``prepare`` reads it: ``owner: ""`` and no owner
-    drafted the same GitHub issue twice."""
+    """The same form twice is one card. An empty value is "not given", as ``prepare`` reads it."""
     return action.name + json.dumps({k: v for k, v in args.items()
                                      if k not in OWN_FIELDS and v not in (None, "", [], {})}, sort_keys=True)
 
@@ -94,15 +90,10 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
                 ran: dict, settings: ActionsSettings, in_thread: bool = False,
                 messages: list[dict] | None = None, already: frozenset = frozenset(),
                 sources: tuple = (), read=None, earlier: str = "", check=None) -> _Drafting:
-    """A tool loop like any agent's (Onyx's): the model calls tools and is
-    given each result in its own conversation, until it replies in words. A
-    read runs and its answer comes back fenced. A write never runs here: the
-    loop PAUSES at the turn that drafts one, leaving that call unanswered. It
-    is answered with what really happened (the link, the tool's error, "the
-    user cancelled") once the person decides the card, and the same
-    conversation goes on (``continue_run``). So a later step sees the real
-    link, and a refusal after approval comes back to be fixed, as any tool
-    error does; nothing depends on the model announcing what comes next.
+    """The model calls tools until it replies in words. A read runs and comes
+    back fenced. A write never runs here: the loop PAUSES with that call
+    unanswered, and ``continue_run`` answers it with what really happened, so
+    nothing depends on the model announcing what comes next.
 
     ``read(words)`` reads company content as ``(sources, passages)``; with
     ``None`` none is offered. ``found`` keeps every lookup's answer (they
@@ -124,39 +115,27 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
         calls = list(result.tool_calls or [])[:MAX_ACTIONS * 3] or _calls_in_text(result.text, tools)
         if not calls:
             if not out.picked and not reminded:
-                # It SAID it drafted the change without calling the tool, or
-                # gave up at once ("I can't access the Google Doc") without
-                # trying the read tool: nothing would be shown. After an
-                # approval it stopped with the GitHub half of "an issue in
-                # Linear and in GitHub" never drafted. Either way one more
-                # look, as Onyx reminds on its last cycle.
+                # Claimed a draft without a call, or gave up untried: one reminder.
                 reminded = True
                 messages += [{"role": "assistant", "content": result.text or "(no reply)"},  # never empty
                              {"role": "user", "content": (ALL_DONE + _still_refused(messages, by_name)
                                                           + _not_asked_yet(messages, by_name, check))
                               if already else NOTHING_DRAFTED}]
                 continue
-            # A link survives as in any answer: only one the model was shown
-            # (the request, a lookup, an approved card's result), never one it
-            # wrote; "here is the link: [link removed]" helped nobody.
+            # Only links the model was shown survive (security/links.py).
             shown = [question, *found, *(s.uri for s in out.sources if s.uri)]
             out.reply = enforce_link_provenance(result.text or "", shown, ()).strip() or None
             break
         ids = [getattr(c, "id", None) or f"call_{step}_{i}" for i, c in enumerate(calls)]
-        # The OpenAI wire format every adapter speaks: content is null beside
-        # tool calls (some providers refuse ""), and every call is answered:
-        # now, or a drafted write once the person decides it. Whatever else a
-        # provider attached to a call is sent back with it, unread: Gemini
-        # refuses the next turn without its ``extra_content`` thought signature,
-        # and a company's own model may need its own field the same way.
+        # Content is null beside tool calls (some providers refuse ""). Provider
+        # extras go back unread: Gemini refuses a turn without its thought signature.
         extras = _call_extras(result.raw_message)
         messages.append({"role": "assistant", "content": result.text or None, "tool_calls": [
             {**extras.get(cid, {}), "id": cid, "type": "function",
              "function": {"name": c.name, "arguments": c.arguments or "{}"}}
             for cid, c in zip(ids, calls)]})
         progress_made = False
-        # A card that makes what another card of this turn names (the folder a
-        # Sheet goes in) is handled first, so the one that needs it waits.
+        # A card that makes what another names (a Sheet's folder) goes first.
         for cid, call in _makers_first(list(zip(ids, calls))):
             said, new = _one_call(call, by_name, question, org_id=org_id, user_id=user_id, email=email,
                                   found=found, looked=looked, ran=ran, settings=settings, out=out,
@@ -170,18 +149,15 @@ def _agent_loop(llm, question: str, tools: list[dict], offered: list[Action], *,
         stalls = 0 if progress_made else stalls + 1
         if stalls >= MAX_STALLS:
             break
-    # A refusal the model fixed in a later turn (that tool drafted after it)
-    # is not said; one it never fixed is.
+    # Only refusals never fixed in a later turn are said.
     out.refused = [why for name, turn, why in refused.values() if out.drafted_in.get(name, -1) <= turn]
     out.messages = messages
     return out
 
 
 def _not_asked_yet(messages: list[dict], by_name: dict, check) -> str:
-    """The request's actions no card has asked for yet, named in the reminder:
-    "Add … and share it with Raj as an editor" drafted the text, and after its
-    approval GPT-OSS stopped; the share was never drafted. An action counts as
-    done when some write's request_words quote it (code checks the quote)."""
+    """The request's actions no card has asked for yet, for the reminder. Done =
+    some write's request_words quote it (code checks the quote)."""
     actions = getattr(check, "actions", None)
     if actions is None:
         return ""
@@ -231,10 +207,7 @@ def _makers_first(calls: list) -> list:
 
 
 def _still_refused(messages: list[dict], by_name: dict) -> str:
-    """The tools whose card was refused and never drafted since, named in the
-    reminder: a Slack post drafted before the GitHub issue existed was refused
-    for its link, and after the issue was approved GPT-OSS said "links posted"
-    without drafting it again."""
+    """Tools whose card was refused and never drafted since, for the reminder."""
     names = {c["id"]: c["function"]["name"] for m in messages for c in m.get("tool_calls") or []}
     state: dict[str, bool] = {}
     for m in messages:
@@ -266,13 +239,8 @@ _ARG_KEYS = ("arguments", "args", "parameters", "params", "toolInput", "tool_inp
 
 
 def _calls_in_text(text: str | None, tools: list[dict]) -> list:
-    """A tool call the model WROTE instead of making, read as one (Onyx's
-    fallback for the same habit): GPT-OSS replied with
-    ``{"tool": "…save_issue", "toolInput": {…}}``, or with the bare arguments
-    of the comment a chain needed, and nothing was drafted. A JSON object
-    counts when it names an offered tool, or when its keys fit exactly one
-    tool's form (every required field, nothing it does not take). It is then
-    checked like any call."""
+    """A tool call the model WROTE as JSON text, read as one: an object naming an
+    offered tool, or whose keys fit exactly one tool's form. Checked like any call."""
     if not text or "{" not in text:
         return []
     forms = {t["function"]["name"]: t["function"].get("parameters") or {} for t in tools}
@@ -289,9 +257,7 @@ def _calls_in_text(text: str | None, tools: list[dict]) -> list:
         name = next((obj[k] for k in _NAME_KEYS if isinstance(obj.get(k), str) and obj[k] in forms), None)
         args = next((obj[k] for k in _ARG_KEYS if k in obj), None) if name else obj
         if name and args is None:
-            # Any other key, by shape: the one object beside the tool's name.
-            # GPT-OSS wrote {"tool": "…save_issue", "value": {…}}, and no list
-            # of key names would have held "value".
+            # Any other key, by shape: the one object beside the tool's name (no key-name list).
             others = [v for k, v in obj.items() if k not in _NAME_KEYS and isinstance(v, dict)]
             args = others[0] if len(others) == 1 else None
         if isinstance(args, str):
@@ -356,9 +322,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         loose = {k: v for k, v in args.items() if k not in unseen}
         wide = action.name + json.dumps(loose, sort_keys=True)
         if unseen and wide not in ran and len(ran) < settings.mcp_max_lookups:
-            # A guessed filter value is dropped once, by the loop: told to drop
-            # it, GPT-OSS kept ``state: "open"`` until the lookups ran out. A
-            # lookup only reads, so asking again without it costs one call.
+            # A guessed filter value is dropped once by code; models ignore being told.
             ran[wide] = action.run(loose, token, timeout=settings.mcp_timeout_seconds)
             found.append(ran[wide])
             if not _found_nothing(ran[wide]):
@@ -367,8 +331,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
                         + _fenced(ran[wide]) + "\nTake from these only the items the QUESTION asks for, "
                         "by each item's own fields."), True
         if _found_nothing(ran[key]):
-            # A title written without its dash ("UI test from slack 4") found
-            # nothing, and the model gave up after one search.
+            # Nudge past a filter that matched nothing; models give up after one search.
             given = [f"{k}={v}" for k, v in args.items() if v not in (None, "", [], {}, False)
                      and not isinstance(v, (list, dict))]
             return _fenced(ran[key]) + "\n" + NOTHING_FOUND + (
@@ -397,28 +360,22 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         problem = _precheck(action, args, question, org_id=org_id, user_id=user_id, email=email,
                             found=found, sources=tuple(out.sources), prepared=prepared)
     if problem:
-        # A different form than any refused before is the model fixing it:
-        # progress, so the loop gives it the turns to (bounded by MAX_STEPS).
+        # A new form is the model fixing it: progress (bounded by MAX_STEPS).
         fresh = key not in refused
         refused[key] = (action.name, out.turn, problem)
         guide = getattr(action, "guide", lambda: "")()
         return (f"Refused, not drafted: {problem}. Fix the form (look up what you need) and call "
                 f"again." + (f"\n{_fenced(guide)}" if guide else "")), fresh
-    # A channel the QUESTION names as content, drafted from without reading
-    # it: GPT-OSS wrote "pointers from #hb-testing today" it made up, which
-    # reads as complete to any check of the text. Only a channel inside a
-    # content part: "…then post both links in #hb-testing" names where a card
-    # goes, and reading it put a week of the channel into a Linear issue.
+    # A channel named as CONTENT must be read before drafting (else made up); a
+    # channel named as a destination is not read.
     content = getattr(check, "content", None)
     asked = [p.casefold() for p in content()] if content else None
     unread = [c for c in dict.fromkeys(_CHANNEL.findall(question))
               if read is not None and c.casefold() not in _channels_read(out.messages or [])
               and (asked is None or any(f"#{c.casefold()}" in p for p in asked))
               and not any(isinstance(v, str) and v.lstrip("#").casefold() == c.casefold() for v in args.values())]
-    # Fetched before drafted: content the request says comes from a read or a
-    # lookup, drafted before anything was fetched, is made up whatever the
-    # model ("a Google Sheet … with the open issues in BEN" became an empty
-    # sheet, no lookup). And a card's lists must come from what was fetched.
+    # Content the request says comes from a read or lookup must be fetched
+    # first, and a card's lists must come from what was fetched.
     fetchers = {n for n, a in by_name.items() if getattr(a, "lookup", False)} | {SEARCH["function"]["name"]}
     seen = _fetched(out.messages or [], fetchers)
     unfetched = [] if seen else list(getattr(check, "needs", lambda *_: [])(action.label, args))
@@ -434,8 +391,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
     if missing:
         out.gaps[action.name] = missing
         if first:
-            # One chance to make the card whole; after it, what is still
-            # missing is said to the person rather than the card shown as done.
+            # One chance to complete it; after that, gaps are told to the person.
             return ("Refused, not drafted: this card does not yet include what the QUESTION asks "
                     f"of it: {'; '.join(missing)}. A summary, list or pointers are written in your own "
                     "words from what you read, never the messages pasted as they were. Read or look up "
@@ -451,8 +407,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
                        "never \"...\" for the rest." if cut else "")), True
     else:
         out.gaps.pop(action.name, None)
-    # The same card in other words: GPT-OSS left GitHub's owner out, then after
-    # approval wrote owner "bench"; Handbook filled both as sana18-syv.
+    # The same card after `prepare` fills defaults is still the same card.
     done = _form_key(action, prepared["args"]) if isinstance(prepared.get("args"), dict) else key
     if done in already:
         return DECIDED, False
@@ -463,8 +418,7 @@ def _one_call(call, by_name: dict, question: str, *, org_id: str, user_id: str, 
         return DONE_BEFORE, False
     needs = _refs(args) & {n for _a, other, _c in out.picked for n in _names(other)}
     if needs:
-        # GPT-OSS drafted a Sheet "in the folder Final E2E" beside the card
-        # making that folder; the Sheet ran first and found no folder.
+        # Its target is made by another card of this request: wait for it.
         refused[key] = (action.name, out.turn, f"needs {next(iter(needs))} made first")
         return (f"Refused, not drafted: {next(iter(needs))} is made by another card of this request. "
                 f"{_LATER}"), False
@@ -491,15 +445,12 @@ def _read_content(call, question: str, *, read, ran: dict, settings: ActionsSett
     except json.JSONDecodeError:
         given = {}
     words = str(given.get("content_words") or "").translate(TYPOGRAPHY).strip()
-    # A "#channel" the content words name is Slack's own syntax for one: read
-    # live even when the model left slack_channel empty (GPT-OSS did).
-    # A channel the asker did not name is never read: it is searched as words.
-    # A garbled one ("hb#hb-testing") falls back to the content words' own.
+    # A "#channel" in the content words is read live even if slack_channel is
+    # empty; a channel the asker did not name is never read.
     named = [str(given.get("slack_channel") or "").translate(TYPOGRAPHY).strip(), *_CHANNEL.findall(words)]
     channel = next((c for c in named if c and asked_in(c.lstrip("#"), question)), "")
     try:
-        # "days": 0 is today, as 1 is; GPT-OSS sent "0", it read a week, and
-        # decided nothing was said today.
+        # "days": 0 means today, as 1 does.
         days = None if given.get("days") in (None, "") else min(max(int(given["days"]), 1), MAX_READ_DAYS)
     except (TypeError, ValueError):
         days = None
@@ -521,8 +472,7 @@ def _read_content(call, question: str, *, read, ran: dict, settings: ActionsSett
                 "that you couldn't find it."), True
     progress.report(f"Drafting from {len(shown)} {'source' if len(shown) == 1 else 'sources'}")
     if channel:
-        # GPT-OSS read today's #hb-testing, then found "no pointers about the
-        # checkout timeout" in it: a channel read is the whole channel, not matches.
+        # Say it is the whole channel, not matches, or the model reads absence into it.
         return (_fenced(passages) + f"\nThat is every message in #{channel.lstrip('#')} for that time, "
                 "not search matches: all of it is what was discussed there. Draft from it."), True
     return _fenced(passages), True

@@ -1,10 +1,5 @@
-/* Session-lifetime cache for ask-screen suggestion chips.
- *
- * Keyed on SCOPE alone. It used to be keyed on `(agent, workspaceId)` because
- * each per-source tab had its own chip set; Ask is one box now and the chips
- * span every connected source, so there is one entry per scope and
- * invalidation is a single delete rather than a list of six that had to be
- * kept in step with the providers. */
+/* Session-lifetime cache for Ask's suggestion chips, keyed on scope alone:
+ * the chips span every connected source. */
 export type CachedSuggestions = {
   questions: string[];
   /** Deep mode's starters: whole-document questions. */

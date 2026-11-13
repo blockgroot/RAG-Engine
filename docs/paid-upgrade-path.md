@@ -9,6 +9,8 @@
 
 Prices below are indicative as of August 2026. Re-verify on the vendor’s pricing page before committing. The application is designed so that a paid substitution is a configuration change behind an existing interface, not a rewrite.
 
+> **Status (13 November 2026).** Several rows below are already done in production. Answers run on Claude: Sonnet 5.5 by default, Haiku 5.5 the other pick, the only two in the picker (`app/llm/catalog.py`), paid from a Claude credit. Background work runs on a Gemini aux model (`gemini-3.1-flash-lite` in `.env.example`), not charged to that credit. Embeddings and reranking are remote Jina. Rate limits live in Redis (Valkey), which holds nothing else. Mail is SendGrid. Spend is bounded in code by tokens a minute per model and dollars a day (`app/security/ai_spend.py`). The sections below keep the reasoning; the rows marked done are no longer open.
+
 ---
 
 ## 1. Principle
@@ -22,7 +24,7 @@ Current defaults exist to keep policy text on-host and to run without a card. Th
 3. **Cold start** after about 15 minutes idle on Render free.
 4. **Web search** still uses keyless DuckDuckGo, which rate-limits. Mail is no longer in this list: production sends through SendGrid (`EMAIL_SENDER=sendgrid`). `console` only prints links for local development. Render free still blocks SMTP, which is why the sender is HTTPS.
 
-Items that look like upgrades but do not remove those failures (Pinecone, Redis, LiteLLM, LangChain) are listed last as non-goals.
+Items that look like upgrades but do not remove those failures (Pinecone, LiteLLM, LangChain) are listed last as non-goals. Redis was later added for one reason those four costs do not cover: rate limits shared by every server.
 
 ---
 
@@ -30,14 +32,14 @@ Items that look like upgrades but do not remove those failures (Pinecone, Redis,
 
 | Order | Purchase | Approximate cost | Pain removed |
 | --- | --- | --- | --- |
-| 1 | Paid Gemini API (same model family) | Usage; Flash-Lite is $0.25 / $1.50 per 1M input/output tokens | 15 rpm cap, 41 s backoff, evaluation flake, ingest contextualisation stalls |
+| 1 | Paid model API. **Done differently:** answers moved to Claude (paid credit); background stays on Gemini | Claude Sonnet 5.5 $2 / $10, Haiku 5.5 $0.10 / $0.50 per 1M input/output tokens (`AI_PRICES` defaults) | 15 rpm cap, 41 s backoff, evaluation flake, ingest contextualisation stalls |
 | 2 | Render **Standard** web service (2 GB), not Starter | $25 / month compute on Hobby workspace | Cold start *and* the 512 MB ceiling that made ingest fatal |
 | 3 | SendGrid — **already in production** (Single Sender). Next, only if deliverability needs it: a verified domain | Free Single Sender today; a domain is the optional next step | Magic links, approvals, report mail and email-change mail already arrive. A domain adds SPF/DKIM alignment |
 | 4 | Tavily **Project** if web fallback is used in production | $30 / month (4,000 credits) | DuckDuckGo throttling; advisory web evaluation |
-| 5 | Jina remote embed + rerank, *or* a host with at least 2 GB for local models | Jina typically $0.05 / 1M tokens after a one-time 10M grant; or included in (2) | Multi-GB weights on a 512 MB box; first-request model load |
-| 6 | Optional: `LLM_AUX_MODEL` on Flash-Lite, answers on a stronger paid model | Flash plus a higher Gemini or OpenAI/Anthropic tier | Bookkeeping cost versus answer quality |
+| 5 | Jina remote embed + rerank (**done in production**, and the self-hosted package's default), *or* a host with at least 2 GB for local models | Jina typically $0.05 / 1M tokens after a one-time 10M grant; or included in (2) | Multi-GB weights on a 512 MB box; first-request model load |
+| 6 | `LLM_AUX_MODEL` on Flash-Lite, answers on a stronger paid model (**done**: Gemini aux, Claude answers) | Gemini Flash-Lite plus the Claude credit | Bookkeeping cost versus answer quality |
 
-Do not start with a dedicated vector database, Redis, or a new RAG framework. Those add operations without fixing quota, RAM, cold start, or mail.
+Do not start with a dedicated vector database or a new RAG framework. Those add operations without fixing quota, RAM, cold start, or mail. Redis is in production for rate limits only; it is not a cache or a queue here.
 
 ---
 
@@ -47,7 +49,7 @@ Do not start with a dedicated vector database, Redis, or a new RAG framework. Th
 
 Development and deploy have used an OpenAI-compatible free endpoint (Gemini Flash-Lite class). Observed effects: a hard 15 requests per minute, server-requested waits around 41 seconds, golden-set refusals of answerable questions with the correct chunk retrieved, and ingest contextualisation dropping prefixes under concurrency 8. Free-tier traffic may be used to improve the vendor’s products; paid Gemini states that it is not.
 
-The client is already the official `openai` package. Changing host is `LLM_MODEL`, `LLM_BASE_URL`, and the API key.
+The client is already the official `openai` package. Changing host is `LLM_ADAPTER`, `LLM_MODEL` and the API key (`LLM_BASE_URL` only with `LLM_ADAPTER=custom`).
 
 ### 3.2 Recommended: paid Gemini, same wire format
 
@@ -68,7 +70,7 @@ A typical grounded prompt is about 2,300 tokens, of which about 2,200 are a byte
 | --- | --- | --- |
 | Gemini 3 Flash / 3.1 Pro | Answer quality or long-context reasoning is the complaint, not rpm | Two to ten times the token price; keep Flash-Lite as `LLM_AUX_MODEL` |
 | OpenAI (GPT-class) | The vendor’s function-calling or ecosystem is specifically required | Another account and prompt regression; the interface already allows it later |
-| Anthropic Claude | Native prompt caching or a particular refusal style is required | Native features imply a LiteLLM (or native) backend behind `LLMProvider`; do not add LiteLLM until that feature is required |
+| Anthropic Claude | **Chosen for answers since 11 Nov 2026** (Sonnet 5.5 and Haiku 5.5) | Reached through Anthropic's OpenAI-compatible endpoint with the same client, so no LiteLLM. Native prompt caching would still need a native backend behind `LLMProvider` |
 | Self-hosted vLLM | Data must not leave the customer network even to Gemini | GPU capital and operations; correct for the eventual self-hosted image, not for the current Render box |
 
 Do not buy LiteLLM in order to support many providers. The OpenAI client already does. Buy LiteLLM only when a native-only feature is an accepted requirement.
@@ -92,7 +94,7 @@ Free plan: 512 MB RAM, 0.1 vCPU, spin-down after inactivity, five-second health 
 
 **Why not Fly.io, Railway, or a VPS first.** Any always-on 2 GB host removes the same pain. Render is already the Blueprint target; changing platform is a migration, not a configuration change. Revisit only if region or Docker behaviour is the complaint.
 
-**Region.** Compute must sit near the database. A US-West API and `ap-south-1` Postgres cost about 250 ms per round trip; `GET /me` multiplied that by query count. `render.yaml` specifies `singapore` for Mumbai. Region cannot be changed in place; a new service is required. Paid CPU does not fix distance.
+**Region.** Compute must sit near the database. A US-West API and `ap-south-1` Postgres cost about 250 ms per round trip; `GET /me` multiplied that by query count. Production's API service runs in Singapore, next to the Mumbai database; `render.yaml` does not set the region (it is not a Blueprint key) and does not configure the production service. Region cannot be changed in place; a new service is required. Paid CPU does not fix distance.
 
 Local embeddings on Standard are possible, but the first request still loads multi-GB weights unless warmup stays enabled. For a 2 GB box, **remote Jina embed and rerank** (section 6) is safer than loading both models.
 
@@ -170,7 +172,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 | --- | --- |
 | Pinecone / Weaviate Cloud | Isolation would split across vendors; document 3 explains why pgvector is the store. Buy ANN only at millions of chunks per tenant. |
 | Render-managed Postgres | Card requirement observed; session-pooler semantics already match `register_vector`. |
-| Redis / Celery | Jobs already use `SKIP LOCKED`. Redis does not fix quota, RAM, or mail. |
+| Redis / Celery for jobs | Jobs already use `SKIP LOCKED`. Redis (Valkey) is in production for rate limits only; it does not fix quota, RAM, or mail. |
 
 ---
 
@@ -182,7 +184,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 | LangChain / LlamaIndex | Faster RAG features | Would own the gate and prompt. Contradicts document 3. |
 | Cohere embed plus rerank bundle | Best-in-class retrieval | Data residency; extra vendor; dimension and schema change. |
 | Pinecone | Managed vectors | Second isolation path; Postgres already holds vectors. |
-| Redis | Shared rate limits | Live in production for rate limits only (`docs/plans/2026-11-05-redis-choice.md`). |
+| Redis | Shared rate limits | Live in production for rate limits only (`git history: docs/plans/2026-11-05-redis-choice.md`). |
 | Always-on LLM query rewrite | Better than SymSpell | Permanent latency; buy model quota first, then re-measure. |
 | Dual-LLM NLI (Phase 20) | Proof that a cited sentence is supported | Inline citations are already built. NLI is extra cost and latency, after token logs justify it. |
 
@@ -190,7 +192,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 
 ## 10. Illustrative monthly bill (small production)
 
-Assumptions: one always-on API, paid Flash-Lite, SendGrid free sender, Tavily Project, Jina after the welcome grant, existing Supabase.
+Assumptions: one always-on API, paid Flash-Lite, SendGrid free sender, Tavily Project, Jina after the welcome grant, existing Supabase. This is the August 2026 estimate. Production now answers on Claude instead; that spend is capped in code by `AI_COMPANY_DOLLARS_PER_DAY` and `AI_PERSON_DOLLARS_PER_DAY` (defaults $3.00 and $0.30, sized for a $100 a month credit and 30 people), and a Redis (Valkey) instance holds the rate limits.
 
 | Line | Monthly |
 | --- | --- |
@@ -211,7 +213,7 @@ A self-hosted customer image inverts this: spend on GPU or RAM inside their netw
 
 All of the following are environment changes. No retrieval or isolation logic should move.
 
-1. **LLM.** Paid Gemini key with `LLM_ADAPTER` set to that provider (the adapter supplies the base URL). Optional `LLM_AUX_MODEL` for rewrite and ingest. `LLM_BASE_URL` is only for `custom`.
+1. **LLM.** A paid key with `LLM_ADAPTER` set to that provider (the adapter supplies the base URL). Production: `LLM_ADAPTER=anthropic`, `LLM_MODEL=claude-sonnet-5-5`, and the background model on `LLM_AUX_ADAPTER=google` with `LLM_AUX_MODEL` and `LLM_AUX_API_KEY` (`LLM_AUX_BASE_URL` and `LLM_AUX_API_KEY` are both or neither). `LLM_BASE_URL` is only for `custom`. Set `AI_TOKEN_LIMITS` within the account's tokens-a-minute limit for each model.
 2. **Compute.** New Render service at Standard (region next to Postgres); update Vercel `API_PROXY_TARGET`; delete the free instance. Region is immutable.
 3. **Mail.** `EMAIL_SENDER=sendgrid` plus key; verify the from-address.
 4. **Web.** `WEB_SEARCH_PROVIDER=tavily` plus `WEB_SEARCH_API_KEY`.

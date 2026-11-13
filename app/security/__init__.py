@@ -1,4 +1,4 @@
-"""Credential encryption at rest (Phase 10).
+"""Security helpers; the package exports credential encryption at rest.
 
 Public API:
     from app.security import encrypt, decrypt

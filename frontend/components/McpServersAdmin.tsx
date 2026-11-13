@@ -12,9 +12,8 @@ import { ApiError, api, type McpPreset, type McpServerAdmin, type McpTool } from
  * to its tools with one switch per tool; the connectors not yet added below.
  * Servers of one product (Google Workspace: Drive and Sheets) share one row.
  *
- * A switch turns a tool on in the only mode it can have: a read-only tool runs
- * while drafting, anything else drafts a card the person approves. Nothing is
- * blocked; a destructive tool is labelled, and its card says it cannot be undone.
+ * A read-only tool runs while drafting; anything else drafts a card to approve.
+ * Nothing is blocked; a destructive tool is labelled.
  */
 
 const BRANDS: Record<string, BrandName> = {

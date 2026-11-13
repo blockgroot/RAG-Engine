@@ -1,9 +1,7 @@
-"""Other tools through MCP: an admin adds servers and chooses each tool's mode;
-each person signs in to a server themselves (docs/plans/2026-10-21-mcp-actions.md).
+"""Tools through MCP: admins add servers and set each tool's mode; each person signs in themselves.
 
-Admin routes need an org admin; a person's routes act only on their own
-sign-in. A sign-in's ``state`` is single-use, bound to the person who started
-it, and carries the PKCE verifier (encrypted), so a captured callback is useless.
+A sign-in ``state`` is single-use, bound to its person and carries the
+encrypted PKCE verifier, so a captured callback is useless.
 """
 
 from __future__ import annotations

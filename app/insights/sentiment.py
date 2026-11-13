@@ -1,23 +1,9 @@
-"""Sentiment from form responses — the one metric whose numbers start with an LLM.
+"""Sentiment from form responses: the one metric whose numbers start with an LLM.
 
-Every other metric in this package counts rows a source handed us. Nothing in a
-survey response says "morale", so there is no row to count until something reads
-the text. That makes this the single exception to "the LLM never produces a
-number" — and it is bounded to the narrowest possible shape:
-
-- **One response, one classification, once.** The model sees one answer at a
-  time and returns one label from a fixed set. It never sees a total, never
-  aggregates, and never learns how many other responses exist.
-- **The label becomes a fact.** The chart is still a ``GROUP BY``, exactly like
-  every other chart here.
-- **The response text is DISCARDED.** Only the label, the score and the
-  question it answered are stored. Nothing anywhere in this product can
-  reconstruct what a person wrote, which is what the anonymity of a survey
-  actually requires.
-
-Runs on the AUX endpoint. Classification is background work, and a person
-waiting on an answer must not lose their rate-limit slot to it -- the same
-reason ingest contextualization goes there.
+Bounded: the model classifies ONE response into a fixed label, once, and never
+sees a total; the label is a fact counted by ``GROUP BY``. The response text
+is DISCARDED (only label, score and question are kept), so nothing can
+reconstruct what a person wrote. Runs on the background (aux) model.
 """
 
 from __future__ import annotations
@@ -66,12 +52,8 @@ _PROMPT = (
 
 
 def classify(text: str, llm) -> str | None:
-    """One response to one label, or None if it could not be read.
-
-    None rather than "neutral" on failure. A failed classification is missing
-    data; recording it as neutral would quietly pull every chart toward the
-    middle and make a bad model look like a calm workforce.
-    """
+    """One response to one label, or None if it could not be read. Never
+    "neutral" on failure: that would pull every chart toward the middle."""
     cleaned = scrub_untrusted_text(text)[:2000]
     if not cleaned.strip():
         return None
@@ -100,25 +82,16 @@ def record_form_sentiment(
 ) -> int:
     """Classify this tenant's unclassified form answers. Returns rows written.
 
-    ``form_ids`` is the admin's ALLOW-LIST, and it is a filter rather than a
-    fetch plan because the Forms API has no listing endpoint -- the ids come
-    back through Drive either way, so the cheap thing is to list once and drop
-    what was not selected.
-
-    ``None`` reads every visible form and exists only for tests and for the
-    direct-call path; the product always passes a list, because a Drive token
-    can see every form in the account and classifying an admin's unrelated
-    personal survey is not something connecting Google consented to.
-
+    ``form_ids`` is the admin's ALLOW-LIST, applied as a filter after one Drive
+    listing (Forms has no listing endpoint). ``None`` reads every visible form,
+    for tests only: a Drive token sees unrelated personal surveys too.
     Never raises: it runs on the shared worker tick.
     """
     if llm is None:
         from ..llm.factory import build_aux_llm_provider
 
-        # The aux endpoint, deliberately. Classification is background work and
-        # must not spend a request a live question needs -- and the aux
-        # provider is unrouted, so a member's model choice cannot make two
-        # responses in one chart classified by different models.
+        # Background work stays off a live question's budget, and one model
+        # classifies every response in a chart.
         llm = build_aux_llm_provider()
 
     try:

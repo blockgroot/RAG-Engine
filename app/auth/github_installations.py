@@ -1,10 +1,7 @@
-"""GitHub installation uniqueness + choice helpers for Company vs space connect.
+"""GitHub installation uniqueness for Company vs space connections.
 
-A Folio org may have many ``oauth_connections`` rows for GitHub (one org-wide
-Company → Sources row, plus one per workspace). Each must bind a **different**
-GitHub App ``installation_id``. Reusing one install on two rows means two
-surfaces answer from the same repos — the "personal id linked in both places"
-symptom — with no real isolation.
+Each GitHub ``oauth_connections`` row must bind a different ``installation_id``:
+one install on two rows makes two surfaces answer from the same repos.
 """
 
 from __future__ import annotations
@@ -28,11 +25,9 @@ def find_github_installation_conflict(
     *,
     for_workspace_id: str | None,
 ) -> GitHubInstallationConflict | None:
-    """Return a conflict when ``installation_id`` is already bound elsewhere.
+    """Return a conflict when ``installation_id`` is bound to another surface.
 
-    Reconnecting the *same* surface (same ``for_workspace_id``, including
-    ``None`` for org-wide) is allowed — that is how reconnect works. Binding
-    the same install to a *different* surface is refused.
+    Reconnecting the same surface (same ``for_workspace_id``, ``None`` = org-wide) is allowed.
     """
     with get_connection() as conn:
         rows = conn.execute(

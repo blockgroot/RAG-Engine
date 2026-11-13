@@ -30,12 +30,8 @@ export interface Message {
 }
 
 /**
- * Chat bubble for Ask. Shows the answer plus a small provenance pill
- * (policy vs web vs GitHub) when the stream finishes, and — when the member
- * picked a model — which model actually answered.
- *
- * A chart-shaped question is answered from counted facts, not RAG: the SVG
- * is the measurement; the caption is only the registry title.
+ * Chat bubble for Ask: the answer, its provenance pill and, when picked, the
+ * model that answered. A chart's numbers are SQL counts, never the model's.
  */
 export function ChatMessageView({
   message,
@@ -47,9 +43,7 @@ export function ChatMessageView({
   onAskDeep,
 }: {
   message: Message;
-  /** The chat this answer belongs to. Feedback is stored against it, and the
-   *  route checks it belongs to this person — so with no id there is nothing
-   *  to rate and the thumbs are simply absent. */
+  /** The chat this answer belongs to; with no id there are no thumbs. */
   conversationId?: string | null;
   /** The question this answer replied to. Kept beside the answer so an admin
    *  reading a downvote is not holding half an exchange. */
@@ -109,9 +103,7 @@ export function ChatMessageView({
                 ordered={Boolean(chart.table)}
                 blankLabels={chart.blank_labels ?? undefined}
                 seriesUnits={chart.series_units}
-                // The rows the bars are made of. They belong in the HOVER --
-                // repeating a chart's contents underneath it makes the card a
-                // table with a picture on top.
+                // The rows behind the bars, shown on hover, not under the chart.
                 details={chart.details}
               />
               {Array.isArray(chart.missing) && chart.missing.length > 0 && (

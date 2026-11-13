@@ -1,32 +1,20 @@
 """The five connectors' MCP servers, as presets an admin adds in one click.
 
-Linear, Notion and GitHub are the vendors' own servers. Slack's and Google's
-hosted servers are gated (Slack: internal or Marketplace apps only; Google: a
-Developer Preview), so those two are Handbook's own servers over the vendors'
-regular APIs (``app/mcphost``), signed in to with Handbook's own apps.
+Linear, Notion and GitHub are the vendors' servers. Slack's and Google's hosted
+servers are gated, so those are Handbook's own (``app/mcphost``) over the regular
+APIs. A preset knows what a bare URL cannot:
 
-Agent mode writes only through MCP (docs/plans/2026-10-22-mcp-only-actions.md).
-A preset knows what a bare URL cannot:
-
-* **How people sign in.** Linear and Notion register Handbook themselves
-  (dynamic client registration). GitHub does not: the sign-in uses the GitHub
-  App (``client``). Slack and Google sign in through Handbook's own apps, with
-  the endpoints and scopes the preset carries (``oauth``): a Slack USER token,
-  and Google's ``drive.file`` + Docs + Sheets (files Handbook made or opened).
-* **Nothing about which tools may be switched on.** The admin decides; every
-  tool starts off and every write is approved on a card. GitHub signs in
-  through the GitHub App, so what GitHub itself allows is the App's
-  permissions (set on GitHub, not here).
+* **How people sign in.** Linear and Notion register Handbook dynamically;
+  GitHub signs in through the GitHub App (``client``); Slack (a USER token) and
+  Google (``drive.file`` + Docs + Sheets) through Handbook's own apps (``oauth``).
 * **Which tools are reads** (``reads``), for servers that do not mark them.
-* **That the account is the company's.** Checked after each person signs in
-  (``account_check``) or on each write's target (``target_check``), as the
-  built-in actions did; company content never lands in a personal workspace.
+  Which tools are ON is the admin's choice; every tool starts off.
+* **That the account is the company's**: ``account_check`` after sign-in, or
+  ``target_check`` on each write's target.
+* **Which servers are one product** (``group``): unused today.
 
-* **Which servers are one product** (``group``): added together, one sign-in
-  for all. Unused today; kept for a vendor that splits a product across servers.
-
-A server added by URL with no preset keeps the generic rules: every tool off,
-lookups only for tools the server marks read-only.
+A server added by URL keeps the generic rules: every tool off, lookups only for
+tools the server marks read-only.
 """
 
 from __future__ import annotations
@@ -44,18 +32,16 @@ class Preset:
     name: str
     url: str
     note: str = ""
-    #: ``(org_id) -> (client_id, client_secret)`` of Handbook's app there, when
-    #: the server cannot register Handbook itself: the company's own app for
-    #: Google and Slack (``org_apps``), else the one in settings.
+    #: ``(org_id) -> (client_id, client_secret)`` for servers that cannot register
+    #: Handbook: the company's own app (``org_apps``), else settings'.
     client: Callable[[str | None], tuple[str | None, str | None]] | None = None
     #: Sign-in endpoints and scope, when the server advertises none.
     oauth: dict | None = None
     reads: re.Pattern | None = None
     account_check: Callable[[str, str, str], bool] | None = None  # (org_id, email, token)
     target_check: Callable[[str, dict], None] | None = None       # (org_id, args)
-    #: Required fields ``target_check`` fills from the company's own connections
-    #: when the asker did not say them, offered to the model as optional: asked
-    #: for "GitHub bench-sandbox", GPT-OSS asked who owns it instead of drafting.
+    #: Required fields ``target_check`` fills from the company's connections, offered
+    #: to the model as optional so it drafts instead of asking.
     fills: tuple[str, ...] = ()
     extra_auth_params: dict = field(default_factory=dict)
     #: Which of the scopes a server advertises to ask for (least privilege);
@@ -120,11 +106,8 @@ def _github_client(org_id: str | None = None) -> tuple[str | None, str | None]:
 def _github_target(org_id: str, args: dict) -> None:
     """A write's repository must be one of the company's own installations.
 
-    The asker names a repository ("in GitHub bench-sandbox"); the model leaves
-    the owner out or guesses it (it wrote "syvora"). When the owner is missing
-    or holds no such company repository but exactly one installation does,
-    that is the one named, and ``args["owner"]`` is set to it, as Slack's
-    "#general" is resolved to its channel. Two candidates are refused, never picked."""
+    A missing or wrong owner is set to the ONE installation holding that repo
+    (``args["owner"]``); two candidates are refused, never picked."""
     from ..auth.credentials import connected_anywhere
     from ..core.exceptions import SourceError
     from ..githublive.repos import resolve_repo, scope_from_config
@@ -201,8 +184,7 @@ SLACK = Preset(
     key="slack", name="Slack", url=_hosted("slack"), source="slack",
     note="Posts as the person who approves it, through Handbook's Slack app.",
     client=_slack_client,
-    # Slack's user sign-in (a user token, never the bot's). Slack's hosted MCP
-    # server takes only internal or Marketplace apps; its Web API takes ours.
+    # Slack's user sign-in (a user token, never the bot's).
     oauth={"authorization_endpoint": "https://slack.com/oauth/v2_user/authorize",
            "token_endpoint": "https://slack.com/api/oauth.v2.user.access",
            "scope": "channels:read groups:read channels:history groups:history users:read "
@@ -249,9 +231,8 @@ def _google_target(org_id: str, args: dict) -> None:
 _GOOGLE_OAUTH = {
     "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
     "token_endpoint": "https://oauth2.googleapis.com/token",
-    # drive.file: only files Handbook created or the person opened with it;
-    # documents and spreadsheets edit those. None is restricted, so there is
-    # no yearly security assessment (Onyx's cloud makes the same choice).
+    # drive.file: only files Handbook made or the person opened with it. No restricted
+    # scope, so no yearly security assessment.
     "scope": "openid email https://www.googleapis.com/auth/drive.file "
              "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets",
 }
@@ -269,8 +250,7 @@ GOOGLE_WORKSPACE = Preset(
 PRESETS: dict[str, Preset] = {p.key: p for p in (LINEAR, NOTION, GITHUB, SLACK, GOOGLE_WORKSPACE)}
 
 
-#: How a group is shown and added: one tile, one sign-in. None today: Google
-#: Workspace became one server of Handbook's own (``app/mcphost``).
+#: How a group is shown and added: one tile, one sign-in. None today.
 GROUPS: dict[str, dict] = {}
 
 
@@ -278,9 +258,8 @@ def in_group(group: str) -> list[Preset]:
     return [p for p in PRESETS.values() if p.group == group]
 
 
-#: Vendor-hosted addresses earlier presets used, and the preset that replaces
-#: each (their gated servers never worked for Handbook). ``mcp_store`` moves
-#: such a row onto the replacement, so the admin's list carries on in place.
+#: Vendor-hosted addresses older presets used -> their replacement preset;
+#: ``mcp_store`` moves such rows in place.
 RETIRED: dict[str, str] = {
     "https://mcp.slack.com/mcp": "slack",
     "https://drivemcp.googleapis.com/mcp/v1": "google_workspace",

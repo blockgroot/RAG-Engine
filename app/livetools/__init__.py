@@ -1,9 +1,6 @@
-"""Second Brain live connector reads (git history: docs/plans/2026-09-29-live-connector-access.md).
-
-**The index finds, the live call refreshes.** A live read only ever re-reads an
-object that retrieval already returned -- and therefore already cleared -- for
-this asker; the gateway never searches a provider. Only ``gateway.py`` ever
-decrypts a token for a live read, and nothing it returns carries one.
+"""Live connector reads. **The index finds, the live call refreshes**: only an
+object retrieval already returned (and cleared) for this asker is re-read.
+Only ``gateway.py`` decrypts a token for it.
 """
 
 from .base import LiveRead, LiveRefresh

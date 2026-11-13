@@ -143,9 +143,7 @@ function WorkspaceDetailPageInner() {
           if (c.provider === "slack" && !c.source_config?.channel_ids?.length) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
-            // A rename changes no content, so it never shows as "1 updated" —
-            // but the stored labels the suggestion chips were built from are
-            // now wrong, and those are cached client-side.
+            // A rename changes no content but stales the cached chip labels.
             if (next[c.id].renamed?.length) {
               const moved = next[c.id]
                 .renamed!.map((r) => `#${r.from} → #${r.to}`)
@@ -189,16 +187,8 @@ function WorkspaceDetailPageInner() {
     [workspaceId]
   );
 
-  /** Re-read this space's jobs and adopt any that are already running.
-   *
-   *  The SERVER queues the first ingest itself the moment a source is
-   *  connected or its folder/channels are saved (``autosync.sync_now``).
-   *  Nothing pushes that to the page, so without re-reading here the card
-   *  claims "first check due within the hour" and "Up to date" while an
-   *  ingest is actually running -- and Update then fails with "a sync is
-   *  already in progress", which reads as a bug rather than as the guard
-   *  working.
-   */
+  /** Re-read this space's jobs and adopt running ones: the server queues the
+   *  first ingest itself (`autosync.sync_now`), and nothing pushes that here. */
   const adoptJobs = useCallback(async () => {
     const list = await api.listWorkspaceJobs(workspaceId).catch(() => null);
     if (!list) return;

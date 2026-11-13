@@ -1,8 +1,6 @@
-"""Admin router: member invites, OAuth connections, ingestion jobs (Phase 13c).
+"""Admin router: invites, connections, ingestion jobs.
 
-Every route requires an admin session (``require_admin``) and takes ``org_id``
-exclusively from that session — never from the URL or body — so an admin can
-only ever manage their OWN organization's members, connections, and jobs.
+Every route needs ``require_admin`` and takes ``org_id`` only from the session.
 """
 
 from __future__ import annotations
@@ -81,16 +79,9 @@ def _build_connection_adapter(org_id: str, provider: str):
 
 
 def _reject_if_github(provider: str, what: str) -> None:
-    """GitHub connections have no ingestion — refuse sync-shaped operations.
+    """Refuse sync-shaped operations for GitHub, which is read live and never indexed.
 
-    Notion and Drive are *ingested* (fetch → chunk → embed → store). GitHub is
-    read **live** at question time and never indexed, so every sync-shaped
-    endpoint is meaningless for it.
-
-    This matters most for ``/ingest``: without this guard it would enqueue a job
-    the worker cannot run, and the admin would see a queued job fail minutes
-    later with an obscure "Unknown source type" error. Refusing up front states
-    the actual truth — there is nothing to sync because nothing is stored.
+    Without it ``/ingest`` would queue a job the worker cannot run.
     """
     if provider == "github":
         raise HTTPException(
@@ -111,11 +102,10 @@ def invite(
     session: SessionClaims = Depends(require_admin),
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
-    """Add ``email`` as a member of the caller's org and email a magic link.
+    """Add ``email`` as a member and email a magic link.
 
-    Creates the account immediately (so they appear in Team), then sends the
-    same single-use sign-in link used by signup / login. With
-    ``EMAIL_SENDER=console`` the link is also echoed as ``dev_link``.
+    The account exists at once (it shows in Team). With ``EMAIL_SENDER=console``
+    the link is also returned as ``dev_link``.
     """
     email = bounded(
         (body.get("email") or "").strip().lower(),
@@ -240,12 +230,7 @@ def search_connection_drive_folders(
     q: str = "",
     session: SessionClaims = Depends(require_admin),
 ):
-    """List Drive folders this connection's account can see (folder-picker dropdown).
-
-    Powers a search-as-you-type folder picker in the Sources UI so connecting
-    a folder no longer requires copy-pasting its URL — see
-    ``google_drive_utils.search_drive_folders``.
-    """
+    """Drive folders this connection's account can see, for the search-as-you-type picker."""
     conn = _owned_connection(session.org_id, connection_id)
     if conn.provider != "google":
         raise HTTPException(
@@ -272,13 +257,10 @@ def search_connection_drive_folders(
 def list_connection_slack_channels(
     connection_id: str, session: SessionClaims = Depends(require_admin)
 ):
-    """List channels this Slack bot token can already see (the channel picker).
+    """Channels this Slack bot can see, for the picker.
 
-    Slack's own OAuth grant screen doesn't let the installer pick channels
-    (unlike GitHub's install screen), so this powers the required second step:
-    show what the bot can see, flag which ones it's actually a member of
-    (``is_member``) so the UI can render "Ready" vs. "Invite the bot in
-    Slack first" per decision D7 — never silently skip an inaccessible one.
+    Slack's grant screen has no channel choice. ``is_member`` lets the UI say
+    "Ready" vs "Invite the bot first"; none is silently skipped.
     """
     conn = _owned_connection(session.org_id, connection_id)
     if conn.provider != "slack":
@@ -313,14 +295,9 @@ def list_connection_linear_teams(
 
 
 # -- Google Forms survey sentiment ------------------------------------------
-#
-# Two routes, GET and PUT, because a form is the one thing connecting Google
-# does NOT grant: the token can see every form in the account, so reading them
-# has to be an explicit choice. See `connection_ops.set_google_form_ids`.
-#
-# `enabled` is reported rather than 400ing when GOOGLE_FORMS_ENABLED is off:
-# "your deployment has not switched this on" is a different fact from "this is
-# not supported", and the picker can say so.
+# A token sees every form, so reading one is an explicit choice
+# (`connection_ops.set_google_form_ids`). `enabled` is reported, not a 400,
+# when GOOGLE_FORMS_ENABLED is off, so the picker can say so.
 
 
 def _google_connection(org_id: str, connection_id: str):
@@ -394,15 +371,9 @@ def put_connection_config(
 ):
     """Set the ingestion scope for a connection.
 
-    Google Drive: ``{"folder_url": "<Drive folder URL or bare id>"}`` — parses
-    the id, validates via ``files.get``, stores ``{folder_id, folder_name}``.
-
-    Slack: ``{"channel_ids": ["C0123ABC", ...]}`` (decision D2 — the admin
-    always names specific channels, never "all channels"). Validates every id
-    against what the bot can currently see, auto-joins any newly-picked
-    PUBLIC channel (decision D7 — private channels have no auto-join API and
-    still need a human `/invite`), then stores ``{channel_ids, channel_names}``.
-
+    Drive: ``{"folder_url": ...}``, validated, stored as ``{folder_id, folder_name}``.
+    Slack: ``{"channel_ids": [...]}``, checked against what the bot sees; public
+    channels are auto-joined (private ones need ``/invite``).
     Linear: ``{"team_ids": [...]}``, teams this connection can see.
     """
     conn = _owned_connection(session.org_id, connection_id)
@@ -438,9 +409,7 @@ def put_connection_config(
             # Drop the old folder's corpus immediately so Ask cannot keep citing it.
             purged = purge_provider_documents(session.org_id, conn.provider)
 
-        # Naming the folder is the request to index it: the adapter could not
-        # run before this point, so this is the first moment a sync is possible
-        # at all, and waiting a tick would read as a broken connection.
+        # Naming the folder is the request to index it: sync now, not on the next tick.
         sync_now(session.org_id, connection_id, provider=conn.provider)
 
         return {
@@ -449,10 +418,7 @@ def put_connection_config(
             "config": config,
             "folder_changed": swapped,
             "documents_purged": purged,
-            # Told HERE, to whoever just picked the folder, rather than to
-            # admins later via the bell: a folder whose sharing we cannot read
-            # is that person's problem to fix, and this is the one moment they
-            # are looking at it. `None` when there is nothing to say.
+            # Told now, to whoever picked the folder (`None` when nothing to say).
             "sharing": drive_sharing_report(token, config["folder_id"]),
         }
 
@@ -501,15 +467,10 @@ def put_connection_config(
 def refresh_connection_scope(
     connection_id: str, session: SessionClaims = Depends(require_admin)
 ):
-    """Re-read which repositories a GitHub installation is allowed to see.
+    """Re-read which repositories a GitHub installation may see.
 
-    The authorized repo list is stored at connect time rather than fetched per
-    question (it changes only when an admin edits the installation on GitHub, so
-    re-listing every time would spend rate limit and latency re-learning
-    something static). The cost of that choice is staleness: a repo added on
-    GitHub afterwards isn't visible to us until someone refreshes. This endpoint
-    is that refresh — it is the GitHub analogue of Drive's "check for changes",
-    for scope rather than content.
+    The list is stored at connect time (it rarely changes), so a repo added on
+    GitHub later appears only after this refresh.
     """
     conn = _owned_connection(session.org_id, connection_id)
     if conn.provider != "github":
@@ -551,11 +512,10 @@ def refresh_connection_scope(
 
 @router.get("/connections/{connection_id}/health")
 def connection_health(connection_id: str, session: SessionClaims = Depends(require_admin)):
-    """Probe whether stored credentials still work (no corpus mutation).
+    """Probe whether stored credentials still work, without changing the corpus.
 
-    Used on Sources load for GitHub (which has no change-check). Minting an
-    installation token hits GitHub and is enough to detect an uninstalled App
-    or dead install without rewriting the stored repo list.
+    For GitHub on Sources load: minting an installation token detects an
+    uninstalled App.
     """
     conn = _owned_connection(session.org_id, connection_id)
     try:
@@ -577,18 +537,12 @@ def connection_health(connection_id: str, session: SessionClaims = Depends(requi
 
 @router.get("/connections/{connection_id}/changes")
 def connection_changes(connection_id: str, session: SessionClaims = Depends(require_admin)):
-    """Metadata-only: which remote pages are new/updated/removed vs our store.
-
-    Does not download page bodies or embed — safe to call on Sources page load.
-    """
+    """Metadata only: which remote pages are new, updated or removed. No bodies, no embedding."""
     conn = _owned_connection(session.org_id, connection_id)
     _reject_if_github(conn.provider, "Change checking")
 
-    # A Slack rename touches no message id or timestamp, so it is invisible to
-    # change detection — correctly, there is nothing to re-ingest. But the
-    # stored channel LABEL is a snapshot, so every display of it stays wrong
-    # until something refreshes it. Checking for changes is exactly when
-    # someone expects the connection to be re-read.
+    # A Slack rename changes no message, so change detection misses it; refresh
+    # the stored channel labels here.
     renamed: list[tuple[str, str]] = []
     if conn.provider == "slack":
         renamed = refresh_slack_channel_names(session.org_id)
@@ -635,10 +589,7 @@ def delete_org_connection(
 
 @router.post("/connections/{connection_id}/ingest")
 def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_admin)):
-    # enqueue() doesn't itself check the connection belongs to this org, so
-    # verify via list_connections (already org-scoped) before enqueuing —
-    # never let an admin enqueue a job against a connection_id that isn't
-    # actually theirs.
+    # enqueue() does not check ownership: verify the connection is this org's first.
     conn = _owned_connection(session.org_id, connection_id)
     _reject_if_github(conn.provider, "Syncing")
 

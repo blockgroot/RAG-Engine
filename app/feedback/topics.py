@@ -1,27 +1,14 @@
 """Unanswered questions grouped by meaning, and when one is worth an alert.
 
-The admin page used to list every unanswered question, chart refusal and
-figure-reading failure. Most of that is ours to fix, not theirs, and a log
-nobody can act on is noise. What an admin (or a space owner) CAN act on is a
-missing or outdated document, and the signal for one is several different
-people failing on the same thing. So questions are grouped into topics and
-the bell speaks only past a threshold.
+Admins (or space owners) can fix a missing document; the signal is several
+people failing on the same thing, so the bell speaks past a threshold.
 
-Embeddings alone cannot group them. Measured on jina-embeddings-v3 (8 topics
-asked 4 ways each), paraphrases scored 0.45-0.70 and different topics up to
-0.70 ("annual leave" ~ "maternity leave"): every cut-off either split one ask
-into many topics or merged two. So embeddings only pick a few CANDIDATE
-topics, and the background model reads the question against them and names
-the one asking for the same thing, or none. Code keeps only a number it
-offered; anything else starts a new topic, because a wrong merge (an alert
-counting unrelated questions under the wrong name) is worse than a split.
-No candidate at all, the common case for a first question, costs no call.
-
-Grouping runs in the background when someone who can act on it opens the
-bell or the page: never on the answer path, and never making a page wait on
-a model. A topic is its first question (real wording, never a model's
-summary). A chart Handbook could not draw is never a topic: no document is
-missing, so it stays in ``feedback_and_gaps`` for us and is never shown.
+Embeddings only pick candidate topics (paraphrases and different topics
+overlap in cosine); the background model names the same one or none, and
+code keeps only a number it offered, else a new topic (a wrong merge is
+worse than a split). Runs in the background when the bell or page opens,
+never on the answer path. A topic is its first question. Chart refusals are
+never topics.
 """
 
 from __future__ import annotations
@@ -193,9 +180,8 @@ class Topic:
     missing_people: int
     wrong_people: int
     questions: list[str]
-    #: Best retrieval score among its questions: None means nothing came
-    #: close (the document is missing); a number means something related
-    #: exists but was too weak a match (find out why it isn't reachable).
+    #: Best retrieval score: None = the document is missing; a number =
+    #: something related exists but matched too weakly.
     best_score: float | None
     #: The latest answer someone marked wrong, with their reason and comment.
     wrong_answer: str | None

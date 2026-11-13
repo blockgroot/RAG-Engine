@@ -1,4 +1,4 @@
-"""Per-request time budget passed through the RAG pipeline (Phase 19)."""
+"""Per-request time budget passed through the RAG pipeline."""
 
 from __future__ import annotations
 

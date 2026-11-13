@@ -1,18 +1,8 @@
-"""Storage/lookup for ``oauth_connections`` rows (Phase 11).
+"""Storage and lookup for ``oauth_connections`` rows (encrypted tokens).
 
-This is the DB-backed replacement for hand-set ``NOTION_TOKEN_<NAME>`` env
-vars: once an admin completes the OAuth "Connect" flow (``app/api/auth.py``),
-the resulting tokens are encrypted (``app.security``) and stored here, one row
-per ``(org_id, provider)`` (enforced by a UNIQUE constraint in schema.sql — see
-CLAUDE.md for why this makes cross-tenant ambiguity structurally impossible).
-
-Deliberately NOT merged with the legacy env-var path
-(``NotionSettings.resolve_token``): the two credential sources are kept fully
-independent, each always requiring an explicit, unambiguous key (``org_id``
-here, ``token_name`` there) — no fallback from one to the other. A prior design
-review flagged that a shared/ambiguous fallback is exactly how a cross-org
-credential leak would happen; keeping the paths separate avoids that risk
-entirely rather than trying to reconcile it.
+Kept apart from the env-var path (``NotionSettings.resolve_token``) with no
+fallback either way: each needs an explicit key, because an ambiguous
+fallback is how one org's credential reaches another.
 """
 
 from __future__ import annotations
@@ -27,21 +17,12 @@ from ..db.connection import get_connection
 from ..security import decrypt, encrypt
 from .base import OAuthTokens
 
-# How far ahead of actual expiry we proactively refresh. Google access tokens
-# live ~1h; refreshing 5 minutes early absorbs request latency/clock skew
-# without adding a retry loop.
+# Refresh this early to absorb latency and clock skew without a retry loop.
 _REFRESH_SAFETY_MARGIN = timedelta(minutes=5)
 
-# In-process cache of minted GitHub installation tokens, keyed by
-# ``(org_id, workspace_id, installation_id)``. GitHub installation tokens are
-# valid for an hour, so minting one per question would burn rate limit and add a
-# round-trip for no benefit. Deliberately process-local (not Postgres): it holds
-# live credentials, it is cheap to rebuild after a restart, and a shared cache
-# would need its own encryption + invalidation story for zero gain.
-#
-# The key includes ``org_id`` so a cache hit can never hand one tenant another
-# tenant's token — the same "scope is part of the key, never assumed" discipline
-# every query in this module follows.
+# Process-local cache of GitHub installation tokens (valid an hour), keyed by
+# ``(org_id, workspace_id, installation_id)`` so a hit can never cross tenants.
+# Not in Postgres: it holds live credentials and is cheap to rebuild.
 _INSTALLATION_TOKEN_CACHE: dict[tuple[str, str | None, str], tuple[str, datetime]] = {}
 
 
@@ -61,11 +42,8 @@ class OAuthConnectionInfo:
     # or a successful live provider call). Safe / non-secret.
     needs_reauth: bool = False
     reauth_reason: str | None = None
-    # When the background sync last ATTEMPTED this connection
-    # (``app/jobs/autosync.py``). Surfaced because the Check button is gone:
-    # with no manual override, "when did this last look for changes?" is the
-    # only freshness signal an admin has left, and a card that shows nothing
-    # makes a working automatic sync indistinguishable from a broken one.
+    # When the background sync last ATTEMPTED this connection: the only
+    # freshness signal on the card, so a working sync is told from a broken one.
     last_sync_at: datetime | None = None
 
 
@@ -79,17 +57,9 @@ def save_connection(
 ) -> str:
     """Encrypt and upsert a connection for ``provider``.
 
-    One row per ``(org_id, provider)`` when ``workspace_id`` is ``None``
-    (today's org-wide admin connection, unchanged) — a second connect for the
-    same provider replaces the first (e.g. reconnecting after revoking
-    access). One row per ``(org_id, provider, workspace_id)`` when
-    ``workspace_id`` is set (Workspace-within-a-Workspace): an employee's
-    personal connection for their sub-workspace, kept fully separate from the
-    org-wide connection and from any other workspace's connection for the
-    same provider (see the two partial unique indexes in schema.sql). Which
-    ``ON CONFLICT`` target applies depends on whether ``workspace_id`` is
-    ``None`` — Postgres requires the inference clause's predicate to match
-    the partial index's predicate exactly, so this can't be one static query.
+    One row per ``(org_id, provider)`` when ``workspace_id`` is ``None``, else
+    per ``(org_id, provider, workspace_id)``. Two partial unique indexes, and
+    ``ON CONFLICT`` must match the partial index's predicate, so two queries.
     """
     access_encrypted = encrypt(tokens.access_token)
     refresh_encrypted = encrypt(tokens.refresh_token) if tokens.refresh_token else None
@@ -137,13 +107,9 @@ def save_connection(
 def get_connection_token(
     org_id: str, provider: str, workspace_id: str | None = None
 ) -> str:
-    """Return the decrypted access token for this ``provider`` connection.
+    """Decrypted access token for this connection, scoped by org, provider and workspace.
 
-    Always scoped by BOTH ``org_id`` and ``provider`` — never provider alone —
-    so this can never return another org's token. ``workspace_id`` (default
-    ``None``) additionally scopes to the org-wide connection vs. a specific
-    sub-workspace's personal connection. Raises ``ConfigurationError`` if no
-    connection exists (the admin/employee hasn't connected this provider yet).
+    Raises ``ConfigurationError`` when it is not connected.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -161,42 +127,19 @@ def get_connection_token(
 def get_live_connection_token(
     org_id: str, provider: str, workspace_id: str | None = None
 ) -> str:
-    """Return a valid (refreshed if necessary) access token for this connection.
+    """A valid access token for this connection, refreshed if necessary.
 
-    Provider-agnostic (CLAUDE.md D10): Notion's tokens never expire, Google's
-    expire in ~1h — this is the ONE place that owns "is it still good, and if
-    not, can/should we refresh it" so every caller benefits without knowing
-    which provider it's talking to.
-
-    - No ``expires_at`` (Notion) or still comfortably valid: return the stored
-      access token unchanged, no network call.
-    - Within ``_REFRESH_SAFETY_MARGIN`` of expiry (or already past) and a
-      refresh token is on file: call ``build_oauth_provider(provider).refresh()``.
-      - If refresh isn't supported (``NotImplementedError``), fall back to the
-        stored access token unchanged — this provider doesn't need refresh.
-      - On success, persist the new access/refresh/expiry and return the new
-        access token. A refresh response that omits a new refresh token (Google
-        commonly does on non-first refreshes) must NOT null out the one we
-        already have on file.
-      - On a terminal provider failure (e.g. Google's ``invalid_grant`` from a
-        revoked/expired refresh token), raise ``OAuthReauthRequiredError`` so
-        the caller can surface an actionable "reconnect" message. Never
-        retry-looped — at most one refresh attempt per call.
-    - No refresh token on file: nothing to refresh with, return the stored
-      (possibly stale) access token as-is.
+    The one place that decides refresh, for every provider. No expiry or still
+    valid: returned as is. Near expiry with a refresh token: refreshed once
+    (no loop) and saved, keeping the old refresh token if none came back.
+    Refresh unsupported or no refresh token: the stored token. A terminal
+    failure raises ``OAuthReauthRequiredError``.
     """
-    # Imported lazily to avoid a hard import cycle (factory -> providers ->
-    # credentials isn't a cycle today, but this keeps the module import order
-    # from ever mattering here, matching the lazy-import convention used for
-    # optional/heavier deps elsewhere in this codebase).
+    # Lazy import keeps module import order irrelevant.
     from .factory import build_oauth_provider
 
-    # GitHub is the one provider where the token callers need is NOT the token
-    # we stored: the stored value is the *user* access token (proof of who
-    # connected), while reading repositories requires a short-lived
-    # *installation* token minted from the App's private key. Handled here, in
-    # front of the generic refresh logic, so no caller has to know that —
-    # exactly why this function exists (see the docstring's D10 note).
+    # GitHub: callers need an installation token minted from the App key, not
+    # the stored user token.
     if provider == "github":
         return _github_installation_token(org_id, workspace_id)
 
@@ -217,9 +160,8 @@ def get_live_connection_token(
     from .org_apps import OWN_APP_PROVIDERS, has_app
 
     if provider in OWN_APP_PROVIDERS and not has_app(org_id, provider):
-        # Hosted Handbook has no shared Google or Slack app: a connection made
-        # through the old shared one stops here with a step the admin can take,
-        # instead of failing on every sync with nothing on its card.
+        # Hosted has no shared Google or Slack app: a connection through the old one
+        # stops here with a step the admin can take.
         reason = (
             f"Set up your company's own {'Google' if provider == 'google' else 'Slack'} "
             "app under Sources, then reconnect."
@@ -239,9 +181,7 @@ def get_live_connection_token(
         return access_token
 
     if not refresh_encrypted:
-        # Expiring/expired but nothing to refresh with — hand back what we
-        # have; the caller's downstream API call will fail with its own
-        # provider error if it's actually no longer valid.
+        # Nothing to refresh with: return what we have; the API call will fail if stale.
         return access_token
 
     refresh_token = decrypt(refresh_encrypted)
@@ -256,11 +196,8 @@ def get_live_connection_token(
         mark_needs_reauth(org_id, provider, workspace_id, str(exc))
         raise
     except ConfigurationError:
-        # THIS HOST cannot refresh (e.g. LINEAR_CLIENT_SECRET unset), which
-        # says nothing about the tenant's token. Marking reauth here flagged
-        # every connection of that provider "Reconnect" after one bad deploy,
-        # and stopped auto-sync for all of them. The refresh token was never
-        # sent; it stays good for a correctly configured host.
+        # This HOST cannot refresh (e.g. a secret unset): that says nothing about the
+        # tenant's token, so it is not flagged for reauth.
         raise
     except Exception as exc:  # noqa: BLE001 - map any other refresh failure to a terminal error
         wrapped = OAuthReauthRequiredError(
@@ -296,16 +233,10 @@ def get_live_connection_token(
 
 
 def _github_installation_token(org_id: str, workspace_id: str | None = None) -> str:
-    """Return a valid GitHub installation access token for this connection.
+    """A valid GitHub installation token for this connection, cached until near expiry.
 
-    Reads ``installation_id`` from the connection's ``source_config`` (written by
-    the connect callback after verifying it against the authorizing user — see
-    ``github_oauth.py``), mints a token from the App private key, and caches it
-    until shortly before it expires.
-
-    Note what is deliberately NOT done: the stored user access token is never
-    returned as a fallback. If minting can't happen, the caller gets an error, not
-    a credential that would fail confusingly at the first repo read.
+    ``installation_id`` comes from ``source_config`` (verified at connect).
+    Never falls back to the stored user token.
     """
     from .github_app import mint_installation_token
 
@@ -328,9 +259,7 @@ def _github_installation_token(org_id: str, workspace_id: str | None = None) -> 
     try:
         minted = mint_installation_token(str(installation_id))
     except Exception as exc:  # noqa: BLE001 - mint failure is terminal for this install
-        # Missing/uninstalled App, bad PEM, or GitHub 401/404 on the install —
-        # all need reconnect, not a soft retry. ConfigurationError (no install id)
-        # is raised above; OAuthError comes from the mint HTTP call.
+        # No App, bad PEM, or GitHub 401/404: reconnect, not a retry.
         from ..core.exceptions import ConfigurationError, OAuthError
 
         if isinstance(exc, (OAuthError, ConfigurationError, OAuthReauthRequiredError)) or looks_like_auth_failure(
@@ -358,11 +287,10 @@ def _github_installation_token(org_id: str, workspace_id: str | None = None) -> 
 
 
 def looks_like_auth_failure(exc: BaseException) -> bool:
-    """True when ``exc`` (or its cause chain) is credential death, not a blip.
+    """True when ``exc`` (or its cause chain) means the credential is dead.
 
-    Conservative on purpose: a Drive 403 on one file must not force reconnect.
-    We treat HTTP 401, Notion ``unauthorized``, and explicit invalid_grant /
-    invalid_token / revoked language as terminal auth failures.
+    Conservative: a Drive 403 on one file must not force reconnect. Only 401,
+    Notion ``unauthorized`` and invalid_grant/invalid_token/revoked count.
     """
     cur: BaseException | None = exc
     for _ in range(8):
@@ -490,12 +418,7 @@ def clear_needs_reauth(
 def list_connections(
     org_id: str, workspace_id: str | None = None
 ) -> list[OAuthConnectionInfo]:
-    """List connections (metadata only — never the decrypted token).
-
-    ``workspace_id`` (default ``None``) lists the org-wide connections;
-    passing a workspace's id lists only that sub-workspace's personal
-    connections instead.
-    """
+    """List connections (metadata only, never the token); ``workspace_id`` picks a space's."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id::text, provider, external_workspace_id, "
@@ -503,13 +426,8 @@ def list_connections(
             "needs_reauth, reauth_reason, last_sync_at "
             "FROM oauth_connections "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
-            # The org's own LLM credential lives in this table (no migration)
-            # but is NOT a data source, and every consumer of this list assumes
-            # it is: the admin Sources page calls checkConnectionChanges on each
-            # row (-> build_source_adapter('llm') -> 400, breaking the page),
-            # onboarding treats any row as "Connect done", and trigger_ingest
-            # would enqueue a job no worker can run. Filtered here rather than
-            # at each caller so a future caller cannot forget.
+            # The org's own LLM credential lives in this table but is not a source;
+            # every caller assumes rows are sources, so it is filtered here once.
             "AND provider <> 'llm' "
             "ORDER BY created_at DESC",
             (org_id, workspace_id),
@@ -533,19 +451,9 @@ def list_connections(
 def set_connection_config(
     org_id: str, provider: str, config: dict, workspace_id: str | None = None
 ) -> None:
-    """Store this org's provider-specific ingestion scope config.
+    """Store this connection's provider-specific scope config (JSONB).
 
-    Generic on purpose (Google Integration Phase 4): Notion never needs this
-    (an integration token already only sees pages explicitly shared with it),
-    but Google Drive requires the admin to designate an in-scope folder up
-    front, and a future GitHub/Slack adapter will need its own shape (a repo
-    name, a channel list). Rather than one column per provider, this stores
-    whatever dict that provider's admin flow collected as JSONB.
-
-    Requires the ``(org_id, provider)`` connection row to already exist (i.e.
-    the OAuth connect flow has run) — raises ``ConfigurationError`` otherwise,
-    mirroring ``get_connection_token``'s not-connected error, since scope
-    config with no underlying connection is meaningless.
+    Raises ``ConfigurationError`` when the connection does not exist.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -563,13 +471,7 @@ def set_connection_config(
 def get_connection_config(
     org_id: str, provider: str, workspace_id: str | None = None
 ) -> dict | None:
-    """Return the stored provider-specific scope config, or ``None``.
-
-    ``None`` covers both "never connected" and "connected but never
-    configured" — callers that need to distinguish those cases should check
-    ``list_connections``/``get_connection_token`` separately; this is purely
-    about the optional scope config.
-    """
+    """The stored scope config, or ``None`` (not connected, or never configured)."""
     with get_connection() as conn:
         row = conn.execute(
             "SELECT source_config FROM oauth_connections "
@@ -582,10 +484,10 @@ def get_connection_config(
 
 
 def connected_anywhere(org_id: str, provider: str) -> list[tuple[str | None, dict]]:
-    """Every connection of ``provider`` in this org, company-wide or in any
-    space, as ``(external_workspace_id, source_config)``, company-wide first.
-    Act's "is this account the company's?" checks read this: a person may
-    connect a tool their company connected in only one space."""
+    """Every ``provider`` connection in this org as ``(external_workspace_id, source_config)``.
+
+    Company-wide first. Act's account checks read it: a tool may be connected in only one space.
+    """
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT external_workspace_id, source_config FROM oauth_connections "
@@ -607,11 +509,9 @@ def clear_installation_token_cache(
 def delete_connection(
     org_id: str, connection_id: str, *, workspace_id: str | None = None
 ) -> str:
-    """Delete one OAuth connection row owned by this org (and optional workspace).
+    """Delete one connection in this org (and workspace); return its provider.
 
-    Returns the provider name so callers can purge indexed docs for Notion/Drive.
-    Raises ``ConfigurationError`` when the id is missing or not in scope —
-    never deletes across a tenant or workspace boundary.
+    Raises ``ConfigurationError`` when the id is missing or out of scope.
     """
     with get_connection() as conn:
         row = conn.execute(

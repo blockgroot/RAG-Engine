@@ -1,13 +1,7 @@
-"""Apply the database schema.
+"""Apply ``schema.sql`` (idempotent; safe to rerun) via ``apply_schema()``.
 
-Reads ``schema.sql`` (which is idempotent — every statement uses IF NOT EXISTS)
-and executes it. Safe to run repeatedly.
-
-Uses a direct connection, NOT the pooled ``get_connection``: this may run against
-a brand-new database where the ``vector`` extension does not exist yet, and the
-pool's configure hook registers pgvector adapters (which requires the extension).
-Migration only runs plain DDL and passes no vector params, so it needs neither
-the pool nor the adapters.
+A direct connection, not the pool: the ``vector`` extension may not exist
+yet, and the pool's hook needs it.
 """
 
 from __future__ import annotations

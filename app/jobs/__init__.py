@@ -1,4 +1,4 @@
-"""Postgres-backed durable ingestion job queue (Phase 12).
+"""Postgres-backed durable ingestion job queue.
 
 Public API:
     from app.jobs import enqueue, get_job, list_jobs

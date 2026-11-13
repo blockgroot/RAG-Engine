@@ -1,16 +1,8 @@
-"""Workspaces router: sub-workspace CRUD, membership, connections, ingest.
+"""Workspaces router: space CRUD, membership, connections, ingest.
 
-Every route requires an authenticated session (``get_session`` — any org
-member, not just admins, since creating a personal sub-workspace is an
-employee capability, not an admin-only one per CLAUDE.md's Workspace-within-
-a-Workspace plan). Every route that operates on an EXISTING workspace resolves
-the ``workspace_id`` from the URL path and immediately calls
-``assert_member`` (via ``get_workspace_role``/``require_workspace_owner`` in
-``deps.py``) before touching anything else — mirroring exactly how
-``deps.require_admin`` is the one gate every admin route trusts. A workspace's
-own ``org_id`` is always checked against the caller's session ``org_id``
-inside that gate, so a stale/forged workspace_id from a different org fails
-closed instead of ever resolving (see app/workspaces/store.py::assert_member).
+Any member may create a space. Every route on an existing space checks
+``assert_member`` first (``get_workspace_role``/``require_workspace_owner``),
+including the space's own ``org_id``, so another org's id fails closed.
 """
 
 from __future__ import annotations
@@ -107,11 +99,7 @@ def get_workspace(
     session: SessionClaims = Depends(get_session),
     role: str = Depends(get_workspace_role),
 ):
-    """Workspace identity + the same ready_to_ask gate shape as ``GET /me``.
-
-    Scoped only to this workspace's connections/docs/jobs — never org-wide
-    rows — so Ask unlocks after *this* workspace's sync succeeds.
-    """
+    """Space identity and its ``ready_to_ask`` gate, from this space's rows only."""
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -151,24 +139,15 @@ def get_workspace(
         "name": row[0],
         "role": role,
         "created_by": row[1],
-        # Whether THIS workspace has its own GitHub connection, so the workspace
-        # chat can offer a Code tab. Scoped to the workspace on purpose: an
-        # org-wide GitHub connection must NOT light this up, or a member would be
-        # offered a Code tab that then answers from a scope they aren't in.
+        # This space's own GitHub connection only: an org-wide one must not offer a
+        # Code tab that answers from a scope the member is not in.
         "github_connected": row[2],
         # Same rule as /me: keyed on ingested Slack documents for THIS
         # workspace, so a Slack tab only appears once it can actually answer.
         "slack_ready": row[3],
-        # Same rule, for ingested Linear issues scoped to THIS workspace. No
-        # workspace-scoped Linear connect flow exists yet (Linear is still
-        # env-token ingestion only — see app/sources/linear.py), so this stays
-        # false in practice until that lands; reported now for parity so the
-        # frontend doesn't need a second wiring pass later.
+        # Same rule, for Linear issues ingested into this space.
         "linear_ready": row[4],
-        # Same rule, for THIS workspace's own Notion/Drive documents — a
-        # workspace CAN connect its own Notion or Drive source (see the
-        # provider checks in this file), so this is real and used, unlike
-        # Linear above.
+        # Same rule, for this space's own Notion/Drive documents.
         "notion_ready": row[5],
         "drive_ready": row[6],
         **status,
@@ -182,10 +161,9 @@ def delete_space(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """Owner-only: permanently delete this space and its scoped content.
+    """Owner-only: permanently delete this space and its content.
 
-    Org-wide policies and org GitHub are untouched. Workspace docs, connections,
-    conversations, and membership cascade away with the ``workspaces`` row.
+    Docs, connections, conversations and membership cascade; org content is untouched.
     """
     try:
         delete_workspace(workspace_id, session.org_id, session.user_id)
@@ -198,12 +176,7 @@ def delete_space(
 
 
 def _reject_if_github(provider: str, what: str) -> None:
-    """GitHub has no ingestion — refuse sync-shaped operations on a workspace too.
-
-    Same reasoning as the admin router's guard: without this, ``/ingest`` would
-    enqueue a job the worker cannot run and the owner would watch it fail later
-    with an obscure "Unknown source type".
-    """
+    """Refuse sync-shaped operations for GitHub (read live, nothing to ingest)."""
     if provider == "github":
         raise HTTPException(
             status_code=400,
@@ -236,13 +209,9 @@ def _notify_workspace_invite(
     background_tasks: BackgroundTasks,
     settings: ApiSettings,
 ) -> None:
-    """Email a sign-in shortcut for a workspace membership that ALREADY exists.
+    """Email a sign-in shortcut for a membership that already exists.
 
-    Membership is granted by the caller (an insert into ``workspace_members``)
-    before this ever runs — this only sends a courtesy notification, never a
-    gate. If the token inside ``link`` expires unused, the person is not
-    locked out: they sign in the ordinary way from the login page, and the
-    workspace is already sitting in their list, independent of this email.
+    A courtesy, never a gate: an expired link still leaves normal sign-in.
     """
     workspace_name = _workspace_name(session.org_id, workspace_id) or "your workspace"
     inviter = get_user(session.user_id)
@@ -291,13 +260,7 @@ def resend_invite(
     _role: str = Depends(require_workspace_owner),
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
-    """Re-send the workspace-invite notification email.
-
-    Never re-creates or re-validates membership — that already happened when
-    they were first added. Purely re-sends the same courtesy email with a
-    fresh sign-in link, for a colleague who missed the first one or let its
-    (short-lived) token age out before opening it.
-    """
+    """Re-send the invite email with a fresh sign-in link; membership is unchanged."""
     match = next(
         (m for m in list_workspace_members(workspace_id) if m["user_id"] == user_id), None
     )
@@ -386,11 +349,7 @@ def search_connection_drive_folders(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """List Drive folders this connection's account can see (folder-picker dropdown).
-
-    Same shape as the admin ``GET /admin/connections/{id}/drive-folders``
-    route, resolved against this workspace's own connection.
-    """
+    """Drive folders this space's connection can see (the folder picker)."""
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     if conn.provider != "google":
         raise HTTPException(
@@ -414,11 +373,7 @@ def search_connection_drive_folders(
 
 
 # -- Google Forms survey sentiment, scoped to this space --------------------
-#
-# The same two routes as `/admin/connections/{id}/forms`, resolved against this
-# space's own Google connection. Owner-only, like every other scope decision
-# here: which surveys feed a sentiment chart is exactly the kind of choice a
-# member should not be able to widen.
+# Owner-only: which surveys feed a sentiment chart must not be widened by a member.
 
 
 def _workspace_google_connection(org_id: str, workspace_id: str, connection_id: str):
@@ -500,20 +455,10 @@ def list_workspace_connection_slack_channels(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """List channels this workspace's Slack bot token can already see.
+    """Channels this space's Slack bot can see, for the picker.
 
-    Same shape as the admin ``GET /admin/connections/{id}/slack-channels``
-    route, resolved against this workspace's own connection.
-
-    Known gap (decision D9, not yet implemented): this returns every channel
-    the shared org bot token can see, not just channels the CONNECTING PERSON
-    personally belongs to — the plan's identity-grant step ("Sign in with
-    Slack" to filter the picker to the owner's own channels) is deferred.
-    Until that lands, a workspace owner can technically pick a channel they
-    aren't personally a member of, as long as the shared bot is already in
-    it. Isolation from OTHER workspaces/org-wide still holds (D10, enforced
-    below) — what's missing is the narrower "did *this person* belong to it"
-    check.
+    Known gap: it lists every channel the bot sees, not only the owner's own
+    channels. Isolation from other spaces and the org still holds.
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     if conn.provider != "slack":
@@ -568,15 +513,10 @@ def list_workspace_slack_channel_members(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """List a connected channel's Slack members, each flagged for invite eligibility.
+    """A channel's Slack members, each flagged for invite eligibility.
 
-    Only members who already have a Handbook account in THIS org can be
-    invited into the workspace (``workspaces.invite_member`` enforces this
-    too — it's checked here again purely so the picker can show, not
-    silently omit, "not on Handbook yet" for everyone else). Matching is by
-    email, which requires the ``users:read.email`` Slack scope; a member
-    Slack won't give an email for is left out entirely (see
-    ``list_channel_members``).
+    Only members with an account in this org can be invited; matched by email
+    (``users:read.email``). Members with no email are left out.
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     if conn.provider != "slack":
@@ -618,14 +558,9 @@ def invite_workspace_slack_channel_members(
     _role: str = Depends(require_workspace_owner),
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
-    """Bulk-invite a subset of a connected channel's members into this workspace.
+    """Bulk-invite some of a channel's members through ``invite_member``.
 
-    Reuses the exact same ``invite_member`` an owner would trigger one email
-    at a time from the members panel — this is only a bulk front-end for it,
-    not a new privilege. An email with no matching org account is reported
-    back as skipped rather than silently dropped or auto-created (see the
-    Slack Integration Plan's member-invite decision: never create new org
-    accounts from this flow).
+    No new privilege; an email with no org account is reported skipped, never created.
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     if conn.provider != "slack":
@@ -655,15 +590,10 @@ def put_connection_config(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """Set the ingestion scope for a workspace's personal connection.
+    """Set the ingestion scope of a space's connection (Drive, Slack, Linear).
 
-    Same shape as the admin ``PUT /admin/connections/{id}/config`` route
-    (Google Drive folder_url, Slack channel_ids) but resolved against this
-    workspace's connections, never the org-wide ones. Decision D10: a channel
-    already claimed by another connection (org-wide or a sibling workspace)
-    for this org is rejected here, since ``validate_slack_channels`` only
-    checks Slack-side visibility — the cross-connection dedupe is ours to
-    enforce.
+    Resolved against this space's connections only. A channel another connection
+    in the org already claims is refused (Slack checks only visibility).
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     if conn.provider not in ("google", "slack", "linear"):
@@ -712,10 +642,7 @@ def put_connection_config(
             "config": config,
             "folder_changed": swapped,
             "documents_purged": purged,
-            # Told HERE, to whoever just picked the folder, rather than to
-            # admins later via the bell: a folder whose sharing we cannot read
-            # is that person's problem to fix, and this is the one moment they
-            # are looking at it. `None` when there is nothing to say.
+            # Told now, to whoever picked the folder (`None` when nothing to say).
             "sharing": drive_sharing_report(token, config["folder_id"]),
         }
 
@@ -773,13 +700,9 @@ def refresh_workspace_connection_scope(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """Re-read which repositories this WORKSPACE's installation may see.
+    """Re-read which repositories this space's GitHub installation may see.
 
-    Owner-only, like every other operation that changes what a workspace can
-    read — an ordinary member can ask questions but must not be able to widen the
-    workspace's data scope. Otherwise identical to the admin route: the repo list
-    is stored rather than re-fetched per question, so it needs an explicit refresh
-    when the owner edits the installation on GitHub.
+    Owner-only: a member must not widen the space's data scope.
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     if conn.provider != "github":

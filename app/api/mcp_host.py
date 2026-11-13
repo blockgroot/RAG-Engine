@@ -1,9 +1,7 @@
 """Handbook's own MCP servers over Streamable HTTP (JSON replies, no sessions).
 
-``POST /mcp/<name>`` answers ``initialize``, ``tools/list`` and ``tools/call``.
-Listing needs no sign-in; a call needs the person's own vendor token as the
-bearer, which is only forwarded to the vendor (``app/mcphost``). A sign-in the
-vendor no longer accepts is a 401, so Agent mode asks the person to sign in again.
+Listing needs no sign-in; a call's bearer is the person's vendor token, only
+forwarded. A token the vendor refuses is a 401, so Agent mode asks to sign in again.
 """
 
 from __future__ import annotations

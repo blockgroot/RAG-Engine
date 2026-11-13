@@ -1,18 +1,8 @@
-"""Postgres-backed durable job queue for admin-triggered ingestion (Phase 12).
+"""Postgres-backed durable ingestion job queue.
 
-Why Postgres instead of an in-process background task or a new queue
-dependency (Redis/Celery): an admin-triggered ingestion run can take a while
-(fetch + chunk + embed a whole workspace) and must survive an API-process
-restart with a truthful status — an in-memory task loses that the moment the
-process recycles. We already run Postgres for everything else, so
-``SELECT ... FOR UPDATE SKIP LOCKED`` gives an at-least-once, crash-safe queue
-with zero new infrastructure, matching CLAUDE.md §1's self-hosted /
-minimal-dependency principle.
-
-Every function takes ``org_id`` where the query needs it and is scoped
-accordingly — an admin can only ever enqueue/poll their OWN org's jobs
-(enforced by the caller passing the session's ``org_id``, never a client value;
-see ``app/api/admin.py``).
+``FOR UPDATE SKIP LOCKED`` gives an at-least-once queue that survives a
+restart with a truthful status, with no new infrastructure. Reads are scoped
+by the session's ``org_id``.
 """
 
 from __future__ import annotations
@@ -31,10 +21,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REAP_TIMEOUT_MINUTES = 30
 
-# How many times a job may be claimed before `requeue_interrupted_running`
-# gives up on it instead of returning it to the queue. 3 leaves room for
-# genuinely transient interruptions (a deploy, a `--reload` recycle) while
-# still bounding a job that kills the process every time it runs.
+# Claims before `requeue_interrupted_running` gives up: room for a deploy or
+# reload, but a job that kills the process every time is bounded.
 DEFAULT_MAX_JOB_ATTEMPTS = int(os.getenv("INGEST_MAX_JOB_ATTEMPTS") or 3)
 
 
@@ -52,22 +40,14 @@ class IngestionJob:
     finished_at: datetime | None
     created_at: datetime
     workspace_id: str | None = None
-    # Live progress, written as the run proceeds rather than only at the end.
-    # ``doc_count`` stays the terminal "pages written this run" figure; these
-    # three are what a poller can watch change while ``status`` is still
-    # ``running``.
+    # Live progress while running; ``doc_count`` is the final figure.
     phase: str | None = None
     total_documents: int | None = None
     processed_documents: int = 0
-    # How many times this job has been claimed (incremented in `claim_next`).
-    # Bounds `requeue_interrupted_running` so a job that kills the worker
-    # process cannot be retried forever.
+    # Claims so far; bounds `requeue_interrupted_running`.
     attempts: int = 0
-    # Files this run could not read the SHARING of, so they were left out of
-    # the index (new) or kept the viewers they already had (already indexed).
-    # Surfaced on the Sources card rather than as a notification: a folder
-    # whose sharing we cannot read belongs to whoever administers that folder,
-    # and that is who is looking at the card.
+    # Files whose sharing could not be read: left out (new) or kept their
+    # viewers (indexed). Shown on the Sources card.
     permission_unreadable_documents: int = 0
 
 
@@ -119,13 +99,9 @@ def has_active_job(org_id: str, connection_id: str) -> bool:
 def enqueue(org_id: str, connection_id: str, workspace_id: str | None = None) -> str:
     """Enqueue an ingestion job for this connection. Returns the job id.
 
-    ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default) is
-    today's org-wide admin-triggered job, unchanged. Non-``None`` records
-    which sub-workspace this job's fetched content should be stored under.
-
-    Refuses a second active job for the same connection (unique partial index
-    ``idx_ingestion_jobs_one_active_per_connection``) so parallel ingest POSTs
-    cannot both succeed — raises ``JobAlreadyActiveError``.
+    ``workspace_id``: None is org-wide, else the space the content belongs to.
+    A second active job for the connection raises ``JobAlreadyActiveError``
+    (unique partial index).
     """
     try:
         with get_connection() as conn:
@@ -149,16 +125,9 @@ def enqueue(org_id: str, connection_id: str, workspace_id: str | None = None) ->
 def claim_next() -> IngestionJob | None:
     """Atomically claim the oldest queued job, marking it ``running``.
 
-    The claim and the status flip happen in one statement (``UPDATE ... WHERE
-    id = (SELECT ... FOR UPDATE SKIP LOCKED)``) so two concurrent workers can
-    never claim the same job — the row lock is held only for the instant of the
-    update, not the whole ingestion run.
-
-    ``attempts`` is incremented here, at claim time, rather than on completion:
-    a job that OOM-kills its own process never reaches *any* later write, so
-    counting on success/failure would leave the very jobs we need to bound at
-    zero forever. Committing the increment as part of the claim is what makes
-    ``requeue_interrupted_running``'s cap enforceable against a poison job.
+    One statement, so two workers never claim the same job. ``attempts``
+    counts at claim: a job that OOM-kills its process never reaches a later
+    write, and the requeue cap depends on it.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -185,13 +154,10 @@ def update_progress(
     processed: int | None = None,
     total: int | None = None,
 ) -> None:
-    """Record live progress on a ``running`` job.
+    """Record live progress on a ``running`` job; only the fields passed.
 
-    Deliberately best-effort and fire-and-forget from the caller's side: a
-    progress write that fails must never abort an ingestion run that is
-    otherwise succeeding — the worst case is a stale spinner, not lost work.
-    Only the fields passed are written, so a caller can advance the counter
-    without restating the phase.
+    Best-effort: a failed write must never abort a run (worst case, a stale
+    spinner).
     """
     sets: list[str] = []
     params: list[object] = []
@@ -207,8 +173,7 @@ def update_progress(
     if not sets:
         return
 
-    # Always stamp the heartbeat, even when only a counter moved: this is what
-    # tells reap_stuck the job is alive rather than merely long-running.
+    # The heartbeat tells reap_stuck the job is alive.
     sets.append("progress_at = now()")
 
     params.append(job_id)
@@ -225,10 +190,8 @@ def update_progress(
 def mark_succeeded(
     job_id: str, doc_count: int, permission_unreadable: int = 0
 ) -> None:
-    """Mark the job done. ``permission_unreadable`` is how many files this run
-    could not read the sharing of -- written even on a successful sync, because
-    that is exactly the case it describes: everything worked, and some files
-    were left out anyway. Defaults to 0 so existing callers are unchanged."""
+    """Mark the job done. ``permission_unreadable`` (files whose sharing could
+    not be read) is written on success too: that is the case it describes."""
     with get_connection() as conn:
         conn.execute(
             "UPDATE ingestion_jobs SET status = 'succeeded', doc_count = %s, "
@@ -251,23 +214,12 @@ def mark_failed(job_id: str, error: str) -> None:
 def requeue_interrupted_running(
     max_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS,
 ) -> int:
-    """Return orphaned ``running`` jobs to ``queued`` after a worker crash/reload.
+    """Return orphaned ``running`` jobs to ``queued`` after a crash or reload.
 
-    The in-API worker dies whenever ``uvicorn --reload`` recycles the process,
-    leaving jobs stuck on ``running`` while the UI says Updating. Re-queuing is
-    safe because ``ingest_source(incremental=True)`` skips pages already stored
-    (matched ``last_modified``) and continues with what is left -- the user must
-    not have to click Update again, and we must not re-embed the whole folder.
-
-    **Bounded by ``max_attempts``.** Unbounded requeuing is how a single bad job
-    takes down a deployment indefinitely: if the job itself is what kills the
-    process (an OOM during ingestion), it is requeued on the next boot, claimed
-    again, and kills the process again — forever, with no traffic required and
-    nobody watching. Two live incidents on this project were exactly that loop
-    rather than the underlying bug. A job that has already been claimed
-    ``max_attempts`` times is therefore marked ``failed`` with an explicit error
-    instead of requeued, so the poison job stops and the *rest* of the system
-    (API, login, chat) stays up. Returns the number actually requeued.
+    Safe: an incremental ingest skips pages already stored. Capped at
+    ``max_attempts``, past which the job is ``failed``: a job that OOMs the
+    process would otherwise crash every boot forever (two real incidents).
+    Returns the number requeued.
     """
     with get_connection() as conn:
         exhausted = conn.execute(
@@ -306,19 +258,10 @@ def requeue_interrupted_running(
 
 
 def reap_stuck(timeout_minutes: int = DEFAULT_REAP_TIMEOUT_MINUTES) -> int:
-    """Flip any *silent* ``running`` job to ``failed``. Returns how many.
+    """Flip any silent ``running`` job to ``failed``. Returns how many.
 
-    Closes the "crashed worker leaves the job running forever" gap — call this
-    periodically from the worker loop (see ``app/jobs/worker.py``).
-
-    Measures silence, NOT age. The condition is
-    ``coalesce(progress_at, started_at)``, so the clock resets every time the
-    job reports progress; only a job that has said nothing for
-    ``timeout_minutes`` is declared dead. Judging by ``started_at`` alone
-    (the original behaviour) failed a *healthy* long ingest — a big folder, or
-    contextualization against a 15-rpm endpoint — while it was still working,
-    and told the admin it had failed when it had not. ``coalesce`` keeps a job
-    that died before its first report reapable exactly as before.
+    Measures silence (``coalesce(progress_at, started_at)``), not age: by age
+    alone a healthy long ingest was failed while still working.
     """
     with get_connection() as conn:
         rows = conn.execute(
@@ -338,8 +281,7 @@ def reap_stuck(timeout_minutes: int = DEFAULT_REAP_TIMEOUT_MINUTES) -> int:
 
 
 def get_job(org_id: str, job_id: str) -> IngestionJob | None:
-    """Look up one job, scoped to ``org_id`` so an admin can never poll (or even
-    detect the existence of) another org's job."""
+    """One job, scoped to ``org_id``: another org's job does not exist."""
     with get_connection() as conn:
         row = conn.execute(
             f"SELECT {_SELECT_COLUMNS} FROM ingestion_jobs WHERE id = %s AND org_id = %s",
@@ -360,10 +302,8 @@ def list_jobs(org_id: str, workspace_id: str | None = None) -> list[IngestionJob
 
 
 def get_connection_provider(connection_id: str, org_id: str) -> str:
-    """Return the ``provider`` for a connection, scoped to ``org_id``.
-
-    Raises ``ConfigurationError`` if the connection doesn't exist *for this
-    org* — never returns another org's connection's provider.
+    """The connection's ``provider``, scoped to ``org_id``; raises
+    ``ConfigurationError`` when this org has no such connection.
     """
     with get_connection() as conn:
         row = conn.execute(

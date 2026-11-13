@@ -1,17 +1,11 @@
-"""Per-asker repository access for live GitHub reads (CLAUDE.md §3, GitHub per-repo access).
+"""Per-asker repository access for live GitHub reads.
 
-The installation token reads every repository the App was granted, so without
-this anyone in the scope could ask about a private repository they cannot open
-on GitHub. A PUBLIC repository costs no call: everyone can read it, the Slack
-public-channel rule. A PRIVATE one is readable only when the asker's GitHub
-login -- proven by "Linked accounts" (`person_identities`), never guessed from a
-name or email -- has access, per GitHub's own resolution of repo, team, org and
-enterprise grants (`repo_permission`).
+The installation token reads every granted repo, so a PRIVATE one is readable
+only when the asker's linked GitHub login (`person_identities`, never guessed)
+has access per GitHub (`repo_permission`). A PUBLIC one costs no call.
 
-Fails CLOSED: no linked login, a Slack channel reply (the room reads it), an
-unrecorded `private` flag or a failed check all hide the repository. A failure
-is never cached, so one blip does not hide a repository for the TTL -- the
-`google_groups` rule.
+Fails CLOSED: no linked login, a Slack channel reply, an unrecorded `private`
+flag or a failed check hide it. Failures are never cached.
 """
 
 from __future__ import annotations
@@ -60,11 +54,8 @@ def linked_login(org_id: str, email: str) -> str | None:
 
 
 class RestrictedReader(GitHubReader):
-    """``inner`` narrowed to the repositories one asker may read.
-
-    Filters the CATALOG too: a private repository's name and description are
-    themselves what is being withheld, so the model is never offered one.
-    """
+    """``inner`` narrowed to the repositories one asker may read, catalog included
+    (a private repo's name and description are themselves withheld)."""
 
     def __init__(self, inner: GitHubReader, org_id: str, login: str | None, *, in_channel: bool):
         self._inner = inner

@@ -1,11 +1,7 @@
 """Local cross-encoder reranker via sentence-transformers ``CrossEncoder``.
 
-Default model ``BAAI/bge-reranker-v2-m3`` — same open-source family as our BGE-M3
-embeddings, strong quality, multilingual, and it runs in-process ($0, no API key,
-data stays local), consistent with the project's self-hosted principle. Reuses the
-``sentence-transformers`` dependency we already have, so Phase 6 adds no new dep.
-Lighter swaps (``BAAI/bge-reranker-base``, ``cross-encoder/ms-marco-MiniLM-L-6-v2``)
-fit behind this same interface if latency matters more than quality.
+Default ``BAAI/bge-reranker-v2-m3``: multilingual, in-process (no key, data
+stays local). Lighter models fit behind the same interface.
 """
 
 from __future__ import annotations

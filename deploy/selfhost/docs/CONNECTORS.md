@@ -98,7 +98,6 @@ Google has no app template, so this one is set up by hand in [Google Cloud Conso
 2. **APIs.** Under **APIs & Services → Library**, search for each of these and press **Enable**. Google refuses any call to an API that is not enabled (*"… API has not been used in project … or it is disabled"*), so enable them now, even if you turn on Agent mode later:
    - **Google Drive API** (always);
    - **Google Docs API** and **Google Sheets API** (Agent mode: creating Docs and Sheets);
-   - **Google Forms API** (only with `GOOGLE_FORMS_ENABLED=true`);
    - **Admin SDK API** (only with `GOOGLE_GROUPS_ENABLED=true`).
 3. **Consent screen.** Under **OAuth consent screen**, choose **Internal**.
    - Internal means only your company's accounts can sign in, and it skips Google's app review. Drive read access is a "restricted" scope, and External apps need a lengthy review to use it.
@@ -129,10 +128,9 @@ Google has no app template, so this one is set up by hand in [Google Cloud Conso
 | **"Google hasn't verified this app"** | Expected for a Testing app. Click **Continue** (under **Advanced** if shown). |
 
 **Optional, off by default**
-- `GOOGLE_FORMS_ENABLED=true`: reads Google Forms responses.
 - `GOOGLE_GROUPS_ENABLED=true`: respects sharing with Google Groups. The person connecting must be a Workspace admin.
 
-After turning one on, connect Google again once so it can ask for the extra permission.
+After turning it on, connect Google again once so it can ask for the extra permission.
 
 **Live updates.** Handbook asks Drive to notify it of changes at `https://<domain>/api/webhooks/google`. If Google does not deliver them for your domain, Drive is still checked on a schedule.
 
@@ -206,7 +204,7 @@ Agent mode lets people ask Handbook to do things in a tool, such as post a Slack
 - **Slack, Google and GitHub:** Agent mode uses the apps above, through the second address you added to each. Nothing more to set up.
 - **Notion and Linear:** Agent mode signs people in through Notion's and Linear's own hosted servers. No extra app is needed.
 
-Agent mode is off until an admin turns it on, tool by tool, in **Admin → Actions**.
+Agent mode is off until an admin turns it on under **Actions** (sidebar): the company switch first, then tool by tool.
 
 ## If something does not connect
 

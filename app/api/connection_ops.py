@@ -1,8 +1,4 @@
-"""Shared connection lifecycle helpers for admin + workspace routes.
-
-Keeps Disconnect / folder-swap purge and OAuth-reauth HTTP mapping in one
-place so org Sources and Spaces never drift.
-"""
+"""Connection lifecycle helpers shared by admin and space routes, so they never drift."""
 
 from __future__ import annotations
 
@@ -24,11 +20,8 @@ from ..vectorstore import build_vector_store
 
 logger = logging.getLogger(__name__)
 
-# Providers that store documents/chunks. GitHub is live-only — disconnect only
-# drops the oauth_connections row. Taken from the source factory rather than
-# listed again here: this set was hand-kept and had gone stale, omitting Linear,
-# so "Indexed documents for this source will be deleted" was false for it and a
-# disconnected Linear kept answering questions.
+# Providers that store documents (GitHub is live-only). From the factory: a
+# hand-kept list omitted Linear, which kept answering after disconnect.
 _INDEXED_PROVIDERS = frozenset(INDEXED_PROVIDERS)
 
 
@@ -50,16 +43,13 @@ def disconnect_connection(
     *,
     workspace_id: str | None = None,
 ) -> dict:
-    """Delete the OAuth row and purge indexed docs for Notion/Drive.
+    """Delete the connection and purge its indexed documents.
 
-    Returns ``{provider, documents_purged}``. Raises ``ConfigurationError`` when
-    the connection is missing or out of scope.
+    Returns ``{provider, documents_purged}``; ``ConfigurationError`` if missing or out of scope.
     """
     provider = delete_connection(org_id, connection_id, workspace_id=workspace_id)
     purged = purge_provider_documents(org_id, provider, workspace_id=workspace_id)
-    # The graph holds no text, but its entities still NAME things from this
-    # source (channels, folders, repos, PRs); disconnecting must leave nothing
-    # that can still answer, or be walked through.
+    # Graph entities still NAME things from this source; purge them too.
     try:
         from ..graph.builder import purge_provider
 
@@ -70,18 +60,11 @@ def disconnect_connection(
 
 
 def drive_sharing_report(token: str, folder_id: str) -> dict | None:
-    """A ready-to-render warning if this folder has files we cannot index.
+    """A warning if this folder has files whose sharing we cannot read.
 
-    Returned by BOTH folder-save routes so the person who picked the folder --
-    an admin for the company, a space's OWNER for their own space -- is told at
-    the moment they pick it, by the same code. The alternative we started with
-    was a notification after the fact, which reaches only admins and only once
-    someone opens the bell; a problem with a folder belongs to whoever is
-    choosing that folder, while they are choosing it.
-
-    ``None`` when there is nothing to say: every file's sharing was readable,
-    the folder holds no files yet, or the check itself could not run. A warning
-    box that appears on a healthy folder teaches people to dismiss it.
+    Returned by both folder-save routes so whoever picks the folder sees it
+    then. ``None`` when all is readable, the folder is empty, or the check
+    failed: a warning on a healthy folder teaches people to dismiss it.
     """
     report = preflight_folder_sharing(token, folder_id)
     if report["failed"] or not report["unreadable"]:
@@ -100,14 +83,8 @@ def drive_sharing_report(token: str, folder_id: str) -> dict | None:
         "files": report["files"],
         "truncated": report["truncated"],
         "title": f"Only you will see {n} {files} in this folder",
-        # States the consequence before the fix, because the consequence is
-        # what makes the fix worth doing. No jargon: not "ACL", not "indexed".
-        #
-        # It says "only you" rather than "left out" because that is what now
-        # happens: a file whose sharing Drive will not report is added for the
-        # connected account ALONE (`DocAccess.owner_only`). Saying "left out"
-        # would send someone hunting for a missing document that is in fact
-        # there and answering -- for one person.
+        # Consequence first, no jargon. "Only you": such a file is indexed for the
+        # connected account alone (`DocAccess.owner_only`), not left out.
         "detail": (
             f"{scope} we looked at don\u2019t tell us who they\u2019re shared with, so "
             "Handbook adds them for the connected Google account only. Anyone "
@@ -143,13 +120,9 @@ def slack_channels_changed(
     *,
     workspace_id: str | None = None,
 ) -> bool:
-    """True when a Slack channel-picker PUT drops a previously-saved channel.
+    """True when a Slack channel-picker PUT drops a saved channel (its threads are purged).
 
-    Same purpose as ``folder_id_changed``: a dropped channel's already-ingested
-    threads must not keep being cited once the admin de-selects it. Adding a
-    NEW channel to an existing selection is not a "change" in this sense — the
-    old channels' content is still valid, so no purge is needed for a
-    pure-addition PUT.
+    Adding a channel is not a change.
     """
     existing = get_connection_config(org_id, provider, workspace_id=workspace_id) or {}
     old_ids = set(existing.get("channel_ids") or [])
@@ -161,12 +134,7 @@ def refresh_slack_channel_names(
     *,
     workspace_id: str | None = None,
 ) -> list[tuple[str, str]]:
-    """API-facing wrapper — the implementation lives with the Slack helpers.
-
-    Kept as a name here because the change-check routes read better calling
-    it, but the same refresh runs from the ingest worker and the scheduler, so
-    it cannot live in the API layer.
-    """
+    """API name for the Slack refresh; it lives with the Slack helpers (worker and scheduler use it)."""
     from ..sources.slack_utils import refresh_channel_names
 
     return refresh_channel_names(org_id, workspace_id=workspace_id)
@@ -178,17 +146,11 @@ def find_slack_channel_conflict(
     *,
     exclude_workspace_id: str | None,
 ) -> str | None:
-    """Return the id of another connection (org-wide or a sibling workspace)
-    already claiming one of ``channel_ids``, or ``None`` if there's no clash.
+    """Id of another connection already claiming one of ``channel_ids``, or ``None``.
 
-    Decision D10: a channel is registered under exactly one ``workspace_id``
-    at a time. ``validate_slack_channels`` only confirms Slack-side
-    visibility — nothing there prevents the SAME channel being saved into two
-    different connections for this org, which would double-embed it and make
-    "which scope answered this" ambiguous. ``exclude_workspace_id`` is the
-    connection currently being saved (``None`` for the org-wide PUT), so
-    re-saving the same channel set to the same connection is never flagged
-    as a conflict with itself.
+    A channel belongs to one connection per org, else it is embedded twice and
+    the answering scope is ambiguous. ``exclude_workspace_id`` is the one being
+    saved, so re-saving is not a clash.
     """
     wanted = set(channel_ids)
     if not wanted:
@@ -215,13 +177,10 @@ def raise_token_http(
     provider: str | None = None,
     workspace_id: str | None = None,
 ) -> None:
-    """Map credential failures to actionable HTTP errors (never bare 500).
+    """Map credential failures to actionable HTTP errors, never a bare 500.
 
-    ``OAuthReauthRequiredError`` and auth-shaped ``SourceError`` (Notion 401,
-    invalid_grant, …) → 401 with ``oauth_reauth_required`` so the frontend can
-    show Reconnect. Also sticks ``needs_reauth`` on the connection row when
-    org/provider are known, so the flag survives a page reload.
-    Other config/source errors → 400.
+    Reauth-shaped failures are 401 ``oauth_reauth_required`` (the UI shows
+    Reconnect) and set ``needs_reauth`` so it survives reload; others are 400.
     """
     auth_exc: Exception = exc
     if isinstance(exc, SourceError) and looks_like_auth_failure(exc):
@@ -252,32 +211,20 @@ def note_live_success(
     clear_needs_reauth(org_id, provider, workspace_id=workspace_id)
 
 
-# -- Google Forms: the surveys an admin has opted into ----------------------
+# -- Google Forms: the surveys an admin opted into ---------------------------
 #
-# Forms are the one source where reading is NOT implied by connecting. A Drive
-# token can see every form in the account, and `sentiment.py` classified all of
-# them -- so switching the feature on would have read an admin's unrelated
-# personal surveys and turned them into charts nobody asked for. The stored
-# list is therefore an ALLOW-LIST, and no list means no reading (see
-# `record_form_sentiment`), not "all of them".
-#
-# Stored under `source_config.form_ids` alongside Drive's folder_id, so it
-# lives on the connection whose scope it belongs to -- org-wide Sources or one
-# space -- and inherits the same org-delete cascade.
+# `source_config.form_ids` is an ALLOW-LIST: a Drive token sees every form in
+# the account, so no list means nothing is read.
 
-#: A generous cap on the allow-list. It exists because the whole config is one
-#: JSONB column shared with Drive's folder, not because 25 surveys is a limit
-#: anyone will reach.
+#: Cap on the allow-list (the config is one JSONB column shared with Drive).
 MAX_FORM_IDS = 25
 
 
 def list_google_forms(org_id: str, *, workspace_id: str | None = None) -> list[dict]:
-    """Forms this connection's token can see, for the picker.
+    """Forms this token can see, for the picker.
 
-    Listed through DRIVE, which `drive.readonly` already covers -- the Forms
-    API has no listing endpoint. So the picker works even before the tenant
-    reconnects for the responses scope, which matters: picking the surveys is
-    step one, and being told to reconnect is step two.
+    Listed through Drive (the Forms API cannot list), so it works before a
+    reconnect for the responses scope.
     """
     from ..auth.credentials import get_live_connection_token
     from ..sources.google_forms import GoogleFormsReader
@@ -295,16 +242,10 @@ def set_google_form_ids(
     *,
     workspace_id: str | None = None,
 ) -> dict:
-    """Store the allow-list, MERGED into the existing config. Returns it.
+    """Store the allow-list merged into the existing config; return it.
 
-    Merged rather than replaced because `set_connection_config` overwrites the
-    whole JSONB column and Drive's `folder_id` lives in it: writing a bare
-    ``{"form_ids": [...]}`` would silently un-scope Drive ingestion, which
-    would then read the entire account.
-
-    Ids are validated against what the token can actually see. An id we cannot
-    see would sit in the config forever, failing every classification run with
-    a 404 that reads as a broken feature rather than a stale selection.
+    Merged: replacing would drop Drive's `folder_id` and un-scope ingestion.
+    Ids are checked against what the token can see, so no stale id 404s forever.
     """
     from ..auth.credentials import set_connection_config
 
@@ -332,20 +273,15 @@ def set_google_form_ids(
     config = {
         **existing,
         "form_ids": wanted,
-        # Snapshotted like Slack's channel_names, for the same reason: the UI
-        # names the selection without a round trip to Google, and a renamed
-        # form keeps a name we once knew rather than showing a bare id.
+        # Names snapshotted like Slack's channel_names: no round trip, and a renamed form keeps a name.
         "form_titles": titles,
     }
     set_connection_config(org_id, "google", config, workspace_id=workspace_id)
     return config
 
 
-# -- Linear: the teams a connection reads -------------------------------------
-#
-# Linear's sign-in grants every team the account can see and has no picker of
-# its own, so, like Slack's channels, the teams are chosen here after
-# connecting, and nothing is indexed until they are.
+# -- Linear: the teams a connection reads -----------------------------------
+# Sign-in grants every team, so teams are picked here; nothing is indexed until then.
 
 
 def list_linear_teams(org_id: str, *, workspace_id: str | None = None) -> list[dict]:
@@ -360,12 +296,11 @@ def list_linear_teams(org_id: str, *, workspace_id: str | None = None) -> list[d
 def set_linear_teams(
     org_id: str, connection_id: str, team_ids, *, workspace_id: str | None = None,
 ) -> dict:
-    """Save the picked teams and queue the sync. A dropped team's issues are
-    purged first, so they stop answering at once (the Slack channel rule).
+    """Save the picked teams and queue the sync; dropped teams' issues are purged first.
 
-    So is a FIRST pick: a connection from before the picker indexed every
-    team, and the sync's mass-removal guard would keep the unpicked teams'
-    issues (it cannot tell most of a listing vanishing from a flaky read)."""
+    A first pick purges too: older connections indexed every team, and the
+    sync's mass-removal guard would keep them.
+    """
     from ..auth.credentials import get_live_connection_token, set_connection_config
     from ..jobs.autosync import sync_now
     from ..sources.linear import validate_linear_teams

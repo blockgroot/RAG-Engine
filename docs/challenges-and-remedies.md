@@ -104,7 +104,7 @@ Further behaviour-preserving cuts:
 3. **Keyword search was unbounded.** Postgres now keeps `KEYWORD_CANDIDATE_LIMIT` rows by `ts_rank` before joining embeddings.
 4. **The question was embedded twice** on the common path (reuse check, then retrieve). A `known_vectors` map keyed by text removed the duplicate (~38 ms local BGE-M3).
 
-Redis was considered and not added. The costs were unnecessary work, not a slow cache.
+Redis was considered for this and not added. The costs were unnecessary work, not a slow cache. Redis (Valkey) arrived later for one job only, shared rate limits (section 10).
 
 ---
 
@@ -127,7 +127,7 @@ Mail scanners prefetch GET links. Signup approve/reject is GET (confirmation pag
 
 Loading BGE-M3 and the reranker twice (policy agent and workspace agent as FastAPI `Depends` on every chat request) could freeze a 16 GB Mac. **Remedy:** lazy agent selection and process-wide singleton embedder/reranker. Avoid `uvicorn --reload` during demos. GitHub chat does not load those models. `RETRIEVAL_RERANK_ENABLED=false` is the kill-switch.
 
-Models now warm on a daemon thread at API startup so the first user after restart does not pay the load inside their request. The test suite disables warmup.
+Models now warm on a daemon thread at API startup so the first user after restart does not pay the load inside their request. The test suite disables warmup. The hosted and self-hosted deploys use remote Jina for embeddings and reranking, so they load neither model; the self-hosted package sets `MODEL_WARMUP_ON_STARTUP=false`.
 
 ---
 
@@ -140,7 +140,7 @@ These did not take the site down. They produced wrong or missing answers and wer
 | Typos buried the correct chunk (mid-pool) on standalone questions | Corpus-vocab SymSpell on the retrieval key only; edit distance 1; skip capitalised OOV so web entities are not rewritten |
 | Follow-up reuse could not separate “same fact” (~0.63) from “adjacent topic” (~0.67) | Reuse threshold 0.72 (conservative). Reused chunks still pass the 0.35 gate |
 | Similarity 0.35 cannot tell “answers” from “on-topic but unanswered” | Gate stays a noise filter; the prompt refuses related-but-unanswered cases. Golden set: no false negatives; unanswerables caught by the prompt |
-| Indirect prompt injection via retrieved text | Fence untrusted content; sandwich reminder; narrow heuristic scrub. Partial mitigation; not dual-LLM quarantine |
+| Indirect prompt injection via retrieved text | Fence untrusted content with `UNTRUSTED_POLICY` before and `UNTRUSTED_REMINDER` after (`app/security/untrusted.py`; `tests/test_untrusted_policy.py` fails if a prompt skips it); narrow heuristic scrub; an optional guard model scores chunks (`app/guard/`, `GUARD_MODE`). Partial mitigation; not dual-LLM quarantine |
 | A model-written link could send the reader to an attacker's URL | A citation link is only `documents.source_uri` from sync. An invented `[n]` is dropped. One document is named under the answer; two or more keep a superscript |
 
 ---
@@ -153,7 +153,22 @@ These did not take the site down. They produced wrong or missing answers and wer
 
 ---
 
-## 10. Lessons worth keeping
+## 10. Shared index, hidden reasoning, and shared state (October–November 2026)
+
+| Observation | Remedy |
+| --- | --- |
+| At 1.1M vectors in one HNSW index, a tenant's search returned 3.9 of 10 rows, because the index returned other tenants' rows that the `org_id` filter then removed | Every pooled connection sets `hnsw.iterative_scan = strict_order`. Embeddings moved to `halfvec(1024)`, a third of the index size. `chunks` has one partition per organisation plus row-level security (`handbook_app` role). |
+| A query vector cast `::vector` skipped the `halfvec` HNSW index | Bind with `_to_db_vector` or cast `::halfvec`. |
+| Claude Haiku spent a 200-token classifier cap thinking and replied empty; a leading reasoning block hid the `MODE:` tag, so the audit never ran | Reasoning off on every call, or the lowest effort a model accepts (`app/llm/routed.py`). Caps are sized to the whole reply; a reply cut at the cap is logged (`llm.truncated`), never retried silently. |
+| An answer cache keyed on the scope could serve one person's answer to the next asker, whose access differs | The answer cache was removed (6 Nov 2026). Every question is answered fresh. |
+| One person or company could take the shared AI account's capacity | Token buckets per person and per company, one step for both (`app/ratelimit/`, `app/security/rate_limit.py`), in Redis (Valkey, `volatile-lru`, every key with a TTL) when `REDIS_URL` is set. A limiter fault lets the request through. |
+| Models differ about 20x in price, so a request count does not bound spend | Tokens a minute per model (input and output apart, person and company, `AI_TOKEN_LIMITS`) plus dollars a day in one wallet (`app/security/ai_spend.py`). |
+| The injection guard's calls spent the same free quota as the background model | The guard has its own account (`GUARD_API_KEY`, `GUARD_BASE_URL`, both or neither). |
+| Company text sent to outside models and search can carry Aadhaar, PAN, card or mobile numbers | `app/privacy/` masks them by format and check digit before any call; a detector failure blocks the send. |
+
+---
+
+## 11. Lessons worth keeping
 
 1. **Measure RSS on the target platform against the hard limit** before debating call sites. Three ingest fixes shipped against plausible hypotheses before the tokenizer floor was measured in a 512 MB Linux container.
 2. **Prefer a bound that remains useful if the diagnosis is wrong.** The job attempt cap is valuable because the next ingest killer will not take down HTTP.

@@ -31,8 +31,7 @@ export interface ChatDonePayload {
   /** The model that actually answered, resolved by the endpoint. Null on the
    *  default path — there is nothing to disclose when nobody chose. */
   model?: string | null;
-  /** WHICH agent answered. The member no longer picks a source, so this is the
-   *  only way "where did this come from?" is answerable. */
+  /** WHICH agent answered: the only answer to "where did this come from?". */
   agent?:
     | "policy"
     | "workspace"
@@ -46,20 +45,16 @@ export interface ChatDonePayload {
   /** Filenames that were in this prompt. Present only when the asker had files
    *  attached; the pill names them instead of claiming the routed source. */
   attachments?: string[];
-  /** Why that agent was picked — "best-match", "repo-named", "code-intent",
-   *  "only-source", "weak-best-match", "requested", "no-sources". Surfaced so
-   *  a misroute is distinguishable from a source genuinely lacking the answer. */
+  /** Why that agent was picked ("best-match", "repo-named", ...), so a misroute
+   *  is told apart from a source lacking the answer. */
   routing_reason?: string;
-  /** The tools a CONNECTED answer read (e.g. ["notion","slack"]); null for a
-   *  normal answer. The pill names all of them, or it would credit one tool
-   *  with an answer drawn from two. */
+  /** The tools a CONNECTED answer read; null otherwise. The pill names all. */
   connected_providers?: string[] | null;
   /** Connectors read LIVE for this answer (Second Brain live tools). Empty when the
    *  indexed copy answered, so "live" is never claimed for a synced copy. */
   live_sources?: { provider: string; fetched_at: string }[];
-  /** The documents behind the answer's [n] markers, numbered in reading order.
-   *  The server keeps only numbers that pointed at a retrieved document, and
-   *  `url` comes from the stored document, never from the model's text. */
+  /** Documents behind the [n] markers, in reading order. `url` is the stored
+   *  document's, never the model's text. */
   cited?: CitedSource[];
   /** Personal memory saved from THIS question -- shown with Undo, so saving
    *  is never silent. */

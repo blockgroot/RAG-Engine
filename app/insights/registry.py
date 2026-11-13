@@ -1,15 +1,10 @@
 """The metric registry -- this codebase's semantic layer.
 
-Why a hardcoded registry rather than letting a model write SQL: pointed at raw
-tables, an LLM re-derives the grain, the joins and the metric definition on
-every prompt, so the same question returns different numbers. Worse, a wrong
-number arrives as a bar chart, which reads as a measurement rather than an
-answer -- and neither the confidence gate nor the strict prompt can check
-arithmetic. So the model SELECTS from this list and never computes one.
-
-Same discipline as ``app/llm/catalog.py``: a small, hand-kept, admitted set.
-Kept honest by ``tests/test_insights_registry.py``, which forbids a format
-hole, a parameter or a statement break in any fragment here.
+A model writing SQL re-derives grain, joins and definitions every prompt, and
+a wrong number drawn as a bar reads as a measurement; no gate checks
+arithmetic. So the model SELECTS from this list and never computes.
+``tests/test_insights_registry.py`` forbids a format hole, a parameter or a
+statement break in any fragment here.
 """
 
 from __future__ import annotations
@@ -28,12 +23,9 @@ CHART_TYPES = (
 def shapes_for(*, time: bool, breakdowns: int) -> tuple[str, ...]:
     """The shapes a chart of this FORM can be drawn as, default first.
 
-    Decided by the data, not the metric: whether it has a time axis, and how
-    many breakdowns sit on it (an activity count always has periods; a table
-    has them only when grouped by its date column). One rule for activity and
-    for document tables, so a new shape is added here and drawn in
-    ``frontend/components/charts/toOption.ts`` and ``app/chartrender``.
-    A pie of the periods is allowed: "each month as a slice".
+    Decided by the data (time axis? how many breakdowns?), one rule for
+    activity and tables. A new shape is added here, in
+    ``frontend/components/charts/toOption.ts`` and in ``app/chartrender``.
     """
     if time:
         return {
@@ -54,24 +46,17 @@ DIMENSIONS = {
     "subject": "subject",
     "state": "state",
     "provider": "provider",
-    # NO "space" dimension, and it is not an omission. Isolation scopes every
-    # query to ONE workspace_id (org-wide means `IS NULL`, a space means that
-    # space -- never both), so grouping by it can only ever return a single
-    # bucket: at org scope "Company-wide", inside a space the space you are
-    # already in. It shipped as "Most active spaces" and rendered one bar
-    # labelled with a raw UUID. A cross-space breakdown would require reading
-    # rows the asker's scope excludes, which is the one thing this product
-    # must never do -- so the chart is gone rather than made to work.
+    # NO "space" dimension: every query is scoped to ONE workspace_id, so it
+    # could only ever draw one bar, and a cross-space breakdown would read rows
+    # the asker's scope excludes.
 }
 
 #: ``date_trunc``'s unit. A closed set because it reaches SQL as a literal and
 #: cannot be bound as a parameter.
 PERIODS = ("day", "week", "month", "quarter")
 
-#: One step finer, for when a period collapses everything into a single
-#: bucket. Four commits on two days are ONE point at week or month, which
-#: draws as a flat line and reads as "no data" -- the shape was the bucket's
-#: fault, not the data's.
+#: One step finer, for when a period collapses everything into one bucket
+#: (a flat line that reads as "no data").
 FINER_PERIOD = {"quarter": "month", "month": "week", "week": "day"}
 
 
@@ -79,14 +64,9 @@ FINER_PERIOD = {"quarter": "month", "month": "week", "week": "day"}
 class Metric:
     """One named, countable thing.
 
-    ``select`` is a fixed aggregate fragment over ``activity_facts`` -- fixed,
-    never formatted. The scoping (org, workspace, window) and the grouping are
-    added by ``store.run_metric`` from looked-up constants and bound
-    parameters, never by string building.
-
-    ``chart`` is a DEFAULT, not a constraint: the same metric grouped by time
-    is a line and grouped by ``actor`` is a leaderboard, so a dashboard panel
-    pairs a metric with a grouping and picks the shape from that.
+    ``select`` is a fixed aggregate fragment over ``activity_facts``, never
+    formatted; scoping and grouping are added by ``store.run_metric`` from
+    constants and bound parameters. ``chart`` is a default, not a constraint.
     """
 
     key: str
@@ -101,24 +81,14 @@ class Metric:
     #: upstream filter, an item cap), say so here -- a partial chart that looks
     #: complete is the failure that matters.
     caveat: str = ""
-    #: Suppress any group with fewer than this many facts. Not a display
-    #: nicety -- it is what makes an anonymous survey actually anonymous. On a
-    #: six-person team, "3 of 4 responses in Engineering are negative"
-    #: identifies people, and anyone who knows the team can work out which.
-    #: Applied in SQL (a HAVING clause), never in the frontend, so no future
-    #: call site can render the suppressed rows by accident.
+    #: Suppress any group with fewer facts: what makes an anonymous survey
+    #: anonymous. Applied in SQL (HAVING), so no call site can show the rows.
     min_group_count: int = 0
-    #: A SECOND grouping, for charts that genuinely need two dimensions: a
-    #: diverging bar is topic (the row) BY sentiment label (the segment), and
-    #: one grouping cannot express that. Whitelisted through ``DIMENSIONS``
-    #: exactly like ``dims``, so it is still never caller text. Fixed per
-    #: metric rather than requestable -- a chart that needs two dimensions
-    #: needs those two.
+    #: A fixed second grouping for two-dimension charts (diverging bar: topic
+    #: BY sentiment). Whitelisted through ``DIMENSIONS``; never caller text.
     series_by: str = ""
-    #: Restrict to org admins and space owners. Only for metrics that read
-    #: individual people's expressed opinions -- a page count is not sensitive
-    #: because everyone can already retrieve those pages, but a morale reading
-    #: is a different kind of claim about colleagues.
+    #: Org admins and space owners only: for metrics reading people's opinions,
+    #: a different claim about colleagues than a page count.
     owners_only: bool = False
 
 
@@ -129,10 +99,8 @@ def _add(metric: Metric) -> None:
     METRICS[metric.key] = metric
 
 
-#: What the `subject` column holds, per provider. One slot, a different thing
-#: in each connector -- so a title saying "by team or repo" over a chart of
-#: Notion pages describes the wrong chart. Kept here rather than in the two
-#: title builders, which had drifted into naming only GitHub's and Linear's.
+#: What the `subject` column holds, per provider, so a title names the right
+#: thing ("by team or repo" over Notion pages was wrong).
 SUBJECT_LABELS = {
     "notion": "page",
     "google": "file",
@@ -143,14 +111,9 @@ SUBJECT_LABELS = {
 }
 
 
-#: Dimensions COMPUTED from a row rather than read from a column, kept apart
-#: from ``DIMENSIONS`` so that one stays bare column names. Fixed SQL of our
-#: own; no caller text ever reaches it.
-#:
-#: ``progress``: finished or not, by the SOURCE's own state type (Linear:
-#: completed and canceled are finished), never by state names -- "completed
-#: vs remaining" is two bars whatever a team calls its states. A row the
-#: source gave no type is left out (NULL), not guessed.
+#: Dimensions COMPUTED from a row, kept apart from bare-column ``DIMENSIONS``.
+#: Fixed SQL of our own; no caller text. ``progress``: finished or not by the
+#: SOURCE's state type, never state names; an untyped row is NULL, not guessed.
 DERIVED_DIMENSIONS = {
     "progress": (
         "(CASE WHEN activity_facts.attrs->>'state_type' IN ('completed', 'canceled') "
@@ -178,20 +141,10 @@ def actor_label(provider: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Notion & Drive -- countable from data ingest already stores.
-#
-# `actor` is a dimension rather than a separate metric: "top editors" is the
-# SAME count grouped differently, and its own entry would mean two definitions
-# to keep in agreement.
-#
-# `subject` (the page or file title) is deliberately NOT offered, and the
-# reason is structural rather than aesthetic: `facts.py` writes ONE row per
-# document, keyed on `source_external_id`, and an edit MOVES that row's date
-# rather than adding another. So a count grouped by title is 1 for every
-# title, always -- eleven pages drew eleven identical 9% slices whose only
-# message was "there are eleven pages", which the total already said. The
-# question it looked like it answered ("which pages changed?") is a LIST with
-# dates, not a count, and `panel["details"]` is where that lives.
+# Notion & Drive. `actor` is a dimension, not another metric (one definition).
+# `subject` (title) is NOT offered: facts.py keeps ONE row per document, so a
+# count by title is always 1. "Which pages changed?" is a list:
+# `panel["details"]`.
 # ---------------------------------------------------------------------------
 
 _add(Metric(
@@ -214,13 +167,9 @@ _add(Metric(
 ))
 
 # ---------------------------------------------------------------------------
-# GitHub -- read live, recorded as facts (app/insights/github_facts.py).
-#
-# THREE people, three metrics. Never one "activity by person" count: who raised
-# a pull request, who merged it and who reviewed it are different claims, and
-# summing them produces "ada did 12 things", which is not a fact anyone asked
-# for. Every one of these discloses its cap, because a chart built from the
-# newest N while looking complete is the failure that matters.
+# GitHub (app/insights/github_facts.py). Three people, three metrics: raising,
+# merging and reviewing are different claims, never summed. Each discloses its
+# cap: the newest N looking complete is the failure that matters.
 # ---------------------------------------------------------------------------
 
 _GITHUB_CAP = (
@@ -290,12 +239,8 @@ _add(Metric(
 ))
 
 # ---------------------------------------------------------------------------
-# Linear -- from the adapter's structured issue feed, recorded on the ingest
-# job (app/insights/linear_facts.py).
-#
-# `subject` is the TEAM, so grouping by subject IS "by team" -- the slot repos
-# occupy for GitHub. That is what answers the request this whole feature
-# started from: task completion, aggregated by team.
+# Linear (app/insights/linear_facts.py). `subject` is the TEAM, so "by subject"
+# is "by team".
 # ---------------------------------------------------------------------------
 
 _LINEAR_CAP = "Issues that moved in the last 180 days."
@@ -335,18 +280,9 @@ _add(Metric(
 ))
 
 # ---------------------------------------------------------------------------
-# Slack -- from the index, with the undercount said out loud.
-#
-# Ingest stores THREADS, not messages, and `SLACK_MIN_THREAD_CHARS` drops short
-# ones -- so these counts are conversations, not message volume, and they are a
-# floor rather than a total. Every Slack metric states that, because a chart
-# that looks complete while undercounting is the failure that matters. Reading
-# `conversations.history` live at chart time would be accurate, but it costs a
-# rate-limited call per channel per page load; the honest cheap answer is the
-# index plus disclosure.
-#
-# `subject` is the channel (see facts.py) and `actor` is whoever started the
-# thread -- not who replied, which the index does not keep.
+# Slack, from the index. Ingest stores THREADS and drops short ones, so counts
+# are conversations and a floor, and every metric says so. `subject` is the
+# channel; `actor` is who started the thread (replies are not kept).
 # ---------------------------------------------------------------------------
 
 _SLACK_CAP = (
@@ -367,22 +303,10 @@ _add(Metric(
 ))
 
 # ---------------------------------------------------------------------------
-# Google Forms -- sentiment. The ONE metric whose numbers begin with an LLM.
-#
-# Every other metric counts rows a source handed us. Nothing in a form response
-# says "morale", so each response is classified ONCE, in the background, and
-# the LABEL is then counted like any other fact -- the chart is still a
-# GROUP BY, and no model ever sees the total.
-#
-# Two protections, both structural rather than conventions:
-#   - `min_group_count=5` suppresses small buckets IN SQL. Without it, "3 of 4
-#     responses in Engineering are negative" identifies people.
-#   - `owners_only` keeps it away from the whole company. A page count is not
-#     sensitive; a reading of colleagues' opinions is a different claim.
-#
-# There is deliberately NO single company-wide sentiment score. One number
-# invites a target, a target invites managing the number, and the number is an
-# LLM's reading of a small sample.
+# Google Forms sentiment: the one metric whose numbers begin with an LLM. Each
+# response is classified once in the background; the label is then counted in
+# SQL. `min_group_count=5` (in SQL) and `owners_only` keep people
+# unidentifiable. No single company-wide score: one number invites managing it.
 # ---------------------------------------------------------------------------
 
 #: Below this, a bucket can identify individuals. Five is not tuned -- it is
@@ -411,42 +335,18 @@ _add(Metric(
     ),
 ))
 
-# NOT here yet, deliberately:
-#
-# `doc_staleness` needs the LATEST fact per document (a page edited five times
-# is one page, not five), which is a DISTINCT ON rather than a GROUP BY over a
-# window -- a different query shape, so it gets its own function rather than a
-# second meaning for `run_metric`.
-#
-# `corpus_size` counts `documents`, not `activity_facts`. Same reason.
-#
-# Slack's `active_hours` (day x hour) can now be drawn as a `heatmap`, but it
-# needs day-of-week and hour dimensions the query grammar does not have yet. `thread_response_time` needs per-message timestamps the index does not
-# keep -- it stores a thread, not its replies.
-#
-# `open_pr_age` is a histogram over `now() - occurred_at` for pull requests
-# still open, which needs the same DISTINCT-ON-shaped query as `doc_staleness`.
-#
-# The PR cycle-time BREAKDOWN (coding / waiting for review / in review /
-# waiting to merge) needs review timestamps per pull request AND the first
-# commit date -- two more calls each. It is the highest-value engineering chart
-# there is, and it is deliberately not paid for yet.
+# Not here yet: `doc_staleness` and `open_pr_age` need the latest fact per
+# document (DISTINCT ON, not GROUP BY); `corpus_size` counts `documents`;
+# Slack `active_hours` needs day/hour dimensions; `thread_response_time` needs
+# per-message times the index does not keep; PR cycle-time breakdown needs
+# review timestamps and first-commit dates per pull request.
 
 
 # ---------------------------------------------------------------------------
-# Attributes -- every simple field a source returned, kept in `attrs` JSONB.
-#
-# WHICH fields exist is no longer listed here: the facts writers keep every
-# simple field (`fields.simple_fields`) and `attr_catalog.discover_scope`
-# reads which ones actually occur, so a field becomes chartable the day a tool
-# starts sending it. It shipped first as six hand-picked keys, which left the
-# original problem in place -- any field nobody listed was dropped at sync.
-#
-# What remains is HINTS: a friendlier name or a unit for fields we know. A
-# hint never makes a field appear (only the data does), and when the data
-# disagrees with a hint's type, the data wins. Keys are the normalized field
-# names (`fields.normalize_key`): `priorityLabel` is stored as
-# `priority_label`.
+# Attributes: every simple field a source returned, in `attrs` JSONB. Which
+# fields exist is DISCOVERED (`attr_catalog.discover_scope`), not listed here.
+# These are HINTS only (a name, a unit): a hint never makes a field appear,
+# and the data wins over a hint's type. Keys are `fields.normalize_key` form.
 # ---------------------------------------------------------------------------
 
 ATTR_TYPES = ("category", "tags", "number")
@@ -495,11 +395,8 @@ def attr(metric: "Metric", key: str, attrs=None) -> Attr | None:
 
 
 def get(key: str) -> Metric:
-    """Look one up, raising rather than inventing.
-
-    ``KeyError`` is the contract: the ask box turns it into "I cannot chart
-    that, here is what I can", which is a refusal instead of a wrong chart.
-    """
+    """Look one up, raising ``KeyError`` rather than inventing: the ask box
+    turns it into a refusal naming what it can chart."""
     return METRICS[key]
 
 

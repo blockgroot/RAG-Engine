@@ -1,19 +1,11 @@
 """Ask answers a figure over a sheet's rows: a total, a ratio, the top row.
 
-A sheet embeds only its columns (`doctables.extract.describe`), so "what is our
-conversion ratio?" or "which region brought in the most revenue?" never found
-the rows that answer it. Here the model fills in a FORM, never an answer: which
-offered table, what to work out, which columns, which values. Code checks every
-name against the table's own headers and every value against its real rows,
-runs the query (`doctables.store`: our column keys spliced, every value bound),
-and writes the result as ONE passage of the sheet's document. The ordinary
-grounded answer then reads it beside the documents, so a mixed question gets
-both, and the citation is the sheet.
-
-A form that does not fit is dropped, never repaired: Ask then answers exactly
-as it did before. Nothing here decides intent from a word list; the question
-check's ``table`` verdict decides whether this runs at all
-(`DocTablesSettings.answers_enabled`, off by default).
+A sheet embeds only its columns, so retrieval never finds the rows. The model
+fills a FORM (table, operation, columns, values), never an answer; code checks
+every name and value against the real table, SQL computes (our column keys
+spliced, values bound), and the result is ONE passage of the sheet, cited.
+A form that does not fit is dropped and Ask answers as before. Runs only on
+the question check's ``table`` verdict (`DocTablesSettings.answers_enabled`).
 """
 
 from __future__ import annotations
@@ -46,15 +38,12 @@ MAX_GROUPS = 12
 MAX_LISTED = 60
 #: The form is a short JSON object; a reasoning model is told to stop there.
 FORM_MAX_TOKENS = 700
-#: Tables the form is shown. Far more than a chart's six: "conversion ratio"
-#: shares no word with a leads sheet's columns, which ranked it 27th of 36, so
-#: the MODEL picks the table from the whole list, by meaning.
+#: Tables the form is shown: the MODEL picks by meaning ("conversion ratio"
+#: shares no word with a leads sheet, ranked 27th of 36).
 # ponytail: one ranked list capped here; a two-step pick when scopes hold far more tables.
 ANSWER_OFFERED = 40
-#: Of those, the first (best ranked, tables holding a typed cell first) are
-#: listed with their values; the rest by their headers only. Every value the
-#: form writes is resolved against the rows anyway; listing all forty in full
-#: was three quarters of an Ask question's tokens.
+#: Of those, the first (typed-cell tables first) are listed with values, the
+#: rest by headers: all forty in full were most of an Ask question's tokens.
 FORM_FULL_DETAIL = 10
 
 
@@ -224,11 +213,10 @@ def _column(table: TableRef, name, types: tuple[str, ...], role: str) -> str | N
 def _filters(table: TableRef, raw) -> tuple[tuple[str, object], ...]:
     """``{header: value or [values]}`` -> column keys and REAL cell values.
 
-    Every value must be one the column holds (case- and space-insensitive,
-    then written as stored). A value the named column lacks but exactly ONE
-    other column holds is that column's (the data's own words: a developer
-    put under the profile column). A value no column holds, or a period
-    outside a date column's dates, is ``_Absent``: said, never answered as 0."""
+    A value must be one the column holds (case/space-insensitive); one the
+    named column lacks but exactly ONE other holds is that column's. A value
+    no column holds, or a period outside the dates, is ``_Absent``: said,
+    never answered as 0."""
     if raw in (None, {}):
         return ()
     if not isinstance(raw, dict):
@@ -436,10 +424,8 @@ def _side(table: TableRef, query: dict) -> tuple[str, dict[str, float], str]:
 
 
 def _compare(first: TableRef, query: dict, second: TableRef) -> str:
-    """Two figures per person or item, joined on the names both tables hold.
-
-    Names are matched case- and space-insensitively; a name only one side has
-    is listed, never dropped. Nothing in common is a form that does not fit."""
+    """Two figures per person or item, joined on names (case/space-insensitive).
+    A name on one side only is listed; nothing in common does not fit."""
     against = query.get("against")
     if not isinstance(against, dict):
         raise _Unfit("compare needs against")
@@ -472,12 +458,9 @@ def _with_typed(table: TableRef, query: dict, question: str,
                 typed: tuple[tuple[str, str], ...]) -> dict:
     """The query with every value the question TYPES of this table as a filter.
 
-    Claude Haiku left typed names out of the form ("Daniel Reed" on a chart,
-    "Jordan Blake" here), and the figure was every row's. The cells the index
-    found in the question (`store.typed_cells`) are added to a query that does
-    not already use their column. A value that is also a word of the sheet's
-    own headers ("applied" beside "Applied Via") is left to the model, and is
-    then worked out both ways (`_broader`)."""
+    Cells found by `store.typed_cells` are added when their column is unused
+    (Haiku left typed names out, figuring every row). A value that is also a
+    header word is left to the model and worked out both ways (`_broader`)."""
     from .tables import _words
 
     if not typed:
@@ -551,8 +534,6 @@ def _stem_match(a: str, b: str) -> bool:
 def _named_breakdown(table: TableRef, query: dict, question: str) -> dict:
     """The breakdown is the column the question NAMES, when it names exactly one.
 
-    "Which recruiter handled the most offers?" came back from Claude Haiku
-    grouped by BDE; the sheet's Recruit column is the one the question names.
     Every word of a header must begin, or be, a word of the question; a header
     inside a longer named one ("Status" in "Lead Status") is that one's word.
     """
@@ -584,15 +565,9 @@ NARROWER = "Of these rows, only"
 
 def _broader(table: TableRef, query: dict, question: str) -> tuple[dict, dict] | None:
     """The same query over every row, and the model's query labelled as the
-    narrower part of it, when a filter is the model's READING of the question
-    rather than the asker's words; else None.
-
-    A reading is a value the asker never typed ("interviews" read as the
-    stages Client Round, Interview Scheduled, Technical Round: 174 where every
-    row of Kavya Reddy's is 372), or a typed word that is also a word of the
-    table's own headers ("applied to the most" against Lead Status Applied
-    beside Applied Via: 18 where every row says 45). Claude Haiku picked one
-    reading per run, so both are worked out: the whole, then the part."""
+    narrower part, when a filter is the model's READING rather than the
+    asker's words (a value never typed, or a header word); else None. The
+    model picked one reading per run, so both are worked out."""
     from .tables import _words
 
     filters = query.get("filters")
@@ -644,12 +619,9 @@ def _grouped(table, measure, value, group, filters) -> list[tuple[str, float]]:
 
 
 def answer(question: str, tables: list[TableRef], *, llm=None) -> list[TableAnswer]:
-    """The worked-out figures for ``question`` over ``tables``: one passage per
-    table they came from, so each is cited as its own document. Empty when no
-    query fits, and Ask answers exactly as it did before.
-
-    ``tables`` are the ones this viewer may read, ranked by the caller. Every
-    query that does not fit is dropped and logged. Never raises.
+    """The worked-out figures for ``question`` over ``tables`` (the viewer's,
+    ranked by the caller): one passage per source table, each cited as its
+    own document. Empty when no query fits. Never raises.
     """
     offered = [t for t in list(tables)[:ANSWER_OFFERED] if t.document_id]
     if not offered:

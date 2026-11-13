@@ -1,6 +1,6 @@
 # Handbook: Current Features and Status
 
-*As of 13 October 2026 · code at* `main`
+*As of 13 November 2026 · code at* `main`
 
 Handbook is an AI assistant that answers employees' questions from their company's own tools:
 Notion, Google Drive, Slack, Linear and GitHub. Every answer names its source. When the answer
@@ -17,7 +17,7 @@ tool already lets them see.
 | 2   | Smart routing between tools                       | Live                                                                                                                      | `app/agent/routing.py`                                     |
 | 3   | Connectors (Notion, Drive, Slack, Linear, GitHub) | Live                                                                                                                      | `app/sources/`, `app/githublive/`                          |
 | 4   | Personal Spaces                                   | Live                                                                                                                      | `app/workspaces/`                                          |
-| 5   | Access control per document                       | Live (Drive, Slack); Live on staging (Linear public teams, charts); Built, not tested live (GitHub, Linear private teams) | `app/security/visibility.py`, `app/githublive/access.py`   |
+| 5   | Access control per document                       | Live (Drive, Slack, GitHub); Live on staging (Linear public teams, charts); Built, not tested live (Linear private teams) | `app/security/visibility.py`, `app/githublive/access.py`   |
 | 6   | Second Brain: knowledge graph                     | Live                                                                                                                      | `app/graph/`                                               |
 | 7   | Second Brain: live tool reads                     | Live                                                                                                                      | `app/livetools/`                                           |
 | 8   | Second Brain: personal memory                     | Live                                                                                                                      | `app/memory/personal.py`                                   |
@@ -26,17 +26,24 @@ tool already lets them see.
 | 11  | Ask in Slack                                      | Live                                                                                                                      | `app/api/slack_events.py`                                  |
 | 12  | Scheduled reports                                 | Live                                                                                                                      | `app/schedulers/`                                          |
 | 13  | File uploads                                      | Live                                                                                                                      | `app/attachments/`                                         |
-| 14  | Model choice and bring-your-own model             | Live                                                                                                                      | `app/llm/`                                                 |
+| 14  | Model choice and a company's own model            | Live                                                                                                                      | `app/llm/`                                                 |
 | 15  | Feedback and documentation gaps                   | Live                                                                                                                      | `app/feedback/`                                            |
-| 16  | Needs-attention bell                              | Live                                                                                                                      | `app/api/notifications.py`                                 |
+| 16  | Notification bell                                 | Live                                                                                                                      | `app/api/notifications.py`                                 |
 | 17  | Automatic sync (hourly)                           | Live                                                                                                                      | `app/jobs/autosync.py`                                     |
 | 18  | Instant updates (webhooks)                        | Live                                                                                                                      | `app/api/webhooks.py`, `app/sources/drive_watch.py`        |
 | 19  | Prompt-injection protection                       | Live                                                                                                                      | `app/security/`, `app/guard/`                              |
 | 20  | Sign-in, email delivery and email change          | Live                                                                                                                      | `app/auth/`                                                |
-| 21  | Chat history                                      | Live                                                                                                                      | `frontend/components/RailChats.tsx`                        |
+| 21  | Chat history (rename, pin)                        | Live                                                                                                                      | `frontend/components/RailChats.tsx`                        |
 | 22  | Google Groups access                              | Built, switched off                                                                                                       | `app/sources/google_groups.py`                             |
 | 23  | Google Forms sentiment                            | Built, not tested live                                                                                                    | `app/sources/google_forms.py`, `app/insights/sentiment.py` |
 | 24  | Answer fact-checker                               | Built, switched off                                                                                                       | `app/rag/audit.py`                                         |
+| 25  | Agent mode (writes into tools)                    | Built, on `main`; off until a company's admin turns it on                                                                 | `app/actions/`, `app/mcphost/`                             |
+| 26  | Each company's own Google and Slack app           | Built, on `main`                                                                                                          | `app/auth/org_apps.py`                                     |
+| 27  | Usage limits (requests, answers at once, AI)      | Built, on `main`                                                                                                          | `app/security/rate_limit.py`, `app/security/ai_spend.py`   |
+| 28  | Personal identifiers masked                       | Built, on `main`                                                                                                          | `app/privacy/`                                             |
+| 29  | Answers worked out from sheet rows                | Row lookup on; worked figures built, switched off                                                                         | `app/doctables/store.py`, `app/insights/table_answers.py`  |
+| 30  | Self-hosted install and Updates                   | Released (0.2.0 to 0.4.1)                                                                                                 | `deploy/selfhost/`, `app/updates/`                         |
+| 31  | Release notes and the new-version pill            | Built, on `main`                                                                                                          | `release-notes/`, `frontend/components/NewVersionPill.tsx` |
 
 
 ---
@@ -46,7 +53,7 @@ tool already lets them see.
 **Status: Live**
 
 One question box covers every connected tool. Handbook finds the most relevant passages using
-meaning-based and keyword search together, re-ranks the best 30, and answers only from those
+meaning-based and keyword search together, re-ranks the best 40, and answers only from those
 passages. Each answer shows the document, the app, who last edited it and when.
 
 Two safety layers prevent invented answers:
@@ -58,6 +65,11 @@ Ask also handles:
 
 - **Follow-ups.** "What about part-timers?" is rewritten into a full question first.
 - **Summaries.** "Summarise everything discussed here" reads the whole channel or space.
+- **Deep analysis.** For questions that span several documents, Deep reads the top documents
+in full instead of short passages. **Extra effort**, a setting under Deep, also reads widely
+across many documents for list and company-wide questions.
+- **Progress while it works.** A timeline shows which tools were searched and which documents
+were found while the answer is written.
 - **Web search.** One web search is allowed for outside topics, labelled as web. Only words the
 user typed are sent.
 - **Access refusals.** If the document exists but isn't shared with the asker, the answer says so
@@ -91,14 +103,17 @@ never a wrong answer, because the chosen tool still runs every safety check.
 **Status: Live**
 
 - **Notion.** Reads pages shared with the integration, including nested content.
-- **Google Drive.** Reads Docs, PDFs and Word files in one chosen folder. Google Sheets are not
-indexed.
+- **Google Drive.** Reads Docs, PDFs, Word files, Google Sheets, Excel and CSV files in one chosen
+folder. A spreadsheet is searched by a description of its columns; its rows are kept as a table
+(see §10 and §29).
 - **Slack.** Reads threads in channels an admin picks. Messages under 15 characters are skipped.
 - **Linear.** Reads issues with status, assignee, team, priority, labels and comments.
 - **GitHub.** Nothing is stored. Commits, pull requests, reviews, branches and READMEs are read
 live through six tools.
 
-Disconnecting a tool deletes everything indexed from it.
+Disconnecting a tool deletes everything indexed from it. Each connector shows how far a running
+sync has got ("12 of 40 issues done"). Pressing Connect for a tool that isn't set up yet opens a
+setup guide instead of an error.
 
 **Code:** `app/sources/` (notion, google_drive, slack, linear), `app/githublive/`
 
@@ -126,7 +141,7 @@ and the knowledge graph.
 - **Linear: public teams verified on staging, 1 Oct.** Private teams are limited to their members,
 admins and people an issue was shared with. This is built but not tested live, because private
 teams need Linear's Business plan.
-- **GitHub: built, tested.** A private repository answers only people whose linked GitHub account can open it. Unlinked members see public repositories only.
+- **GitHub: Live (verified in production, 1 Oct).** A private repository answers only people whose linked GitHub account can open it. Unlinked members see public repositories only.
 - **Charts: Live :** A chart counts only documents the viewer can open.
 - **Notion: blocked, per space only.** Notion's API exposes no page sharing.
 
@@ -204,6 +219,8 @@ The same Chart mode charts figures that sit inside documents.
 
 - **Tables in documents.** Tables in Notion pages, Notion inline databases, Google Docs, Sheets and
   Word files are saved as rows when the page syncs (`doc_tables`, `doc_table_rows`), with no AI.
+  A workbook is read tab by tab; tabs with the same columns are one table, so a total spans them.
+  Two tables can be compared in one chart ("target vs achieved").
   A chart picks the table that best matches the question; the table's first column is its axis,
   rows keep the document's order, and percentages are averaged, never added up.
 - **Figures written in paragraphs.** When a page with at least three figures syncs, the AI reads
@@ -234,6 +251,8 @@ app.
 documents never reach a shared room.
 - **Direct messages.** Answers use everything the person can see and name the source and space.
 - **While searching.** The bot shows "Searching…" and edits it into the answer.
+- **Agent mode.** A message that asks for an action ("agent, post this to #team") gets an
+approval card in Slack (see §25).
 
 - **Charts.** A chart question gets a PNG image of the chart (Slack can't run interactive
 charts), with an **Open interactive chart** link that asks the same question in the web app, under
@@ -252,7 +271,8 @@ Unanswered questions are logged here too, but Slack has no thumbs.
 A member describes what they want in plain words and picks a tool, a space and a schedule: daily,
 weekly or monthly. Each report is saved in the app and announced by email with a link. The first
 report covers the last 90 days. Reports say what was checked, and they describe current content
-rather than changes.
+rather than changes. The list keeps each schedule's latest 12 reports and says how many older ones
+it leaves out.
 
 **Code:** `app/schedulers/`
 
@@ -261,7 +281,7 @@ rather than changes.
 **Status: Live**
 
 Attach PDF, Word, Excel (.xlsx), CSV, TSV, text, Markdown or JSON files to a chat. Files are stored privately in
-Cloudinary and answered together with company documents, so "is this bill claimable?" reads the
+Cloudinary (or, with no Cloudinary keys, their text is kept in the database) and answered together with company documents, so "is this bill claimable?" reads the
 bill and the expense policy. Each file gets its own result: one bad file doesn't block the
 others. In Chart mode a file's tables and figures can be charted (see §10).
 
@@ -269,17 +289,17 @@ others. In Chart mode a file's tables and figures can be charted (see §10).
 
 **Code:** `app/attachments/`, `app/api/attachments.py`
 
-## 14. Model choice and bring-your-own model
+## 14. Model choice and a company's own model
 
 **Status: Live**
 
-Members can pick which AI model answers, from a short vetted list served through OpenRouter and
-Groq. Admins can connect their own provider from 14 presets. Model calls through OpenRouter only
-go to providers that don't collect data.
+Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Claude Haiku 5.5
+(fast and low cost). Both build charts. Admins can also add the company's own model from a list
+of provider presets; its key is tested before it is saved and stored encrypted. Background work
+(context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
+nobody picks.
 
-**Limitation:** free-tier quotas of hosted models apply.
-
-**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`
+**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `frontend/components/ModelPicker.tsx`
 
 ## 15. Feedback and documentation gaps
 
@@ -301,12 +321,21 @@ embeddings only narrow which topics it compares against.
 
 **Code:** `app/feedback/`
 
-## 16. Needs-attention bell
+## 16. Notification bell
 
 **Status: Live**
 
-The bell shows tools that stopped syncing or still need setting up. Only the person who can fix
-the problem sees it: admins for company-wide tools, and owners for their own space.
+The bell shows what someone can fix, only to the person who can fix it: admins for company-wide
+tools, owners for their own space.
+
+- Tools that stopped syncing or still need setting up.
+- Topics people couldn't get answered (see §15).
+- A document the safety model flagged, when the guard is enforcing: the item opens the page
+itself, so its owner can remove the text.
+- On a self-hosted copy, admins see a new release or what the last update changed.
+
+An item can be dismissed, or all cleared at once. A dismissal is kept in that browser until the
+problem changes.
 
 **Code:** `app/api/notifications.py`, `frontend/components/NotificationBell.tsx`
 
@@ -314,7 +343,9 @@ the problem sees it: admins for company-wide tools, and owners for their own spa
 
 **Status: Live**
 
-Every tool is re-checked every hour. An external timer runs every 10 minutes and keeps the free server awake to avoid render 15 minute stale shutdwn. Only changed documents are re-processed. A new connection syncs right away.
+Every tool is re-checked every hour. On Cloud an external timer calls Handbook every 10 minutes,
+which also keeps the hosted server from going to sleep. On a self-hosted install the worker runs
+these jobs itself. Only changed documents are re-processed. A new connection syncs right away.
 
 **Code:** `app/jobs/autosync.py`, `.github/workflows/tick.yml`
 
@@ -357,7 +388,8 @@ text.
 are off.
 - **Canary.** A hidden canary catches the AI repeating its instructions.
 - **Safety model.** A safety model screens documents and answers. Flagged documents are reported
-to their owner.
+to their owner. The guard can run on its own AI account (`GUARD_API_KEY`, `GUARD_BASE_URL`,
+`GUARD_SAFEGUARD_MODEL`), so it never uses the quota of the models that answer.
 
 **Limitation:** files over about 15,600 characters are not screened by the safety model.
 
@@ -367,10 +399,14 @@ to their owner.
 
 **Status: Live (email change verified on production)**
 
-Sign-in uses single-use email links, with no passwords. New companies go through an approval
-queue. Emails are sent through SendGrid and verified with real mailboxes. People can change their
+Sign-in uses single-use email links, with no passwords, sent as an email with a button. New
+companies go through an approval queue (a self-hosted install creates its one company during
+installation instead). Emails are sent through SMTP, Resend or SendGrid. People can change their
 sign-in email after confirming the new address. The old address is kept, so files shared to it
 still match.
+
+A company's email domain is its first admin's. Inviting someone, or changing a sign-in email, to
+any other domain (a personal address, or a subdomain) is refused.
 
 **Code:** `app/auth/magic_link.py`, `app/auth/email_change.py`, `app/auth/email.py`
 
@@ -378,7 +414,8 @@ still match.
 
 **Status: Live**
 
-Recent chats appear in the left rail. Each chat has its own link, can be deleted, and is private to its owner.
+Recent chats appear in the left rail. Each chat has its own link, can be renamed, pinned to the
+top or deleted from its ⋯ menu, and is private to its owner.
 
 **Limitation:** there are no automated browser tests.
 
@@ -415,6 +452,106 @@ because the hosting it needs now requires a paid plan.
 
 **Code:** `app/rag/audit.py`, `deploy/lettucedetect-space/`
 
+## 25. Agent mode (writes into tools)
+
+**Status: Built, on `main`; off until a company's admin turns it on**
+
+Agent mode drafts work in connected tools: a Linear or GitHub issue, a Notion page, a Slack post,
+a Google Doc or Sheet. Nothing runs until the person approves a card showing exactly what will be
+sent; they can edit the words, ask for changes, or cancel.
+
+- **Through MCP only.** Every write goes through an MCP server an admin added. Linear, Notion,
+  GitHub, Slack and Google come as presets; Slack and Google run on Handbook's own MCP servers
+  over those tools' regular APIs. An admin can add any other MCP server by its address.
+- **Each tool starts off.** The admin sets each one to off, read (used while drafting) or write
+  (needs a card). A space's owner can turn tools off for that space.
+- **Own accounts.** Each person signs in to each tool with their own account, which must be the
+  company's. Never a shared or admin key.
+- **Private stays private.** Private content is never sent somewhere public; a wider or unknown
+  audience needs a tick on the card.
+- **From Slack.** A message that asks for an action, or starts with `agent`, drafts a card: in a
+  DM as the person, in a channel from that channel only, shown only to the asker.
+- **Recorded.** Every proposal and outcome is kept. Admins see the switches, never what people
+  drafted or sent.
+
+**Limitation:** works best with strong models; smaller models have not been tuned for it.
+
+**Code:** `app/actions/`, `app/mcphost/`, `app/api/actions.py`, `app/api/slack_act.py`
+
+## 26. Each company's own Google and Slack app
+
+**Status: Built, on `main`**
+
+An admin sets up the company's own Google app and Slack app under **Sources**, step by step, with
+every value to paste shown there. Sync, sign-in and Agent mode then use it. Hosted Handbook
+requires the company's own app; a self-hosted install can keep using the app in its `.env`.
+Saving an app asks for that tool's connections to be reconnected, because a token belongs to the
+app that issued it.
+
+**Code:** `app/auth/org_apps.py`, `app/api/connector_apps.py`, `frontend/components/OwnAppSetup.tsx`
+
+## 27. Usage limits
+
+**Status: Built, on `main`**
+
+- **Requests.** Each person and each company has a question rate; sign-in emails have their own.
+- **Answers at once.** At most 20 answers are written at once across the servers, and 2 per
+  person; the rest wait for a place, then are told Handbook is busy.
+- **AI limits, two layers.** Tokens a minute for each answering model, for the person and for the
+  company, input and output counted apart; and dollars a day for the person and the company,
+  whichever model answers. Defaults: $0.30 a person and $3 a company a day.
+
+Limits are counted in Redis when it is set up, so every server shares them. Redis holds rate
+limits only: there is no answer cache, and every question is answered fresh.
+
+**Code:** `app/security/rate_limit.py`, `app/security/ai_spend.py`, `app/ratelimit/`
+
+## 28. Personal identifiers masked
+
+**Status: Built, on `main`**
+
+Before any text reaches an outside AI service (the models, remote search, the safety checks),
+Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values are replaced with placeholders, and put
+back only in what the person sees. If the check fails, nothing is sent.
+
+**Limitation:** bank account numbers, order ids, names and emails are not masked.
+
+**Code:** `app/privacy/`, `app/llm/masking.py`
+
+## 29. Answers worked out from sheet rows
+
+**Status: row lookup on; worked figures built, switched off**
+
+A question that types a value from a stored table ("who closed L-1076?") reads that row
+directly. With `DOCTABLES_ANSWERS_ENABLED` on, a question asking for a figure over a sheet (a
+total, a share, the highest, named people compared) is worked out exactly: the AI fills in a
+form, code checks every name and value against the real table, and SQL computes the answer. A
+name no table holds is said, never answered as zero.
+
+**Code:** `app/doctables/store.py`, `app/insights/table_answers.py`
+
+## 30. Self-hosted install and Updates
+
+**Status: Released (0.2.0 to 0.4.1)**
+
+A company can run Handbook on its own server from versioned Docker images: the installer creates
+`.env`, the team fills it in, and the second run starts Handbook and creates the company and its
+first admin. Admin › Updates shows the version running and offers a newer release (one click, or
+`./upgrade.sh <version>`); admins also get an email about each release. Cloud has no Updates page:
+it is kept current for its companies.
+
+**Code:** `deploy/selfhost/`, `deploy/updater/`, `app/updates/`, `app/api/updates.py`
+
+## 31. Release notes and the new-version pill
+
+**Status: Built, on `main`**
+
+Each release has notes in `release-notes/<version>.md`. A tab left open from an older release
+shows a "new version is ready" pill with Refresh (and What's new, for admins). Admins also see a
+short notice beside the chat modes when a new version is out.
+
+**Code:** `release-notes/`, `frontend/components/NewVersionPill.tsx`, `frontend/components/ReleaseChip.tsx`
+
 ---
 
 ## Blockers at a glance
@@ -424,18 +561,19 @@ because the hosting it needs now requires a paid plan.
 - **Google employee directory:** we can't see which employees belong to a group email. Reading
 group membership needs Google's Admin SDK APIs, which only a Workspace admin can authorize.
 - **Linear private teams:** waiting on a Business-plan workspace to test.
-- **GitHub per-person access:** waiting on the production test and members linking GitHub.
+- **GitHub per-person access:** each member must link their GitHub account.
 - **Answer fact-checker:** waiting on a paid host.
 
 ## Testing
 
-- **Automated tests.** 2,058 automated tests cover the product, run on every change.
+- **Automated tests.** About 2,700 test functions in 218 modules cover the product, run on every change.
 - **Staging (1 Oct).** Tested by hand: Slack private-channel access, Linear public-team access,  
 chart access, email change, and instant updates from all four tools.
-- Test GitHub per-person access in production.
+- **Not yet tried live:** Google Groups, Google Forms, Linear private teams, each company's own
+Google and Slack app end to end.
 
 ## What's next
 
-1. Add new connectors (Confluence and Jira first), a deep research mode, and action tools that
-  create issues or post updates after confirmation.
+1. Add new connectors (Confluence and Jira first).
+2. Tune Agent mode for smaller models.
 

@@ -1,35 +1,19 @@
 """Figures written in SENTENCES, read by an AI and checked by code.
 
-"Q1 revenue was ₹12L, Q2 grew to ₹15L" is data nobody put in a table, and no
-parser can turn prose into rows: knowing that ₹15L is Q2's revenue is reading
-comprehension. So an AI reads it -- inline at INGEST on the background model
-budget, and in Chart mode for a page ingest did not read -- and lists every
-FACT: one figure, what it measures, its unit, period and item, and the exact
-sentence. The AI never designs a table: code groups the facts into one table
-per measure (and unit), with a column for the period and one per kind of item,
-so every read of a page has the same shape and two measures are never added.
+No parser turns prose into rows, so an AI (inline at ingest on the background
+model, or in Chart mode) lists FACTS: figure, measure, unit, period, item and
+the exact quote. Code, never the model, groups them into one table per
+measure and unit, so two measures are never added.
 
-The AI is not trusted with the result. Code keeps a row only when:
+A row is kept only when its quote is in the document, EVERY cell is in that
+quote (numbers compared as numbers: ₹15L == 1,500,000), and the cells bind
+(each label to its own figure, each figure to its written measure). Anything
+else is dropped, never repaired. A figure the AI MISSED cannot be caught, so
+the chart says "read from text" and names dropped rows.
 
-- its quote appears in the document (whitespace- and case-insensitive),
-- EVERY cell appears in that quote: a number must equal a number written in
-  the quote (₹15L == 1,500,000), a label must occur in it verbatim, and
-- the cells bind: each label to its own figure ("140 in January, 150 in June"
-  -- one sentence, one convention, label after or before its figure), and
-  each figure to its own measure when the measure is written in the quote.
-  A figure another measure governs ("revenue was ₹40L while headcount
-  reached 150": 150 is not revenue) is dropped, never moved.
-
-So an invented figure, a changed figure, or a figure moved onto the wrong
-label ("Q3" on a sentence about Q2, revenue plotted as headcount) fails the
-check and is dropped. What the check cannot catch is a figure the AI MISSED
--- the chart says it was read from text, and a dropped row is named so a
-partial series is not presented as complete.
-
-Bounded: the whole document (pipe tables removed -- the table adapter already
-has those, exactly) in sections of ``max_chars``, at most ``MAX_SECTIONS``
-model calls, ``MAX_TABLES`` measures and ``MAX_ROWS`` facts each; anything
-beyond is named on the chart.
+Bounded: sections of ``max_chars`` (pipe tables removed), at most
+``MAX_SECTIONS`` calls, ``MAX_TABLES`` measures, ``MAX_ROWS`` facts each;
+anything beyond is named on the chart.
 """
 
 from __future__ import annotations
@@ -62,16 +46,11 @@ MAX_SECTIONS = 6
 #: Kinds of item a measure is broken down by (Plant, Product); a chart draws two.
 MAX_KINDS = 2
 MAX_COLUMNS = 8
-#: A reasoning model spends a small cap before it writes the JSON. At 1500,
-#: gemini-3.1-flash-lite logged `llm.truncated` with the whole budget used
-#: and the page was left with no table. The call stops when the JSON is done.
-#: A section's facts are verbose JSON (~60 tokens each); 16000 holds ~200.
+#: A reasoning model spends a small cap before the JSON (1500 was cut, no
+#: table). ~60 tokens a fact; 16000 holds ~200. The call stops at the JSON's end.
 MAX_TOKENS = 16000
-#: How many figures a page needs before ingest spends a model call on it, and
-#: (``MIN_CHART_NUMBERS``) before a page someone is waiting on is read. A
-#: figure is any number that is not a year; no list of currencies, units or
-#: measure words decides it, so "we hired 12 in Q1 and 18 in Q2" counts as
-#: much as "₹12L". What the model returns is still checked against the text.
+#: Figures (any number but a year; no unit or currency list) a page needs before
+#: ingest reads it, and (``MIN_CHART_NUMBERS``) when someone is waiting.
 MIN_FIGURES = 3
 MIN_CHART_NUMBERS = 2
 
@@ -127,10 +106,8 @@ def _cell_in_quote(cell: str, quote_norm: str, quote_numbers: list[float]) -> bo
     return _norm(cell) in quote_norm
 
 
-#: A word long enough to name a measure. Between a measure and a figure that
-#: follows an earlier figure, such a word ("while headcount reached") means
-#: the measure has changed. Short glue ("in", "and", "to", "rose") does not.
-#: Length, not a vocabulary: it reads the same in any language.
+#: A word long enough to name a measure: between figures it means the measure
+#: changed ("while headcount reached"). Length, not vocabulary: any language.
 _LONG_WORD = re.compile(r"[^\W\d_]{5,}")
 
 
@@ -209,10 +186,8 @@ def _bound(span, nums, *, follows: bool):
 def _clean_stretch(stretch: str, allowed: set[str], names: list[str]) -> bool:
     """Nothing between an earlier figure and this one names another measure.
 
-    When the row's own label opens the clause ("..., and Plant C contributed
-    1,700"), the list item is that label, a verb and its figure: what follows
-    the label may hold one connecting word. Otherwise every long word must be
-    a label, a column name or a unit ("while headcount reached 150" fails).
+    Every long word between must be a label, a column name or a unit; when the
+    row's own label opens the clause, one connecting word may follow it.
     """
     last = -1
     for name in names:
@@ -227,15 +202,10 @@ def _clean_stretch(stretch: str, allowed: set[str], names: list[str]) -> bool:
 def _measure_binds(header, value, measures, quote, nums, allowed, names=()) -> bool:
     """The figure belongs to this column's measure, not to another one.
 
-    No constraint when the column's name is not written in the quote ("In Q1
-    we brought in ₹12 lakh" under Revenue: the section names the measure, or
-    the model named it). The figure is still bound to its label. When
-    it is, the measure governing the figure -- the nearest measure written
-    before it among the table's own columns, else the nearest after -- must be
-    this one. And when other figures sit between the measure and this one
-    ("spend was $40k in April, $55k in May"), the stretch after the last of
-    them must not name something else ("revenue was ₹40L while headcount
-    reached 150": 150 is not revenue).
+    No constraint when the column's name is not in the quote. When it is, the
+    nearest measure before the figure (else after) must be this one, and no
+    word after intervening figures may name another ("revenue was ₹40L while
+    headcount reached 150": 150 is not revenue).
     """
     own = _header_spans(header, quote)
     if not own:
@@ -281,13 +251,10 @@ def _bind_group(columns: list[str], rows: list[list[str]], quote: str,
                 column_values: dict[int, set[str]] | None = None) -> list[bool]:
     """Which of these rows (all quoting ``quote``) bind cell to cell.
 
-    Each figure binds to its own measure (``_measure_binds``), and each label
-    to its own figure. Rows of one sentence follow one convention -- labels
-    after their figures or before them -- so the convention that binds the
-    most rows is the sentence's, and a row it does not bind is dropped (a tie
-    keeps only the rows both readings bind). A
-    label every row of the sentence shares ("In 2024, ...") is context, not
-    a binding. A mismatch is dropped, never repaired.
+    Each figure to its measure (``_measure_binds``), each label to its figure.
+    One sentence, one convention (labels after or before figures): the one
+    binding most rows wins, a tie keeps rows both bind. A label every row
+    shares is context. A mismatch is dropped, never repaired.
     """
     # A label written before the sentence (``_context_label``) was checked
     # there; only labels inside the quote bind to a figure in it.
@@ -354,11 +321,9 @@ _OPENING_CHARS = 12
 def _context_label(cell: str, values: set[str], quote_norm: str, paragraphs: list[str]) -> bool:
     """A label the sentence leaves to an earlier one in its paragraph.
 
-    "In January, the facility produced 6,200 units. Plant A manufactured 2,400
-    units" -- the month is not in the second sentence. It is kept only when it
-    is the LAST of its column's values written before the quote in that
-    paragraph -- preferring one that opens its sentence -- so "January" on a
-    February sentence is still dropped.
+    Kept only when it is the LAST value of its column written before the quote
+    in that paragraph, preferring one opening its sentence, so "January" on a
+    February sentence is dropped.
     """
     want = _norm(cell)
     for paragraph in paragraphs:
@@ -366,10 +331,8 @@ def _context_label(cell: str, values: set[str], quote_norm: str, paragraphs: lis
         if at < 0:
             continue
         before = paragraph[:at]
-        # Where each sentence before the quote starts: a value in a sentence's
-        # opening words ("In March, ...") sets the context; one in passing
-        # ("compared with 19 hours in February") does not, unless no sentence
-        # opens with one.
+        # A value opening a sentence ("In March, ...") sets context; one in
+        # passing does not, unless no sentence opens with one.
         starts = [0] + [m.end() for m in re.finditer(r"[.!?]\s+", before)]
         last = lead = None
         last_at = lead_at = -1
@@ -388,12 +351,9 @@ def verify_rows(
     document: str, rows: list[dict], columns: list[str] | None = None,
 ) -> list[tuple[list[str], str]]:
     """``(cells, quote)`` for each row whose quote is in the document, whose
-    every cell is in its quote -- or, for a label, written just before it in
-    the same paragraph (``_context_label``) -- and (with ``columns``) whose
-    cells bind to each other (``_bind_group``).
-
-    A mismatch is dropped, never repaired. ``columns`` is omitted only by tests
-    of the quote check itself; extraction always passes them.
+    every cell is in its quote (or a context label, ``_context_label``), and
+    (with ``columns``) whose cells bind (``_bind_group``). A mismatch is
+    dropped, never repaired. Only quote-check tests omit ``columns``.
     """
     doc_norm = _norm(document)
     paragraphs = [_norm(line) for line in (document or "").splitlines() if line.strip()]
@@ -491,12 +451,10 @@ _NUMBER_THEN_WORD = re.compile(r"(.*\d)\s*([^\W\d_]{1,16})\.?")
 def _split_units(header: list[str], rows: list[dict]) -> tuple[list[str], dict]:
     """"18.5 tonnes" -> "18.5", whatever the word after the number is.
 
-    The number parser knows formats (₹, lakh, k, %), not every unit a page can
-    use, so a cell like "420 kg" read as text and its row had no figure. The
-    unit is moved, never dropped: into the column name when the whole column
-    shares it ("Figure (tonnes)"), else onto that row's own label afterwards
-    (``_carry_units``), so tonnes and kilograms are never one series. Rows are
-    changed in place; returns the header and ``{(cells, quote): unit}``.
+    The unit is moved, never dropped: into the column name when the whole
+    column shares it, else onto the row's label (``_carry_units``), so units
+    are never one series. Rows change in place; returns the header and
+    ``{(cells, quote): unit}``.
     """
     per_row: dict[int, str] = {}
     column_unit: dict[int, set[str]] = {}
@@ -535,10 +493,9 @@ def _split_units(header: list[str], rows: list[dict]) -> tuple[list[str], dict]:
 
 
 def _merge_labels(rows, header: list[str]):
-    """One name per item: "Product Alpha" in January and "Alpha" after it are
-    one product, or the chart draws six series for three. A label is shortened
-    only to ANOTHER label in its column, by dropping the column's own name
-    ("Product"), so "Plant A" stays "Plant A" when no "A" was written."""
+    """One name per item ("Product Alpha" and "Alpha" are one series). A label
+    is shortened only to ANOTHER label in its column, by dropping the column's
+    own name."""
     for i, name in enumerate(header):
         words = _norm(name).split()
         if not words:
@@ -594,11 +551,8 @@ class TextAdapter(DatasetAdapter):
         self._interactive = interactive
 
     def wants(self, doc: DocumentText) -> bool:
-        """Cheap: enough figures in the prose to be worth a model call.
-
-        ``MIN_FIGURES`` at ingest, ``MIN_CHART_NUMBERS`` when someone is
-        waiting. Any number but a year counts; the AI's rows are checked
-        against their sentences either way."""
+        """Cheap: enough non-year numbers in the prose to be worth a model call
+        (``MIN_FIGURES`` at ingest, ``MIN_CHART_NUMBERS`` when someone waits)."""
         if doc.tables:
             # A Sheet or CSV: its rows ARE the data, read exactly already.
             return False
@@ -759,14 +713,12 @@ def _is_scale(unit: str) -> bool:
 
 
 def facts_to_tables(prose: str, facts: list[dict], *, extra_notes=()) -> list[extract.Table]:
-    """Tables built by code, never by the model: one per measure and unit, per
-    what it is broken down by (Plant, Product) and per period grain (years,
-    months, a span's total), so no two kinds of figure are ever added.
+    """Tables built by code, never by the model: one per measure and unit,
+    breakdown and period grain, so no two kinds of figure are added.
 
-    A kind of item with one name across the whole measure ("support team") is
-    the subject, not a breakdown, and is left out. Every row then goes through
-    the same checks as before (``verify_rows``: quote in the page, cells in the
-    quote, label bound to figure). Fewer than two kept figures is not a series.
+    An item kind with one name across the measure is the subject, not a
+    breakdown. Every row then passes ``verify_rows``. Fewer than two kept
+    figures is not a series.
     """
     # A unit left blank on some facts of a measure is that measure's unit when
     # it has exactly one ("2,400" beside "2,600 units"): never two tables.
@@ -877,12 +829,9 @@ def read_for_chart(
 ) -> ProseRead:
     """Read figures from at most two pages whose text matches the question.
 
-    Ingest reads pages with enough unit-bearing figures; this covers the rest
-    (fewer or plainer figures, a page indexed before ingest read prose, a
-    failed ingest read) because someone is waiting in Chart mode and nothing
-    stored answers them. ``providers`` keeps the read on the connector the
-    question names; ``tag`` on one Slack channel. Never raises: a failed read
-    costs the chart, not the refusal.
+    For pages ingest did not read, when someone waits in Chart mode and nothing
+    stored answers. ``providers`` keeps the named connector; ``tag`` one Slack
+    channel. Never raises: a failed read costs the chart, not the refusal.
     """
     from ..config.settings import DocTablesSettings
 

@@ -1,21 +1,8 @@
-"""Postgres connection helpers, backed by a psycopg connection pool.
+"""Postgres connection helpers over a psycopg pool.
 
-One place that knows how to talk to Postgres. Everything else (the pgvector
-store, test cleanup) goes through ``get_connection()`` rather than calling
-``psycopg.connect`` directly, so pooling is transparent to callers.
-
-Lifecycle
----------
-The pool is created lazily on first use and lives at module scope. Every process
-that uses the DB should close it at its own boundary via ``close_pool()`` (see
-``scripts/*`` mains and the test teardown) so connections are released cleanly —
-this matters more once a long-running API server exists, but we wire it now so it
-isn't a loose end later.
-
-Note: schema migration (``migrate.apply_schema``) deliberately does NOT use this
-pool — it opens a direct connection, because it may run against a brand-new
-database where the ``vector`` extension (and thus the pgvector adapters
-registered here) does not exist yet.
+Everything goes through ``get_connection()``. The pool is created lazily;
+every process calls ``close_pool()`` at its boundary. ``migrate.apply_schema``
+opens its own connection: the ``vector`` extension may not exist yet.
 """
 
 from __future__ import annotations
@@ -40,42 +27,18 @@ _pool: ConnectionPool | None = None
 _pool_url: str | None = None
 
 
-# Marker set on a physical connection once its pgvector adapters are registered.
-# Registration is per-connection state, so this is the honest way to ask "has
-# THIS connection been set up" without re-deriving it from the server.
+# Marker on a physical connection once its pgvector adapters are registered.
 _REGISTERED = "_handbook_pgvector_registered"
 
 
 def _register_vector_once(conn: "psycopg.Connection") -> None:
-    """Register pgvector type adapters on ``conn``, at most once per connection.
+    """Register pgvector adapters on ``conn``, at most once per connection.
 
-    Why the guard exists (a measured, site-wide latency bug)
-    -------------------------------------------------------
-    ``register_vector`` is not a local call: it does a ``TypeInfo.fetch`` against
-    ``pg_type`` for each of vector/bit/halfvec/sparsevec, i.e. a **server round
-    trip per type**. This used to run on EVERY ``get_connection()`` checkout in
-    addition to the pool's ``configure`` hook, so every query in the app carried
-    a burst of catalogue lookups in front of it. Measured against a real
-    Postgres: 10 trivial ``SELECT 1`` calls through ``get_connection()`` issued
-    **58** server round trips — a 5.8x amplification on every endpoint. That is
-    invisible locally (sub-millisecond hops) and brutal on a cross-region
-    deployment: at the ~250ms round trip measured between the API and its
-    database, ~12 extra lookups is ~3s of latency *per connection checkout*,
-    which is what made every page in the portal feel like it hung.
-
-    The type OIDs cannot change under a live connection, so re-fetching them per
-    checkout could never learn anything new. What the per-checkout call was
-    actually defending against was a *stale* connection: one created before the
-    ``vector`` extension existed, or surviving a ``docker compose down -v`` +
-    re-init, which otherwise keeps dumping embeddings as bare ndarrays and
-    fails with ``cannot adapt type 'ndarray'`` on ingest. That property is kept
-    — a connection without the marker is still registered on checkout — it just
-    no longer costs anything once the connection is set up. After deliberately
-    recreating the extension under a running process, call ``close_pool()``
-    (tests and scripts already do) so fresh connections re-register.
-
-    Fails closed rather than swallowing a miss: a silently unregistered
-    connection sitting in the pool is far worse than a loud error here.
+    ``register_vector`` costs a server round trip per type; run on every
+    checkout it added ~3s per query on a cross-region deploy. An unmarked
+    connection (made before the extension existed) is still registered on
+    checkout; after recreating the extension, call ``close_pool()``. Fails
+    closed: an unregistered pooled connection is worse than an error.
     """
     if getattr(conn, _REGISTERED, False):
         return
@@ -92,20 +55,13 @@ def _register_vector_once(conn: "psycopg.Connection") -> None:
 
 
 def _configure(conn: "psycopg.Connection") -> None:
-    """Pool hook: run once when a new physical connection is opened.
+    """Pool hook, run once per new physical connection.
 
-    The connection acts as ``handbook_app`` from here on, so the row-level
-    policy on ``chunks`` (schema.sql) applies to everything the app runs: the
-    owner the URL logs in as bypasses it. Fails closed: a connection that could
-    not switch would read every tenant's chunks, so it never joins the pool.
-
-    ``hnsw.iterative_scan``: filters run alongside the HNSW index (workspace,
-    provider, who may open a document), so a plain scan stops after
-    ``ef_search`` (40) candidates and can return fewer rows than asked. Measured
-    on 1.1M vectors across 10 tenants, before chunks was partitioned per tenant:
-    3.9 of 10 requested rows came back. An iterative scan keeps going until the
-    LIMIT is met; ``strict_order`` keeps results in exact distance order. Needs
-    pgvector 0.8+; on an older server the setting is an inert placeholder.
+    Switches to ``handbook_app`` so the row-level policy on ``chunks`` applies
+    (the URL's owner bypasses it); a connection that cannot switch never joins
+    the pool. Sets ``hnsw.iterative_scan = strict_order``: tenants share one
+    index, and a plain scan returned 3.9 of 10 rows at 1.1M vectors. Needs
+    pgvector 0.8+ (inert before).
     """
     try:
         conn.execute("SET ROLE handbook_app")
@@ -167,25 +123,16 @@ def get_connection(
     org_id: str | None = None,
     all_orgs: bool = False,
 ) -> Iterator["psycopg.Connection"]:
-    """Yield a pooled connection with pgvector registered.
+    """Yield a pooled connection with pgvector registered (commit on exit, rollback on error).
 
-    The pool's context manager commits on clean exit, rolls back on exception,
-    and returns the connection to the pool (it is not closed).
-
-    ``chunks`` shows a transaction only the rows of ``org_id``, and none without
-    it (the row-level policy in schema.sql). ``all_orgs`` is for background jobs
-    that work across tenants. Both last until the transaction ends, so a
-    ``commit()`` inside the block ends them too, and never reach the next
-    borrower of the connection.
+    ``chunks`` shows only ``org_id``'s rows, none without it (row-level policy);
+    ``all_orgs`` is for cross-tenant background jobs. Both end with the
+    transaction, so a ``commit()`` in the block ends them too.
     """
     pool = get_pool(settings)
     try:
         with pool.connection() as conn:
-            # Safety net for a connection that somehow reached a caller without
-            # the pool's configure hook having registered it (e.g. opened before
-            # the extension existed). A no-op once registered — see
-            # _register_vector_once for why paying it per checkout was ~3s of
-            # latency per query on a cross-region deploy.
+            # Safety net for a connection that skipped the configure hook; a no-op once registered.
             _register_vector_once(conn)
             if org_id is not None:
                 conn.execute("SELECT set_config('app.org_id', %s, true)", (str(org_id),))

@@ -71,21 +71,14 @@ class IngestResult:
     documents_unchanged: int = 0
     chunks_stored: int = 0
     documents_skipped: int = 0  # fetched but had no usable text
-    # Files whose SHARING the source would not report this run. Counted apart
-    # from `documents_skipped` because the cause and the fix are different: an
-    # empty document is a document with nothing in it, while this is a document
-    # we are not allowed to know the audience of. Two outcomes are summed here
-    # because the remedy is identical (give the connected account rights to see
-    # sharing): a NEW file is left out of the index entirely, and an
-    # ALREADY-INDEXED one keeps the access set it last had. Surfaced on the
-    # notification bell -- silence here looks exactly like a source with less
-    # in it than you thought.
+    # Files whose sharing the source would not report: a new one is left out,
+    # an indexed one keeps its viewers. Same fix for both, so one count,
+    # shown to the admin.
     documents_permission_unreadable: int = 0
     document_ids: list[str] = field(default_factory=list)
     # External ids written this run — used by deferred contextual enrich.
     ingested_external_ids: list[str] = field(default_factory=list)
-    # Already-indexed documents whose `source_meta` was captured this run by
-    # the bounded metadata refresh -- the knowledge graph builds these too.
+    # Indexed documents whose `source_meta` the metadata refresh captured.
     meta_refreshed_external_ids: list[str] = field(default_factory=list)
 
 
@@ -94,13 +87,8 @@ _MIN_STORED_FOR_REMOVAL_GUARD = 5
 
 
 def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[str], bool]:
-    """Refuse a removal set that would wipe out most of what's on record.
-
-    A handful of genuinely unshared/deleted pages always passes through
-    untouched — this only trips once there's real scale on record AND a
-    single listing call claims most of it vanished at once, which real-world
-    unsharing essentially never does at that scale but a flaky API response
-    can.
+    """Refuse a removal set that would wipe out most of what's on record:
+    real unsharing never does that at scale, a flaky listing can.
     """
     if not removed_ids or stored_count < _MIN_STORED_FOR_REMOVAL_GUARD:
         return removed_ids, False
@@ -110,17 +98,11 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
 
 
 def _removable(adapter: SourceAdapter, removed_ids: list[str], *, provider: str) -> list[str]:
-    """Drop removals the listing cannot actually vouch for.
+    """Drop removals the listing cannot vouch for.
 
-    Absence from a listing proves deletion only when the listing was
-    COMPLETE and would have INCLUDED the document. Two adapter hooks, both
-    optional (every adapter that has neither is unchanged):
-
-    - ``listing_complete = False``: the listing stopped early (a cap, a rate
-      limit mid-channel). Nothing is deleted from it.
-    - ``may_remove(external_id)``: ``False`` when the document sits outside
-      what the listing covers at all -- a Slack thread older than the
-      backfill window is not listed, which is not the same as deleted.
+    Absence proves deletion only if the listing was complete
+    (``listing_complete``) and would have included the document
+    (``may_remove``: an old Slack thread outside the window is not deleted).
     """
     if not removed_ids:
         return removed_ids
@@ -150,10 +132,8 @@ def _empty_listing_is_confirmed(
 ) -> bool:
     """Second opinion before acting on "the source has nothing at all".
 
-    Returns ``True`` when the wipe should proceed — including when this was
-    never a total wipe in the first place, so callers can use it as a plain
-    gate. A failing re-list counts as *not* confirmed: an error is not
-    evidence of emptiness.
+    ``True`` lets the removal proceed (also when it is not a total wipe). A
+    failing re-list is not confirmation.
     """
     if live_count > 0 or stored_count == 0:
         return True
@@ -202,16 +182,11 @@ def detect_source_changes(
     store: VectorStore | None = None,
     workspace_id: str | None = None,
 ) -> ChangeReport:
-    """Compare remote page metadata to stored rows — no content download.
+    """Compare remote page metadata to stored rows, with no content download.
 
-    Cheap enough to call when an admin opens Sources: only ``list_documents``.
-
-    ``provider`` (e.g. ``"notion"``, ``"google"``) must be supplied by the
-    caller from the connection's known provider, never inferred — sync state
-    is partitioned per provider so a Google sync never diffs against Notion's
-    rows in the same org (see CLAUDE.md §4). ``workspace_id`` (Workspace-
-    within-a-Workspace): ``None`` (default) diffs the org-wide documents,
-    unchanged; a sub-workspace's documents are diffed independently.
+    ``provider`` is explicit, never inferred: sync state is per provider, so
+    a Google sync never diffs against Notion's rows. ``workspace_id`` None is
+    org-wide; each space is diffed on its own.
     """
     store = store or build_vector_store()
     stored = {
@@ -266,27 +241,16 @@ def detect_source_changes(
 
 
 def _doc_tags(doc, run_tags: list[str] | None) -> list[str] | None:
-    """Merge the adapter's per-document tags with the run-level ones.
-
-    Run-level tags describe the whole sync ("hr", "policies"); a document's own
-    tags describe where inside the source it came from (which Slack channel).
-    Both are hard filters on the same column, so they simply union -- and an
-    adapter that sets none leaves every existing caller byte-identical.
-    """
+    """Union of run-level tags and the document's own (e.g. its Slack channel)."""
     merged = list(run_tags or []) + list(getattr(doc, "tags", None) or [])
-    # dict.fromkeys: de-duplicate while keeping order stable, so a re-ingest
-    # of an unchanged document does not rewrite the column in a new order.
+    # Stable order, so a re-ingest does not rewrite the column.
     return list(dict.fromkeys(merged)) or None
 
 
 def _doc_meta(doc) -> tuple[dict, str | None]:
-    """``(source_meta, source_editor_key)`` for one fetched document.
-
-    The adapter's own record plus every resolvable link in the BODY: a URL to a
-    Linear issue or a pull request sits in a Drive doc's text just as often as
-    in a structured field, and the text is already in hand. Never ``None`` —
-    ``{}`` marks "captured, nothing found", so the metadata refresh does not
-    pick the same document up again every job.
+    """``(source_meta, source_editor_key)`` for one fetched document: the
+    adapter's record plus links found in the body. ``{}`` (never None) marks
+    "captured, nothing found", so the refresh does not pick it up again.
     """
     meta = merge_meta(getattr(doc, "meta", None), links=extract_links(doc.content)) or {}
     return meta, editor_key(meta)
@@ -297,23 +261,10 @@ def _doc_access(
 ) -> tuple[bool, list[str] | None, bool] | None:
     """Resolve ``(is_public, viewers, unreadable)``, or ``None`` meaning SKIP.
 
-    The fetched document wins over the listing when both report sharing (it is
-    the fresher read), and either is accepted -- Drive answers from the listing
-    for free, and an adapter that can only answer on fetch is still supported.
-
-    The whole fail-closed rule lives here: for a provider in
-    ``sources.factory.ACL_CAPABLE``, "no access reported" means the source
-    refused to tell us who a file is shared with AND could not name anyone who
-    demonstrably can (an adapter reporting ``DocAccess.owner_only`` has already
-    handled the ordinary case). Indexing it anyway would publish, to the whole
-    scope, precisely the file whose sharing we could not read. Everything else
-    keeps scope-level visibility, which is what it had before document-level
-    filtering existed.
-
-    ``unreadable`` rides the tuple rather than being inferred from the viewer
-    list, because "shared with exactly one person" and "we could only prove one
-    person" are indistinguishable once the list is built, and they are a
-    healthy sync and a reportable one respectively.
+    The fetched document wins over the listing (fresher). Fail closed: an
+    ``ACL_CAPABLE`` provider reporting no access is skipped, never published to
+    the scope. ``unreadable`` is explicit: "shared with one person" and "could
+    only prove one person" look alike once the list is built.
     """
     access = getattr(doc, "access", None) or getattr(ref, "access", None)
     if access is None:
@@ -332,37 +283,24 @@ def _restamp_unchanged_access(
     provider: str,
     workspace_id: str | None,
 ) -> int:
-    """Refresh the ACL of documents this sync did NOT re-fetch.
+    """Refresh the ACL of documents this sync did not re-fetch.
 
-    Returns how many of them could NOT be refreshed because the source stopped
-    reporting their sharing -- those keep the viewers they already had.
-
-    A permission change moves no content, so an unshared file never reaches
-    the fetch/upsert path above -- without this, revocation would take effect
-    only if someone happened to also edit the file. Costs nothing: the sharing
-    is already in the listing that just ran.
+    A permission change moves no content, so without this revocation waits
+    for an edit. Uses the listing's sharing (free). Returns how many could not
+    be refreshed (they keep their viewers).
     """
     if provider not in ACL_CAPABLE:
         return 0
     pending = [ref for ref in refs if ref.external_id not in handled]
-    # An `unreadable` access is a FALLBACK, not a reading, so it must never be
-    # written over a document that already has a real one. The owner-only
-    # fallback is right for a NEW document (something beats nothing); applying
-    # it here would narrow an established corpus to one person the moment a
-    # Workspace setting changed -- which is the very failure the freeze exists
-    # to prevent, and it would also report as zero frozen documents.
+    # An `unreadable` access is a fallback, never written over a real one.
     entries = [
         (ref.external_id, ref.access.is_public, list(ref.access.viewers) or None)
         for ref in pending
         if getattr(ref, "access", None) is not None and not ref.access.unreadable
     ]
-    # FROZEN, not locked down: a document already in the index whose sharing we
-    # can no longer read keeps the access set it last had. It is never widened,
-    # and the alternative -- blanking it the moment a read fails -- makes a
-    # transient Drive error or one changed Workspace setting silently empty a
-    # corpus. The cost is that a viewer removed during that window keeps access
-    # until sharing is readable again, which is why the count is reported
-    # rather than only logged.
+    # Frozen, not blanked: an unreadable document keeps its last viewers (a
+    # transient error must not empty a corpus). Reported, since a removed
+    # viewer keeps access meanwhile.
     frozen = len(pending) - len(entries)
     if frozen:
         logger.warning(
@@ -416,12 +354,8 @@ def _reindex_slack_docs_missing_channel_prefix(
     to_update: list[SourceRef],
     unchanged: int,
 ) -> tuple[list[SourceRef], int]:
-    """Re-fetch Slack threads whose stored title has no ``#channel:`` prefix.
-
-    ``fetch_document`` used to save the raw message as the title. Ask chips
-    name a channel, and recap/keyword search cannot confirm a match without
-    that prefix (or the ``Channel: #x`` line now written into chunk text).
-    One Update after this ships backfills them; Notion/Drive are untouched.
+    """Re-fetch Slack threads whose stored title has no ``#channel:`` prefix:
+    keyword search and chips cannot match a channel without it.
     """
     already = {r.external_id for r in to_update}
     extra: list[SourceRef] = []
@@ -444,10 +378,8 @@ def _guard_document(
 ) -> tuple[list[float | None] | None, bool]:
     """Injection scores for a document's raw chunks, and whether it is flagged.
 
-    Scored BEFORE contextualization: a flagged document skips it WHOLE,
-    because every contextualize call carries the full document text -- skipping
-    only the flagged chunk would still hand the poison to our own model. A
-    guard failure is ``(None, False)``: unscored, never a failed ingest.
+    Scored before contextualization: a flagged document skips it whole, since
+    every call carries the full text. A guard failure is ``(None, False)``.
     """
     if guard is None:
         return None, False
@@ -477,17 +409,10 @@ def _store_scores(store: VectorStore, document_id: str, scores, guard: Injection
 def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) -> None:
     """Hand the document to the dataset adapters (app/doctables), for charts.
 
-    Every adapter runs HERE, inline: the tables the document already has (no
-    AI), and the figures in its sentences (one paced background-model call,
-    only for a page that passes the cheap figures check). A queue read on a
-    later tick left a page uncharted for minutes; reading at ingest costs the
-    ingest a call instead, and a webhook re-ingest keeps the figures as fresh
-    as the text. A page whose sentences held no series is marked read, so
-    Chart mode does not pay for the same call again.
-
-    A re-ingest deletes and re-inserts the `documents` row and its tables
-    cascade with it, so an adapter with nothing to say costs no query. Never
-    raises: a chart that failed to store must not cost the indexed document.
+    Every adapter runs inline at ingest: stored tables (no AI) and figures in
+    prose (one paced aux-model call, only past the cheap figures check). A
+    page with no series is marked read. Tables cascade with the document row.
+    Never raises: a chart failure must not cost the indexed document.
     """
     from ..doctables import base, factory
 
@@ -539,9 +464,8 @@ def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) ->
     if retry_later:
         return
     try:
-        # Stamped even when an adapter failed for any other reason: the failure
-        # is logged, and a document that always fails must not take a backfill
-        # slot forever.
+        # Stamped on other failures too, or one bad document holds a
+        # backfill slot forever.
         from ..doctables.store import mark_checked
 
         mark_checked(document_id)
@@ -580,15 +504,10 @@ def backfill_tables(
 ) -> int:
     """Read tables from already-indexed documents, a bounded batch per sync.
 
-    A sync never re-fetches an UNCHANGED document, so a sheet indexed before
-    charts read tables would otherwise never be charted. This re-fetches up to
-    ``DOCTABLES_BACKFILL_BATCH`` documents the adapters have never looked at
-    and hands each to ``_store_tables`` -- tables only: no re-chunking, no
-    re-embedding, access untouched. Same shape as ``refresh_missing_meta``.
-
-    Never raises. A document the source refuses stays unstamped and is tried
-    on a later sync; ``live_ids`` keeps one the source no longer lists from
-    taking a slot every time.
+    Unchanged documents are never re-fetched, so this re-fetches up to
+    ``DOCTABLES_BACKFILL_BATCH`` unchecked ones for ``_store_tables`` (tables
+    only, no re-embedding). Never raises; a refused fetch stays unchecked,
+    and ``live_ids`` skips documents the source no longer lists.
     """
     from ..config.settings import DocTablesSettings
     from ..doctables import store as table_store
@@ -732,11 +651,8 @@ def ingest_source(
         doc = adapter.fetch_document(ref.external_id)
         access = _doc_access(doc, ref, provider)
         if access is None:
-            # Fail CLOSED, and this is now the LAST resort: the adapter could
-            # not read the sharing AND could not name an account that can, so
-            # there is nobody it could be indexed for. Counted as skipped and
-            # logged, since silence here looks identical to a source with
-            # nothing in it.
+            # Fail closed: no sharing and no account that can open it. Counted
+            # and logged, so it never reads as an empty source.
             logger.warning(
                 "Skipping %s/%s: %s reports no sharing information for it and no "
                 "account we could fall back to",
@@ -748,13 +664,9 @@ def ingest_source(
             continue
         is_public, viewers, unreadable = access
         if unreadable and is_update:
-            # ALREADY INDEXED, so freeze exactly as `_restamp_unchanged_access`
-            # does: it has a real access set and the fallback is a guess, so
-            # writing the guess over it would narrow an established corpus to
-            # one person because a file happened to be edited in the window its
-            # sharing went dark. The content update waits too -- re-indexing a
-            # document whose audience we cannot determine is the thing we are
-            # declining to do.
+            # Already indexed: freeze as `_restamp_unchanged_access` does. Its
+            # real access set beats the fallback, and the content update waits
+            # until the audience is readable.
             logger.warning(
                 "%s/%s changed but its sharing is no longer reported; keeping the "
                 "access set and the content it already had",
@@ -764,10 +676,8 @@ def ingest_source(
             report("indexing", done, total_work)
             continue
         if unreadable:
-            # NEW, so something beats nothing: indexed for the one account that
-            # could see the file. Counted so the connection card can say so --
-            # people it is genuinely shared with cannot reach it until sharing
-            # is readable.
+            # New: indexed for the connected account only, and counted for
+            # the connection card.
             logger.info(
                 "%s/%s: sharing not reported; indexing it for the connected "
                 "account only (%s)",
@@ -857,9 +767,7 @@ def ingest_source(
             added_n += 1
         report("indexing", done, total_work)
 
-    # Revocation: every ref this run did NOT re-fetch still gets its access set
-    # refreshed from the listing. Without it, losing access in the source would
-    # only ever reach us if someone also happened to edit the file.
+    # Revocation: refs not re-fetched still get their access from the listing.
     permission_unreadable += _restamp_unchanged_access(
         store,
         refs,
@@ -918,17 +826,10 @@ def refresh_missing_meta(
 ) -> int:
     """Capture ``source_meta`` for already-indexed documents, a bounded batch per run.
 
-    An UNCHANGED document is never re-fetched (``_plan_refs``), so every row
-    indexed before Second Brain 1.1 would otherwise stay invisible to the graph
-    forever. This re-fetches up to ``GRAPH_META_REFRESH_BATCH`` of them per job
-    and writes the metadata ONLY — no re-chunking, no re-embedding, access
-    untouched. Newest first, so the documents questions are about go first.
-
-    Never raises: it rides a sync that has already succeeded, and one document
-    the source now refuses must not turn that into a failure. A document that
-    fails is left NULL and retried on a later job. ``live_ids`` (the listing
-    this run just made) keeps a document the source no longer has from
-    occupying a slot, and failing, on every job forever.
+    Unchanged documents are never re-fetched, so this re-fetches up to
+    ``GRAPH_META_REFRESH_BATCH`` (newest first) and writes metadata only.
+    Never raises; a failure stays NULL for a later job, and ``live_ids``
+    skips documents the source no longer lists.
     """
     limit = GraphSettings.from_env().meta_refresh_batch if batch is None else batch
     if limit <= 0:
@@ -1050,14 +951,9 @@ def enrich_source_contextual(
                     for stored, raw in zip(chunks, raw_chunks)
                 ]
             embeddings = embedder.embed(chunks)
-            # CHUNKS ONLY -- the documents row stays exactly as ingest wrote it.
-            # This used to call `upsert_source_document`, which deletes and
-            # re-inserts the row, with only the run tags: every deferred enrich
-            # (on by default) re-published a restricted Drive file to the whole
-            # scope and dropped a Slack thread's channel tag and editor.
-            # Re-reading the sharing from this re-fetch is NOT a fix: Slack
-            # reports sharing only on the listing, and ingest has already
-            # applied the skip / owner-only / freeze rules to this very row.
+            # Chunks only: the documents row keeps the access, tags and editor
+            # ingest wrote. Re-upserting it re-published restricted files to
+            # the whole scope.
             document_id = store.replace_source_document_chunks(
                 org_id,
                 provider=provider,

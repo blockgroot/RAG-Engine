@@ -1,6 +1,6 @@
 # Handbook: Feature Overview
 
-*26 October 2026*
+*13 November 2026*
 
 Handbook is an AI assistant that answers employees' questions from their company's own tools: Notion, Google Drive, Slack, Linear and GitHub.
 
@@ -18,6 +18,7 @@ Everything starts from one chat box. Ask is the default; the other modes are swi
   - Handbook picks the right tool on its own, or uses the one the question names ("in Slack…").
   - Follow-up questions are understood in context.
 - **Deep:** for complex questions that span several documents. It reads whole documents instead of short passages.
+  - While an answer is written, a timeline shows which tools were searched and which documents were found.
 - **Extra Effort:** a setting inside Deep for the hardest questions. It reads even more, and is used only when needed, which keeps AI usage under control.
 - **Chart:** turns a question into a chart, such as "commits per week by author" or "salary by team".
   - It charts tool activity, tables inside documents, figures written in paragraphs, and uploaded files.
@@ -27,9 +28,9 @@ Everything starts from one chat box. Ask is the default; the other modes are swi
 
 **Also in chat:**
 
-- chat history, private to each person;
-- suggested starter questions;
-- a choice of AI model.
+- chat history, private to each person, with rename and pin;
+- suggested starter questions, including starter charts in Chart mode;
+- a choice of AI model: Claude Sonnet 5.5 (strongest) or Claude Haiku 5.5 (fast and low cost).
 
 <p align="center"><img src="docs/poc-images/chart-from-document.png" alt="Chart from a document" width="520"><br><em>Chart mode: a stacked bar built from figures written in a Google Drive report. Each value is checked against the sentence it came from.</em></p>
 
@@ -64,7 +65,8 @@ When Handbook cannot answer, it falls back step by step instead of guessing:
   - **Linear:** private teams are open to their members only.
   - **GitHub:** private repositories are open only to people with access.
   - **When access is lost:** someone who loses access in the original tool loses it in Handbook at the next update.
-- **Company separation:** one company can never see another company's data.
+- **Company separation:** one company can never see another company's data. Each company's indexed text also sits in its own database partition, which the database itself fences off.
+- **Company email domain:** only addresses on the company's own email domain can be invited, or set as a new sign-in email.
 
 <p align="center"><img src="docs/poc-images/spaces.png" alt="Spaces" width="520"><br><em>Spaces: private rooms for a team or project, kept separate from company-wide documents.</em></p>
 
@@ -75,10 +77,12 @@ When Handbook cannot answer, it falls back step by step instead of guessing:
 **What Handbook reads**
 
 - **Notion:** pages, including tables and inline databases.
-- **Google Drive:** Docs, PDFs, Word files, Sheets and CSV in a chosen folder.
+- **Google Drive:** Docs, PDFs, Word files, Google Sheets, Excel and CSV in a chosen folder. Every tab of a spreadsheet is kept as rows, so totals over thousands of rows are exact.
 - **Slack:** chosen channels, last 90 days.
 - **Linear:** issues, with comments, status and assignee.
 - **GitHub:** commits, pull requests, reviews and READMEs, read live.
+
+Google and Slack connect through the company's own Google and Slack app, which an admin sets up step by step under Sources. Each connector shows how far a sync has got.
 
 **How data stays fresh**
 
@@ -94,7 +98,7 @@ When Handbook cannot answer, it falls back step by step instead of guessing:
 People attach PDF, Word, Excel, CSV, text or Markdown files to a chat, then ask questions about them or chart them.
 
 - **Combined with company content:** for example, "is this bill claimable?" reads both the bill and the expense policy.
-- **Private storage:** files are kept in cloud storage (Cloudinary), private to the uploader and that chat.
+- **Private storage:** files are kept in private cloud storage (Cloudinary), or on the company's own server when it runs Handbook itself, private to the uploader and that chat.
 - **Automatic deletion:** files are removed after 30 days.
 
 <p align="center"><img src="docs/poc-images/chart-from-upload.png" alt="Chart from an uploaded file" width="520"><br><em>A chart from an uploaded Excel file. Cells that are not numbers are left out and the answer says how many.</em></p>
@@ -131,7 +135,8 @@ A member writes a request such as "What did the Platform team ship?" and chooses
   - to the admin, for company-wide questions;
   - to the space owner, for questions in their space.
 - **Privacy:** who asked is never shown.
-- **Other alerts:** the same notification bell warns when a tool stops updating or still needs setting up.
+- **Other alerts:** the same notification bell warns when a tool stops updating or still needs setting up, or when a document contains hidden instructions (it opens that page, so its owner can fix it).
+- **Dismiss:** alerts can be dismissed one at a time, or cleared all at once.
 
 ---
 
@@ -149,7 +154,7 @@ Handbook can **do** work, not just answer:
 
 - post in Slack;
 - create or edit Google Docs and Sheets;
-- create Linear, Notion or GitHub issues.
+- create Linear or GitHub issues and Notion pages.
 
 This lets people keep documentation up to date just by chatting.
 
@@ -178,7 +183,7 @@ A document can hide instructions meant to trick the AI. Handbook makes these har
 - **Treated as reading material:** document text is never followed as instructions.
 - **Cleaned first:** hidden characters and fake system messages are removed.
 - **No invented links:** answers can only contain links found in the sources.
-- **Extra scan:** an additional AI safety scanner checks content.
+- **Extra scan:** an additional AI safety scanner checks content. It can run on its own AI account, so it never uses up the answering models' quota.
 
 ---
 
@@ -186,7 +191,7 @@ A document can hide instructions meant to trick the AI. Handbook makes these har
 
 Before any text reaches the AI, these are replaced with placeholders, and put back only in the answer the person sees:
 
-- Aadhaar;
+- Aadhaar and Virtual ID;
 - PAN;
 - card numbers;
 - mobile numbers;
@@ -197,19 +202,30 @@ If the masking check fails, nothing is sent at all.
 
 ---
 
-## 13. Bring Your Own Model
+## 13. AI Models and Usage Limits
 
-People choose the AI model from a short, vetted list. An admin can also connect the company's own AI account.
+People choose the AI model that answers: Claude Sonnet 5.5 or Claude Haiku 5.5. Background work runs on a separate model. An admin can also connect the company's own AI account.
 
-- **Providers:** 14 are supported, including OpenAI, Anthropic, Google and Mistral.
+- **Providers:** 14 are supported for a company's own model.
 - **Tested first:** the key is tested before it is saved.
 - **Stored safely:** the key is encrypted and never shown in full.
+- **Usage limits:** each person and each company has a question rate, a cap on answers written at once, and AI limits in tokens a minute (per model) and dollars a day.
+- **Always fresh:** every question is answered fresh; no answer is reused for another person.
 
 <p align="center"><img src="docs/poc-images/company-model.png" alt="Company model" width="420"><br><em>Connecting a company model: choose the provider, enter the model ID and paste the API key. A short test runs first, and the key is encrypted.</em></p>
 
 ---
 
-## 14. Gaps
+## 14. Cloud or Self-Hosted
+
+- **Handbook Cloud:** we run it and keep it up to date.
+- **Self-Hosted:** the company runs Handbook on its own server from Docker images. The installer creates the company and its first admin; colleagues join by invite.
+- **Updates:** on a self-hosted copy, admins are emailed about each release and update from Admin › Updates (one click, or one command).
+- **New version:** an open tab offers Refresh when a new release is out, and admins see what changed.
+
+---
+
+## 15. Gaps
 
 1. **Images, scanned PDFs and presentations.** Handbook understands text only. Images, diagrams, scanned PDFs, PowerPoint, Google Slides, audio and video are not read and embedded.
 2. **Notion page permissions.** Notion does not share who can see each page, so every Notion page given to Handbook is visible to everyone in the company or space.

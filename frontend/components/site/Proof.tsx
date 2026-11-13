@@ -41,11 +41,7 @@ const COST = [
   { who: "Another assistant", tokens: 69466, calls: "12.1", seconds: 11.2, ours: false },
 ];
 
-/**
- * Open stat grid, no frame: the section already has many boxed figures, so
- * the numbers stand on the page. Bars are drawn at their final width (a
- * scroll-linked grow left them mid-animation and read as wrong values).
- */
+/** Open stat grid. Bars drawn at final width: a mid-animation bar reads as a wrong value. */
 export function Scoreboard() {
   return (
     <figure className="score">
@@ -72,12 +68,8 @@ export function Scoreboard() {
   );
 }
 
-/**
- * How much each assistant had to read for one answer, drawn as dots so the
- * gap is seen before it is read, plus time to the first word. Plays as a race
- * on an 8s loop: the dots fill in one by one (Handbook stops at 4), then both
- * time bars grow at their real ratio and each number lands when its bar ends.
- */
+/** Documents read per answer (dots) and time to first word, as an 8s race;
+ *  bars grow at their real ratio. */
 export function Receipts() {
   const slowest = Math.max(...COST.map((c) => c.seconds));
   return (

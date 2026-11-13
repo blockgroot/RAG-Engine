@@ -1,10 +1,7 @@
-"""Application users (Phase 13).
+"""Application users, always looked up by email.
 
-A user is always looked up/created by email. ``org_id`` is only ever set when
-an org has already been resolved — either an admin's own org at signup, or a
-specific email an admin directly invited into their org (``invite_member``) —
-a user with no ``org_id`` exists but is NEVER issued a session (see
-``app/api/auth.py``), so there is no authenticated state that lacks a tenant.
+A user with no ``org_id`` is never issued a session, so no signed-in state
+lacks a tenant.
 """
 
 from __future__ import annotations
@@ -46,10 +43,8 @@ def get_user_by_email(email: str) -> User | None:
 def get_member_by_address(email: str, org_id: str) -> User | None:
     """The member of ``org_id`` who signs in with ``email`` or once did.
 
-    For identities that arrive as an address from another tool (a Slack
-    profile): a person whose login changed is still the same person. A prior
-    address someone ELSE now signs in with is theirs, so it matches nobody
-    here (the same rule as ``email_change.aliases_for``).
+    For addresses from another tool (a Slack profile). A prior address someone
+    else now signs in with matches nobody (as ``email_change.aliases_for``).
     """
     address = (email or "").strip().lower()
     if not address:
@@ -91,11 +86,7 @@ def create_user(email: str, *, org_id: str | None = None, role: str = ROLE_MEMBE
 
 
 def create_admin(email: str, org_id: str) -> User:
-    """Create the first admin user for a freshly-created org (Phase 13/14 signup).
-
-    Their address's domain becomes the company's: everyone invited later must
-    share it (``assert_company_email``).
-    """
+    """Create the first admin of a new org; their domain becomes the company's."""
     user = create_user(email, org_id=org_id, role=ROLE_ADMIN)
     with get_connection() as conn:
         conn.execute(
@@ -112,10 +103,9 @@ def email_domain(email: str) -> str:
 def assert_company_email(email: str, org_id: str) -> None:
     """Refuse an address outside the company's domain.
 
-    Without it an admin could invite (or a member switch to) a personal
-    address, and company content would be one sign-in away from outside.
-    Exact match: a subdomain is another domain. A company with no domain
-    recorded (none of its users was ever an admin) is not checked.
+    Otherwise company content is one invite away from a personal address.
+    Exact match (a subdomain is another domain); a company with no domain
+    recorded is not checked.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -127,12 +117,9 @@ def assert_company_email(email: str, org_id: str) -> None:
 
 
 def invite_member(email: str, org_id: str) -> User:
-    """Create a member account for ``email``, scoped directly to ``org_id``.
+    """Create a member account for ``email`` in ``org_id`` (an explicit invite).
 
-    Replaces domain-based auto-join: an admin names the exact email to invite,
-    no domain matching involved. Doesn't check for an existing account —
-    callers (the invite endpoint) do that, mirroring signup's duplicate check,
-    so the "already exists" message stays consistent across both entry points.
+    Callers check for an existing account, so "already exists" reads the same as signup.
     """
     return create_user(email, org_id=org_id, role=ROLE_MEMBER)
 
@@ -148,7 +135,7 @@ def list_members(org_id: str) -> list[User]:
 
 
 def revoke_user_sessions(user_id: str, org_id: str) -> None:
-    """Invalidate all outstanding sessions for ``user_id`` in ``org_id`` (Phase 21)."""
+    """Invalidate all outstanding sessions for ``user_id`` in ``org_id``."""
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -216,11 +203,9 @@ def promote_to_admin(user_id: str, org_id: str) -> User:
 
 
 def demote_to_member(user_id: str, org_id: str) -> User:
-    """Demote an org admin to member.
+    """Demote an org admin to member; refuse the last admin.
 
-    Refuses when they are the last admin (same guard as ``remove_member``).
-    Revokes outstanding sessions so a privilege drop is immediate even for
-    callers that somehow still trusted a stale JWT role snapshot.
+    Revokes their sessions so the drop is immediate.
     """
     with get_connection() as conn:
         role, _email = _resolve_org_user(conn, user_id, org_id)
@@ -238,11 +223,10 @@ def demote_to_member(user_id: str, org_id: str) -> User:
 
 
 def _handle_sole_owned_workspaces(conn, user_id: str, org_id: str) -> None:
-    """Block remove when the target solely owns a space that still has others.
+    """Block removal when the target solely owns a space that has other members.
 
-    Spaces where they are the only member are deleted (would be empty after
-    cascade). Spaces with other members but no other owner must transfer
-    ownership first — see ``make_workspace_owner``.
+    Spaces where they are the only member are deleted; others need a new owner
+    first (``make_workspace_owner``).
     """
     sole_owned = conn.execute(
         """
@@ -278,17 +262,11 @@ def _handle_sole_owned_workspaces(conn, user_id: str, org_id: str) -> None:
 
 
 def remove_member(user_id: str, org_id: str, *, acting_user_id: str) -> None:
-    """Remove an invited member (or another admin) from ``org_id``.
+    """Remove a member (or another admin) from ``org_id``.
 
-    Guards:
-    - cannot remove yourself (use Sign out; transfer admin first via promote)
-    - cannot remove the last remaining admin
-    - cannot remove a sole workspace owner while other members remain
-    - target must belong to this org
-
-    Nulls ``oauth_connections.connected_by_user_id`` first (that FK has no
-    ON DELETE clause) so a user who once connected a source can still leave.
-    ``workspace_members`` cascades via ON DELETE CASCADE on ``users``.
+    Refuses removing yourself, the last admin, a sole owner of a shared space,
+    or someone outside this org. Nulls ``connected_by_user_id`` first (that FK
+    has no ON DELETE).
     """
     if user_id == acting_user_id:
         raise AuthError("You cannot remove your own account.")

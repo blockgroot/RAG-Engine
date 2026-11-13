@@ -1,13 +1,8 @@
-"""Sub-workspace CRUD + membership (Workspace-within-a-Workspace).
+"""Sub-workspace CRUD + membership.
 
-A sub-workspace always belongs to exactly one org (``org_id``); membership is
-this module's OWN boundary — separate from, and stricter than, org
-membership (every workspace member must already be a ``users`` row in the
-same org, but not every org member is in every workspace). Never trust a
-caller-supplied ``workspace_id`` without calling ``assert_member`` first —
-this mirrors how ``app/api/deps.py`` is the only place ``org_id`` enters a
-request; this module is the only place a ``workspace_id`` is validated
-against a user.
+A space belongs to one org; its members are a subset of that org's users.
+``assert_member`` is the only place a ``workspace_id`` is validated against a
+user: never trust one without it.
 """
 
 from __future__ import annotations
@@ -47,12 +42,9 @@ def create_workspace(org_id: str, name: str, created_by_user_id: str) -> str:
 def invite_member(workspace_id: str, org_id: str, inviter_user_id: str, invitee_email: str) -> None:
     """Add an existing org user (by email) to the workspace.
 
-    Requires the invitee to already be a ``users`` row with this SAME
-    ``org_id`` — this is what stops a sub-workspace from becoming a
-    side-channel around the org's Notion-enforced tenant boundary. Raises
-    ``NotFoundError`` if the email isn't a member of this org (never
-    auto-creates a user here — that stays magic-link/admin-invite's job, see
-    ``app/auth/users.py``).
+    The invitee must already be a user of this org, so a space never crosses
+    the tenant boundary. Raises ``NotFoundError`` otherwise; never creates a
+    user (that is invite's job).
     """
     with get_connection() as conn:
         user_row = conn.execute(
@@ -71,11 +63,8 @@ def invite_member(workspace_id: str, org_id: str, inviter_user_id: str, invitee_
 def assert_member(workspace_id: str, org_id: str, user_id: str) -> str:
     """Return the caller's role in this workspace, or raise ``AuthError``.
 
-    ALWAYS checks ``org_id`` too (not just ``workspace_id`` + ``user_id``) —
-    the workspace's own ``org_id`` must match the caller's session ``org_id``,
-    so a stale/forged ``workspace_id`` from a different org fails closed
-    instead of ever resolving. Call this before any read/write scoped to a
-    workspace.
+    Checks ``org_id`` too, so a forged id from another org fails closed. Call
+    before any read or write scoped to a workspace.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -106,11 +95,7 @@ def list_my_workspaces(org_id: str, user_id: str) -> list[WorkspaceInfo]:
 def get_workspace_name(org_id: str, workspace_id: str) -> str | None:
     """Display name for one workspace, or None if it is not in this org.
 
-    ``org_id`` is in the WHERE clause like everywhere else here, so a stale or
-    forged id from another tenant resolves to nothing rather than leaking a
-    name. Read-only and membership-free on purpose: callers use it to LABEL a
-    scope they have already authorized (a stored scheduler, an archived
-    report), not to reach into one.
+    No membership check: only labels a scope the caller already authorized.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -135,12 +120,8 @@ def list_workspace_members(workspace_id: str) -> list[dict]:
 def make_workspace_owner(
     workspace_id: str, org_id: str, acting_user_id: str, target_user_id: str
 ) -> None:
-    """Promote an existing workspace member to ``owner``.
-
-    Required so an org admin can remove a departing sole space-owner after
-    transferring ownership — without this, ``remove_workspace_member`` correctly blocks
-    and there is no in-product way to unblock. Allows multiple owners (additive
-    promote, not a transfer) so the departing owner can still be removed next.
+    """Promote an existing workspace member to ``owner`` (additive), so a
+    departing sole owner can then be removed.
     """
     acting_role = assert_member(workspace_id, org_id, acting_user_id)
     if acting_role != "owner":
@@ -174,10 +155,7 @@ def make_workspace_owner(
 def remove_workspace_member(workspace_id: str, org_id: str, acting_user_id: str, target_user_id: str) -> None:
     """Remove a member from a workspace (owner-only). Never touches the org account.
 
-    Refuses to remove the space's sole owner — the same "no in-product way to
-    unblock" gap ``make_workspace_owner``'s docstring already documents.
-    Promote another member to owner first (or delete the whole space, if that
-    was the actual intent).
+    Refuses the sole owner: promote another first, or delete the space.
     """
     acting_role = assert_member(workspace_id, org_id, acting_user_id)
     if acting_role != "owner":
@@ -209,12 +187,10 @@ def remove_workspace_member(workspace_id: str, org_id: str, acting_user_id: str,
 
 
 def delete_workspace(workspace_id: str, org_id: str, acting_user_id: str) -> None:
-    """Permanently delete a space and all of its scoped content.
+    """Permanently delete a space and all of its scoped content (owner-only).
 
-    Owner-only (caller must already have passed ``require_workspace_owner`` or
-    we re-check here). Always pairs ``workspace_id`` with ``org_id`` so a
-    forged id from another tenant cannot match. Cascades members, documents,
-    chunks, conversations, oauth_connections, and jobs via schema FKs.
+    Paired with ``org_id`` so another tenant's id cannot match; everything
+    scoped to it cascades.
     """
     role = assert_member(workspace_id, org_id, acting_user_id)
     if role != "owner":

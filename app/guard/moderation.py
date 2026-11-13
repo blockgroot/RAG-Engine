@@ -1,15 +1,10 @@
 """A last look at the finished answer: does it do what an injection wants?
 
-`gpt-oss-safeguard-20b` on Groq, a policy-following safety model (Llama Guard
-4 is not on Groq's list). The policy targets what a successful injection
-makes an answer DO -- ask for a credential, move money, send the reader to an
-outside "verifier", leak our own instructions -- plus the usual harm
-categories. Measured 8/8 on hand-written phishing, gift-card, verify-externally
-and prompt-leak answers against ordinary policy answers, median 0.23 s.
-
-Free tier: 1,000 requests/day and 8K tokens/min, so it is opt-in
-(`GUARD_ANSWER_CHECK`) and FAILS OPEN: a limit, a timeout or an odd reply
-leaves the answer as it was. Phase 1's structural rules do not depend on it.
+`gpt-oss-safeguard-20b` on Groq, with a policy for what a successful
+injection makes an answer DO (ask for a credential, move money, send the
+reader to an outside "verifier", leak our instructions) plus the usual
+harms. Opt-in (`GUARD_ANSWER_CHECK`) and FAILS OPEN: a limit, timeout or
+odd reply leaves the answer as it was.
 """
 
 from __future__ import annotations

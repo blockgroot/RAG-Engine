@@ -1,19 +1,14 @@
-"""What Agent mode says to the model: the loop's first message, its read
-tool, the reminders and answers it is given, and the check and rewrite
-prompts. Every fence of outside text is here, with the shared policy before
-it and the reminder after (``tests/test_untrusted_policy.py``)."""
+"""Everything Agent mode says to the model. Every fence of outside text is here,
+with the shared policy before it and the reminder after
+(``tests/test_untrusted_policy.py``)."""
 
 from __future__ import annotations
 
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
 
 
-#: Handbook's own read: the person's company content, found the way Ask finds
-#: it (``api.actions.ask_search``). A tool like any other, as Onyx's search
-#: is, so the model reads content when the request asks to draft from it; a
-#: field it had to remember to fill ("document_words") was left empty and the
-#: card said "Summarising the Q4 roadmap page." The words it reads for must be
-#: the asker's own.
+#: Handbook's own read tool: company content found the way Ask finds it
+#: (``api.actions.ask_search``), for the asker's own words.
 SEARCH = {"type": "function", "function": {
     "name": "handbook_read_company_content",
     "description": (
@@ -57,15 +52,13 @@ ALL_DONE = ("Before you finish: compare the QUESTION with what was done above. I
             "sentence.")
 
 
-#: Said when an action this request already did is drafted again, in the same
-#: words and to the same place.
+#: Said when an action already done is drafted again (same words, same place).
 DONE_BEFORE = ("Not drafted: the card above already did this part of the QUESTION (same words, same "
                "place) and the user approved it. Draft another only for a part not done yet, quoting "
                "that part's own words; otherwise reply in one short sentence.")
 
 
-#: Said when a card already decided is drafted again. GPT-OSS "fixed" a failed
-#: card with a priority nobody asked for, which is left out: the same card.
+#: Said when a card already decided is drafted again.
 DECIDED = ("The user already decided this card (its result is above): a setting the QUESTION did not "
            "ask for is left out, so this is the same card. Do not draft it again; if it failed, tell "
            "the user why in one sentence.")
@@ -81,10 +74,8 @@ def _fenced(text: str) -> str:
 
 
 def build_parts_prompt(question: str) -> str:
-    """Every part of a request, each labelled by what it is, as quotes of its
-    own words. Asked to leave the actions out, GPT-OSS listed them anyway (a
-    Linear card was "missing" the Linear issue it was); labelling every part
-    and keeping the content in code holds whatever the model includes."""
+    """Every part of a request, each labelled by what it is, as quotes of its words.
+    Labelling every part (rather than asking to omit actions) lets code keep the content."""
     return (
         "Split this request into its parts. Label each part with its kind:\n"
         "- \"action\": what to do (create, comment, post, send, close...)\n"
@@ -111,10 +102,8 @@ def build_parts_prompt(question: str) -> str:
 
 
 def build_cover_prompt(parts: list[str], label: str, form: str, question: str = "") -> str:
-    """Which of the request's content parts a drafted card lacks. The form may
-    hold document text, so it is fenced as data. The request itself is shown:
-    given the parts alone, GPT-OSS asked the Slack post for the sheet's rows
-    ("post that the tracker is ready"), and the post repeated them."""
+    """Which of the request's content parts a drafted card lacks. The form is fenced
+    as data; the whole request is shown so a part for another card is not demanded."""
     listed = "\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1))
     return (
         (f"An employee's request: {question}\n" if question else "")
@@ -149,10 +138,8 @@ _LATER = ("It exists only once the user approves that card, and you are given it
 
 
 def build_act_prompt(question: str, *, in_thread: bool = False, earlier: str = "") -> str:
-    """The loop's first message. What the model reads arrives as tool
-    answers, fenced as data (``_fenced``). ``in_thread``: asked inside a Slack
-    thread, whose messages are what "the above" or "this" means; without
-    saying so the model asked for text the thread already held."""
+    """The loop's first message. Reads arrive as fenced tool answers. ``in_thread``:
+    asked in a Slack thread, which is what "the above" or "this" means."""
     thread = (
         "- The QUESTION was asked inside a Slack thread. If it refers to anything it does "
         "not itself contain (\"the above\", \"this\"), that content is the thread: read it "

@@ -19,12 +19,8 @@ const STEPS = [
   ["You get the answer", "A short answer with a link to the document it came from. If your tools don’t hold the answer, it says so instead of guessing."],
 ];
 
-/**
- * Section 2: the same question asked of a search box and of Handbook. The
- * search side is not wrong, it is just work: five links and no answer. Both
- * sides play on one 8s loop: links pile up on the left while, on the right,
- * each tool is checked and then the answer appears. Reduced motion: still.
- */
+/** Section 2: one question to a search box (five links) and to Handbook (an
+ *  answer), on one 8s loop. Still for reduced motion. */
 export function AnswerFigure() {
   return (
     <div className="site-frame duo" aria-hidden>
@@ -101,11 +97,8 @@ const STEP_ICONS = [
   </svg>,
 ];
 
-/**
- * How one question moves through Handbook, as an open flow rather than four
- * cards: an icon per step on one line, with a light travelling along it and
- * each icon glowing as it is reached (CSS only; still for reduced motion).
- */
+/** How one question moves through Handbook: a light along one line of steps
+ *  (CSS only; still for reduced motion). */
 export function AskSteps() {
   return (
     <ol className="steps">

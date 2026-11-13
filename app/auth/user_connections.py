@@ -1,13 +1,9 @@
-"""A person's own token for acting in a tool (Act mode).
+"""A person's own token for acting in a tool (Agent mode).
 
-Separate from ``credentials.py`` on purpose. Those rows belong to a scope (the
-org or a space), were connected by an admin or owner, and serve reads and
-sync. These belong to one person, were granted by that person on the tool's
-own consent page, and serve only that person's approved writes -- so a write
-runs with their rights in the tool, and the tool shows them as its author.
-
-Keyed by ``(org_id, user_id, provider)`` in every query: one person's token is
-never returned for another, nor across orgs.
+Apart from ``credentials.py``, whose rows belong to a scope and serve reads.
+These belong to one person and serve only their approved writes, so the tool
+runs with their rights and shows them as author. Every query is keyed by
+``(org_id, user_id, provider)``.
 """
 
 from __future__ import annotations
@@ -22,10 +18,9 @@ from ..security import decrypt, encrypt
 
 @dataclass(frozen=True)
 class UserTokens:
-    """What a per-person OAuth exchange returns, before encryption.
+    """A per-person OAuth exchange, before encryption.
 
-    ``scopes`` are the GRANTED ones: Google lets people untick a scope, so
-    what was asked for is not proof of what was given.
+    ``scopes`` are the GRANTED ones: Google lets people untick a scope.
     """
 
     access_token: str
@@ -92,9 +87,8 @@ def save_user_connection(org_id: str, user_id: str, provider: str, tokens: UserT
 def get_user_token(org_id: str, user_id: str, provider: str) -> StoredUserToken:
     """This person's token for ``provider``.
 
-    Raises ``ConfigurationError`` when they never connected it and
-    ``OAuthReauthRequiredError`` when it stopped working -- two different
-    things to tell them ("Connect" vs "Reconnect").
+    Raises ``ConfigurationError`` if never connected ("Connect") and
+    ``OAuthReauthRequiredError`` if it stopped working ("Reconnect").
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -120,14 +114,12 @@ REFRESH_MARGIN = timedelta(minutes=5)
 
 
 def fresh_user_token(org_id: str, user_id: str, provider: str) -> str:
-    """A working access token for this person, refreshed first if it is near expiry.
+    """A working access token for this person, refreshed first if near expiry.
 
-    The refresh runs under a row lock and saves the new pair in the same
-    transaction: GitHub's refresh token is single-use ("that refresh token and
-    the old user access token will no longer work"), so two requests that both
-    refreshed would leave the connection broken. The second waits on the lock
-    and then finds a fresh token. A refresh that fails marks the connection
-    for reconnecting, and raises ``OAuthReauthRequiredError``.
+    The refresh holds a row lock and saves the new pair in the same transaction:
+    GitHub's refresh token is single-use, so two concurrent refreshes would break
+    the connection. A failed refresh flags reconnect and raises
+    ``OAuthReauthRequiredError``.
     """
     stored = get_user_token(org_id, user_id, provider)
     if stored.expires_at is None or stored.expires_at - REFRESH_MARGIN > datetime.now(timezone.utc):

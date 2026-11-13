@@ -1,13 +1,8 @@
 """Which charts a connector actually shows, and how.
 
-A ``Metric`` is a definition; a ``Panel`` is a *view* of one -- the same count
-grouped over time is a line and grouped by ``actor`` is a leaderboard. Keeping
-the two apart is what stopped the registry growing a second entry per
-grouping, each with its own definition to keep in agreement.
-
-Hardcoded and curated on purpose: nobody configures a dashboard. It exists
-because a connector exists, which is why there is no "create a dashboard" step
-anywhere in this feature.
+A ``Metric`` is a definition; a ``Panel`` is a view of one (over time: a line;
+by ``actor``: a leaderboard), so the registry needs one entry per count.
+Curated on purpose: dashboards exist because a connector does.
 """
 
 from __future__ import annotations
@@ -82,12 +77,8 @@ def for_provider(provider: str) -> tuple[Panel, ...]:
 
 
 def validate() -> None:
-    """Every panel must name a real metric, a dimension that metric allows, and
-    a chart we can draw.
-
-    Called by the test suite rather than at import: a broken panel should fail
-    a test run, not a deploy's health check.
-    """
+    """Every panel must name a real metric, a dimension it allows, and a chart
+    we can draw. Called by tests, so a broken panel fails a test, not a deploy."""
     for provider, panels in PANELS.items():
         for panel in panels:
             metric = registry.get(panel.metric)

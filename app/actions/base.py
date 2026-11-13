@@ -1,10 +1,8 @@
-"""The Act-mode action interface (docs/plans/2026-10-13-write-actions.md).
+"""The Act-mode action interface.
 
-The model never calls an API. It fills in ONE action's tool schema; code turns
-that into a frozen ``Proposal`` (``prepare``), the person approves it, and only
-then does ``execute`` run, with the person's own token, from the STORED row.
-That split is the whole safety story, so it is the interface: there is no
-method that both decides and writes.
+The model never calls an API: it fills ONE tool schema, ``prepare`` freezes it,
+the person approves, and only then ``execute`` runs from the STORED row with
+their token. No method both decides and writes.
 """
 
 from __future__ import annotations
@@ -19,12 +17,8 @@ from .draft import clean_body, clean_title
 
 @dataclass(frozen=True)
 class ActionTarget:
-    """Where a write goes, resolved by code, never typed by the model.
-
-    ``kind`` names what it is in the tool's terms ("linear_team",
-    "github_issue"), ``name`` is what the card shows, ``url`` an http(s) link
-    from the tool's own API.
-    """
+    """Where a write goes, resolved by code, never typed by the model. ``url`` comes
+    from the tool's own API."""
 
     kind: str
     external_id: str
@@ -38,12 +32,8 @@ class ActionTarget:
 
 @dataclass(frozen=True)
 class Source:
-    """A document the draft drew on, with who may read it.
-
-    Only hits the asker was already shown become sources, so ``title`` is never
-    something they could not see. ``viewers`` are lowercased emails, the same
-    entries as ``documents.doc_viewers``.
-    """
+    """A document the draft drew on, with who may read it (lowercased emails, as
+    ``documents.doc_viewers``). Only hits the asker was shown become sources."""
 
     document_id: str
     title: str
@@ -58,12 +48,8 @@ class Source:
 
 @dataclass(frozen=True)
 class Audience:
-    """Who will be able to read the write once it lands.
-
-    ``public`` is everyone in the company or the world. ``members`` is a full
-    list of emails, or ``None`` when the tool cannot say or the list was cut
-    short -- an unknown audience is never treated as a small one.
-    """
+    """Who will read the write once it lands. ``members`` is ``None`` when unknown
+    or cut short: an unknown audience is never treated as a small one."""
 
     public: bool = False
     members: tuple[str, ...] | None = None
@@ -81,9 +67,8 @@ class Proposal:
 
 
 def details(*pairs: tuple[str, str | None]) -> list[list[str]]:
-    """The settings a write carries besides its words ("Assignee", "Labels"),
-    as ``[label, value]`` rows for the card. Part of the stored payload, so
-    the fingerprint covers them; never editable (cancel and ask again)."""
+    """Settings a write carries besides its words, as ``[label, value]`` card rows.
+    In the stored payload (fingerprinted); never editable."""
     return [[label, value] for label, value in pairs if value]
 
 
@@ -99,11 +84,9 @@ class ActionResult:
 
 @dataclass(frozen=True)
 class ActionContext:
-    """Everything ``prepare`` may use, all of it from the session or code.
-
-    ``question`` is the asker's own words, the only text a target, a mention
-    or a link may come from. ``token`` is the asker's own write token, used by
-    ``prepare`` only to READ (resolve a target, list an audience).
+    """Everything ``prepare`` may use, all from the session or code. ``question`` is
+    the only text a target, mention or link may come from; ``token`` is used only
+    to READ.
     """
 
     org_id: str
@@ -116,21 +99,17 @@ class ActionContext:
     #: The asker's ``Viewer``: a target that is in our index must be one they
     #: may read, whatever the tool itself would allow.
     viewer: Any = None
-    #: Where the request was made: ``{"kind": "web" | "slack_dm" |
-    #: "slack_channel", "slack_user", "channel", "thread_ts"}``. From the
-    #: event or session, never from the model.
+    #: Where the request was made (web, slack_dm, slack_channel + ids); never from the model.
     surface: dict | None = None
-    #: What lookups (an admin-marked read of an MCP tool) returned while
-    #: drafting: the tool's own answer, so an id taken from it is grounded.
+    #: What lookups returned while drafting, so an id taken from one is grounded.
     lookups: str = ""
 
 
 class Action(ABC):
     """One kind of write in one tool.
 
-    ``tool`` is the JSON schema the model fills in; its target fields are
-    handles from a list code built for this request, never ids or URLs.
-    ``destructive`` actions (none in v1) will need a second confirmation.
+    ``tool`` is the JSON schema the model fills in. ``destructive`` is labelled and
+    its card says it cannot be undone (``mcp_store.destructive``, by name).
     """
 
     name: ClassVar[str]
@@ -156,15 +135,13 @@ class Action(ABC):
 
     def token_for(self, org_id: str, user_id: str, surface: str = "web",
                   payload: dict[str, Any] | None = None) -> str:
-        """The token this action writes with: the asker's own, refreshed.
-        ``surface`` is where it was asked (only Slack's bot replies differ);
-        ``payload`` is the stored draft, given at send time."""
+        """The asker's own write token, refreshed. ``surface``: where it was asked;
+        ``payload``: the stored draft."""
         from ..auth.user_connections import fresh_user_token
 
         return fresh_user_token(org_id, user_id, self.provider)
 
-    #: Payload fields the person may rewrite before approving: drafted words
-    #: only. Where it goes is never editable (cancel and ask again).
+    #: Payload fields the person may rewrite: drafted words only, never the target.
     editable_fields: ClassVar[tuple[str, ...]] = ("title", "body")
 
     def editable(self, payload: dict[str, Any]) -> dict[str, str]:
@@ -173,12 +150,9 @@ class Action(ABC):
 
     def edit(self, payload: dict[str, Any], fields: dict[str, Any], *,
              asked: str | None = None) -> dict[str, Any]:
-        """The stored payload with the edit applied, cleaned like a draft.
-
-        A person's own edit is their writing, so its links and @-mentions are
-        theirs (``asked`` None). A model's rewrite passes ``asked``: the words
-        that may supply links and mentions (the draft they saw and their
-        instruction), so a rewrite cannot add one. Everything else is kept."""
+        """The stored payload with the edit applied, cleaned like a draft. A person's
+        edit keeps its own links and mentions (``asked`` None); a model rewrite passes
+        ``asked`` so it cannot add any."""
         current = self.editable(payload)
         if not fields or set(fields) - set(current):
             raise ActionRejected(
@@ -206,8 +180,7 @@ class Action(ABC):
     ) -> ActionResult:
         """Send the stored write once, with the asker's token.
 
-        ``key`` is the ``actions`` row id: a tool that accepts a client id
-        (Linear) gets it, so a repeated send cannot create a second object.
-        Raises ``ActionOutcomeUnknown`` when the request was sent and no answer
-        came back, ``ActionError`` when the tool refused it.
+        ``key`` (the ``actions`` row id) goes to tools that accept a client id, so a
+        repeat cannot create a second object. Raises ``ActionOutcomeUnknown`` when sent
+        with no answer, ``ActionError`` when refused.
         """

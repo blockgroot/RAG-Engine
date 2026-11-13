@@ -1,16 +1,7 @@
-"""Uploaded file -> plain text. One implementation, deliberately.
+"""Uploaded file -> plain text. One implementation, so no base.py/factory.
 
-No ``base.py``/``factory.py`` here: CLAUDE.md §2 asks for that shape when a
-capability has (or will have) a second backend to abstract over, and text
-extraction has neither. There is one way to read a PDF in this image and one
-way to read a DOCX; an interface over a single implementation is the
-speculative abstraction that section explicitly forbids.
-
-Every extractor is BOUNDED and says when it stopped early. A truncated
-document that looks complete is the failure this codebase is arranged against
-(CLAUDE.md §2), and it is worse for an attachment than for an indexed source:
-the asker is looking at the file, so a silent half-read produces an answer they
-will believe and cannot check.
+Every extractor is bounded and says when it stopped early: a silent half-read
+gives an answer the asker will believe.
 """
 
 from __future__ import annotations
@@ -28,12 +19,8 @@ class AttachmentError(ProviderError):
     """An uploaded file could not be turned into text."""
 
 
-#: Extension -> canonical kind. Matched on the FILENAME, not the browser's
-#: content type: a browser routinely sends `application/octet-stream` for a
-#: .docx, and trusting that would reject a file the user can plainly see is a
-#: Word document. The extension is also attacker-controlled, but it only ever
-#: selects a parser -- every parser is bounded and none of them execute
-#: anything -- so the worst a wrong one can do is fail.
+#: Extension -> kind, by filename (browsers send octet-stream for .docx). It
+#: only picks a bounded, non-executing parser, so a wrong one just fails.
 _KINDS = {
     "pdf": "pdf",
     "docx": "docx",
@@ -96,9 +83,7 @@ def _extract_docx(data: bytes) -> tuple[str, bool]:
         raise AttachmentError("That Word file could not be read", cause=exc) from exc
 
     parts = [p.text for p in document.paragraphs if p.text.strip()]
-    # Tables carry the answer often enough in a real document (a rate card, a
-    # rota) that dropping them would make the feature look broken on exactly
-    # the files people upload to ask about numbers.
+    # Tables often hold the answer (a rate card, a rota).
     for table in document.tables:
         for row in table.rows:
             cells = [c.text.strip() for c in row.cells]
@@ -144,12 +129,9 @@ MAX_SHEETS = 10
 
 def xlsx_sheets(data: bytes, max_rows: int) -> tuple[list[tuple[str, list[list[str]], bool]], bool]:
     """``([(sheet name, rows, truncated)], more sheets than read)`` for an
-    .xlsx. Values, not formulas (``data_only``): a cached result is what the
-    person sees in Excel. Empty rows are skipped and trailing empty columns
-    trimmed; each sheet stops after ``max_rows`` rows and says so.
+    .xlsx: values, not formulas; empty rows skipped; ``max_rows`` per sheet.
 
-    The ONE reader of workbooks, so the text the model is shown and the rows
-    a chart adds up can never come from two different parsings of the file.
+    The one workbook reader, so prompt text and chart rows always agree.
     """
     from openpyxl import load_workbook
 
@@ -198,11 +180,8 @@ def extract_text(
     max_pdf_pages: int,
     max_csv_rows: int,
 ) -> tuple[str, bool]:
-    """``(text, truncated)`` for an uploaded file.
-
-    ``truncated`` is True when the file was longer than one of the bounds --
-    pages, rows or characters. The caller must surface it; see the schema note
-    on ``conversation_attachments.truncated``.
+    """``(text, truncated)`` for an uploaded file; the caller must surface
+    ``truncated`` (pages, rows or characters over a bound).
     """
     kind = kind_for(filename)
     if kind is None:
@@ -224,9 +203,7 @@ def extract_text(
 
     text = text.strip()
     if not text:
-        # The overwhelmingly common cause is a scanned PDF, and saying so is
-        # the difference between a user reaching for a different file and a
-        # user assuming the product is broken. No OCR in this image.
+        # Almost always a scanned PDF; say so. No OCR in this image.
         raise AttachmentError(
             f"No text could be read from {filename}. If it's a scan or an "
             "image-only PDF, there is no text layer to read."

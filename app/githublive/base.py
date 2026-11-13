@@ -1,24 +1,8 @@
-"""The live-GitHub-read contract (GitHub Integration Plan Phase 5).
+"""The live-GitHub-read contract: one org's authorized repos, always read live.
 
-A ``GitHubReader`` answers questions about one org's authorized repos — what
-does this repo say about itself, what did this commit do, what changed
-recently, and who raised, merged and reviewed which pull requests — always
-**live**, never from a stored copy.
-
-This gets a ``base.py`` for the usual reason (CLAUDE.md §3): there is a plausible
-second backend. GitHub's GraphQL API can fetch a commit and its files in a single
-round trip, which is attractive given latency is on the critical path here (risk
-T8), so keeping callers on an interface means that swap costs no call-site
-changes. It is *not* speculative abstraction over a single implementation the way
-an "RAG backend" contract would have been.
-
-Every return type is a frozen dataclass rather than a raw API dict, for the same
-reason ``SourceDocument`` exists in ``app/sources/base.py``: the shape the prompt
-sees is ours, so a GitHub response-format change can't silently reshape a prompt.
-Each type also carries an explicit truncation flag — a consumer must be able to
-tell "this is everything" from "this is the first N", because an answer composed
-from partial evidence while believing it complete is the failure mode that
-matters (risk T6).
+A ``base.py`` because a GraphQL backend is a plausible second implementation.
+Return types are frozen dataclasses (the prompt's shape is ours), each with a
+truncation flag: partial evidence taken as complete is the failure that matters.
 """
 
 from __future__ import annotations
@@ -64,8 +48,7 @@ class CommitDetail:
     files: tuple[CommitFile, ...] = ()
     additions: int = 0
     deletions: int = 0
-    # True when the commit changed more files than we're willing to describe, so
-    # the model can say "and N more" instead of implying it saw everything.
+    # More files changed than described: the model can say "and N more".
     files_truncated: bool = False
     total_files: int = 0
 
@@ -80,21 +63,14 @@ class CommitSummary:
     author: str | None
     date: datetime | None
     url: str
-    # The GitHub LOGIN when GitHub matched the commit to an account, else None
-    # -- `author` falls back to the git display name, which must never become
-    # an identity key (Second Brain: people are never merged by name).
+    # GitHub LOGIN when matched, else None; the git display name is never an identity key.
     author_login: str | None = None
 
 
 @dataclass(frozen=True)
 class PullRequest:
-    """One pull request, carrying the THREE distinct people involved.
-
-    ``author`` raised it, ``merged_by`` merged it, and reviewers come from
-    ``list_reviews``. Collapsing any two of them loses the reading that
-    matters: on most teams one person merges most pull requests, and that is
-    invisible if "actor" silently means "author" everywhere.
-    """
+    """One pull request, carrying the THREE distinct people: ``author``,
+    ``merged_by``, and reviewers (``list_reviews``). Collapsing them hides who merges."""
 
     repo: str
     number: int
@@ -106,22 +82,16 @@ class PullRequest:
     merged_at: datetime | None
     closed_at: datetime | None
     url: str
-    #: Label names and the branch it targets. Both ride the listing we already
-    #: fetch, so charts can group by them at no extra cost (activity_facts.attrs).
+    #: Label names and target branch, free in the listing, chartable (activity_facts.attrs).
     labels: tuple[str, ...] = ()
     base: str | None = None
-    #: Every SIMPLE field of the payload it was parsed from
-    #: (`insights.fields.simple_fields`), as sorted pairs so the dataclass
-    #: stays hashable. Kept for charts: a field nobody anticipated (milestone,
-    #: draft, requested reviewers; additions/changed files on a merged PR's
-    #: detail payload) is chartable without a code change.
+    #: Every SIMPLE field of the payload (`insights.fields.simple_fields`) as sorted
+    #: pairs (hashable), so any field is chartable without a code change.
     fields: tuple[tuple[str, object], ...] = ()
 
     @property
     def lead_time_seconds(self) -> float | None:
-        """Created to merged. ``None`` unless it actually merged -- an open or
-        abandoned pull request has no lead time, and treating "now" as its end
-        would make every stale branch look like a slow merge."""
+        """Created to merged. ``None`` unless merged: "now" would make every stale branch slow."""
         if not (self.created_at and self.merged_at):
             return None
         return (self.merged_at - self.created_at).total_seconds()
@@ -138,24 +108,15 @@ class Review:
     submitted_at: datetime | None
 
 
-#: A review event that states a position on the change, as opposed to one that
-#: merely leaves a comment. Used to pick which of a person's events represents
-#: their review.
+#: Review events that state a position (vs. a plain comment).
 VERDICT_STATES = ("APPROVED", "CHANGES_REQUESTED")
 
 
 def dedupe_reviews(reviews) -> list[Review]:
-    """One review per person, keeping the event that is their actual verdict.
+    """One review per person, keeping their actual verdict.
 
-    GitHub returns reviews OLDEST-first, so keeping the first event stores the
-    wrong one on the most ordinary sequence there is: comment, then approve
-    would be recorded as COMMENTED, and "who approved #7?" would miss the
-    person who did. A verdict therefore beats a comment, and between two
-    events of equal weight the later one wins.
-
-    Deduplicated at all because someone who comments four times on one pull
-    request reviewed one pull request -- counting events would make a chatty
-    reviewer outrank a thorough one.
+    Reviews come OLDEST-first: a verdict beats a comment, and between equals the
+    later wins. One per person so a chatty reviewer does not outrank a thorough one.
     """
     best: dict[str, Review] = {}
     for review in reviews or ():
@@ -178,9 +139,7 @@ class Branch:
 
     repo: str
     name: str
-    #: True when GitHub reports branch protection. Reported rather than
-    #: inferred: "is main protected?" is a real question and a guess is worse
-    #: than silence.
+    #: GitHub-reported branch protection; never inferred.
     protected: bool = False
     #: The tip commit's own SHA, so a follow-up can fetch it.
     sha: str | None = None
@@ -188,13 +147,7 @@ class Branch:
 
 @dataclass(frozen=True)
 class PullRequestPage:
-    """Pull requests plus whether we saw all of them.
-
-    ``truncated`` exists for the same reason every other type here carries a
-    flag: a chart built from the first N while believing it complete is the
-    failure that matters. A capped window only ever drops the OLDEST end,
-    because the listing is sorted newest-first.
-    """
+    """Pull requests plus whether we saw all of them. A cap drops the OLDEST end."""
 
     items: tuple[PullRequest, ...] = ()
     truncated: bool = False
@@ -203,20 +156,14 @@ class PullRequestPage:
 class GitHubReader(ABC):
     """Read-only, bounded access to one org's authorized GitHub repositories.
 
-    Implementations MUST validate every ``repo`` argument against the
-    connection's authorized scope (``repos.resolve_repo``) *before* issuing any
-    request, and MUST raise ``core.exceptions.SourceError`` on any failure so the
-    agent can degrade to its fixed fallback rather than crash.
+    Implementations MUST validate every ``repo`` with ``repos.resolve_repo`` before
+    any request, and raise ``SourceError`` on any failure.
     """
 
     @abstractmethod
     def list_repos(self) -> list[RepoRef]:
-        """Return the repos this connection may read (name, description, topics).
-
-        Answered from stored scope, not a live call — the list changes only when
-        an admin edits the installation. This is what lets the model choose a
-        repo without any embeddings.
-        """
+        """The repos this connection may read (name, description, topics), from stored
+        scope, not a live call."""
         raise NotImplementedError
 
     @abstractmethod
@@ -252,46 +199,25 @@ class GitHubReader(ABC):
     ) -> PullRequestPage:
         """List pull requests, newest first, bounded and marking truncation.
 
-        ``since`` filters on ``updated_at`` because that is the only date
-        GitHub can sort on -- so a very old pull request touched yesterday is
-        included, which is correct for "what moved recently" and is why the
-        caller, not this method, decides which date a chart buckets on.
-
-        ``state`` MUST be applied to the REQUEST, never by filtering the
-        result. Filtering a newest-first window of 20 for ``open`` returns an
-        empty list on any busy repo -- the newest 20 are usually all merged --
-        and the caller then reports "no open pull requests" while several are
-        open. ``"merged"`` has no GitHub equivalent: ask for ``closed`` and
-        drop anything without a ``merged_at``.
+        ``since`` filters on ``updated_at`` (the only sortable date); the caller picks
+        which date a chart buckets on. ``state`` MUST go on the REQUEST, never filter
+        the result (a newest-20 window has no open ones). ``"merged"`` = ``closed``
+        with a ``merged_at``.
         """
         raise NotImplementedError
 
     @abstractmethod
     def get_pull_request(self, repo: str, pull_number: int) -> PullRequest | None:
-        """One pull request in full.
-
-        Exists for exactly one field: ``merged_by`` is absent from the LIST
-        payload, so the listing alone cannot answer "who merged it" and a
-        chart of mergers built from it is empty. One call per pull request, so
-        callers must bound the set first.
-        """
+        """One pull request in full, for ``merged_by`` (absent from the LIST payload).
+        One call each: callers bound the set."""
         raise NotImplementedError
 
     @abstractmethod
     def list_branches(self, repo: str, *, limit: int = 50) -> list[Branch]:
-        """Branches in ``repo``, bounded.
-
-        A long-lived repo can have hundreds of stale branches, so this is
-        capped like every other walk here -- a prompt full of dead branch names
-        answers nothing.
-        """
+        """Branches in ``repo``, bounded."""
         raise NotImplementedError
 
     @abstractmethod
     def list_reviews(self, repo: str, pull_number: int) -> list[Review]:
-        """Reviews on one pull request.
-
-        One call PER pull request, which is why the caller must bound the pull
-        request set first. There is no bulk reviews endpoint.
-        """
+        """Reviews on one pull request: one call each (no bulk endpoint), so bound the set."""
         raise NotImplementedError

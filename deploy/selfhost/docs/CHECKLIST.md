@@ -5,7 +5,7 @@ Handbook is installed and you can sign in as its admin. This checklist takes you
 ## 1. Check the installation
 
 - [ ] `https://<your domain>` opens with a valid certificate, and you can sign in.
-- [ ] `docker compose ps` shows all six services running, and `api` as `healthy`.
+- [ ] `docker compose ps` shows all seven services running, and `api` as `healthy`.
 - [ ] A sign-in link reached your inbox, not spam. If it went to spam, ask your mail team to allow the sending address.
 - [ ] A daily backup is scheduled, and the backups are copied off the server ([BACKUP.md](BACKUP.md)).
 - [ ] A copy of `.env` is kept somewhere safe, apart from the backups.
@@ -37,14 +37,15 @@ Only connect what people should be able to ask about. Handbook follows each tool
 
 ## 5. Choose your settings
 
-- [ ] **AI model:** check the model Handbook answers with (**Model** in the sidebar). It uses the model and key set in `.env` (`LLM_API_KEY`, and `LLM_ADAPTER`/`LLM_MODEL` for a provider other than Claude).
+- [ ] **AI model:** Handbook answers with the model and key set in `.env` (`LLM_API_KEY`, and `LLM_ADAPTER`/`LLM_MODEL` for a provider other than Claude). With a Claude key, people can also pick Claude Sonnet 5.5 or Claude Haiku 5.5 in the chat. **Model** in the sidebar lets you connect another model for your team's chat answers; this is optional.
+- [ ] **Limits on AI use:** check the daily dollar and per-minute token limits fit your plan with your AI provider ([INSTALL.md](INSTALL.md), "Limits on AI use"). They are on by default.
 - [ ] **Agent mode** (Handbook carrying out actions in your tools, such as posting a Slack message or creating an issue): off until you turn it on. Every tool action starts off, and each one you turn on is either read-only or needs the person to approve a card before it runs (**Actions** in the sidebar). Leave it off if you are not ready for it.
 
 ## 6. Invite your colleagues
 
 There is no public sign-up page: people join when an admin invites them.
 
-- [ ] Invite colleagues from **People**. Each gets an email with a sign-in link. Start with a small group if you prefer.
+- [ ] Invite colleagues from **People**. Each gets an email with a sign-in link. Start with a small group if you prefer. Only addresses at your company's email domain (the first admin's) can be invited.
 - [ ] Make at least one more person an admin, so you are not the only one who can manage Handbook.
 - [ ] Ask everyone with access to private GitHub repositories, admins included, to link their GitHub account (**Account → Link GitHub**). Until they do, Handbook answers them "No answer found" about those repositories.
 - [ ] Invite people with the same email they use in Slack, so the Slack bot recognises them.

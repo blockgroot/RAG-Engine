@@ -1,9 +1,5 @@
-/**
- * Left half of sign-in and sign-up. These two pages are where someone decides
- * whether to bother, so the copy says what Handbook does today, and a short
- * row of steps says what happens next. Kept compact so this column is about
- * as tall as the form beside it.
- */
+/** Left half of sign-in and sign-up: what Handbook does and what happens
+ *  next, about as tall as the form. */
 export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signup" }) {
   const isSignup = variant === "signup";
 

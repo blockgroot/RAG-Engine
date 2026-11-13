@@ -1,6 +1,6 @@
 """Every simple field a source returns, kept and DISCOVERED for charts.
 
-Step 2 of docs/plans/2026-09-30-open-ended-charts.md. It first kept six
+Step 2 of git history: docs/plans/2026-09-30-open-ended-charts.md. It first kept six
 hand-picked fields, which left the original problem in place: a field nobody
 listed (a PR's milestone, a Linear cycle) was dropped at sync and could never
 be charted. Now the writers keep every SIMPLE field (`insights/fields.py`) and

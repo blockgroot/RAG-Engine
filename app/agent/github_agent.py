@@ -1,36 +1,14 @@
 """The GitHub agent: answers repository questions from live API reads only.
 
-This is the second real backend behind the ``Agent`` contract, and the one
-``app/agent/base.py`` has been predicting since Phase 7 ("a future GitHub agent
-will implement the *same* contract"). It is also the **first agent that is not a
-RAG agent**, which is why it does not extend ``RagPipelineAgent`` the way
-``PolicyAgent`` and ``WorkspaceAgent`` do: with nothing embedded there is no
-``RagPipeline`` to adapt, so the "thin adapter over a pipeline" shape simply
-doesn't apply (plan decision D8, revision 1).
+Not a RAG agent (nothing is embedded), so grounding is structural:
 
-**How grounding is guaranteed without a confidence gate.** The RAG agents lean on
-a cosine threshold to decide whether evidence is good enough to answer from.
-There is no similarity score here, so the guarantee has to be structural instead,
-and it is enforced in exactly two places:
+1. An answer is only ever composed from tool output. No tool, a failed
+   tool or unparseable arguments return the fixed fallback.
+2. ``build_github_answer_prompt`` forbids filling in from world knowledge.
 
-1. An answer is *only ever* composed from tool output. If the model requests no
-   tool, or the tool fails, or the arguments are unparseable, the fixed fallback
-   is returned — the agent never asks the model to answer from its own knowledge.
-   A plausible-sounding invention about a customer's codebase is worse than "I
-   don't know", because the user has no way to tell the difference.
-2. ``build_github_answer_prompt`` forbids supplementing the evidence from world
-   knowledge of similarly-named open-source projects.
-
-**One tool round, not a loop.** Same decision as the Phase 5 web-search
-fallback: one tool-selection call, one bounded read, one answer call. A
-multi-step agent loop would multiply latency (already on the critical path with
-no cache behind it — plan risk T8) and make the cost of a single question
-unbounded.
-
-**Tool output is untrusted.** A README or commit message can be written by any
-repository contributor, which is a materially wider authorship surface than a
-curated HR policy document. Evidence is fenced and scrubbed identically to
-retrieved chunks (Phase 16) before it reaches a prompt.
+One tool round, not a loop, so latency and cost stay bounded. Tool output
+is untrusted (any contributor writes a README) and is fenced and scrubbed
+like retrieved chunks.
 """
 
 from __future__ import annotations
@@ -74,9 +52,7 @@ logger = logging.getLogger(__name__)
 
 ReaderBuilder = Callable[..., GitHubReader]
 
-# Parses the "MODE: A|B|C\n\n<answer>" tag ``build_github_answer_prompt`` asks
-# for. Deliberately the same shape as ``RagPipeline``'s ``_MODE_TAG_RE`` rather
-# than a second convention.
+# Parses the "MODE: A|B|C\n\n<answer>" tag, same shape as ``RagPipeline``'s.
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
 
@@ -116,11 +92,8 @@ def _citations_are_about_only(citations: list[Citation]) -> bool:
 
 
 def _split_mode_tag(raw: str) -> tuple[str | None, str]:
-    """Split a declared mode off the front of a generation, if present.
-
-    An untagged answer returns ``(None, raw)`` and is treated as sufficient — see
-    ``GitHubAgent._compose`` for why failing open is the right direction here.
-    """
+    """Split a declared mode off a generation. Untagged returns ``(None, raw)``,
+    treated as sufficient (see ``_compose``)."""
     match = _MODE_TAG_RE.match(raw or "")
     if not match:
         return None, (raw or "").strip()
@@ -139,11 +112,8 @@ class GitHubAgent(Agent):
     ) -> None:
         """Build the agent.
 
-        ``reader_builder`` is injected rather than imported so the agent stays
-        pure and testable with a fake reader — the same reason ``RagPipeline`` is
-        injected into ``PolicyAgent``. It is a *builder* (not a reader) because a
-        reader is tenant-scoped: it must be constructed per request from the
-        ``org_id`` being served, so one agent instance can never hold onto one
+        ``reader_builder`` is injected for testability, and is a builder because a
+        reader is tenant-scoped: built per request so the agent never holds one
         tenant's credentials.
         """
         self._llm = llm
@@ -161,15 +131,14 @@ class GitHubAgent(Agent):
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
     ) -> AgentResponse:
-        # A tenant with no GitHub connection costs zero LLM calls: there is
-        # nothing a model could usefully decide without repos to read.
+        # No GitHub connection costs zero LLM calls.
         try:
             reader = self._build_reader(org_id, workspace_id)
         except (ConfigurationError, ProviderError):
             return self._fallback_response()
 
-        # The installation token reads every granted repository; this narrows
-        # it to the ones the ASKER can open on GitHub (`githublive.access`).
+        # The installation token reads every granted repo; narrow to those the ASKER
+        # can open (`githublive.access`).
         reader = restrict(reader, org_id, viewer)
         try:
             repos = reader.list_repos()
@@ -197,16 +166,10 @@ class GitHubAgent(Agent):
             return self._fallback_response()
         mode, answer = composed
 
-        # Mode C = nothing relevant. Mode B = partial but useful — yet for a
-        # stock-template README the model often picks B with stiff "evidence
-        # establishes…" copy instead of C, which used to skip recovery. For
-        # get_readme questions, try one supplementary commit fetch on B or C;
-        # if that fails, keep a Mode B answer (never invent), or fall back on C.
-        #
-        # Also recover on Mode A when the *only* grounding is catalog `#about`
-        # metadata (README 404). A one-line GitHub description is true but thin;
-        # recent commit subjects usually let us write a fuller, still-grounded
-        # overview without inventing purpose.
+        # Mode C = nothing relevant, B = partial. For get_readme questions try one
+        # supplementary commit fetch on B or C (a template README is often labelled
+        # B); if it fails keep B, fall back on C. Also on A when the only grounding
+        # is catalog `#about` metadata, which is true but thin.
         thin_about_only = mode == "A" and _citations_are_about_only(citations)
         if (
             self._settings.evidence_recovery_enabled
@@ -258,22 +221,15 @@ class GitHubAgent(Agent):
     ) -> AgentResponse | None:
         """ONE supplementary evidence round after a thin Mode B/C answer.
 
-        The motivating case, seen live: a "what does this repo do" question fetched
-        a README that turned out to be an unmodified project template. The model
-        often labels that Mode B (partial) rather than Mode C, so recovery must
-        run for both. Recent commit *subjects* describe such a project well.
-
-        Bounded exactly like ``RECOVERY_ENABLED`` on the RAG side: at most one
-        extra round, and if it yields no genuinely new evidence we do **not** burn
-        a second generation re-reading the same text. Returns ``None`` when
-        recovery couldn't help, leaving the caller to fall back.
+        Recent commit subjects describe a project whose README is a template. At
+        most one extra round, and no second generation without new evidence.
+        ``None`` when it could not help.
         """
         name, arguments = decision
         repo = arguments.get("repo")
         if not isinstance(repo, str) or not repo:
             return None
-        # Only the repo-overview path benefits: a commit lookup that found nothing
-        # relevant isn't improved by listing more commits.
+        # Only the repo-overview path benefits from more commits.
         if name != "get_readme":
             return None
 
@@ -301,7 +257,7 @@ class GitHubAgent(Agent):
             return None
         mode, answer = composed
         if mode == "C":
-            # Honest second look, still nothing. Don't dress it up.
+            # Second look, still nothing: don't dress it up.
             return None
 
         recovered_citations = list(citations) + list(commit_citations)
@@ -328,12 +284,8 @@ class GitHubAgent(Agent):
     ) -> tuple[Iterator[str], AgentResponse]:
         """Like ``answer``, but the text arrives as a chunk iterator.
 
-        Chunks an already-decided answer, for the same reason
-        ``RagPipeline.answer_stream`` does (Phase 13a): the tool decision can
-        still resolve to the fixed fallback *after* the first LLM call, so
-        streaming raw tokens could leak text that gets discarded. Not part of the
-        abstract ``Agent`` contract — it exists so ``app/api/chat.py`` can treat
-        every agent identically at the transport layer.
+        Chunks an already-decided answer: the tool decision can still resolve to
+        the fallback, so raw tokens could leak discarded text.
         """
         result = self.answer(
             question,
@@ -355,13 +307,10 @@ class GitHubAgent(Agent):
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
     ) -> tuple[str, str, bool, str | None] | None:
-        """What ``answer`` reads live, without writing an answer: for a caller
-        that drafts from it (Act). The same repos the asker can open, the same
-        one-tool decision and the same bounded read.
+        """What ``answer`` reads live, without writing an answer (for Act).
 
-        ``(repo, evidence, public, url)``, where ``public`` is True only when
-        GitHub says the repository is public (unknown counts as private, as in
-        ``githublive.access``). ``None`` when there is nothing to read.
+        ``(repo, evidence, public, url)``; ``public`` is True only when GitHub says
+        so (unknown counts as private). ``None`` when there is nothing to read.
         """
         try:
             reader = restrict(self._build_reader(org_id, workspace_id), org_id, viewer)
@@ -384,11 +333,7 @@ class GitHubAgent(Agent):
         return (ref.full_name if ref else repo), block, bool(ref and ref.private is False), url
 
     def _fallback_response(self) -> AgentResponse:
-        """The single place a GitHub refusal is constructed.
-
-        ``SOURCE_NONE`` matches how the RAG agents label a refusal, so callers
-        keep branching on the same values they already handle.
-        """
+        """The single place a GitHub refusal is built (``SOURCE_NONE``, like RAG)."""
         return AgentResponse(
             answer=self._fallback, grounded=False, source=SOURCE_NONE, citations=[]
         )
@@ -397,13 +342,9 @@ class GitHubAgent(Agent):
         """One call: which tool, with which arguments? ``None`` means "no tool"."""
         prompt = build_github_decision_prompt(question, format_repo_catalog(repos))
         try:
-            # Pinned to the configured model. Two reasons: choosing a tool is
-            # machinery, not an answer; and this agent grounds STRUCTURALLY —
-            # no tool call returns the fixed fallback — so a member picking a
-            # model with unreliable function calling would silently turn every
-            # GitHub question into the fallback, which reads as a broken
-            # product rather than a bad model choice. The composed answer
-            # (_compose) still follows their pick, because that is the chat.
+            # Pinned to the configured model: choosing a tool is machinery, and an
+            # unreliable tool-caller would turn every question into the fallback. The
+            # composed answer (_compose) still follows the member's pick.
             with default_model_only():
                 result = self._llm.generate_with_tools(
                     [{"role": "user", "content": prompt}],
@@ -435,15 +376,9 @@ class GitHubAgent(Agent):
     ) -> tuple[str, list[Citation]] | None:
         """Execute exactly one read. Any failure returns ``None`` (-> fallback).
 
-        ``SourceError`` covers both a genuine GitHub failure and a **refused
-        repo** (``resolve_repo`` raises it). Refused repos still degrade to the
-        fixed fallback so we never confirm whether a private name exists.
-
-        One deliberate exception: ``get_readme`` often 404s when a repo simply
-        has no README (common on personal/learning repos). If that repo is in
-        the installation's own catalog and carries a description/topics, those
-        are enough to ground a short "what is this repo" answer — they were
-        stored for exactly that purpose when nothing is embedded.
+        A refused repo also degrades to the fallback, so a private name's
+        existence is never confirmed. Exception: a README 404 on a catalogued repo
+        is grounded on its stored description/topics.
         """
         name, arguments = decision
         repo = arguments.get("repo")
@@ -476,8 +411,8 @@ class GitHubAgent(Agent):
                 page = reader.list_pull_requests(
                     repo,
                     limit=int(limit) if isinstance(limit, (int, float)) else 20,
-                    # On the request. Filtering a newest-first window here
-                    # returns nothing on a busy repo.
+                    # Filtered on the request: filtering a newest-first window finds nothing on
+                    # a busy repo.
                     state=state if isinstance(state, str) and state else "all",
                 )
                 return self._format_pull_requests(
@@ -505,20 +440,15 @@ class GitHubAgent(Agent):
                     return meta
             return None
 
-        # An unrecognized tool name (a hallucinated function) is not an error to
-        # surface — just no evidence.
+        # A hallucinated tool name is just no evidence.
         return None
 
     @staticmethod
     def _format_repo_metadata(
         repo: str, known_repos: list
     ) -> tuple[str, list[Citation]] | None:
-        """Ground a README miss on the installation catalog, if the repo is listed.
-
-        Matching is against the catalog only — never against GitHub world
-        knowledge — so a coaxed foreign name that isn't in ``known_repos`` still
-        yields ``None`` and the fixed fallback.
-        """
+        """Ground a README miss on the installation catalog only, so a coaxed
+        foreign name still falls back."""
         candidate = (repo or "").strip().lower()
         if not candidate:
             return None
@@ -551,10 +481,8 @@ class GitHubAgent(Agent):
             lines.append(f"Description: {description}")
         if topics:
             lines.append("Topics / tech tags: " + ", ".join(topics))
-        # No "guidance for the answer" line here: this block is fenced as
-        # UNTRUSTED evidence, and a trusted instruction inside the fence teaches
-        # the model that instructions there are legitimate. The answer prompt's
-        # own rules already cover catalog-only evidence.
+        # No guidance line here: this block is UNTRUSTED evidence, and a trusted
+        # instruction inside the fence teaches the model to obey the fence.
         block = "\n".join(lines)
         about_body = description or ("Topics: " + ", ".join(topics))
         return block, [
@@ -569,11 +497,8 @@ class GitHubAgent(Agent):
     def _format_readme(
         cls, readme: RepoReadme, *, known_repos: list | None = None
     ) -> tuple[str, list[Citation]]:
-        """README plus installation catalog description/topics when available.
-
-        A stock template README alone is often useless for "what does this do?",
-        while the org's stored description usually is not — include both.
-        """
+        """README plus the catalog's description/topics (a template README alone
+        says little)."""
         header = f"README of {readme.repo}"
         if readme.truncated:
             header += " (truncated — only the beginning is shown)"
@@ -624,13 +549,8 @@ class GitHubAgent(Agent):
     def _format_pull_requests(
         page, *, state: str | None = None
     ) -> tuple[str, list[Citation]] | None:
-        """Render pull requests, keeping the three people distinct.
-
-        Who raised it, who merged it and who reviewed it are different claims,
-        so they are separate fields here for the same reason they are separate
-        `activity_facts` kinds -- the model must not be able to collapse them
-        into "ada did 12 things".
-        """
+        """Render pull requests with author, merger and reviewers as separate
+        fields, so the model cannot merge them into one count."""
         items = list(getattr(page, "items", ()) or ())
         wanted = (state or "all").lower()
         if wanted == "open":
@@ -638,8 +558,7 @@ class GitHubAgent(Agent):
         elif wanted == "merged":
             items = [p for p in items if p.state == "merged"]
         if not items:
-            # Genuinely no evidence. Falling back beats asking the model to
-            # narrate an empty list.
+            # No evidence: fall back rather than narrate an empty list.
             return None
 
         repo = items[0].repo
@@ -649,11 +568,8 @@ class GitHubAgent(Agent):
             bits = [f"raised {raised} by {pull.author or 'unknown'}"]
             if pull.state == "merged":
                 merged = pull.merged_at.date().isoformat() if pull.merged_at else "unknown date"
-                # The merger is OMITTED when we do not have it, never rendered
-                # as "unknown". GitHub leaves `merged_by` out of the LIST
-                # payload entirely, so "by unknown" would appear on almost
-                # every merged pull request and read as a claim about the
-                # merger rather than a gap in what we read.
+                # The merger is OMITTED when unknown: GitHub leaves `merged_by` out of
+                # listings, so "by unknown" would read as a claim.
                 bits.append(
                     f"merged {merged} by {pull.merged_by}" if pull.merged_by
                     else f"merged {merged}"
@@ -663,9 +579,7 @@ class GitHubAgent(Agent):
             lines.append(f"- #{pull.number} {pull.title} ({'; '.join(bits)})")
 
         if getattr(page, "truncated", False):
-            # A list built from the newest N while looking complete is the
-            # failure that matters, so the model is told rather than trusted to
-            # hedge.
+            # A newest-N list looking complete is the failure that matters: tell the model.
             lines.append(
                 "(Only the most recent pull requests were read; there may be more.)"
             )
@@ -680,24 +594,17 @@ class GitHubAgent(Agent):
     def _format_reviews(
         repo: str, pull_number: int, reviews: list
     ) -> tuple[str, list[Citation]] | None:
-        """Who reviewed one pull request, deduplicated per person.
-
-        Someone who comments four times reviewed one pull request; listing
-        every event would make a chatty reviewer look like four.
-        """
+        """Who reviewed one pull request, one entry per person."""
         if not reviews:
-            # An unreviewed pull request is a real, useful answer -- unlike an
-            # empty commit list, "nobody has reviewed it" is the information
-            # someone asking was after, so this does NOT fall back.
+            # "Nobody has reviewed it" is a real answer, so this does NOT fall back.
             return (
                 f"Pull request #{pull_number} in {repo} has no reviews yet.",
                 [Citation(content="no reviews", reference=f"{repo}#{pull_number}",
                           url=f"https://github.com/{repo}/pull/{pull_number}")],
             )
 
-        # Keeps each person's VERDICT, not their first event: GitHub returns
-        # reviews oldest-first, so "commented, then approved" stored as
-        # COMMENTED would make "who approved this?" miss the approver.
+        # Keep each person's latest VERDICT: reviews come oldest-first, and
+        # "commented, then approved" must count as approved.
         seen: dict[str, str] = {
             review.reviewer: (getattr(review, "state", "") or "reviewed")
             for review in dedupe_reviews(reviews)
@@ -734,8 +641,7 @@ class GitHubAgent(Agent):
         commits: list[CommitSummary],
     ) -> tuple[str, list[Citation]] | None:
         if not commits:
-            # No commits is genuinely no evidence, so fall back rather than ask
-            # the model to narrate an empty list.
+            # No commits: fall back rather than narrate an empty list.
             return None
         repo = commits[0].repo
         lines = [f"Recent commits in {repo}:"]
@@ -752,21 +658,15 @@ class GitHubAgent(Agent):
         return "\n".join(lines), citations
 
 
-#: A ceiling on detail CALLS, not on the size of the list. Bounding by list
-#: size instead meant the default browse of 20 was skipped entirely, so Ask
-#: could never name a merger -- the one question the field exists for. The
-#: listing is newest-first, so the budget is spent on the most recent merges,
-#: which is where a question about "who merged this" almost always points.
+#: A ceiling on detail CALLS, not list size, spent on the newest merges.
 _MERGER_DETAIL_CALLS = 5
 
 
 def _with_mergers(reader, page):
     """Fill ``merged_by`` on the newest merged pull requests in a list.
 
-    GitHub returns ``merged_by`` only from the single-pull-request endpoint, so
-    a listing can never say who merged anything. Rather than answer "merged by
-    unknown", the first few are enriched one call at a time and the rest simply
-    omit the merger -- an interactive path must not pay twenty round trips.
+    Only the single-PR endpoint returns it, so the first few are enriched one
+    call each and the rest omit the merger.
     """
     items = list(getattr(page, "items", ()) or ())
     detail = getattr(reader, "get_pull_request", None)
@@ -789,20 +689,15 @@ def _with_mergers(reader, page):
     return type(page)(items=tuple(filled), truncated=getattr(page, "truncated", False))
 
 
-#: The window a title match searches. Newest-first, so a question about a
-#: recent pull request resolves and an ancient one falls back rather than
-#: paging through a repo's history.
+#: The window a title match searches (newest first; old PRs fall back).
 _PULL_MATCH_LIMIT = 30
 
 
 def _resolve_pull_number(reader, repo: str, arguments: dict) -> int | None:
     """The pull request a review question is about, by number or by name.
 
-    Reviews need a number, but a question rarely has one -- "who reviewed the
-    auth PR?" does not. Without this the tool exists and is unreachable,
-    because the agent runs exactly ONE tool round and never loops, so the model
-    cannot list pull requests and then ask about one. Resolving the name here
-    keeps that single round: two bounded reads inside one tool call.
+    The agent runs ONE tool round, so the name is resolved here: two bounded
+    reads inside one tool call.
     """
     number = arguments.get("pull_number")
     if isinstance(number, (int, float)) and int(number) > 0:
@@ -825,8 +720,7 @@ def _resolve_pull_number(reader, repo: str, arguments: dict) -> int | None:
     for pull in getattr(page, "items", ()) or ():
         title = set(re.findall(r"[a-z0-9]+", (pull.title or "").lower()))
         score = len(words & title)
-        # Strictly greater, so two equally good titles resolve to NEITHER --
-        # answering about the wrong pull request is worse than falling back.
+        # Strictly greater: two equal titles resolve to neither.
         if score > best_score:
             best, best_score = pull, score
         elif score == best_score and score > 0 and pull is not best:

@@ -1,12 +1,9 @@
 """Which actions are switched on, and whether a person may send another write.
 
-Act itself is off until an org admin allows it for the company (``act_on``);
-then each action is off unless an admin switched it on. With Act on, it is on
-in every space too, and a space's owner may switch it OFF for their space. A
-space only narrows what the company allows: a space owner is an ordinary member of the org, and letting
-them turn on a write the org's admins left off would hand them a decision
-that is not theirs. Company-wide use (the chat outside a space, Slack DMs)
-follows the company switch alone.
+Act is off until an org admin allows it (``act_on``). In a space it is on
+unless the owner switches it off; a space only narrows (an owner is an ordinary
+member and cannot turn on what admins left off). Company-wide use follows the
+company switch alone.
 """
 
 from __future__ import annotations
@@ -17,9 +14,8 @@ from ..config.settings import ActionsSettings
 from ..db.connection import get_connection
 from . import store
 
-#: The company-wide "Allow Act" switch, stored as an ``action_policies`` row.
-#: In a space, a row with this name and that ``workspace_id`` is the owner's
-#: own switch for the space.
+#: The company-wide "Allow Act" switch (an ``action_policies`` row); with a
+#: ``workspace_id`` it is that space owner's switch.
 ACT_KEY = "act"
 
 
@@ -39,8 +35,7 @@ def act_on(org_id: str, workspace_id: str | None = None) -> bool:
     return workspace_id is None or found.get(workspace_id) is not False
 
 
-#: Where Act may be asked from besides the web page, each switched on apart.
-#: Stored as ``action_policies`` rows named ``surface:<kind>``.
+#: Surfaces besides the web, each its own ``surface:<kind>`` row.
 SURFACES = {
     "slack_dm": "Allow Agent mode from Slack DMs",
     "slack_channel": "Allow Agent mode from Slack channels (replies stay in the thread)",
@@ -89,10 +84,8 @@ def set_policy(
 ) -> None:
     """Switch an action on or off for the org (``workspace_id`` None) or a space.
 
-    A space row that says ``enabled`` is stored but changes nothing for an
-    action: only the org's row can switch one on (``enabled_actions``). The
-    one exception is the space's own ``act`` row, the owner's opt-in when
-    spaces decide (``act_on``).
+    Only the org row can switch an action on; a space's ``act`` row is the owner's
+    own switch (``act_on``).
     """
     conflict = (
         "ON CONFLICT (org_id, action) WHERE workspace_id IS NULL"
@@ -112,9 +105,8 @@ def set_policy(
 
 
 def space_off(org_id: str, workspace_id: str | None) -> set[str]:
-    """Tools a space's owner switched off for their space: ``mcp:<server>``
-    (the whole server) or ``mcp:<server>:<tool>``. Only narrows: an owner can
-    never turn on a tool the admin left off, because only "off" rows count."""
+    """Tools a space's owner switched off there: ``mcp:<server>`` or
+    ``mcp:<server>:<tool>``. Only "off" rows count, so it only narrows."""
     if workspace_id is None:
         return set()
     with get_connection() as conn:

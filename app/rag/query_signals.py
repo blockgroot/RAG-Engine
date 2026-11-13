@@ -1,4 +1,4 @@
-"""Structured per-query production signals (Phase 22).
+"""Structured per-query production signals.
 
 Emits one JSON log line per answered question so gate/reuse thresholds can be
 validated against real traffic (top_score distribution, response modes, refusal

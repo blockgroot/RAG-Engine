@@ -5,16 +5,9 @@ import { useSearchParams } from "next/navigation";
 import { API_BASE_URL } from "@/lib/api";
 
 /**
- * The emailed magic link points here (not directly at the API) so the token
- * lives in a frontend-owned URL first. This page's only job is a real browser
- * navigation (not a `fetch`) to the API's verify endpoint, so the browser
- * actually processes the Set-Cookie header and follows the redirect home —
- * a `fetch` would see the cookie in JS metadata but never store it.
- *
- * With `NEXT_PUBLIC_API_BASE_URL=/api` this navigation stays on the frontend
- * origin (`/api/auth/magic-link/verify` → FastAPI via next.config rewrite),
- * so the cookie is first-party. Do not point this at a different site
- * (e.g. onrender.com) or SameSite=Lax will drop it on later `/me` fetches.
+ * Magic-link landing. A real navigation (not `fetch`) to the API's verify
+ * endpoint, so the browser stores the Set-Cookie. Via `/api` the cookie is
+ * first-party; another site (e.g. onrender.com) loses it to SameSite=Lax.
  */
 function VerifyRedirect() {
   const params = useSearchParams();

@@ -1,31 +1,17 @@
 """Keep every SIMPLE field a source already returned, for charts.
 
-Step 2 of docs/plans/2026-09-30-open-ended-charts.md, done properly. It first
-shipped as six hand-picked keys (`registry.ATTRS`), which left the original
-problem in place: a field nobody listed -- a PR's milestone, a Linear cycle --
-was thrown away at sync and could never be charted. Now the whole payload a
-facts writer already holds goes through ``simple_fields`` and what survives is
-stored in ``activity_facts.attrs``; ``attr_catalog.discover`` then reads which
-fields actually exist, so a field becomes chartable the day a tool sends it.
+What survives ``simple_fields`` is stored in ``activity_facts.attrs``, and
+``attr_catalog`` discovers what exists, so a field is chartable the day a
+tool sends it. Each rule is a size or privacy bound:
 
-"Simple" is the whole point, and each rule is a size or privacy bound, not a
-taste (the "won't it clutter the database?" question):
+- short values only (``MAX_TEXT``, numbers, booleans, short name lists);
+- no ids, links or timestamps (they group nothing);
+- no email addresses anywhere (a person is ``actor``);
+- a nested object becomes its name, never the object;
+- at most ``MAX_FIELDS`` keys per item.
 
-- **short values only** -- text up to ``MAX_TEXT`` characters, numbers,
-  booleans, and short lists of names. A PR body, an issue description or a
-  comment is content, not a category, and is the bulk of any payload;
-- **no ids, links or timestamps** -- unique per item, so they can never group
-  anything (``occurred_at`` already carries the one date a chart needs);
-- **no email addresses**, anywhere -- a person is already ``actor``;
-- **a nested object becomes its name** (``milestone`` -> its title, ``user`` ->
-  its login), never the object: profiles and repository blocks repeat on every
-  row;
-- **at most ``MAX_FIELDS`` keys** per item, so a tool that starts returning
-  more cannot grow a row without bound.
-
-Keys are normalized to ``^[a-z][a-z0-9_]{0,39}$`` here, at WRITE time, and
-checked against the same pattern at READ time (``KEY_RE``) -- that is what
-lets an attribute key be used as a JSON key literal in SQL.
+Keys are normalized at WRITE and checked again at READ (``KEY_RE``): that is
+what lets a key be a JSON key literal in SQL.
 """
 
 from __future__ import annotations
@@ -132,10 +118,7 @@ def _simple(value):
 
 def simple_fields(payload: dict, *, skip: tuple[str, ...] = ()) -> dict:
     """Every simple field of one API object, normalized. Never raises.
-
-    ``skip`` names keys the caller already stores in a real column (the
-    author, the repository, the state), so they are not stored twice.
-    """
+    ``skip`` names keys the caller already stores in a real column."""
     out: dict = {}
     if not isinstance(payload, dict):
         return out

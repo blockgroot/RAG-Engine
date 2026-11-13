@@ -1,25 +1,12 @@
-"""Personal memory: the Second Brain's "who is asking" layer.
+"""Personal memory: a few facts per person, carried across chats.
 
-A handful of facts per person ("works in the Bangalore office", "prefers short
-answers"), carried across chats so a new conversation does not start from
-nothing. The rules are the whole design:
-
-* **Written ONLY from the person's own questions.** Never from an answer: an
-  answer can quote a document only they may read, and memory would carry that
-  text past its access check into every later chat.
-* **Never evidence.** Facts help interpret the question and set tone; the
-  answer still comes only from documents, through the unchanged gate, strict
-  prompt and audit (which is handed documents only, so a claim resting on a
-  memory is unsupported by construction).
-* **Saved automatically, never silently.** The chat shows "Remembered: ... ·
-  Undo" the moment a fact is saved, and the account page lists and deletes all
-  of them -- the production pattern (automatic + visible + undoable).
-* **Private and bounded.** Keyed on ``(org_id, user_id)``; ``max_facts`` per
-  person, oldest unpinned first out; a fact dies with its chat unless pinned.
-  Off unless ``PERSONAL_MEMORY_ENABLED``, and a member or an org admin can
-  switch it off. Slack and schedulers never read or write it.
-* **Nothing sensitive.** Health, pay, credentials, family and the like are
-  dropped even if the model proposes them.
+* Written only from the person's own questions, never an answer (which could
+  carry text past its access check).
+* Never evidence: the answer still comes only from documents.
+* Saved visibly ("Remembered: ... · Undo") and listed on the account page.
+* Keyed on ``(org_id, user_id)``; ``max_facts`` per person; a fact dies with
+  its chat unless pinned. Off unless ``PERSONAL_MEMORY_ENABLED``; web chat only.
+* Sensitive facts (health, pay, credentials, family) are dropped.
 """
 
 from __future__ import annotations
@@ -41,9 +28,8 @@ from ..security.untrusted import (
 
 logger = logging.getLogger(__name__)
 
-#: No "interest": one message cannot show that someone KEEPS asking about a
-#: topic, and single questions saved as interests filled the slots with noise
-#: ("Inquires about the ownership of the authentication service").
+#: No "interest": one question cannot show a lasting one, and it filled the
+#: slots with noise.
 KINDS = ("preference", "context")
 #: Facts saved from one question, at most.
 MAX_PER_QUESTION = 3
@@ -328,10 +314,8 @@ def parse_facts(raw: str, known: tuple[str, ...] = ()) -> list[tuple[str, str]]:
 def remember_from_question(question: str, *, org_id: str, user_id: str,
                            conversation_id: str | None, known: tuple[str, ...],
                            llm=None) -> list[Fact]:
-    """Read ONE question for lasting facts and save them. Never raises.
-
-    Nothing is saved without a chat: a fact expires with the chat it came from,
-    so one with no chat would never expire -- a pin nobody chose.
+    """Read one question for lasting facts and save them. Never raises.
+    Nothing is saved without a chat, or it would never expire.
     """
     if not worth_reading(question) or not conversation_id:
         return []

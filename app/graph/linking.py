@@ -1,20 +1,12 @@
-"""From a question to where the graph should start (Second Brain step 1.5).
+"""From a question to where the graph walk starts (top ``MAX_SEEDS``).
 
-Two kinds of match, strongest first, top ``MAX_SEEDS``:
+1. **Exact identifiers** (``ENG-142``, ``#14``, ``api#14``, a repo name)
+   against entity aliases and PR names.
+2. **Trigram names** (``word_similarity``); short names are excluded ("eng"
+   would match "engineering").
 
-1. **Exact identifiers** in the question: a Linear id (``ENG-142``), a pull
-   request (``#14``, ``api#14``) or a repository name -- matched against entity
-   aliases and PR names. An identifier is what the asker typed on purpose.
-2. **Trigram names**: ``word_similarity`` of an entity's name within the
-   question (``pg_trgm``), so "the token refresh bug" finds an issue titled
-   "Token refresh fails on Safari". Short names are excluded from fuzzy
-   matching -- a three-letter channel called "eng" would match every question
-   containing "engineering".
-
-Only entities the viewer may see are candidates, by the same rules the walk
-applies (``walk.visible_edge_sql`` / ``openable_entity_sql``): a document they
-cannot open is never a seed, and anything else must have at least one current
-edge with visible evidence -- otherwise matching its NAME would disclose it.
+Only entities the viewer may see are seeds (``walk.visible_edge_sql`` /
+``openable_entity_sql``): matching a hidden NAME would disclose it.
 No LLM call; one round trip.
 """
 

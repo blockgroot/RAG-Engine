@@ -3,12 +3,8 @@
 /**
  * Setting up the company's own Google or Slack app, one step at a time.
  *
- * Handbook has no shared Google or Slack app: ours would put Google sign-in
- * behind a test-user list and slow Slack history to a crawl. The admin doing
- * this is often not technical, and every step on screen at once read as a
- * wall, so the steps are a numbered list with only the current one open, its
- * link as a button, and every value to type into Google or Slack behind a
- * Copy button. The full guide is docs/handbook/connect-google-and-slack.md.
+ * No shared app: ours would gate Google sign-in behind test users and throttle
+ * Slack history. One step open at a time, each value behind a Copy button.
  */
 
 import { ReactNode, useState } from "react";

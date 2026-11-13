@@ -5,11 +5,7 @@ import { ContactLink } from "@/components/site/ContactLink";
 import "@/app/site.css";
 
 
-/**
- * Public chrome for the marketing page. White, hairline rules, square
- * buttons: the product figures carry the colour, the frame stays quiet.
- * Styles live in app/site.css under `.site`, apart from the app's globals.
- */
+/** Public chrome for the marketing page. Styles in app/site.css under `.site`. */
 export function LandingShell({ children }: { children: ReactNode }) {
   return (
     <main className="landing site">

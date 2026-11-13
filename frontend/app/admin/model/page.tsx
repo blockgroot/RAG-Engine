@@ -2,12 +2,8 @@
 
 /**
  * Admin-only: connect the organisation's own model.
- *
- * Deliberately says out loud which calls use the org's key and which do not.
- * Chat answers route to their model; indexing documents and the internal
- * answer-quality check still run on ours. An admin pasting a credential on a
- * page that implied full isolation would form a false belief about where their
- * company's content goes, and that is a compliance question, not a UI nicety.
+ * Says which calls use the org's key (chat answers) and which still run on
+ * ours (indexing, the quality check): implying full isolation would mislead.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -25,7 +21,6 @@ const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
   unknown: "Agent mode: couldn't be tested — save again to retry",
 };
 
-/** The provider list as a menu: each one with its letter mark, the chosen one ticked. */
 /** Provider logos (public/providers, from the MIT-licensed lobehub icon set).
  *  An id without a file falls back to its first letter. */
 const LOGOS = new Set(["openai", "anthropic", "openrouter", "nvidia", "google", "mistral", "deepseek", "xai", "together", "fireworks", "cerebras", "perplexity", "cohere", "groq"]);
@@ -156,9 +151,7 @@ export default function AdminModelPage() {
       setApiKey("");
       setNotice("Saved. Everyone in your company can now pick this model in chat.");
     } catch (err) {
-      // The provider's own words, not a generic failure. Telling 401 (wrong
-      // key) from 404 (wrong model id) is the difference between a two-minute
-      // fix and giving up — and a wrong model id is the predicted failure here.
+      // The provider's own words: 401 (wrong key) vs 404 (wrong model id).
       setError(err instanceof ApiError ? err.message : "Could not save that.");
     } finally {
       setBusy(false);

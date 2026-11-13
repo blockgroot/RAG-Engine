@@ -1,11 +1,7 @@
 """Upload a file into a conversation and ask about it.
 
-The uploaded BYTES never leave this function: they are parsed to text in
-memory and dropped. There is no disk write, no object store and no CDN --
-which is what makes "only the uploader can see it" a property of the system
-rather than a promise about a URL. A link-addressable copy would be readable
-by anyone holding the link, including anyone the link is forwarded to, and
-would outlive the conversation it belongs to.
+Only the uploader, in that conversation, can read it. The bytes and text go
+to the object store as private assets (signed, expiring URLs), never a public link.
 """
 
 from __future__ import annotations
@@ -43,11 +39,9 @@ router = APIRouter(prefix="/chat/conversations", tags=["attachments"])
 def _guard(
     conversation_id: str, session: SessionClaims, workspace_id: str | None
 ) -> None:
-    """The conversation must be this org's, this scope's AND this person's.
+    """The conversation must be this org's, this scope's and this person's.
 
-    Reuses `chat._conversation_belongs_to_scope` rather than re-deriving the
-    rule: the owner check is the whole reason an attachment is private, and
-    two copies of it would eventually disagree.
+    Reuses `chat._conversation_belongs_to_scope` so the rule has one copy.
     """
     from .chat import _conversation_belongs_to_scope
 
@@ -72,16 +66,10 @@ async def upload_attachment(
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """Upload one or more files. Some may land while others are refused.
+    """Upload one or more files; some may land while others are refused.
 
-    **Partial success is the normal outcome, not an edge case** (Onyx's
-    `CategorizedFilesSnapshot`). Someone selecting five files routinely has
-    one scan, one password-protected PDF and three good documents; failing the
-    whole request on the first bad one makes them re-pick the good ones and
-    guess which was at fault. Every refusal names the file and why.
-
-    Only the things that are true of the REQUEST rather than of a file -- the
-    rate limit, the conversation not being theirs -- still fail it outright.
+    Each refusal names its file and reason. Only request-level faults (rate
+    limit, not their conversation) fail the whole request.
     """
     # Parsing is CPU work on member-supplied bytes; the per-person limit every
     # route takes (`security.rate_limit.limit_request`) bounds it.
@@ -136,21 +124,14 @@ async def _store_one(
     session: SessionClaims,
     settings: AttachmentSettings,
 ) -> tuple[dict | None, str | None]:
-    """``(attachment, None)`` or ``(None, reason)``. Never raises.
-
-    Every refusal in here is a fact about ONE file, so it comes back as a
-    reason beside that file's name rather than as a status code for the whole
-    upload.
-    """
+    """``(attachment, None)`` or ``(None, reason)``; never raises."""
     if kind_for(filename) is None:
         return None, (
             f"I can't read {filename}. Supported: "
             f"{', '.join('.' + e for e in SUPPORTED_EXTENSIONS)}"
         )
 
-    # Read with ONE byte of headroom so an oversized file is rejected by the
-    # limit rather than by whatever breaks first downstream, and so the check
-    # cannot be defeated by a wrong or absent Content-Length.
+    # Read one byte past the limit, so the size check does not trust Content-Length.
     data = await upload.read(settings.max_bytes + 1)
     try:
         if len(data) > settings.max_bytes:
@@ -169,9 +150,7 @@ async def _store_one(
                 max_csv_rows=settings.max_csv_rows,
             )
         except AttachmentError as exc:
-            # Written for the uploader ("this is a scan", "this is
-            # password-protected"), so it is passed through rather than
-            # replaced with a generic message that says nothing to do next.
+            # Written for the uploader, so passed through.
             return None, str(exc)
         except Exception:  # noqa: BLE001
             logger.exception("Attachment: unexpected failure parsing %s", filename)
@@ -196,9 +175,7 @@ async def _store_one(
                 content_type=upload.content_type or "application/octet-stream",
                 content=text,
                 truncated=truncated,
-                # The ORIGINAL bytes leave this process for the object store,
-                # so a lost plaintext asset can be re-extracted rather than
-                # lost with it.
+                # The original bytes go to the object store so a lost asset can be re-extracted.
                 data=data,
                 injection_score=injection_score,
             )
@@ -260,11 +237,9 @@ def remove_attachment(
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """Idempotent: removing a file that is already gone (a second click, a
-    retry after a dropped response) is success, ``deleted: false`` -- the
-    state the asker wanted is the state they have. That reveals nothing to
-    someone guessing ids: the answer is the same whether the id never
-    existed or belongs to someone else, because the delete is owner-scoped.
+    """Idempotent: a file already gone is ``deleted: false``, never a 404.
+
+    Owner-scoped, so the answer is the same for an id that never existed.
     """
     _guard(conversation_id, session, workspace_id)
     removed, key = remove_attachment_row(

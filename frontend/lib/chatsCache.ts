@@ -1,21 +1,6 @@
-/* Module-lifetime cache for the rail's Recent Chats list.
- *
- * `AppShell` is rendered by each PAGE rather than by a shared layout, so every
- * navigation remounts `RailChats`: its `loaded` flag reset to false, the
- * component returned null, and the whole section disappeared and re-fetched on
- * each click. A rail that flickers away while you use the app reads as the app
- * reloading itself.
- *
- * Seeding initial state from here makes a remount render the previous list
- * immediately while the refetch happens behind it — the list is a few rows of
- * titles, so showing a second-old copy for 200ms costs nothing, where an empty
- * gap costs the illusion that the rail is part of the page rather than part of
- * the route.
- *
- * Module scope, not sessionStorage: this is a render-smoothing cache, not
- * state worth persisting, and it should die with the tab's JS context. Same
- * shape as `suggestionsCache`, keyed on scope for the same reason.
- */
+/* Module-lifetime cache for the rail's Recent Chats, keyed on scope. Every
+ * page remounts `RailChats`; seeding from here stops the list flickering away.
+ * Not persisted: it dies with the tab. */
 import type { ConversationSummary } from "./api";
 
 const cache = new Map<string, ConversationSummary[]>();

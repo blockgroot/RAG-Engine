@@ -1,6 +1,6 @@
 """Tables inside documents (`app/doctables`, `insights/tables.py`).
 
-Step 3 of docs/plans/2026-09-30-open-ended-charts.md: "chart last year's
+Step 3 of git history: docs/plans/2026-09-30-open-ended-charts.md: "chart last year's
 revenue by region" from a sales sheet. Pinned here:
 
 - parsing is deterministic and honest about what it could not read (Indian

@@ -1,25 +1,13 @@
-"""Which provider serves the model, named in config — never implied.
+"""Which provider serves the model, named in config, never implied.
 
-``LLM_ADAPTER`` picks an entry from a FIXED list; the entry owns the base URL,
-and ``LLM_MODEL`` is only a parameter passed through it. Before this, the
-provider was implied by two free-text values (a URL and a model name), so a
-typo or a model from the wrong vendor was accepted at boot and surfaced as
-failed answers in front of users. Now an unknown adapter is a
-``ConfigurationError`` at build time and ``verify_model`` lets the boot check
-refuse a model the provider does not list (``scripts/check_llm_config.py``).
+``LLM_ADAPTER`` picks from a FIXED list that owns the base URL; ``LLM_MODEL``
+is a parameter. An unknown adapter is a ``ConfigurationError`` at build,
+and ``verify_model`` lets the boot check refuse an unlisted model.
 
-The vendors are ``org_model.PRESETS`` — one list, so the BYO-key form and the
-deployment's own model can never disagree about a vendor's URL — plus
-``custom`` for an operator-supplied OpenAI-compatible endpoint (self-hosted,
-Azure-style URLs). ``custom`` is acceptable HERE and not in ``org_model``
-because the URL comes from the deployment's env, set by whoever runs the
-server, not from an org admin typing into a form (the SSRF surface that module
-refuses).
-
-Every adapter today speaks the OpenAI wire format, so every one builds an
-``OpenAICompatProvider``. ``Adapter.kind`` is the seam for a native adapter
-(Anthropic's own API, Bedrock, Vertex): add a ``kind``, a class behind
-``LLMProvider``, and a branch in ``build_provider`` — nothing downstream moves.
+The vendors are ``org_model.PRESETS`` (one list, so BYO and deployment
+URLs agree) plus ``custom``: an operator's endpoint from env, acceptable
+here because no org admin types it. Every adapter speaks the OpenAI wire
+format; ``Adapter.kind`` is the seam for a native one.
 """
 
 from __future__ import annotations
@@ -51,8 +39,7 @@ ADAPTERS: dict[str, Adapter] = {
     p.id: Adapter(id=p.id, label=p.label, base_url=p.base_url) for p in PRESETS
 }
 ADAPTERS[CUSTOM] = Adapter(id=CUSTOM, label="Custom OpenAI-compatible endpoint", base_url=None)
-#: Accepted spellings -> adapter id. ``gemini`` is what people type; the
-#: preset id is ``google`` because that is the vendor.
+#: Accepted spellings -> adapter id (``gemini`` -> the ``google`` preset).
 ALIASES = {"gemini": "google", "claude": "anthropic", "openai_compatible": CUSTOM}
 
 
@@ -82,11 +69,8 @@ def resolve(
 ) -> Endpoint:
     """Turn env values into an endpoint, refusing anything ambiguous.
 
-    * no adapter -> legacy: ``base_url`` exactly as configured (unchanged
-      behaviour for every deploy that predates ``LLM_ADAPTER``);
-    * a named vendor -> ITS base URL. A different ``*_BASE_URL`` alongside it
-      is an error, not a silent override: two sources for one fact is how a
-      Groq key ends up posted to Google;
+    * no adapter -> ``base_url`` as configured (legacy);
+    * a named vendor -> ITS base URL; a conflicting ``*_BASE_URL`` is an error;
     * ``custom`` -> ``*_BASE_URL`` is required.
     """
     if adapter is None:
@@ -118,8 +102,7 @@ def build_provider(endpoint: Endpoint, *, timeout: float, reasoning_effort: str 
     from .openai_provider import OpenAICompatProvider
 
     if endpoint.kind == KIND_OPENAI_COMPAT:
-        # The vendor's own request extras (e.g. Claude's thinking off), the same
-        # table an org's own model uses, so the two never disagree.
+        # The vendor's own extras, the same table an org's own model uses.
         from .routed import preset_extra_body
 
         extra_body, optional = preset_extra_body(endpoint.adapter, endpoint.model) if endpoint.adapter else (None, False)
@@ -162,11 +145,8 @@ def _normalize(model_id: str) -> str:
 def verify_model(endpoint: Endpoint, *, timeout: float = 10.0, client=None) -> ModelCheck:
     """Does the provider actually list ``endpoint.model``?
 
-    ``NOT_FOUND`` only when the list was fetched AND the model is absent.
-    Anything else — the endpoint has no ``/models``, the network is down, the
-    list is empty — is ``UNVERIFIED``: a boot check that fails a deploy
-    because a provider was briefly unreachable would be a new outage, not a
-    safety net.
+    ``NOT_FOUND`` only when the list was fetched and lacks it; anything else is
+    ``UNVERIFIED``: a brief outage must not fail a deploy.
     """
     if not endpoint.model:
         return ModelCheck(NOT_FOUND, "no model configured (set LLM_MODEL)")
@@ -188,9 +168,8 @@ def verify_model(endpoint: Endpoint, *, timeout: float = 10.0, client=None) -> M
         listed = {_normalize(m.id) for m in client.models.list()}
     except Exception as exc:  # noqa: BLE001 — any failure means "could not check"
         if getattr(exc, "status_code", None) == 401:
-            # A 401 is the provider saying the key is wrong — proof, unlike a
-            # timeout. (Gemini answers a bad key with a 400, which stays
-            # unverified: a 400 also means "this endpoint has no /models".)
+            # A 401 proves a bad key. Gemini's 400 for a bad key stays unverified (a
+            # 400 also means "no /models").
             return ModelCheck(BAD_KEY, f"the provider rejected the API key (401): {exc}")
         return ModelCheck(UNVERIFIED, f"could not list models: {type(exc).__name__}: {exc}")
     if not listed:

@@ -1,15 +1,9 @@
 """``act_runs``: a request paused at the cards it drafted.
 
-Agent mode is a tool loop paused at each write ("open a GitHub issue, then
-comment its link on the Linear issue"): the drafted calls stay unanswered,
-the conversation is kept here with which card answers which call, and when
-every card is decided each call is answered with what happened (the link,
-the tool's error, a cancel) and the same conversation goes on
-(``service.continue_run``).
-
-Every query is pinned to ``org_id`` and ``user_id``: a run is its asker's.
-``resume`` is one conditional UPDATE, so two approvals arriving together
-continue the run once.
+The conversation is kept with which card answers which call; once every card
+is decided, each call is answered with what happened and the conversation goes
+on (``service.continue_run``). Pinned to ``org_id`` and ``user_id``. ``resume``
+is one conditional UPDATE, so concurrent approvals continue a run once.
 """
 
 from __future__ import annotations
@@ -53,8 +47,7 @@ class Run:
 
 
 def _sources(sources: list[Source]) -> list[dict[str, Any]]:
-    # Whole, unlike ``Source.as_dict``: the continued drafts are checked
-    # against these viewers exactly as the first ones were.
+    # Whole: continued drafts are checked against these viewers like the first.
     return [{"document_id": s.document_id, "title": s.title, "public": s.public,
              "viewers": list(s.viewers), "uri": s.uri} for s in sources]
 
@@ -79,11 +72,9 @@ def create(*, org_id: str, workspace_id: str | None, user_id: str, surface: dict
 
 
 def resume(org_id: str, user_id: str, action_id: str) -> tuple[Run, list[tuple[str, str, str, dict]]] | None:
-    """The run this card belongs to, claimed for continuing, with every card
-    of it as ``(id, action, status, result)``; or ``None`` when there is
-    nothing to continue: no run, a card still pending, expired, another
-    approval already continuing it, or every card cancelled (a cancel ends a
-    request; going on drafted the cancelled card again)."""
+    """The run this card belongs to, claimed for continuing, with its cards as
+    ``(id, action, status, result)``; ``None`` when there is nothing to continue
+    (no run, a card pending, expired, already claimed, or every card cancelled)."""
     with get_connection() as conn:
         row = conn.execute(
             f"""

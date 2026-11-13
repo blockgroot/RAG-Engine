@@ -1,10 +1,6 @@
-"""Slack through its regular Web API, with the person's own user token: a post
-is theirs, never the bot's (the bot only answers in threads).
-
-Channels and people are named the way people name them ("#general",
-"priya@acme.com", "Priya Shah") and resolved here, so a draft's target is the
-asker's own words rather than an id the model was shown. Every walk is
-bounded and a cut list says so.
+"""Slack over its Web API with the person's own user token: a post is theirs,
+never the bot's. Channels and people are resolved here from people's words, so
+a target is the asker's words, not an id. Walks are bounded; a cut says so.
 """
 
 from __future__ import annotations
@@ -39,10 +35,8 @@ def _call(token: str, method: str, **params) -> dict:
 
 
 def _channels(token: str, mine: bool = False) -> tuple[list[dict], bool]:
-    """Channels this person can see (``mine``: is a member of), and whether
-    the walk was cut short. Slack fills pages unevenly (archived channels are
-    dropped after the page is cut), so a large workspace's full list can run
-    out before a channel; the member list is short and is where they post."""
+    """Channels this person can see (``mine``: is a member of), and whether the walk
+    was cut short (a large workspace can run out first; the member list is short)."""
     found, cursor = [], None
     for _ in range(_PAGES):
         page = _call(token, "users.conversations" if mine else "conversations.list",
@@ -138,15 +132,13 @@ def read_thread(token: str, args: dict) -> ToolResult:
     return ToolResult(bounded(f"Thread in {shown}:\n" + "\n".join(lines)))
 
 
-#: Under every message Agent mode sends: the words stay exactly as approved,
-#: and whoever reads them sees a tool sent them on the person's behalf.
+#: Footer on every Agent message: the words are as approved, sent on the person's behalf.
 SENT_WITH = "Sent with Handbook"
 
 
 def _post(token: str, channel: str, text: str, thread_ts: str | None = None) -> dict:
-    """The approved words as they are (``text`` is also the notification), then
-    a small grey context line. A section holds 3,000 characters, so a long
-    message is several sections."""
+    """The approved words as they are, then a grey context line. A section holds
+    3,000 characters, so a long message is several."""
     text = bounded(text, 12_000)
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text[i:i + 3000]}}
               for i in range(0, len(text), 3000)]

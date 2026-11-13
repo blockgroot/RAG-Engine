@@ -84,7 +84,7 @@ def test_query_unknown_org_returns_nothing(store, embedder):
 # nested INSIDE org_id (never queried alone). These prove a sub-workspace's
 # content never leaks into the org-wide space, into a sibling workspace, or
 # across an org boundary — and that org-wide behavior (workspace_id=None) is
-# completely unaffected. See docs/plans/2026-08-03-workspace-within-workspace.md.
+# completely unaffected. See git history: docs/plans/2026-08-03-workspace-within-workspace.md.
 
 
 @requires_db

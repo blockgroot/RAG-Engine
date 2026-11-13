@@ -15,11 +15,7 @@ const STARTS = [10, 30, 50, 70, 90];
 // The tools this answer actually cites; only their lines light up.
 const CITED = new Set<BrandName>(["notion", "slack", "linear"]);
 
-/**
- * Hero figure: every tool feeds one answer, and the answer names the three it
- * used. Says "connects your tools" and "cites its sources" in one picture,
- * which is the whole product in a sentence.
- */
+/** Hero figure: every tool feeds one answer, which names the three it used. */
 export function HeroFigure() {
   return (
     <div className="site-frame hero-fig" aria-hidden>

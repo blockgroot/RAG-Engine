@@ -1,11 +1,4 @@
-"""Canonical answer-provenance labels, shared by ``RagResult``/``AgentResponse``.
-
-A tiny utility module, not an interface + factory package (there is nothing to
-swap — just a vocabulary that ``app/rag/`` and ``app/agent/`` must agree on).
-Both ``RagResult.source`` and ``AgentResponse.source`` use these same string
-values (``rag_pipeline_agent.py`` passes ``RagResult.source`` straight through),
-so a single spelling here is what keeps them from drifting apart.
-"""
+"""Answer-provenance labels shared by ``RagResult.source`` and ``AgentResponse.source``, so the spellings never drift."""
 
 from __future__ import annotations
 
@@ -38,9 +31,7 @@ ANSWER_SOURCES = frozenset(
     }
 )
 
-# Architectural recovery reasons (Retrieval Discovery Gap) — shared between
-# ``RagPipeline`` and ``GitHubAgent`` so the two never spell "insufficient
-# evidence" differently. Re-exported from ``app.rag.pipeline`` for callers
-# (and tests) that import them from there.
+# Recovery reasons shared by ``RagPipeline`` and ``GitHubAgent`` (re-exported
+# from ``app.rag.pipeline``).
 RECOVERY_REASON_GATE_MISS = "gate_miss"
 RECOVERY_REASON_INSUFFICIENT_EVIDENCE = "insufficient_evidence"

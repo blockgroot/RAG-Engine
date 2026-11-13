@@ -1,8 +1,7 @@
 """In-chat file attachments: extract text, keep it with the conversation.
 
-Never embedded, never written to `documents`, and the uploaded bytes are
-discarded once parsed -- see the `conversation_attachments` block in
-`app/db/schema.sql` for why each of those is a decision rather than a shortcut.
+Never embedded and never written to `documents`; the uploader's own, in that
+chat. Bytes and text live in the object store when one is configured.
 """
 
 from .blobstore import (

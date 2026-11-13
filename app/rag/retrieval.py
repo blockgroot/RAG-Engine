@@ -1,20 +1,9 @@
-"""Hybrid retrieval + reranking (Phase 6), sitting under the Phase 3 gate.
+"""Hybrid retrieval + reranking, under the 0.35 gate.
 
-Plain top-k vector search ranks each chunk independently and can leave a genuinely
-relevant chunk just outside the cutoff. This retriever addresses that from two
-angles at query time:
-
-1. **Hybrid search** — run vector (semantic) *and* keyword (Okapi BM25) search,
-   then fuse the two ranked lists with **Reciprocal Rank Fusion (RRF)**. RRF is
-   rank-based, so it needs no score normalization between cosine and BM25
-   (which live on totally different scales) — the settled default for hybrid RAG.
-2. **Cross-encoder reranking** — over-retrieve a wider ``candidate_pool`` then
-   rerank it with a cross-encoder, selecting the final ``top_k``.
-
-Crucially this only changes *which chunks, in what order* reach the prompt. The
-**confidence gate is unchanged**: ``gate_score`` is the best cosine similarity
-among candidates (== the vector top-1 the Phase 3 gate always used), so the
-pipeline's threshold logic behaves exactly as before.
+Vector and BM25 search fused by Reciprocal Rank Fusion (rank-based, so no
+score normalization), then a cross-encoder reranks a wider
+``candidate_pool`` down to ``top_k``. Only which chunks reach the prompt
+changes: ``gate_score`` is still the best cosine among candidates.
 """
 
 from __future__ import annotations
@@ -30,20 +19,16 @@ from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore, Viewer
 from .deep import extra_effort_on
 
 logger = logging.getLogger(__name__)
-#: Beside `rag.query_signals`: one line per question the graph list ran for,
-#: so step 1.7 can measure how often it links and what it contributes.
+#: One line per question the graph list ran for, to measure what it adds.
 _graph_log = logging.getLogger("rag.graph_signals")
 
 
-# Ceiling on concurrent first-stage searches for ONE question. Each in-flight
-# search holds a pooled connection, and DB_POOL_MAX_SIZE defaults to 10 shared
-# across the whole process — so this stays well under it, leaving room for
-# concurrent requests. Raising it trades tail latency for pool contention: past
-# the pool size the extra tasks just queue on a connection instead of a query.
+# Concurrent first-stage searches for ONE question. Each holds a pooled
+# connection (DB_POOL_MAX_SIZE is shared process-wide), so stay well under it.
 _MAX_RETRIEVAL_WORKERS = 4
 
-#: A table row's passage index: past any real chunk, so a row never collides
-#: with (or is mistaken for a neighbour of) the document's own chunks.
+#: A table row's passage index: past any real chunk, so it is never taken
+#: for a neighbour.
 _ROW_INDEX = 1_000_000
 #: A figure worked out over a table for this question (past every row index).
 _WORKED_INDEX = 2_000_000
@@ -55,25 +40,18 @@ class RetrievalResult:
 
     hits: list[RetrievedChunk]  # final top_k, best-first (fused + reranked)
     gate_score: float | None    # best cosine similarity among candidates (gate signal)
-    # Chunks the knowledge graph contributed to the first stage (0 when the
-    # graph list is off or found nothing) -- logged so step 1.7 can measure it.
+    # Chunks the graph contributed to the first stage (0 when off or empty).
     graph_hits: int = 0
-    # The document of the candidate that produced ``gate_score``. The final
-    # ``hits`` cannot reproduce the gate (it is a max over every first-stage
-    # candidate, taken BEFORE reranking cuts to top_k), so a caller that must
-    # re-check the gate after withholding a document -- a live read saying
-    # the object is gone -- asks "was the gate earned by THIS document?"
-    # instead of recomputing over hits that never held the max.
+    # The document that produced ``gate_score``. ``hits`` cannot reproduce the
+    # gate (a max taken before reranking), so a caller withholding a document
+    # asks whether the gate was earned by THAT document.
     gate_document_id: str | None = None
 
 
 class HybridRetriever:
     """Vector + keyword retrieval, RRF fusion, then cross-encoder reranking.
-
-    An orchestrator (composes the store + reranker), so no ``base.py`` — like the
-    RAG pipeline itself. ``reranker`` is optional; when absent (or disabled) the
-    fused/vector order is used directly.
-    """
+    An orchestrator, so no ``base.py``. Without a reranker the fused order is
+    used."""
 
     def __init__(
         self,
@@ -89,11 +67,8 @@ class HybridRetriever:
         self._reranker = reranker
         self._settings = settings or RetrievalSettings.from_env()
         self._rag_settings = rag_settings or RagSettings.from_env()
-        # Pinned per-retriever rather than per-call: which providers an agent
-        # may draw on is a property of the agent (a Slack agent is always a
-        # Slack agent), not of one question. Keeping it off the call signature
-        # also means it can never be forgotten at one of the retrieve() call
-        # sites the way a per-request argument could be.
+        # Pinned per retriever, not per call: an agent's providers are a property of
+        # the agent, and cannot be forgotten at a call site.
         self._source_provider = source_provider
 
     def retrieve(
@@ -111,25 +86,10 @@ class HybridRetriever:
     ) -> RetrievalResult:
         """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first.
 
-        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
-        retrieves only org-wide chunks, unchanged from every prior call site.
-        Non-``None`` retrieves only that sub-workspace's chunks — passed
-        straight through to the store, never widened to also include the
-        org-wide space (see CLAUDE.md's Workspace-within-a-Workspace plan).
-
-        ``date_range``: an optional hard filter (e.g. "updated after March")
-        passed straight through to both the vector and keyword legs — a
-        no-op when ``None``, identical to every existing call site.
-
-        ``tags``: an optional hard filter (e.g. department labels), same
-        no-op-when-``None`` and pass-through-to-both-legs behaviour as
-        ``date_range``.
-
-        ``viewer`` (document-level access): WHO is asking, passed to both legs
-        so a document the asker cannot open cannot reach them through either.
-        ``None`` reads every document in scope, which is what ingestion,
-        evaluation and the CLI want and what every member-facing path must NOT
-        pass — see ``tests/test_doc_access.py``.
+        ``workspace_id``, ``date_range``, ``tags`` and ``viewer`` pass straight to
+        both legs. ``workspace_id=None`` reads org-wide only, never widened.
+        ``viewer=None`` reads everything in scope: ingest, eval and CLI only,
+        never a member-facing path.
         """
         top_k = self._rag_settings.top_k
         pool = self._settings.candidate_pool
@@ -146,8 +106,7 @@ class HybridRetriever:
         graph_cross = graph_cross or bool(extra_tools)
         from ..insights.table_answers import current_answers
 
-        # Read HERE, on the request's thread: the first-stage pool does not
-        # inherit context.
+        # Read here, on the request's thread: the pool does not inherit context.
         worked = current_answers()
         graph_counter: list[int] = []
         ranked_lists = self._first_stage_all(
@@ -180,22 +139,15 @@ class HybridRetriever:
         gate_document_id = gate_document(candidates)
 
         pool_candidates = candidates[:pool]
-        # A row the question named by a cell comes from ONE leg, while each
-        # document chunk is found again by every sub-question's vector and
-        # keyword search; fusion rewards that, and the row fell outside the
-        # pool before the reranker read it ("who does Rohan Mehta report to,
-        # and what is their email?" split in two). The reranker judges it.
+        # A row named by a cell comes from ONE leg, which fusion under-rewards, so
+        # it always enters the rerank pool; the reranker judges it.
         pooled = {(c.document_id, c.chunk_index) for c in pool_candidates}
         pool_candidates += [c for c in candidates
                             if _ROW_INDEX <= c.chunk_index < _WORKED_INDEX
                             and (c.document_id, c.chunk_index) not in pooled]
-        # The selection below sees the WHOLE reranked pool. Cutting it to the
-        # top 10 pieces first hid documents ranked lower than one long
-        # document's many pieces from the wide read (RCA, 9 Oct: 62% -> 66% of
-        # the right documents for many-document questions, simple questions
-        # unchanged). The reranker scores every candidate either way; the
-        # selection still returns at most ``ranked_max_hits``.
-        # Deep's extra effort may read more documents when the evidence is spread out.
+        # The selection sees the WHOLE reranked pool (cutting it first hid
+        # documents behind one long document's pieces); it still returns at most
+        # ``ranked_max_hits``. Deep's extra effort may read more when evidence is spread.
         rag = self._rag_settings.deep(extra=True) if extra_effort_on() else self._rag_settings
         keep = len(pool_candidates)
         if self._reranker is not None and self._settings.rerank_enabled:
@@ -208,8 +160,7 @@ class HybridRetriever:
             final = pool_candidates[: keep if graph_cross else rag.ranked_max_hits]
         if graph_cross:
             final = _reserve_other_tools(final, top_k, self._source_provider)
-        # A figure worked out for THIS question is never ranked out: the rows
-        # that answer it are not text the reranker could weigh.
+        # A figure worked out for this question is never ranked out.
         kept = {(c.document_id, c.chunk_index) for c in final}
         final = final + [c for c in candidates if c.chunk_index >= _WORKED_INDEX
                          and (c.document_id, c.chunk_index) not in kept]
@@ -221,11 +172,7 @@ class HybridRetriever:
 
     def _rerank(self, query: str, candidates: list[RetrievedChunk], keep: int) -> list[RetrievedChunk]:
         """The reranker's order; with ``rerank_with_title`` it reads "title\ntext".
-
-        Only what the reranker sees changes: the returned hits are the original
-        chunks (content untouched for the prompt and citations) carrying the
-        new ``rerank_score``.
-        """
+        Returned hits are the original chunks with ``rerank_score`` set."""
         if not self._settings.rerank_with_title:
             return self._reranker.rerank(query, candidates, keep)
         shown = [
@@ -241,17 +188,12 @@ class HybridRetriever:
     def _graph_documents(
         self, org_id: str, workspace_id: str | None, query_text: str, viewer: Viewer | None
     ) -> tuple[list[str], bool]:
-        """Documents the knowledge graph connects to this question (Second Brain 1.6).
+        """Documents the knowledge graph connects to this question: ``(ids, cross)``.
 
-        ``(document_ids, cross)``. When the chat edge already built this
-        question's ``GraphPlan`` it is REUSED -- no second walk -- and its
-        ``cross`` flag says whether the documents may come from other tools
-        (a connected answer) or only from this retriever's own tool (every
-        normal question, exactly as before). Otherwise: link the question to at
-        most three entities, walk ≤2 hops as THIS viewer, return the visible
-        evidence documents. Empty when the flag is off (the default), when
-        nothing links, or on ANY failure: the graph can only ever add
-        candidates, so losing it must cost nothing but them.
+        Reuses the chat edge's ``GraphPlan`` when there is one (``cross`` = other
+        tools allowed). Otherwise links up to three entities and walks ≤2 hops as
+        THIS viewer. Empty when off, unlinked, or on ANY failure: the graph only
+        adds candidates.
         """
         if not self._graph_settings.retrieval_enabled:
             return [], False
@@ -288,14 +230,9 @@ class HybridRetriever:
             return [], False
 
     def _named_tools(self, org_id: str, workspace_id: str | None) -> list[str]:
-        """Tools a connected answer searches besides this retriever's own.
-
-        Only ever the ones the question NAMED, or a refused answer's retry
-        across the tools that cleared the gate (``GraphPlan.search``); empty
-        for every normal answer, so their searches do not run at all. Not tied
-        to the graph flag: these are plain searches, and the retry builds its
-        plan without a graph.
-        """
+        """Tools a connected answer searches besides this one: the ones the
+        question NAMED, or a refusal retry's (``GraphPlan.search``). Empty for a
+        normal answer."""
         try:
             from ..graph.plan import current_plan
 
@@ -325,21 +262,10 @@ class HybridRetriever:
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
-        These searches are independent database round trips — vector and keyword
-        for one query, and every sub-question's pair — but they used to run
-        strictly one after another, so a three-part compound question serialized
-        six queries whose latency is almost entirely waiting on Postgres. The
-        pool is deliberately capped: each task takes a connection, and a large
-        decomposition must not be able to drain the shared pool.
-
-        Ordering is preserved by index, not completion, because RRF fusion is
-        order-sensitive across lists.
-
-        ``graph_documents`` adds the knowledge graph's list: one vector search,
-        primary query only, restricted to the walk's evidence documents and
-        filtered by the viewer AGAIN (the walk already checked, but retrieval
-        never trusts an upstream filter). Ranked by cosine, so each hit carries
-        a real cosine ``score`` and the gate is unchanged.
+        Capped so a large decomposition cannot drain the shared pool. Order is by
+        index, not completion: RRF is order-sensitive. ``graph_documents`` adds one
+        vector search over the walk's documents, filtered by the viewer AGAIN, with
+        real cosine scores.
         """
         tasks: list[tuple[int, str, str, list[float]]] = []
         for i, (q_text, q_vec) in enumerate(query_pairs):
@@ -350,12 +276,10 @@ class HybridRetriever:
             q_text, q_vec = query_pairs[0]
             tasks.append((0, "graph", q_text, q_vec))
         if query_pairs:
-            # Rows of this tool's (and a connected answer's tools') document
-            # tables that the question names by a cell (`_table_rows`).
+            # Document-table rows the question names by a cell (`_table_rows`).
             tasks.append((0, "rows", *query_pairs[0]))
-        # A connected answer's NAMED tools: the same vector (+ keyword) search
-        # the routed tool runs, pinned to that tool, primary query only. Run in
-        # the same pool as everything else, so they add no wall-clock time.
+        # A connected answer's NAMED tools: the same search pinned to each tool,
+        # primary query only, in the same pool.
         for tool in extra_tools or []:
             if not query_pairs:
                 break
@@ -376,11 +300,8 @@ class HybridRetriever:
                     tools=[self._source_provider, *(extra_tools or [])], worked=worked,
                 )
             if kind == "graph":
-                # A connected answer's graph documents were already limited to
-                # the tools that answer may use (GraphPlan.documents_for), so
-                # the pin is lifted for THIS leg only; the vector and keyword
-                # legs below stay on the routed tool whatever happens. The
-                # viewer is applied again either way.
+                # Graph documents are already limited to the tools this answer may use, so
+                # the pin is lifted for this leg only. The viewer still applies.
                 hits = self._store.query(
                     org_id,
                     q_vec,
@@ -453,18 +374,13 @@ class HybridRetriever:
         self, org_id: str, q_text: str, q_vec: list[float], *, workspace_id: str | None,
         viewer: Viewer | None, tools: list[str | None], worked: tuple = (),
     ) -> list[RetrievedChunk]:
-        """Table rows the question names by a cell, and figures worked out over a
-        table for it (``insights.table_answers``), as passages of their document.
+        """Rows the question names by a cell, and figures worked out over a table
+        (``insights.table_answers``), as passages of their document.
 
-        A sheet embeds only its columns, so "who was the field officer on
-        L-1008?" could never reach the row. ``doctables.store.rows_naming``
-        finds it by the exact text typed, as this viewer. A figure carries its
-        DOCUMENT's own cosine to the question; a row the better of that and
-        its OWN text's cosine, embedded here with the question's model. Both
-        are real cosines of what the model is shown, so the gate still means
-        what it says: a sheet's column description scored 0.342 against "who
-        closed L-1076?" and refused the row that answers it.
-        Never raises: a lookup may only ever add.
+        A sheet embeds only its columns, so rows are found by exact text
+        (``rows_naming``) as this viewer. A figure carries its document's cosine;
+        a row the better of that and its own text's. Both are real cosines, so the
+        gate holds. Never raises.
         """
         try:
             from ..doctables.store import rows_naming
@@ -477,8 +393,7 @@ class HybridRetriever:
             ids = sorted({r.document_id for r in rows} | {w.document_id for w in figures}
                          | {d for w in figures for d in getattr(w, "requires", ())})
             cosine: dict[str, float] = {}
-            # Private unless the index says otherwise: a worked figure from a
-            # restricted sheet must keep its answer out of the shared cache.
+            # Private unless the index says the document is public.
             public: dict[str, bool] = {}
             for hit in self._store.query(org_id, q_vec, top_k=4 * len(ids),
                                          workspace_id=workspace_id, viewer=viewer,
@@ -488,8 +403,8 @@ class HybridRetriever:
         except Exception:  # noqa: BLE001
             logger.warning("retrieval: table row lookup skipped", exc_info=True)
             return []
-        # Re-checked at run time: the cosine query is filtered by this viewer, so
-        # a sheet they cannot open has no hit and its figures are not shown.
+        # Re-checked: the cosine query is filtered by this viewer, so an unreadable
+        # sheet has no hit and its figures are not shown.
         figures = [f for f in figures if f.document_id in cosine
                    and all(d in cosine for d in getattr(f, "requires", ()))]
         rows = [r for r in rows if r.document_id in cosine]
@@ -517,8 +432,8 @@ class HybridRetriever:
 
     @staticmethod
     def _row_cosines(q_vec: list[float], texts: list[str]) -> list[float]:
-        """Cosine of each row's text to the question, one batched embed call;
-        zeros (the document's score stands) when it cannot be measured."""
+        """Cosine of each row's text to the question in one embed call; zeros (the
+        document's score stands) when it cannot be measured."""
         if not texts:
             return []
         try:
@@ -539,12 +454,8 @@ class HybridRetriever:
     def _rrf_fuse(
         ranked_lists: list[list[RetrievedChunk]], k: int
     ) -> list[RetrievedChunk]:
-        """Reciprocal Rank Fusion: score(d) = Σ 1/(k + rank_d) across lists.
-
-        Dedupes chunks by (document_id, chunk_index). Each retained chunk keeps its
-        cosine ``score`` (both search paths populate it), so the gate signal stays
-        a real cosine similarity; RRF only governs ordering.
-        """
+        """Reciprocal Rank Fusion: score(d) = Σ 1/(k + rank_d). Dedupes by
+        (document_id, chunk_index); each chunk keeps its cosine ``score`` for the gate."""
         rrf_scores: dict[tuple[str, int], float] = {}
         chunk_by_key: dict[tuple[str, int], RetrievedChunk] = {}
 
@@ -559,13 +470,8 @@ class HybridRetriever:
 
 
 def _drop_weak(hits: list[RetrievedChunk], ratio: float) -> list[RetrievedChunk]:
-    """Keep hits whose reranker score is at least ``ratio`` x the best one's.
-
-    The best hit always stays, so this can thin the prompt but never empty it,
-    and the gate (computed before reranking) is untouched. Off at 0, and a no-op
-    when the reranker gave no scores or the best score is not positive (a
-    ratio of a non-positive number means nothing).
-    """
+    """Keep hits whose rerank score is at least ``ratio`` x the best's. The
+    best always stays; off at 0; no-op without positive scores."""
     if ratio <= 0 or not hits:
         return hits
     best = hits[0].rerank_score
@@ -582,24 +488,12 @@ def _spread(
 ) -> list[RetrievedChunk]:
     """``top_k`` hits, plus more documents when the evidence is spread out.
 
-    A document is "strong" when its best reranker score is at least ``ratio`` x
-    the top document's. With one strong document the answer lives in one
-    place and the usual ``top_k`` is returned unchanged. With several, the
-    usual ``top_k`` is KEPT and passages from strong documents it does not
-    already cover are added, up to ``max_hits`` and ``per_doc`` per document:
-    new documents first, then a second passage each. So a wide read is always
-    a superset of the narrow one and can only reach more documents, never
-    fewer (Benchmark 1: more passages of the same documents did not help).
+    A document is strong when its best rerank score is at least ``ratio`` x
+    the top one's. With several strong documents, the usual ``top_k`` is kept
+    and passages from other documents down to ``include_ratio`` (from
+    ``pool``) are added up to ``max_hits``/``per_doc``: a superset, never
+    fewer documents. ``always`` (Deep's extra effort) widens regardless.
     Reranker scores only; the gate is untouched.
-
-    Detection and inclusion are separate. ``ratio`` decides whether the
-    question is broad; once it is, documents down to ``include_ratio`` x the
-    best are added, from ``pool`` (the whole reranked list, before the weak
-    cutoff). A broad question's right documents are often pieces that answer
-    only PART of it, which the reranker scores low (RCA, 9 Oct: 66% -> 74% of
-    the right documents for many-document questions at 0.15). A question with
-    one strong document is untouched, unless ``always`` (Deep's extra effort,
-    where the asker chose breadth).
     """
     base = hits[:top_k]
     if max_hits <= top_k or ratio <= 0 or not hits:
@@ -639,13 +533,8 @@ def _spread(
 
 
 def gate_document(chunks) -> str | None:
-    """The document holding the best cosine among ``chunks`` (the gate's).
-
-    Every candidate's ``score`` is a real cosine -- the vector leg and the
-    keyword leg both select ``1 - (embedding <=> q)``, and ``_rrf_fuse`` keeps
-    each chunk's own score -- but a hit with no score is skipped rather than
-    trusted, so a future score-less leg cannot quietly decide the gate.
-    """
+    """The document holding the best cosine among ``chunks`` (the gate's). A
+    hit with no score is skipped, never trusted."""
     best = max(
         (c for c in chunks if getattr(c, "score", None) is not None),
         key=lambda c: c.score,
@@ -661,20 +550,15 @@ _CROSS_RESERVED_SLOTS = 2
 def _reserve_other_tools(
     ordered: list[RetrievedChunk], top_k: int, routed: str | None
 ) -> list[RetrievedChunk]:
-    """Top ``top_k``, but with the best chunk of each OTHER tool guaranteed a seat.
+    """Top ``top_k``, with the best chunk of each OTHER tool guaranteed a seat.
 
-    A connected answer exists because the question spans tools ("has the
-    author discussed it in Slack?"). With five slots and a corpus that is
-    mostly the routed tool's, plain relevance order routinely fills all five
-    from it, and the answer then says Slack has nothing when the graph PROVED
-    a thread exists. At most ``_CROSS_RESERVED_SLOTS`` swaps, each replacing
-    the routed tool's weakest kept chunk, so the routed tool keeps the rest.
+    Otherwise the routed tool fills every slot and the answer says Slack has
+    nothing when a thread exists. Swaps replace the routed tool's weakest.
     """
     final = list(ordered[:top_k])
     present = {c.source_provider for c in final}
     swaps = 0
-    # One seat per other tool, up to all but two of the slots: a question
-    # naming four tools must hear from each, and the routed tool keeps two.
+    # One seat per other tool, up to all but two slots (the routed tool keeps two).
     limit = max(_CROSS_RESERVED_SLOTS, min(len({c.source_provider for c in ordered}) - 1,
                                            top_k - 2))
     for chunk in ordered[top_k:]:

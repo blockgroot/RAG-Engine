@@ -1,29 +1,10 @@
-"""Externally-driven background tick.
+"""Externally driven background tick (``POST`` from a cron).
 
-Why this endpoint exists at all
-------------------------------
-A free-tier Render web service spins down after ~15 minutes with **no inbound
-HTTP request**. Process activity does not count: an in-process timer thread
-does not keep the instance alive, so every background loop in this codebase
-(ingestion queue, activity scheduler, auto-sync) silently stops shortly after
-the last user closes the tab — and comes back only when someone visits.
-
-That makes "we sync every hour" false on the deployment we actually run on.
-A free external cron (cron-job.org, UptimeRobot, a GitHub Actions schedule)
-hitting this endpoint fixes it, and fixes it *properly*: the same request that
-wakes the instance also does the work, so there is no ping-then-hope window
-where the box is awake but nothing has been triggered.
-
-Auth
-----
-A shared secret in a header, not a session: the caller is a cron job, not a
-person, and it has no org. Unset secret **disables the route** rather than
-leaving it open — an unauthenticated tick is a free way for anyone to spend
-every tenant's provider quota, and "nobody will find the URL" is not an access
-control.
-
-Compared on the raw bytes with ``secrets.compare_digest`` so a wrong secret
-costs the same time as a right one.
+A free Render service sleeps after ~15 idle minutes and in-process timers do
+not keep it awake, so an outside cron calls this: the request that wakes it
+also does the work. Auth is a shared header secret compared with
+``secrets.compare_digest``; unset, the route is disabled, since an open tick
+spends every tenant's provider quota.
 """
 
 from __future__ import annotations
@@ -43,13 +24,9 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 @router.post("/tick")
 def tick(x_tick_secret: str | None = Header(default=None)):
-    """Run one background pass: reap stuck jobs, sync due connections, run
-    due schedulers.
+    """Run one pass: reap stuck jobs, sync due connections, run due schedulers.
 
-    Idempotent and safe to call often: every step is already guarded (the
-    interval floor, the unique active-job index, the scheduler's claim). A
-    minute-granularity cron is fine; the work happens only when something is
-    actually due.
+    Idempotent (each step is guarded), so a per-minute cron is fine.
     """
     settings = AutoSyncSettings.from_env()
     if not settings.tick_secret:

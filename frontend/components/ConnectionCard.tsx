@@ -143,13 +143,8 @@ function manageExternalTitle(provider: Provider, connection: ConnectionRecord): 
   return "Open Notion to share or unshare pages with this integration";
 }
 
-/** "last checked 12 minutes ago" — the freshness signal that replaced Check.
- *
- * Automatic sync (``app/jobs/autosync.py``) stamps ``last_sync_at`` on every
- * ATTEMPT, so this answers "is the background sync alive?" and nothing more:
- * a stamp is not a promise that anything was ingested. That is exactly the
- * question the removed Check button used to answer by hand.
- */
+/** "last checked 12 minutes ago". `last_sync_at` is stamped on every ATTEMPT,
+ * so this says the sync is alive, not that anything was ingested. */
 function checkedAgo(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
   if (!Number.isFinite(minutes) || minutes < 0) return "just now";
@@ -213,9 +208,8 @@ export function ConnectionCard({
   const [changingTeams, setChangingTeams] = useState(false);
   const [invitingMembers, setInvitingMembers] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
-  // Files in the saved folder Handbook cannot index because Google will not
-  // say who they are shared with. Held on the CARD rather than in the picker
-  // because the picker closes on save and this has to outlive it.
+  // Files Google will not report sharing for, so not indexed. On the card:
+  // the picker closes on save.
   const [sharing, setSharing] = useState<SharingWarning | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
@@ -888,10 +882,7 @@ export function ConnectionCard({
             <span className="connection-reauth-title">{sharing.title}</span>
             <p className="connection-reauth-desc">{sharing.detail}</p>
             {sharing.files.length > 0 && (
-              // Named on purpose, unlike the notification bell: whoever is
-              // choosing this folder can already open it in Drive, so listing
-              // what is in it discloses nothing -- and "which ones?" is the
-              // immediate next question.
+              // Named here: the picker can already open this folder in Drive.
               <p className="connection-reauth-desc">
                 {sharing.files.join(", ")}
                 {sharing.count > sharing.files.length

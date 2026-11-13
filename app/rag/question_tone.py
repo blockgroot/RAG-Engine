@@ -1,16 +1,10 @@
 """Question tone: classify intent, then compose empathy outside grounding.
 
-Production shape (no keyword lists, no empathy rules in the grounded prompt):
-
-1. ``classify`` — cheap aux LLM labels the QUESTION as ``factual`` or
-   ``supportive`` (semantic rubric; paraphrases welcome; topic alone never
-   forces SUPPORTIVE).
-2. Grounded generate — policy facts only (unchanged gate + slim prompt).
-3. ``compose`` — if SUPPORTIVE and we have an answer, a second tiny aux call
-   writes one acknowledgment sentence; code prepends it to the grounded body.
-
-Empathy is therefore a structural pipeline step, not something we hope the
-large grounding prompt will remember.
+1. ``classify``: the aux model labels the question ``factual`` or
+   ``supportive``.
+2. Grounded generation, unchanged.
+3. ``compose``: for a supportive question with an answer, one aux sentence
+   of acknowledgment is prepended in code.
 """
 
 from __future__ import annotations

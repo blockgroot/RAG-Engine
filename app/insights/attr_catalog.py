@@ -1,24 +1,15 @@
 """Which recorded fields actually exist, read from the data itself.
 
-The other half of ``fields.simple_fields``: the writers keep every simple
-field a tool returned, and this works out -- per metric, per scope -- which of
-them a chart can use, and how. Nothing is listed by hand, so a field becomes
-chartable the day a tool starts sending it. ``registry.ATTRS`` survives only
-as display HINTS (a nicer name, a unit) for fields we already know.
+Per metric and scope, which kept fields a chart can use; nothing is listed by
+hand (``registry.ATTRS`` is display hints only). Typed from the rows:
 
-How a field is typed, from the rows in scope:
+- a JSON array -> ``tags`` (an item counts under each)
+- a number     -> ``number`` (summable)
+- text or bool -> ``category``, only when it groups: at most
+  ``MAX_CATEGORY_DISTINCT`` values and not unique per item.
 
-- a JSON array            -> ``tags``     (an item counts under each)
-- a number                -> ``number``   (summable)
-- text or true/false      -> ``category``, but ONLY when it actually groups:
-  at most ``MAX_CATEGORY_DISTINCT`` values and not unique per item. A branch
-  name on every PR, say, would draw one bar per PR -- a list, not a chart.
-
-A field must appear on at least ``MIN_ROWS`` rows, and a key that is not a
-bare identifier is ignored even though the writer already normalized it: the
-key is spliced into SQL as a JSON key literal, so it is checked at read time
-too. Viewer-filtered, so a field present only on items this person cannot
-open is not even named to them.
+At least ``MIN_ROWS`` rows; non-identifier keys ignored (spliced into SQL).
+Viewer-filtered, so a field only on items this person cannot open is unnamed.
 """
 
 from __future__ import annotations
@@ -53,11 +44,8 @@ def _label(key: str) -> str:
 def discover_scope(
     *, org_id: str, workspace_id: str | None, viewer=None, days: int = WINDOW_DAYS,
 ) -> dict[tuple[str, str], tuple[registry.Attr, ...]]:
-    """``{(provider, kind): attrs}`` for every fact kind in this scope.
-
-    One query for the whole scope (the router calls this once per chart-shaped
-    question). Raises ``ProviderError``; callers degrade to no attributes.
-    """
+    """``{(provider, kind): attrs}`` for every fact kind in this scope, one
+    query. Raises ``ProviderError``; callers degrade to no attributes."""
     from .store import _scoped, _viewer_filter  # one spelling of each rule
 
     where = _scoped(

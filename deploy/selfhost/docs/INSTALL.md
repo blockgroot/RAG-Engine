@@ -110,7 +110,7 @@ Check the services:
 docker compose ps
 ```
 
-All six services (`caddy`, `web`, `api`, `worker`, `updater`, `db`) should show `running`, and `api` should show `healthy`.
+All seven services (`caddy`, `web`, `api`, `worker`, `updater`, `db`, `redis`) should show `running`, and `api` should show `healthy`. `redis` runs Valkey and holds only the rate-limit counts, so it needs no backup.
 
 If `api` keeps restarting, its log names the problem:
 
@@ -127,7 +127,7 @@ Handbook checks its settings when it starts and stops with a message when someth
 1. Open `https://<your domain>` and enter the work email you set as `HANDBOOK_ADMIN_EMAIL` in `.env`.
 2. Open the sign-in link that arrives by email. You are in as your company's admin.
 
-There is no public sign-up page: your Handbook holds only your company. Colleagues join when an admin invites them from the admin page.
+There is no public sign-up page: your Handbook holds only your company. Colleagues join when an admin invites them under **People**. Your email's domain becomes your company's: only addresses at exactly that domain can be invited, or set as someone's new sign-in email. A subdomain counts as another domain.
 
 ## 5. Get Handbook ready for your company
 
@@ -170,6 +170,20 @@ Handbook checks this every time it starts. If the sizes differ, it refuses to st
 ### Changing the embedding size
 
 Changing the database's vector size is not a self-service step yet. Contact us **before your first sync** and we will give you the steps for your version.
+
+## Limits on AI use
+
+Handbook limits how much each person and the company can use Claude Sonnet 5.5 and Claude Haiku 5.5, the two models people can pick in the chat when the key is a Claude key. The limits are on by default and are set in `.env`:
+
+| Setting | Default | What it limits |
+| --- | --- | --- |
+| `AI_PERSON_DOLLARS_PER_DAY` | `0.30` | Dollars a day per person, whichever of the two models answers |
+| `AI_COMPANY_DOLLARS_PER_DAY` | `3.00` | Dollars a day for the whole company |
+| `AI_TOKEN_LIMITS` | 60,000 input and 8,000 output tokens a minute per person; 400,000 and 40,000 for the company; for each model | Tokens a minute, per model |
+
+`AI_TOKEN_LIMITS` is written per model, separated by commas: `model=person_in:person_out:company_in:company_out`, for example `claude-sonnet-5-5=60000:8000:400000:40000`.
+
+A question is refused once one of these runs out, and allowed again as it refills. Set a dollar limit to `0` to turn it off. Raise them to fit your own plan with your AI provider, then run `docker compose up -d`. Background work is not counted, and a model other than these two has no limit.
 
 ## Current limitations
 

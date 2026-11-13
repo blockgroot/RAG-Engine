@@ -1,9 +1,5 @@
-"""Notion: re-read one page that retrieval already returned (plan Phase 3).
-
-The block walk is the ingest adapter's own renderer with ONE shared char
-budget (the Notion lesson: an unbounded nested walk built an unbounded string
-and unbounded API calls), and it is additionally bounded in CALLS here, since
-a page of empty blocks spends no characters.
+"""Notion: re-read one page retrieval already returned, with the ingest
+renderer under one char budget, and bounded in CALLS too (empty blocks cost no chars).
 """
 
 from __future__ import annotations
@@ -60,11 +56,8 @@ def read_page(token: str, external_id: str) -> ProviderRead:
 
 
 class _CountingClient:
-    """The Notion client with `blocks.children.list` capped at ``limit`` calls.
-
-    Past the cap it returns an empty page, so the adapter's renderer stops
-    cleanly and ``exhausted`` tells the caller to mark the text truncated.
-    """
+    """The Notion client with `blocks.children.list` capped at ``limit`` calls; past
+    it an empty page, and ``exhausted`` marks the text truncated."""
 
     def __init__(self, client, limit: int) -> None:
         self._client = client

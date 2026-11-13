@@ -1,8 +1,4 @@
-"""Admin routes for the company's own Google and Slack apps (``org_apps``).
-
-Everything an admin must paste into Google or Slack is given here, filled in,
-so the setup is copying values rather than knowing them.
-"""
+"""Admin routes for the company's own Google and Slack apps, with every value to paste filled in."""
 
 from __future__ import annotations
 
@@ -19,9 +15,8 @@ from .deps import SessionClaims, require_admin
 
 router = APIRouter(prefix="/admin/connector-apps", tags=["admin"])
 
-# What Handbook's code expects of a Slack app. Kept equal to the self-hosted
-# template (deploy/selfhost/apps/templates/slack-manifest.yml) by
-# tests/test_own_connector_apps.py; change both together.
+# What our code expects of a Slack app. tests/test_own_connector_apps.py keeps
+# it equal to deploy/selfhost/apps/templates/slack-manifest.yml.
 _SLACK_BOT_SCOPES = [
     "channels:history", "channels:read", "channels:join", "groups:history", "groups:read",
     "im:history", "im:read", "mpim:history", "mpim:read", "users:read", "users:read.email",

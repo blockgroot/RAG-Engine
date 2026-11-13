@@ -1,8 +1,5 @@
-"""The chart-picture interface.
-
-Slack has no canvas, so a chart that the web draws as SVG has to travel as an
-image. The renderer sits behind this interface so the drawing library can be
-swapped (e.g. a server-side ECharts render) without touching the Slack flow.
+"""The chart-picture interface: Slack has no canvas, so a chart travels as an
+image. Behind an interface so the drawing library can be swapped.
 """
 
 from __future__ import annotations
@@ -27,8 +24,5 @@ class ChartRenderer(ABC):
         period: str = "month",
     ) -> bytes:
         """Draw one chart panel (the dict `InsightsAgent` returns) as PNG bytes.
-
-        ``width``/``height`` are pixels; ``None`` uses the configured size.
-        ``period`` is the panel's time grain, which formats the time axis.
-        Raises ``ChartRenderError``.
-        """
+        ``width``/``height`` in pixels (``None``: configured size); ``period``
+        formats the time axis. Raises ``ChartRenderError``."""

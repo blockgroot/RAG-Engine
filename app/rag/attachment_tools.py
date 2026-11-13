@@ -1,33 +1,18 @@
 """The `read_file` tool: let the model page through a long attachment.
 
-Why a tool rather than a bigger prompt
--------------------------------------
-A 300-page contract does not fit in a context window, and the alternative to
-paging is a hard truncation -- which answers a question about the contract
-from its first N characters and presents that as an answer about the whole
-thing. That is the "partial result that looks complete" failure CLAUDE.md §2
-names, and on an attachment it is worse than on a synced source: the asker is
-holding the document, so a half-read answer is one they will believe and
-cannot check.
-
-Why the slice is in MEMORY, not a query
----------------------------------------
-`load_attachment_texts` already returns the full text in the one query the
-turn was going to make anyway -- 0.4MB at the ceiling. So paging costs nothing
-at the database and this module never touches it, which is also what keeps
-`app/rag/` from importing `app/attachments/`.
-
-Bounded like every other walk here: ``max_reads`` calls of ``max_read_chars``
-in ONE round, never a loop (the rule GitHubAgent already sets).
+Truncating a long file would answer from its first N characters as if it
+were the whole: the "partial result that looks complete" failure. The full
+text is already in memory, so paging costs no query (and keeps `app/rag/`
+off `app/attachments/`). Bounded: ``max_reads`` calls of
+``max_read_chars`` in ONE round.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-#: Files are addressed by 1-based INDEX, not filename: two uploads can share a
-#: name, and the index is what the preview block already labels them with, so
-#: the model is choosing from something it can see.
+#: Files are addressed by 1-based INDEX (names can repeat), as the preview
+#: labels them.
 READ_FILE_TOOL = {
     "type": "function",
     "function": {
@@ -66,18 +51,13 @@ class AttachedFile:
 
     filename: str
     text: str
-    #: The file was longer than the extractor's own budget, so even the stored
-    #: text is partial. Carried through to the prompt -- a file cut twice must
-    #: not be described as read once.
+    #: The extractor already cut the stored text; said in the prompt.
     truncated: bool
 
 
 def build_preview_block(files: list[AttachedFile], preview_chars: int) -> str:
-    """The ATTACHED FILES header: what exists, how big, and its opening.
-
-    The length is stated because the model cannot otherwise choose a sensible
-    ``start_char`` -- without it, paging is guesswork against an unknown end.
-    """
+    """The ATTACHED FILES header: what exists, its length (so ``start_char`` is
+    not guesswork) and its opening."""
     lines = []
     for i, f in enumerate(files, start=1):
         head = f.text[:preview_chars].strip()
@@ -98,10 +78,8 @@ def run_reads(
 ) -> list[str]:
     """Execute the model's `read_file` calls. Returns context strings.
 
-    Every argument is treated as untrusted: a bad ``file_id`` is skipped
-    rather than raising, and the offsets are clamped into the text. A model
-    asking for character 900000 of a 40000-character file is a mistake to
-    absorb, not a 500 -- the answer path must survive it.
+    Arguments are untrusted: a bad ``file_id`` is skipped and offsets are
+    clamped, never a 500.
     """
     contexts: list[str] = []
     for name, args in calls[:max_reads]:
@@ -121,8 +99,7 @@ def run_reads(
         if not excerpt.strip():
             continue
         end = start + len(excerpt)
-        # The RANGE is stated so the model cannot present an excerpt as the
-        # whole file, and so a later "is that everything?" is answerable.
+        # The RANGE is stated so an excerpt is never presented as the whole file.
         contexts.append(
             f"Attached file: {chosen.filename} "
             f"(characters {start}–{end} of {len(chosen.text)})\n\n{excerpt}"

@@ -1,18 +1,9 @@
 """The ask box: a question becomes a validated registry spec, or a refusal.
 
-This is the ONLY place an LLM touches this feature, and the shape is chosen so
-that it cannot produce a wrong number. The model **selects** from a fixed list
-of metrics and dimensions; it never writes SQL, names a column, or emits a
-figure. Everything it returns is validated against the registry, so a
-hallucinated metric costs a refusal rather than a chart of something else.
-
-Not a chatbot: one turn, no conversation, no memory. A follow-up ("now by
-month") **patches the previous spec** via ``patch_spec`` rather than
-re-resolving, so it cannot silently change which metric is being shown.
-
-This is deliberately NOT routed through ``RagPipeline``: there is no
-retrieval, no confidence gate and no grounded prompt involved, and borrowing
-that path would imply guarantees this does not need or provide.
+The model only SELECTS from registry metrics and dimensions; it never writes
+SQL or emits a figure, so a hallucination costs a refusal, not a wrong chart.
+A follow-up patches the previous spec (``patch_spec``) so it cannot change the
+metric. Not routed through ``RagPipeline``: no retrieval, no gate.
 """
 
 from __future__ import annotations
@@ -38,28 +29,20 @@ logger = logging.getLogger(__name__)
 #: over it would be pedantry.
 DEFAULT_PERIOD = "month"
 
-#: One flat JSON object of about twenty fields, each quote copied from the
-#: question. 200 cut a full reply off before its closing brace (logged as
-#: ``llm.truncated``), and the chart was refused as unreadable. The cap is a
-#: ceiling, not a cost: a reply stops when its object does.
+#: Fits the whole JSON reply; 200 cut it off and the chart was refused.
+#: A ceiling, not a cost.
 MAX_TOKENS = 600
 
 
 class CannotChart(Exception):
-    """The question does not map onto anything we can actually count.
-
-    Carries the message shown to the member, which always names what IS
-    available -- a bare "no" leaves them guessing, and the point of refusing is
-    to redirect rather than to stop.
-    """
+    """The question maps onto nothing we can count. The message names what IS
+    available, so the refusal redirects."""
 
 
 @dataclass(frozen=True)
 class Versus:
-    """The second figure of a two-table chart ("target vs achieved"): a sum,
-    count or average of another table's rows per the same people or items.
-    Validated against that table like any pick; re-checked for the viewer at
-    run time."""
+    """The second figure of a "target vs achieved" chart, from another table,
+    per the same names. Validated like a pick; re-checked for the viewer."""
 
     table_id: str
     group_by: str
@@ -76,10 +59,8 @@ class ChartSpec:
     group_by: str | None
     period: str
     chart: str
-    #: What the member named ("the DAO repo", "#rag-updates", "the Leave
-    #: Policy"). RAW text on purpose: it is resolved against the subjects that
-    #: actually have rows, in the scope, at run time -- this layer has no
-    #: database and must not pretend to validate it.
+    #: What the member named, RAW: resolved against real subjects at run time;
+    #: this layer has no database and must not pretend to validate it.
     focus: str | None = None
     #: The query grammar (`query.py`). A second grouping from the metric's
     #: own dims, drawn as "group · split" categories.
@@ -109,11 +90,7 @@ class ChartSpec:
 def spec_to_dict(spec: ChartSpec) -> dict:
     """The one serialisation of a spec for the agent graph's state.
 
-    Chat and Slack each built this dict by hand and both omitted ``focus``, so
-    "commits in the DAO repo" reached InsightsAgent as commits in EVERY repo
-    -- the chart-answering-a-different-question failure ``focus`` exists to
-    prevent. One function both directions, so a field added to ``ChartSpec``
-    cannot be dropped at a call site again.
+    Hand-built dicts in chat and Slack dropped ``focus`` and charted every repo.
     """
     return {
         "metric": spec.metric,
@@ -140,11 +117,9 @@ def spec_to_dict(spec: ChartSpec) -> dict:
 def _parse_versus(raw, pick, handles) -> tuple[str, Versus] | None:
     """The second table of a "target vs achieved" chart, validated like a pick.
 
-    Both sides are grouped by the column naming the people or items (a
-    category, never a date: the names are what the bars are matched on).
-    Raises ``TableRefusal`` for a second side that names a real table but
-    does not fit it; anything else is no second side at all. Returns the
-    first side's names column with the second side."""
+    Both sides group by a category column of names (never a date). Raises
+    ``TableRefusal`` for a real table that does not fit; anything else is no
+    second side. Returns the first side's names column with the second side."""
     if not isinstance(raw, dict) or not isinstance(raw.get("table"), str):
         return None
     second = doc_tables.parse_pick({**raw, "split_by": None, "chart": None}, handles)
@@ -209,46 +184,21 @@ def spec_from_dict(data: dict) -> ChartSpec:
 class AskIntent:
     """What Ask should do with this question.
 
-    ``qa`` — a document question; the cosine router picks Notion/Slack/….
-    ``chart`` — count something we store; InsightsAgent runs SQL.
-    ``refuse`` — they wanted a visual we cannot count; do not RAG.
-    ``github_live`` — a code or repository question; GitHubAgent reads live.
-    ``unavailable`` — they asked about a connector that is NOT connected in
-    this scope. A distinct outcome because "Slack is not connected here" and
-    "I cannot chart that" are different facts, and answering the second when
-    the first is true sends someone hunting a product limitation that does not
-    exist. The message names the connector and says who can fix it.
-
-    Why ``github_live`` exists, and why it is the one place an LLM picks a
-    non-chart destination: GitHub embeds nothing, so it can never win the
-    cosine probe, and the two keyword rules cannot be extended to cover the
-    rest. No regex distinguishes "auth code" from "code of conduct" — and a
-    code of conduct is a Notion page — which is exactly why ``_CODE_INTENT``
-    is kept collision-free rather than widened.
-
-    This bends CLAUDE.md's "No LLM picks the *source*". The amendment is
-    narrow: that rule's own rationale is "the corpus answers which source
-    resembles this", and GitHub has no corpus, so the reasoning never covered
-    it. ``GitHubAgent`` is structurally grounded — composed only from tool
-    output, with the fixed fallback on any miss — so a wrong pick costs a
-    refusal, which is the standard the whole router already sets.
+    ``qa`` a document question; ``chart`` count something stored; ``refuse`` a
+    visual we cannot count; ``github_live`` a code question read live (GitHub
+    embeds nothing, so it never wins the cosine probe); ``unavailable`` the
+    named connector is not connected here, a different fact from "cannot chart".
     """
 
     kind: str  # qa | chart | refuse | github_live
     spec: ChartSpec | None = None
     message: str | None = None
-    #: Does the question ask about the CURRENT state of something (status,
-    #: progress, done/blocked/reviewed, latest update)? Decides whether the
-    #: Second Brain re-reads the matching items live (app/livetools). Asked in
-    #: this call because it already runs for every chat question, beside the
-    #: cosine probe: a separate "should I read live?" call would cost more
-    #: than the live read it decides about. ``None`` = the model was not asked
-    #: or did not say; the gateway then reads live (only False skips).
+    #: Does it ask about CURRENT state (status, progress, latest)? Decides the
+    #: live re-read; asked here because this call already runs. ``None`` = not
+    #: said, and the gateway reads live (only False skips).
     needs_live: bool | None = None
-    #: Ask's question check only: ``"visual"`` when they asked to SEE a chart
-    #: or graph, ``"count"`` when they asked how many/how much of something,
-    #: else None. Read by the model from the question in any wording or
-    #: language -- no word list decides it.
+    #: ``"visual"`` (asked to see a chart), ``"count"`` (how many/much), or
+    #: None. Read by the model, never a word list.
     chart_ask: str | None = None
     #: Ask's question check only, when table answers are on: True when the
     #: question asks for a figure worked out over a table's rows (a total, a
@@ -257,10 +207,8 @@ class AskIntent:
     #: A page, file or sheet the question named, copied from the question.
     #: Set only when those words are really in the question.
     named_document: str | None = None
-    #: The connector the question names or plainly means ("the Google doc",
-    #: "in Notion"), as its stored id. Read by the model, kept only when the
-    #: words it quoted are in the question and the connector is in scope. A
-    #: chart is never drawn from another connector's rows when this is set.
+    #: The connector the question names, kept only when its quoted words are in
+    #: the question and it is in scope. Then no other connector's rows are drawn.
     source: str | None = None
 
 
@@ -268,12 +216,8 @@ _JSON_RE = re.compile(r"\{.*\}", re.S)
 
 
 def _available(providers: list[str]) -> list[registry.Metric]:
-    """Metrics this scope can actually answer.
-
-    Scoped rather than global on purpose: offering a metric the tenant cannot
-    chart invites the model to pick it, which turns an ordinary question into a
-    refusal.
-    """
+    """Metrics this scope can answer: offering one it cannot chart invites a
+    refusal."""
     out: list[registry.Metric] = []
     for provider in providers:
         out.extend(registry.for_provider(provider))
@@ -365,10 +309,8 @@ _UNAVAILABLE_VALUE = {
 def _unavailable_message(provider: str) -> str:
     """Names the connector, what it would give, and who can connect it.
 
-    Deliberately NOT the generic refusal: "I can't chart that" is a statement
-    about the product, and it is false when the truth is "this space has no
-    Slack". Someone told the first thing goes looking for a missing feature;
-    someone told the second asks an admin.
+    Not the generic refusal: "can't chart that" is false when the truth is
+    "this space has no Slack", and sends people hunting a missing feature.
     """
     label = provider.title() if provider != "github" else "GitHub"
     if provider == "google":
@@ -404,11 +346,8 @@ def _refusal(metrics: list[registry.Metric], tables: list | None = None) -> str:
 
 
 def unsupported_model_message(label: str, alternatives: list[str]) -> str:
-    """The selected model cannot build charts; name the ones that can.
-
-    Said plainly rather than as a chart refusal: "this can't be charted"
-    blames the question, when the same question works on another model.
-    """
+    """The selected model cannot build charts; name the ones that can, rather
+    than blame the question."""
     names = [a for a in alternatives if a]
     if len(names) > 1:
         options = ", ".join(names[:-1]) + f" or {names[-1]}"
@@ -467,12 +406,8 @@ def prose_figures_unclear(titles: list[str], tables: list[str]) -> str:
     )
 
 
-#: Ask's question check is short: three small fields. The cap is not sized to
-#: them: Claude Haiku wraps the JSON in a ```json fence over several lines and
-#: ran past 40 tokens, and a reply cut before its "}" read as no verdict -- no
-#: live read, no chart hint, silently. The model stops at the end of the JSON.
-#: 200 was cut too: Haiku sometimes reasons in prose first (119 tokens measured,
-#: "who missed their revenue target?" cut at 200, no table figures worked out).
+#: Sized for prose a model may write before the JSON (Haiku fences it, and
+#: reasoned 119 tokens first). 40 and 200 were cut, silently losing the verdict.
 ROUTE_MAX_TOKENS = 600
 
 
@@ -482,13 +417,9 @@ def with_earlier(question: str, earlier: str | None) -> str:
 
 
 def _route_prompt(question: str, *, github: bool, table: bool = False) -> str:
-    """Ask's question check, now that charts have their own mode.
-
-    Two things only: is this about the CODE itself (read live from GitHub),
-    and does it ask about the CURRENT state of something (worth a live
-    re-read). No metric list, no fields, no tables: those were most of the
-    old prompt and are Chart mode's business.
-    """
+    """Ask's question check: code (read GitHub live), chart ("visual"/"count"),
+    table figures (only when asked for), and current state (live re-read).
+    Metrics, fields and tables are Chart mode's."""
     fenced = scrub_untrusted_text(question)[:500]
     return (
         "Answer two questions about this question.\n\n"
@@ -568,11 +499,8 @@ def classify_route(question: str, *, github: bool, llm=None, table: bool = False
                                     _json_object(reply).get("table") is True))
 
 
-#: Every connector that has chartable metrics at all. Compared against what
-#: is connected so the model can name one the tenant does NOT have -- offering
-#: only connected providers made "chart our Slack activity" in a Slack-less
-#: space come back as "I can't chart that", which is a claim about the product
-#: rather than about the connection.
+#: Every connector with chartable metrics, so the model can name one that is
+#: NOT connected ("not connected here", not "can't chart that").
 def _chartable_providers() -> list[str]:
     seen = []
     for metric in registry.METRICS.values():
@@ -604,17 +532,13 @@ def _prompt(
     missing: list[str] | None = None, tables: list | None = None,
     fields: dict | None = None, chart_mode: bool = False, names: dict | None = None,
 ) -> str:
-    # The question is user text reaching a prompt, so it is scrubbed and fenced
-    # like any other untrusted input. That is a mitigation, not the guarantee:
-    # validation below is the actual gate, and the tests assert the outcome
-    # assuming the prompt LOST.
+    # User text reaching a prompt: scrubbed and fenced. A mitigation only;
+    # validation below is the gate.
     fenced = scrub_untrusted_text(question)[:500]
     return (
         (
-            # Chart mode: the asker CHOSE a chart. The job is to pick what to
-            # count, not to second-guess the choice -- a small model asked
-            # "chart or prose?" answered prose for "Pull requests merged per
-            # week".
+            # Chart mode: the asker chose a chart; a small model asked "chart or
+            # prose?" answered prose for "Pull requests merged per week".
             "They switched on Chart mode: they want a CHART. Pick what to count "
             "from the list below.\n\n"
             "intent=qa ONLY when the question plainly asks for a written answer "
@@ -813,10 +737,7 @@ def _prompt(
 
 
 def _chart_for(metric: registry.Metric, group_by: str | None) -> str:
-    """Default shape when the model does not pick one, or picks badly.
-
-    A grouped count is a leaderboard; the same count over time is a line.
-    """
+    """Default shape: a grouped count is a bar, the same count over time a line."""
     if group_by:
         return "bar" if metric.chart in ("line", "bar") else metric.chart
     return metric.chart
@@ -848,11 +769,8 @@ def _metric_words(metric: registry.Metric) -> set[str]:
 
 
 def _operation_words() -> set[str]:
-    """Measure words shared by two or more connectors: "people", "count".
-
-    They describe how to count, not which resource is counted, so a question
-    that says "how many people" is not about the sentiment metric.
-    """
+    """Measure words shared by several connectors ("people", "count"): they say
+    how to count, not what, so they pick no connector."""
     owners: dict[str, set[str]] = {}
     for metric in registry.METRICS.values():
         for measure in query.measures_for(metric).values():
@@ -864,10 +782,7 @@ def _operation_words() -> set[str]:
 
 def _label_evidence(question: str) -> tuple[set[str], set[str]]:
     """Connectors whose own metric wording is in the question, and those words.
-
-    A word used by two connectors ("edited" is both pages and files) identifies
-    neither, and a shared measure word does not either. ``(providers, words)``.
-    """
+    A word two connectors share identifies neither. ``(providers, words)``."""
     skip = _operation_words()
     owners: dict[str, set[str]] = {}
     for metric in registry.METRICS.values():
@@ -884,11 +799,8 @@ def _label_evidence(question: str) -> tuple[set[str], set[str]]:
 
 
 def _name_evidence(question: str, names: dict | None) -> set[str]:
-    """Connectors that hold a real subject or person the question names.
-
-    ``names`` is ``store.scope_names``: the rows this scope actually has.
-    A name stored on two connectors does not decide between them.
-    """
+    """Connectors holding a real subject or person the question names
+    (``store.scope_names``). A name on two connectors decides nothing."""
     asked = f" {_squashed(question)} "
     owners: dict[str, set[str]] = {}
     for (provider, _kind), dims in (names or {}).items():
@@ -957,11 +869,8 @@ def _spec_on_metric(spec: ChartSpec, metric: registry.Metric, fields) -> ChartSp
 def _best_metric(
     provider: str, metrics: list[registry.Metric], words: set[str],
 ) -> list[registry.Metric]:
-    """Metrics on ``provider`` the question's words actually fit.
-
-    The unique best overlap wins. No overlap means the question identified
-    the connector (a stored name, a document) but not which of its metrics.
-    """
+    """Metrics on ``provider`` the question's words fit; the unique best overlap
+    wins. None: the connector was identified but not the metric."""
     scored = []
     for metric in metrics:
         if metric.provider != provider:
@@ -993,13 +902,10 @@ def _align_connector(
 ) -> AskIntent:
     """Point the chart at the resource the question actually matches.
 
-    Not by a list of product names. A connector is the one whose own metrics
-    share the most words with the question ("files edited" fits files, not
-    pages), or that holds a subject, person, or document the question names.
-    A tie, including a word two connectors share, decides nothing.
-    Drive and Notion share ``doc_changed``, so a model pick of the other
-    connector draws the wrong rows. Nothing matched, and two connectors
-    share the picked kind: refuse, rather than draw one of them.
+    By words of each connector's own metrics, or a stored name or document the
+    question names, never a list of product names; a tie decides nothing.
+    Drive and Notion share ``doc_changed``: with no match, refuse rather than
+    draw one of them.
     """
     if intent.kind != "chart" or intent.spec is None:
         return intent
@@ -1092,12 +998,9 @@ def _align_connector(
             ),
         )
 
-    # Nothing in the question picks a connector. A TABLE pick is one document's
-    # own rows, not a kind two connectors share, so it is drawn when the
-    # question has a word of that table's own labels or names its page:
-    # refusing every pick across two connectors refused "leads by stage" on
-    # the only leads table there was. A pick nothing in the question supports
-    # ("chart the totals") is the model's guess between documents.
+    # Nothing picks a connector. A TABLE pick is drawn when the question has a
+    # word of its labels or names its page (refusing every cross-connector
+    # pick refused "leads by stage"); a pick nothing supports is a guess.
     if spec.table_id:
         from .tables import label_hits
 
@@ -1137,16 +1040,9 @@ def classify_question(
 ) -> AskIntent:
     """Classify Ask as qa, a validated chart, or a visual we cannot count.
 
-    ``offer_github=False`` is chat's Chart mode: the asker chose a chart, so a
-    live code read is not a destination this call may pick.
-
-    ``tables`` are document tables the asker may open (``doctables.store.
-    list_tables`` with their viewer); only those sharing a word with the
-    question are offered, ranked by the caller (``insights.tables.rank``).
-
-    ``fail_open`` is for the chat router: a dead LLM must not refuse a leave
-    policy question. The dedicated ``/insights/ask`` path sets it False so a
-    failure stays a refusal, matching the old ask-box contract.
+    ``offer_github=False`` is Chart mode: no live code read. ``tables`` are
+    those the asker may open, ranked by the caller. ``fail_open`` (chat): a
+    dead LLM must not refuse a policy question; ``/insights/ask`` refuses.
     """
     metrics = _available(providers)
     # Already ranked by meaning and capped by the caller (routing), which
@@ -1305,24 +1201,16 @@ def _squashed(text: str) -> str:
 
 
 def title_mentioned(title: str, question: str) -> bool:
-    """True when some run of the stored title, at least 8 letters, is in the question.
-
-    "Quarterly update 2026" still matches "the quarterly update page". A title
-    that shares no such run does not, so an unrelated page is not pulled in.
-    """
+    """True when a run of the stored title of at least 8 letters is in the
+    question, so an unrelated page is not pulled in."""
     return title_match(title, question) >= 8
 
 
 def title_match(title: str, question: str) -> int:
-    """Letters in the longest run of the title the question contains. Callers
-    choosing among pages keep the longest: "Annual Manufacturing Performance
-    Report" over "Customer Support Performance Update", which shares only
-    "Performance" with the question.
-
-    The run is at least two words unless the title has only one word besides
-    numbers ("Onboarding 2025"): one word of a longer title is a topic, not a
-    name. "Won revenue by employee" named "Employee Referral Policy" and
-    charted its bonus table."""
+    """Letters in the longest run of the title the question contains; callers
+    keep the longest. The run is two words or more unless the title has one
+    word besides numbers: one word of a longer title is a topic, not a name
+    ("by employee" charted "Employee Referral Policy")."""
     words = _squashed(title).split()
     asked = f" {_squashed(question)} "
     shortest = 2 if sum(not w.isdigit() for w in words) > 1 else 1
@@ -1336,12 +1224,10 @@ def title_match(title: str, question: str) -> int:
 
 
 def _chart_the_named_table(question: str, reply: str, handles: dict) -> AskIntent | None:
-    """Chart mode named a page we already offered, and the model picked nothing.
+    """Chart mode named an offered page and the model picked nothing.
 
-    One offered title (or table name) has to be a phrase in the question.
-    Two matches stay unresolved, so a later message can say which page.
-    The shape is whatever the model put in ``chart``; a missing shape is the
-    ordinary bar or line for that column.
+    Exactly one offered title must be a phrase in the question; two stay
+    unresolved. A missing shape is the ordinary bar or line.
     """
     if not handles:
         return None
@@ -1417,11 +1303,8 @@ def _quoted_source(question: str, reply: str, known: set[str]) -> str | None:
 def chart_document_gap(question: str, named: str | None, tables, places) -> str | None:
     """When a chart names a page this space cannot chart, say where it is.
 
-    A page in another workspace, asked from Company-wide, used to come back
-    as "turn off Chart" or "this can't be shown as a chart". The page title
-    has to sit in the question, the same way a focus has to match a stored
-    name. None when nothing named is missing, so a real prose question stays
-    a prose question.
+    The title must be in the question, so a prose question stays prose. None
+    when nothing named is missing.
     """
     asked = _squashed(question)
     offered = {_squashed(getattr(t, "document_title", "") or "") for t in (tables or [])}
@@ -1503,15 +1386,11 @@ def chart_document_gap(question: str, named: str | None, tables, places) -> str 
 
 
 def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) -> AskIntent:
-    """"Units by each plant PER MONTH" on a table: the asker's period is the
-    table's axis, the model's breakdown its series.
+    """"Units by each plant PER MONTH" on a table: the asker's period makes the
+    table's first column the axis and the model's breakdown the series.
 
-    Claude Haiku put "month" in the activity ``period`` field and drew plant
-    totals. When that period word is in the question, the table's first
-    column (its axis: a read page's period, a real table's row label) is not
-    used yet, and it is not filtered, it becomes ``group_by`` and the model's
-    pick ``split_by``. Format and position only; the model's word must be
-    the asker's.
+    Only when the period word is the asker's and that column is unused and
+    unfiltered (Haiku put "month" in ``period`` and drew totals).
     """
     spec = intent.spec
     if intent.kind != "chart" or spec is None or not spec.table_id or spec.split_by \
@@ -1582,11 +1461,8 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
     about_period = bool(words) and (words == quote or (word and f" {word}" in f" {words}"))
     if (split is None and (group in dates or period_asked) and words and not about_period
             and f" {words} " in f"{asked_text} "):
-        # They asked for a breakdown ("by employee", "by region") the model
-        # matched to no column of this table, and only a time axis is left
-        # (a date column, or the asked period on a read page's Period):
-        # that chart answers another question ("revenue by region by month"
-        # drew the targets sheet by month). Say which columns can be the breakdown.
+        # A breakdown asked for but matched to no column, with only a time axis
+        # left, answers another question: refuse, naming the columns.
         from .tables import _options
 
         return AskIntent("refuse", message=(
@@ -1602,11 +1478,9 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
 
 
 def _table_range(intent: AskIntent, question: str, reply: str, handles) -> AskIntent:
-    """"Weekly leads in November" on a table: the named month is a filter on
-    the date column. Claude Haiku quoted "in November" as range_words every
-    time and left filters empty, so every week of the sheet was drawn. Kept
-    only when the quote is the asker's and the period is a real date format;
-    a date filter the model did set stands."""
+    """"Weekly leads in November" on a table: the named month filters the date
+    column. Kept only when the quote is the asker's and the period is a real
+    date; a date filter the model set stands."""
     spec = intent.spec
     if intent.kind != "chart" or spec is None or not spec.table_id or spec.versus is not None:
         return intent
@@ -1656,15 +1530,9 @@ def _covers(column: dict, span) -> bool:
 def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
     """A value the asker TYPED that the model left out of a table chart.
 
-    "Lead count by source for Rohan Mehta" and "won revenue by employee" came
-    back from Claude Haiku with no filter, so the chart counted everyone and
-    every stage. When the question holds, as whole words, exactly ONE of a
-    column's values (all of them are known: the column lists every value) and
-    that column is not drawn, it is the filter. Two or more values of one
-    column ("Kavya Nair and Rohan Mehta") keep each of them, also when the model
-    kept only one: a comparison of those, drawn one series each
-    (``_table_period_axis``). The data's own words, never a list; the filter is
-    then resolved against the real rows like every other one.
+    Exactly ONE of an undrawn column's values in the question (whole words) is
+    its filter; two or more are a comparison, one series each. The data's own
+    words, never a list; resolved against real rows like any filter.
     """
     spec = intent.spec
     if intent.kind != "chart" or spec is None or not spec.table_id or spec.versus is not None:
@@ -1741,15 +1609,9 @@ def _typed_values(intent: AskIntent, question: str, handles) -> AskIntent:
 def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> AskIntent:
     """A breakdown is drawn only when the asker asked for one.
 
-    "Drive files edited per week" came back from a small model as files BY
-    PERSON -- a valid breakdown, so validation passed, but not the question:
-    one editor drew a single bar instead of the weekly trend. The model must
-    QUOTE the words that asked for the breakdown (``breakdown_words``), and
-    the quote must really be in the question -- the same check that keeps a
-    figure read from prose (``doctables.text_adapter``). Failing that, the
-    breakdown's own name from the data ("person", "team", "priority") in the
-    question is enough. Neither: the breakdown is removed and the chart is
-    the trend. No word list: any wording, any language.
+    The model QUOTES the asking words (``breakdown_words``) and the quote must
+    be in the question, or the breakdown's own label must be; else it is
+    removed ("files edited per week" came back BY PERSON). No word list.
     """
     spec = intent.spec
     if intent.kind != "chart" or spec is None or spec.table_id:
@@ -1792,10 +1654,8 @@ def parse_live(reply: str) -> bool | None:
 
 def resolve_question(question: str, *, providers: list[str], llm=None) -> ChartSpec:
     """Turn a question into a validated ``ChartSpec``, or raise ``CannotChart``.
-
-    Used by ``POST /insights/ask``. Chat uses ``classify_question`` so a
-    document question can fall through to RAG instead of a refusal.
-    """
+    For ``POST /insights/ask``; chat uses ``classify_question`` so a document
+    question falls through to RAG."""
     intent = classify_question(
         question, providers=providers, llm=llm, fail_open=False
     )
@@ -1849,10 +1709,8 @@ def _parse_intent(
             return AskIntent("github_live")
 
     if intent == "unavailable":
-        # Validated, never trusted: the connector must be one we actually
-        # chart AND must genuinely be absent from this scope. A model that
-        # says "not connected" about a connected provider would otherwise
-        # hide a working chart behind a "go ask an admin".
+        # The connector must be chartable AND really absent here, or a working
+        # chart hides behind "ask an admin".
         provider = data.get("provider")
         if isinstance(provider, str) and provider in missing:
             return AskIntent("refuse", message=_unavailable_message(provider))
@@ -1954,10 +1812,8 @@ def _parse_intent(
     if measure == query.default_measure(metric):
         measure = None
     filters = _parse_filters(data.get("filters"))
-    # One named channel, repository or team sent as a FILTER on the subject
-    # is a focus in the wrong slot ("threads in #rag-updates" was refused as
-    # "cannot be narrowed by subject"). Moved, not dropped: the focus is
-    # still matched against real names and refused by name if none fits.
+    # One subject sent as a FILTER is a focus in the wrong slot: moved, not
+    # dropped, and still matched against real names.
     subject = [value for dim, value in filters if dim == "subject"]
     if subject and "subject" in metric.dims:
         filters = tuple((dim, value) for dim, value in filters if dim != "subject")
@@ -2026,10 +1882,8 @@ def patch_spec(
 ) -> ChartSpec:
     """Adjust an existing spec without re-resolving.
 
-    A follow-up ("now by month", "just this quarter") must not be able to
-    change WHICH metric is shown -- that is the difference between adjusting a
-    chart and silently answering a different question. Validated the same way
-    the model's output is, because the caller is still a request body.
+    A follow-up must not change WHICH metric is shown. Validated like model
+    output: the caller is still a request body.
     """
     metric = registry.get(spec.metric)
 

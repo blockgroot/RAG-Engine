@@ -1,9 +1,7 @@
-"""Single-use magic-link tokens for employee login (Phase 13).
+"""Single-use magic-link tokens for employee login.
 
-Only a SHA-256 hash of the token is ever stored (schema.sql:
-``magic_link_tokens.token_hash``) — a DB read alone can never be used to log
-in as someone. ``consumed_at`` makes the token single-use even if the raw
-value leaks before it expires (e.g. in a mail relay's logs).
+Only the SHA-256 of a token is stored, so a DB read cannot log anyone in;
+``consumed_at`` keeps a leaked token single-use.
 """
 
 from __future__ import annotations
@@ -40,12 +38,10 @@ def create_magic_link_token(email: str, *, settings: AuthSettings | None = None)
 
 
 def consume_magic_link_token(token: str) -> str:
-    """Validate and consume a token in one atomic step. Returns the bound email.
+    """Validate and consume a token in one statement; return its email.
 
-    Raises ``AuthError`` if the token is unknown, expired, or already used.
-    The consume happens in the same statement as the validity check (``UPDATE
-    ... WHERE ... AND consumed_at IS NULL AND expires_at > now() RETURNING``)
-    so two concurrent verify requests for the same token can't both succeed.
+    One conditional UPDATE, so two concurrent verifies cannot both succeed.
+    Raises ``AuthError`` if unknown, expired or used.
     """
     with get_connection() as conn:
         row = conn.execute(

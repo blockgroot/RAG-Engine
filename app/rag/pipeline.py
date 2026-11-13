@@ -126,18 +126,14 @@ WEB_ANSWER_LABEL = "🌐 From a web search (NOT your organization's policy docum
 RECOVERY_REASON_GATE_MISS = _RECOVERY_REASON_GATE_MISS
 RECOVERY_REASON_INSUFFICIENT_EVIDENCE = _RECOVERY_REASON_INSUFFICIENT_EVIDENCE
 
-#: How many of the best hits get their neighbouring chunks (RAG_NEIGHBOR_CHUNKS).
-#: The top two cover the answer's main document and a close second; the rest
-#: stay single chunks, which is what keeps the prompt near its old size.
+#: How many best hits get their neighbouring chunks (RAG_NEIGHBOR_CHUNKS).
 _NEIGHBOR_TOP_HITS = 2
 
 _MAX_RECOVERY_QUERY_LEN = 200
 
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
-#: The tag on a line of its own AFTER a short lead-in: Claude Haiku sometimes
-#: writes one sentence first ("The CONTEXT lists the owner...\n\nMODE: B"), and
-#: the tag then shipped mid-answer with the audit skipped. Bounded so a "MODE:"
-#: quoted deep inside a long answer is never taken for the tag.
+#: The tag on its own line after a short lead-in (Haiku sometimes writes one
+#: sentence first). Bounded so a "MODE:" quoted deep in an answer is not the tag.
 _LATE_MODE_TAG_RE = re.compile(r"^[ \t]*MODE:[ \t]*([ABC])[ \t]*\n+", re.IGNORECASE | re.MULTILINE)
 _MODE_LEAD_IN_CHARS = 400
 
@@ -145,19 +141,14 @@ _MODE_LEAD_IN_CHARS = 400
 
 logger = logging.getLogger(__name__)
 
-# Tone only decorates an answer (an empathy opener), so it runs ALONGSIDE the
-# main generation and may cost at most this long past it.
+# Tone only adds an empathy opener, so it runs alongside generation, capped here.
 _TONE_GRACE_SECONDS = 1.0
 _AUX_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rag-aux")
 
 
 def _read_order(hit) -> tuple[float, str, int]:
-    """Oldest first, then stable within a document.
-
-    A missing timestamp sorts first rather than raising: a thread we cannot
-    date still belongs in the transcript, and dropping it to make sorting
-    simple would silently shrink the very corpus this path exists to deliver.
-    """
+    """Oldest first, stable within a document. A missing timestamp sorts first,
+    never dropped."""
     when = getattr(hit, "last_modified", None)
     try:
         stamp = when.timestamp() if when is not None else 0.0
@@ -166,28 +157,21 @@ def _read_order(hit) -> tuple[float, str, int]:
     return (stamp, hit.document_id or "", hit.chunk_index or 0)
 
 
-#: Heads the graph-facts context block. Named as what it is, so the model can
-#: say "Sana wrote the Leave Policy" and the reader can see where that came from.
+#: Heads the graph-facts block, so the model can say where a fact came from.
 GRAPH_FACTS_HEADER = (
     "Known connections (from the company's own tools: who wrote, edited, "
     "commented on or links to what):"
 )
 
 
-#: Heads the search-coverage lines: which named tools were searched, and how
-#: much they hold for this asker. Facts, not an instruction -- the strict
-#: prompt's own modes decide what to say about them.
+#: Heads the search-coverage lines. Facts, not an instruction.
 SEARCH_COVERAGE_HEADER = "Search coverage:"
 
 
 def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | None, bool]:
-    """``(context_block, graph_shaped)`` for this request's graph plan.
-
-    Read from the plan the chat edge built -- never a second walk. A normal
-    answer gets only facts inside its own tool; a connected one gets the
-    tools it was widened to (``GraphPlan.facts``). ``graph_shaped`` is True
-    whenever the plan changed what this answer could see.
-    """
+    """``(context_block, graph_shaped)`` from the plan the chat edge built
+    (never a second walk). ``graph_shaped`` is True when the plan changed
+    what this answer could see."""
     try:
         from ..graph.plan import current_plan
 
@@ -195,8 +179,7 @@ def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | No
         if plan is None or plan.org_id != org_id:
             return None, False
         lines = plan.facts(routed)
-        # What was searched is stated only on a connected answer: that is
-        # the answer reading the tool the question named.
+        # Coverage is stated only on a connected answer.
         searched = plan.coverage_lines() if plan.cross is not None else []
         shaped = bool(lines) or bool(searched) or plan.cross is not None
         if not lines and not searched:
@@ -228,11 +211,8 @@ def _deep_spans(
 ) -> dict[str, list[int]]:
     """Which pieces of each top document a deep read takes, in reading order.
 
-    Sized by the budget, not a fixed window: the room ``top_docs`` documents
-    would share goes to the ones found, so one long page gets all of it. Grown
-    around EVERY hit in that document, not just the best one, so a fact far
-    from the best match (meeting notes at the end of a long page) is still
-    read. Never fewer than the 2n+1 pieces a fixed window took.
+    Sized by the budget, and grown around EVERY hit in the document so a fact
+    far from the best match is still read. Never fewer than 2n+1 pieces.
     """
     avg = max(1, sum(len(h.content) for h in hits) // len(hits))
     share = max(2 * n + 1, budget_chars // max(1, len(top)) // avg)
@@ -283,8 +263,7 @@ def _tone_retry_addendum(mode: str) -> str:
 
 
 def _safe_json_args(raw: str | None) -> dict:
-    """Tool-call arguments as a dict, never raising. A malformed payload is a
-    read we skip, not a failed answer."""
+    """Tool-call arguments as a dict, never raising (a bad payload is skipped)."""
     try:
         parsed = json.loads(raw or "{}")
     except (json.JSONDecodeError, TypeError):
@@ -293,30 +272,24 @@ def _safe_json_args(raw: str | None) -> dict:
 
 
 def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
-    """Split a ``MODE: A|B|C`` tag off the front of a generation, if present.
+    """Split a ``MODE: A|B|C`` tag off a generation: ``(mode, answer_text)``.
 
-    Returns ``(mode, answer_text)``. If the model didn't include a parseable
-    tag (e.g. any test/fake that returns plain text with no tag), returns
-    ``(None, raw)`` unchanged — callers must treat a missing tag as "unknown",
-    never as an error, so behavior degrades gracefully instead of breaking.
+    No parseable tag returns ``(None, raw)``; callers treat that as unknown,
+    never an error.
     """
     match = _MODE_TAG_RE.match(raw)
     if match:
         return match.group(1).upper(), match.group(2).strip()
     late = _LATE_MODE_TAG_RE.search(raw, 0, _MODE_LEAD_IN_CHARS + 20)
     if late and late.start() <= _MODE_LEAD_IN_CHARS:
-        # The answer is what follows the tag, as the prompt asks; the lead-in
-        # was narration before it ("The CONTEXT lists ...").
+        # The answer is what follows the tag; the lead-in was narration.
         return late.group(1).upper(), raw[late.end():].strip()
     return None, raw
 
 
 def _violates_mode_b_tone(text: str) -> bool:
-    """True if ``text`` narrates sources instead of stating facts.
-
-    Name kept for import continuity; applies to Modes A and B. Detection is
-    structural (``uses_source_meta_language``), not a phrase laundry list.
-    """
+    """True if ``text`` narrates sources instead of stating facts (Modes A and B).
+    Detection is structural, not a phrase list."""
     return uses_source_meta_language(text)
 
 
@@ -324,42 +297,12 @@ def _violates_mode_b_tone(text: str) -> bool:
 class RagResult:
     """The outcome of answering one question for one tenant.
 
-    - ``answer``     the text to show the user (a real answer, or the fixed
-      fallback string when we could not ground an answer).
-    - ``answered``   ``True`` when an answer was produced (grounded in policy OR
-      from web search); ``False`` for the fixed fallback. Callers branch on this
-      bool, not on string-matching.
-    - ``source``     where the answer came from: ``"policy"`` (internal docs),
-      ``"web"`` (web-search fallback), or ``"none"`` (the fixed fallback).
-    - ``sources``    the internal chunks retrieved for this question, all belonging
-      to the queried ``org_id``. Empty for web answers and the empty case.
-    - ``top_score``  similarity of the best retrieved chunk (``None`` if nothing
-      was retrieved), for logging / debugging / threshold tuning.
-    - ``resolved_question``  the standalone question actually used for retrieval
-      after conversation-aware rewriting (``None`` outside a conversation).
-    - ``retrieval_reused``  ``True`` when this turn skipped retrieval and reused the
-      previous turn's chunks (Phase 8). A diagnostic for logging/tests; the answer
-      itself is produced by the same gate → generate path either way.
-    - Recovery diagnostics (Retrieval Discovery Gap): ``recovery_used``,
-      ``recovery_reason``, ``recovery_queries``, ``retrieval_improved``,
-      ``top_score_before``, ``top_score_after``, ``final_answer_source``,
-      ``latency_ms``.
-    - ``response_mode``  the ``A``/``B``/``C`` tag the model declared for this
-      answer (``None`` if it didn't include a parseable tag — the pipeline
-      degrades gracefully rather than failing the request). A diagnostic.
-    - ``tone_retry_used``  ``True`` when a declared Mode A or B answer used
-      forbidden meta-language, or answered a distress/help-seeking question
-      without a warm opening, and the pipeline retried generation once with a
-      corrective reminder (see ``RagPipeline._generate``). A diagnostic; never
-      loops more than once.
-    - ``question_tone``  ``factual`` / ``supportive`` from the aux classifier
-      (``None`` if classify disabled/failed).
-    - ``question_decomposed`` / ``sub_questions`` — Phase 18 compound-question
-      split before retrieval (diagnostics).
-    - ``audit_used`` / ``audit_downgraded`` / ``audit_reason`` — post-generation
-      groundedness audit (validation layer, off by default: ``AuditSettings``).
-      ``audit_downgraded`` is ``True`` only when the auditor found an
-      unsupported claim and the answer was replaced with the fixed fallback.
+    ``answered`` is False only for the fixed fallback; callers branch on it,
+    never on the text. ``source`` is ``policy``, ``web`` or ``none``.
+    ``sources`` all belong to the queried ``org_id``. The rest (scores,
+    ``resolved_question``, ``retrieval_reused``, recovery, mode, tone, audit
+    fields) are diagnostics; ``audit_downgraded`` is True only when the audit
+    replaced the answer with the fallback.
     """
 
     answer: str
@@ -386,32 +329,21 @@ class RagResult:
     audit_used: bool = False
     audit_downgraded: bool = False
     audit_reason: str | None = None
-    # True when this refusal is "documents matched but are not shared with
-    # you" rather than "nothing matched". Carried on the result because the
-    # answer TEXT is the only other place it appears, and matching on text is
-    # how a message becomes load-bearing: the API needs it to keep the
-    # documentation-gap log honest (a withheld document is not a gap in the
-    # company's documentation).
+    # "Matched but not shared with you", carried as a flag so nothing matches on
+    # text: a withheld document is not a documentation gap.
     access_restricted: bool = False
-    # True when this request's knowledge-graph plan shaped the answer (facts
-    # in the context, or a connected answer reading other tools).
+    # True when the graph plan shaped the answer.
     graph_shaped: bool = False
-    # Second Brain live tools (git history: docs/plans/2026-09-29-live-connector-access.md):
-    # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
+    # Connectors read LIVE for this answer: ``[{provider, fetched_at}]``.
     live_sources: list[dict] = field(default_factory=list)
-    # True when this refusal is "the matching item is no longer available":
-    # a live read said the object behind the answer is gone or no longer
-    # readable. Like ``access_restricted`` it rides the result so nothing
-    # matches on text: not logged as a documentation gap.
+    # True when a live read said the item behind the answer is gone or unreadable.
+    # Not a documentation gap.
     live_withheld: bool = False
-    # True when personal memory was in the prompt: the answer was interpreted
-    # for ONE person.
+    # True when personal memory was in the prompt (answer is for ONE person).
     personalized: bool = False
-    # Inline citations (`rag/cite.py`): ``[{n, document_id, title, provider,
-    # url}]`` for every valid ``[n]`` marker left in ``answer``.
+    # ``[{n, document_id, title, provider, url}]`` per valid ``[n]`` (`rag/cite.py`).
     cited: list[dict] = field(default_factory=list)
-    #: Retrieval found the answer spread over several documents (a wide read)
-    #: -- the broad questions Deep analysis reads more of.
+    #: Retrieval found the answer spread over several documents (a wide read).
     wide_read: bool = False
 
 
@@ -423,12 +355,9 @@ def _without_withheld(
 ) -> tuple[list[RetrievedChunk], float | None]:
     """Drop withheld documents' chunks; re-check the gate only if it was theirs.
 
-    ``top_score`` is a max over every first-stage candidate, so the remaining
-    hits cannot reproduce it (plan D8a). A withheld document that did NOT earn
-    the gate leaves it untouched. One that DID gives way to the best cosine of
-    what remains -- a max over at most top_k hits, so it can only come out
-    lower than a full recompute: it can turn an answer into a refusal, never a
-    refusal into an answer. A hit with no score is skipped, never trusted.
+    The replacement score is a max over the remaining hits, so it can only be
+    lower: an answer can become a refusal, never the reverse. A hit with no
+    score is skipped, never trusted.
     """
     if not withheld:
         return hits, top_score
@@ -451,13 +380,9 @@ class _RecoveryAttempt:
 def _screen_hits(hits, org_id: str | None, guard: GuardSettings) -> list:
     """Log every flagged chunk; in ``enforce`` mode also drop it.
 
-    Shadow (Task 2.6) logs and returns ``hits`` unchanged: run it a week on the
-    real corpus first, because the false-positive rate on real company
-    documents decides the threshold, not a benchmark. Enforce (Task 3.1) drops
-    the chunk AFTER retrieval, so the 0.35 gate score is untouched, and a
-    dropped chunk's links then fail the provenance rule because they are no
-    longer in the prompt. NULL (unscored) passes: a Groq outage must not empty
-    the corpus. Logs ids and the score only -- never the chunk text.
+    Dropped after retrieval, so the 0.35 gate score is untouched and the
+    chunk's links fail provenance. Unscored (NULL) passes: a guard outage must
+    not empty the corpus. Logs ids and score only, never chunk text.
     """
     if not guard.enabled:
         return hits
@@ -477,10 +402,8 @@ def _screen_hits(hits, org_id: str | None, guard: GuardSettings) -> list:
 class RagPipeline:
     """Composes embeddings + vector store + LLM into grounded, org-scoped Q&A.
 
-    Prefer building this via ``factory.build_rag_pipeline``. Providers are injected
-    (not constructed here) so the pipeline stays a pure orchestrator and is trivial
-    to test. ``memory`` and ``web_search`` are optional: when ``None`` the
-    corresponding capability is off (leaving the Phase 3 path unchanged).
+    Build via ``factory.build_rag_pipeline``. ``memory`` and ``web_search``
+    are optional: ``None`` turns that capability off.
     """
 
     def __init__(
@@ -545,14 +468,11 @@ class RagPipeline:
     ) -> str:
         provider = self._provider_for_stage(stage)
         if stage in USER_FACING_LLM_STAGES:
-            # The reader sees this text, so it is written by the model they
-            # chose (or the default, when they chose none).
+            # The reader sees this text, so it uses the model they chose (or the default).
             text = provider.generate(prompt, max_tokens=max_tokens)
         else:
-            # Machinery. Pinned to the configured model regardless of the
-            # member's pick: rewriting, the web-search decision and the
-            # groundedness audit are what the grounding guarantees rest on, and
-            # they must not vary because someone changed a dropdown.
+            # Machinery (rewrite, web decision, audit) is pinned to the configured model:
+            # the grounding guarantees must not depend on a member's dropdown.
             with default_model_only():
                 text = provider.generate(prompt, max_tokens=max_tokens)
         log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
@@ -560,13 +480,8 @@ class RagPipeline:
 
     @property
     def memory(self) -> ConversationStore | None:
-        """The configured conversation store, or ``None`` if memory is off.
-
-        Exposed (like ``PolicyAgent.pipeline``) so a caller that needs to
-        create a conversation up front — e.g. the chat API's
-        ``POST /chat/conversations`` — can reach it without duplicating
-        construction logic.
-        """
+        """The conversation store, or ``None`` if memory is off. Exposed so the
+        chat API can create a conversation up front."""
         return self._memory
 
     @property
@@ -582,13 +497,9 @@ class RagPipeline:
         limit: int = 40,
         viewer: Viewer | None = None,
     ) -> list[RetrievedChunk]:
-        """Recency-selected chunks from this pipeline's own pinned corpus.
+        """Recency-selected chunks from this pipeline's pinned corpus (Slack recap).
 
-        Exposed for the Slack agent's recap retry. It goes through the pipeline
-        rather than reaching for the store directly so ``source_provider`` stays
-        pinned where every other read pins it — an agent that passed its own
-        provider string could drift from the corpus its answers claim to come
-        from. ``workspace_id`` is still the caller's, exactly as on ``answer``.
+        Goes through the pipeline so ``source_provider`` stays pinned.
         """
         chunks = self._store.recent_chunks(
             org_id,
@@ -603,11 +514,8 @@ class RagPipeline:
     def generate_raw(self, prompt: str) -> str:
         """One un-gated LLM call on this pipeline's provider.
 
-        Deliberately narrow: it exists so a caller with its own fully-built,
-        already-fenced prompt (the Slack recap) reuses the configured provider
-        instead of constructing a second one. It performs NO retrieval, gating,
-        or grounding — the caller owns those, and must not use this to answer
-        from an un-fenced or un-scoped prompt.
+        For a caller with its own already-fenced, scoped prompt (the Slack recap).
+        No retrieval, gating or grounding: the caller owns those.
         """
         return self._llm.generate(prompt)
 
@@ -625,31 +533,12 @@ class RagPipeline:
         attachments: list[tuple[str, str, bool]] | None = None,
         viewer: Viewer | None = None,
     ) -> RagResult:
-        """Answer ``question`` using only ``org_id``'s chunks (with optional memory).
+        """Answer ``question`` from ``org_id``'s chunks only (plus optional memory).
 
-        ``attachments`` are files the asker put in THIS conversation, as
-        ``(filename, text, truncated)``. They do not replace retrieval, they
-        join it: "is this bill claimable?" is a question about the uploaded
-        bill AND about the expense policy in the corpus, and answering it from
-        either one alone is answering a different question. See ``_run``.
-
-        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
-        answers from the org-wide space, identical to every prior caller.
-        Non-``None`` scopes retrieval to that sub-workspace ONLY — never also
-        the org-wide space — while the gate, strict prompt, and every other
-        grounding guarantee below are completely unchanged; only which rows
-        retrieval is allowed to see changes. Always paired with ``org_id``,
-        never resolved from ``workspace_id`` alone.
-
-        ``date_range``: an optional hard filter on ``documents.source_last_modified``
-        (e.g. "only policies updated after March"). ``None`` (default) is a
-        no-op — every prior caller is unaffected. Like ``workspace_id`` it
-        narrows what retrieval is allowed to see; it never changes the gate
-        threshold or the grounded prompt.
-
-        Retrieval is delegated to the vector store, which enforces the
-        ``WHERE org_id`` tenant filter — this pipeline never sees another tenant's
-        data and never bypasses that guarantee.
+        ``attachments`` (``(filename, text, truncated)``) join retrieval, never
+        replace it. ``workspace_id`` scopes retrieval to that workspace ONLY;
+        ``date_range`` filters on ``source_last_modified``. Neither changes the
+        gate or the prompt. The store enforces the ``org_id`` filter.
         """
         resolved = question
         if conversation_id is not None and self._memory is not None:
@@ -660,9 +549,8 @@ class RagPipeline:
             context = self._memory.get_context(
                 conversation_id, self._memory_settings.recent_turns
             )
-            # Personal memory narrows the SEARCH, not only the wording: with
-            # a remembered team/office the question is rewritten even on a
-            # chat's first turn, so "office hours?" searches for Bangalore's.
+            # Personal memory narrows the SEARCH too: with a remembered office the
+            # question is rewritten even on a first turn.
             if not context.is_empty() or current_asker_context():
                 resolved = self._rewrite_question(
                     question, context, org_id=org_id, conversation_id=conversation_id
@@ -735,20 +623,11 @@ class RagPipeline:
         attachments: list[tuple[str, str, bool]] | None = None,
         viewer: Viewer | None = None,
     ) -> RagResult:
-        """First retrieve as today; recover at most once if evidence is insufficient.
+        """Retrieve; recover at most once if evidence is insufficient.
 
-        With ``attachments``, retrieval runs COMPLETELY UNCHANGED -- same
-        routing, same 0.35 gate, same strict prompt -- and the uploaded files
-        are added to the prompt alongside whatever the corpus returned. The
-        only behaviour that differs is on a gate MISS: with files attached the
-        answer is generated from them rather than refused, which is exactly
-        what the attachment-only path did before and is the reason a bill can
-        be asked about in a chat whose corpus has nothing to say about bills.
-
-        The gate itself is untouched: it still decides whether CORPUS chunks
-        are good enough to include. An attachment was handed to us by the
-        person asking, so it needs no similarity score to justify its presence
-        -- they already answered that question by uploading it.
+        Attachments do not change retrieval or the 0.35 gate; they join the
+        prompt. On a gate miss with files attached, the answer comes from the
+        files instead of a refusal: an upload needs no similarity score.
         """
         t0 = time.perf_counter()
         budget = budget or RequestBudget.from_settings(self._budget_settings)
@@ -776,9 +655,7 @@ class RagPipeline:
 
         from ..insights.table_answers import current_answers
 
-        # A turn with figures worked out for IT never reuses the last turn's
-        # passages: "and how many of them reached an offer?" was answered from
-        # the previous turn's figure and refused.
+        # A turn with worked figures never reuses the last turn's passages.
         reused = (
             None
             if date_range is not None or tags is not None or current_answers()
@@ -805,9 +682,8 @@ class RagPipeline:
                 and self._recovery_settings.proactive
                 and budget.can_spend(min_stage)
             ):
-                # Alternative wordings searched alongside the question, then the
-                # whole pool reranked against the ORIGINAL question, so a
-                # rephrase can add candidates but never decide the ranking.
+                # Alternative wordings add candidates; the pool is reranked against the
+                # ORIGINAL question.
                 recovery_queries = self._expand_recovery_queries(
                     question, [], org_id=org_id, conversation_id=conversation_id
                 )
@@ -881,10 +757,7 @@ class RagPipeline:
             elif self._recovery_available(recovery_used):
                 budget_exhausted = True
             if self._gate_miss(hits, top_score):
-                # The corpus has nothing, but the asker handed us a document.
-                # Refusing here would be the old bug in a new place: "what's
-                # the total on this invoice?" is answerable from the invoice
-                # and has no reason to reach the corpus at all.
+                # Nothing in the corpus, but the asker attached a document: answer from it.
                 if attachment_contexts:
                     return _finalize(
                         self._answer_from_contexts(
@@ -911,11 +784,8 @@ class RagPipeline:
                     )
                 )
 
-        # Second Brain live tools: re-read what retrieval found, live. Off
-        # (LIVE_TOOLS_ENABLED unset) or no LiveRequest => `live_refresh`
-        # returns nothing and nothing below changes. Refreshed AFTER the gate passed, so a live read can never
-        # rescue a question the corpus could not ground -- it only freshens
-        # or withholds what the gate already admitted.
+        # Live re-read of what retrieval found. Runs AFTER the gate, so it only
+        # freshens or withholds what the gate admitted; off => no change.
         live = live_refresh(hits, current_live_request(), guard_settings=self._guard_settings)
         if live.withheld:
             hits, top_score = _without_withheld(hits, top_score, gate_doc, live.withheld)
@@ -939,8 +809,7 @@ class RagPipeline:
         wide_read = self._settings.top_k < len(hits) <= self._read_settings().ranked_max_hits
         result = self._generate(
             question,
-            # Reused hits are last turn's sources, which already carry their
-            # neighbours; expanding again would repeat them.
+            # Reused hits already carry their neighbours.
             hits if retrieval_reused else self._with_neighbors(
                 hits, org_id, workspace_id=workspace_id, viewer=viewer
             ),
@@ -950,9 +819,8 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
             user_question=tone_question,
-            # Live blocks lead: they are the current state of the very items
-            # below them. Inside `contexts`, so the audit and the link rule
-            # both see them (plan D9).
+            # Live blocks lead: they are the current state of the items below. In
+            # `contexts`, so the audit and the link rule see them.
             extra_contexts=live.blocks + attachment_contexts,
             extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
             superseded=live.refreshed,
@@ -987,10 +855,7 @@ class RagPipeline:
             gate_doc = attempt.gate_document_id
             hits, top_score = _without_withheld(hits, top_score, gate_doc, live.withheld)
             if self._gate_miss(hits, top_score):
-                # The corpus has nothing, but the asker handed us a document.
-                # Refusing here would be the old bug in a new place: "what's
-                # the total on this invoice?" is answerable from the invoice
-                # and has no reason to reach the corpus at all.
+                # Nothing in the corpus, but the asker attached a document: answer from it.
                 if attachment_contexts:
                     return _finalize(
                         self._answer_from_contexts(
@@ -1071,17 +936,9 @@ class RagPipeline:
     ) -> list[RetrievedChunk]:
         """The best hits with the chunks either side joined into their block.
 
-        Benchmark 1: Handbook usually had the right document, but only one
-        256-token piece of it, and the answer missed the detail in the next
-        paragraph. Joining neighbours keeps one block per hit, so a citation
-        [n] still points at a document that was really retrieved. The context
-        budget still applies after this and keeps a prefix, so depth on the
-        best hits pushes the weakest hits out rather than growing the prompt.
-
-        Runs after the gate and never changes a score. A neighbour passes the
-        same org, workspace and viewer filter as retrieval, and the injection
-        screen. A whole read already holds every chunk, so it is left alone.
-        Any failure returns ``hits`` unchanged.
+        One block per hit, so ``[n]`` still points at a retrieved document. Runs
+        after the gate and never changes a score. Neighbours pass the same org,
+        workspace, viewer and injection filters. Any failure returns ``hits``.
         """
         rag = self._read_settings()
         n = rag.neighbor_chunks
@@ -1089,8 +946,8 @@ class RagPipeline:
             return hits
         top_docs = rag.neighbor_top_docs
         if top_docs > 0:
-            # The best hit of each of the top N documents: depth goes to
-            # different documents, never twice into the same one.
+            # Depth goes to the best hit of each of the top N documents, never twice
+            # into one.
             firsts: dict[str, RetrievedChunk] = {}
             for h in hits:
                 if len(firsts) >= top_docs:
@@ -1121,13 +978,8 @@ class RagPipeline:
             (c.document_id, c.chunk_index): c
             for c in _screen_hits(found, org_id, self._guard_settings)
         }
-        # Neighbours only fill room left after EVERY selected hit's own piece,
-        # so they never push another document out of the budget (RCA, 9 Oct: a
-        # short read lost a right document to the top hits' neighbours). A
-        # narrow deep read is already sized by the budget; a WIDE one (extra
-        # effort) is not: three documents read in depth filled it and the
-        # prefix cut every other document, so a company-wide question saw 2-3
-        # documents and half its facts. Breadth first there, depth with what is left.
+        # Neighbours only fill room left after every selected hit's own piece, so
+        # they never push another document out of the budget. Breadth first.
         hit_keys = {(h.document_id, h.chunk_index) for h in hits}
         room = (
             rag.context_chars_for(len(hits))
@@ -1165,20 +1017,12 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
     ) -> list[RetrievedChunk]:
-        """Ask's retrieval without an answer: the corpus spelling fix, the
-        hybrid keyword + meaning search, rerank, and the same 0.35 gate on the
-        best match. ``[]`` when the gate misses.
+        """Ask's retrieval without an answer (for Act): spelling fix, hybrid search,
+        rerank, and the 0.35 gate. ``[]`` on a gate miss.
 
-        For a caller that drafts from passages (Act). ``about`` is the part of
-        a longer request that names the content ("the Slack message about
-        mixing cases"); it is searched alongside the request and is what the
-        reranker orders by, so the action words around it ("create an issue
-        titled …") do not outrank the content. No answer, memory rewrite or
-        decomposition: those serve generating a reply, not finding sources.
-
-        With the deep read on (Act always reads deeply), the best documents
-        come with their neighbouring chunks, as Deep analysis reads them: a
-        Linear summary drafted from six scattered chunks was too short.
+        ``about`` (the words naming the content) is searched alongside and orders
+        the rerank, so action words do not outrank the content. With the deep read
+        on, the best documents come with their neighbours.
         """
         query = self._normalize_for_retrieval(question, org_id)
         vec = self._embedder.embed([query])[0]
@@ -1212,11 +1056,8 @@ class RagPipeline:
         return self._recovery_settings.enabled and not recovery_used
 
     def _generation_found_evidence_insufficient(self, result: RagResult) -> bool:
-        """True when the generation stage judges available evidence insufficient.
-
-        Architectural trigger — not tied to a specific detector. Current
-        implementation: the model emitted the fixed fallback (``_is_refusal``).
-        """
+        """True when generation judged the evidence insufficient (currently: the
+        model emitted the fixed fallback)."""
         return (not result.answered) or self._is_refusal(
             result.answer, self._settings.fallback_response
         )
@@ -1231,34 +1072,20 @@ class RagPipeline:
         tags: list[str] | None,
         viewer: Viewer | None,
     ) -> tuple[list[RetrievedChunk], float | None] | None:
-        """Breadth retrieval for a question that asks about the corpus AS A WHOLE.
+        """Breadth retrieval for a question about the corpus AS A WHOLE.
 
-        Ranked retrieval keeps `top_k` chunks by similarity, which is right for
-        "what did we decide about Notion?" and wrong for "summarise everything
-        discussed here": measured live, 5 of 38 chunks reached the model and the
-        answer came from the one thread phrased most like a summary.
-
-        Driven by the QUESTION (`scope_intent.classify_scope_intent`), not by a
-        property of the data. "Read it whole whenever it fits" needs no
-        classifier but is not intent: it hands a pointed question the entire
-        corpus, and it cannot tell "summarise the channel" from "summarise what
-        Sana said about Notion" -- the distinction that decides the answer.
-
-        ``None`` means "rank instead", and every failure returns it: this is an
-        improvement on a narrow read, never a correctness guarantee, so nothing
-        here may cost an answer.
+        Driven by the question (`scope_intent.classify_scope_intent`), not the
+        data: "summarise the channel" and "what did Sana say about X" differ.
+        ``None`` means "rank instead"; every failure returns it.
         """
         max_chunks = self._settings.scope_whole_max_chunks
         if max_chunks <= 0:
             return None
-        # Only a SCOPED corpus is a candidate. Company-wide Ask reaches
-        # everything the org has, where "all of it" is neither affordable nor
-        # what anyone means.
+        # Only a SCOPED corpus: "all of it" company-wide is neither affordable nor meant.
         if not tags and workspace_id is None:
             return None
 
-        # Classified BEFORE fetching: the read is the expensive half, and a
-        # specific question must not pay for a breadth query it will not use.
+        # Classified before fetching: the read is the expensive half.
         try:
             intent = classify_scope_intent(query_text, llm=self._llm)
         except Exception:  # noqa: BLE001 - a classifier must never cost an answer
@@ -1271,8 +1098,7 @@ class RagPipeline:
             hits = self._store.query(
                 org_id,
                 query_vec,
-                # One over the bound, so "more than we can read" is detectable
-                # without a second COUNT query.
+                # One over the bound detects "more than we can read" without a COUNT.
                 top_k=max_chunks + 1,
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
@@ -1285,10 +1111,7 @@ class RagPipeline:
         if not hits:
             return None
 
-        # They asked for all of it, so give as much of it as a prompt can hold
-        # rather than silently dropping to five chunks. Selected NEWEST-first
-        # (an overview that had to cut something should cut the oldest), then
-        # re-ordered oldest-first for reading.
+        # As much as a prompt holds: selected newest-first, read oldest-first.
         by_recency = sorted(hits, key=_read_order, reverse=True)
         kept: list[RetrievedChunk] = []
         used = 0
@@ -1301,16 +1124,13 @@ class RagPipeline:
         if not kept:
             return None
         if len(kept) < len(hits):
-            # Partial, and said so IN THE CONTEXT rather than left implicit --
-            # an overview that quietly covered the newest N is the failure this
-            # path exists to fix, and the model cannot disclose what it was not
-            # told.
+            # Partial, and said so in the context: the model cannot disclose a cut it
+            # was not told about.
             logger.info(
                 "Breadth read covered %s of %s chunks in scope (%s chars)",
                 len(kept), len(hits), used,
             )
-        # The gate is unchanged: still the best cosine in the retrieval, exactly
-        # as the ranked path reports it.
+        # The gate is unchanged: the best cosine in the retrieval.
         gate_score = max((h.score for h in kept), default=None)
         return sorted(kept, key=_read_order), gate_score
 
@@ -1493,11 +1313,8 @@ class RagPipeline:
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
     ) -> str | None:
-        """One-sentence acknowledgment for SUPPORTIVE asks (aux LLM).
-
-        Best-effort: still attempt when the request budget is tight — skipping
-        the opener silently is worse UX than a short over-budget aux call.
-        """
+        """One-sentence acknowledgment for SUPPORTIVE asks (aux LLM). Attempted even
+        on a tight budget."""
         try:
             raw = self._generate_text(
                 STAGE_EMPATHY_OPENER,
@@ -1522,11 +1339,8 @@ class RagPipeline:
     ) -> RagResult:
         """Generate from attachment contexts alone, labelled as such.
 
-        Reached when retrieval found nothing worth including but files ARE
-        attached. Runs the same strict prompt and the same audit as every
-        other answer -- only the confidence gate is absent, and only because
-        there is no cosine score for a file nobody embedded (see
-        `answer_from_attachments`).
+        Same strict prompt and audit; only the gate is absent (no cosine exists
+        for an unembedded file).
         """
         result = self._generate(
             question,
@@ -1553,14 +1367,10 @@ class RagPipeline:
         org_id: str | None = None,
         conversation_id: str | None = None,
     ) -> list[str]:
-        """Prompt-ready context blocks for the files the asker attached.
+        """Prompt-ready context blocks for the attached files.
 
-        Public because two callers need the same blocks: the attachment-only
-        path (`answer_from_attachments`) and the BLENDED path, where these sit
-        alongside retrieved chunks in one prompt. Two copies of the
-        inline-vs-paging decision would eventually disagree about when a file
-        is too long to inline, and the two answers would differ for reasons
-        nobody could see.
+        Shared by the attachment-only and blended paths so they agree on when a
+        file is too long to inline.
         """
         files = [
             AttachedFile(name, text, cut)
@@ -1572,9 +1382,8 @@ class RagPipeline:
 
         settings = settings or AttachmentSettings.from_env()
         if deep_read_on():
-            # Deep analysis reads uploads whole up to the deep budget too, rather
-            # than letting the model pick sections of a mid-sized file, and lets
-            # it pick more sections of a long one.
+            # Deep analysis reads uploads whole up to the deep budget, and picks more
+            # sections of a long one.
             settings = replace(
                 settings,
                 inline_char_budget=max(settings.inline_char_budget, self._settings.deep_max_context_chars),
@@ -1583,10 +1392,7 @@ class RagPipeline:
         progress.report(f"Reading {', '.join(f.filename for f in files)}")
         if sum(len(f.text) for f in files) <= settings.inline_char_budget:
             return [
-                # The filename rides IN the context for the reason
-                # `describe_hit` puts provenance there: with two files
-                # attached, "which one says that?" is the first follow-up and
-                # the model cannot answer it from text alone.
+                # The filename rides in the context so "which file says that?" is answerable.
                 f"Attached file: {f.filename}"
                 + (" (truncated — only the first part is shown)" if f.truncated else "")
                 + "\n\n"
@@ -1614,26 +1420,11 @@ class RagPipeline:
 
         ``attachments`` is ``(filename, text, truncated)``, oldest first.
 
-        **There is no confidence gate on this path, and that is the design.**
-        The gate answers "does the corpus resemble this question?" using a
-        cosine score that does not exist here -- nothing was embedded. The
-        person attaching the file has already answered that question by
-        attaching it, and a threshold invented for this path would be a number
-        with nothing behind it. The SECOND grounding layer is untouched and
-        does the whole job: the same strict prompt, so a file that does not
-        answer the question produces the same fixed fallback it always did
-        (CLAUDE.md §3 -- "a threshold can't separate 'answers' from 'on-topic
-        but doesn't'"; here only the threshold is absent, never the prompt).
-
-        Scrubbing and fencing are likewise unchanged: `build_grounded_prompt`
-        runs `scrub_untrusted_text` over every context, so an uploaded file is
-        treated as exactly as hostile as a synced one -- more so in practice,
-        since anyone with an account can upload where only an admin can
-        connect a source.
-
-        Short files go in WHOLE; long ones are paged (`_page_attachments`).
-        Both end in the same `_generate`, so the two differ in which text
-        reaches the prompt and in nothing else.
+        No confidence gate here by design: there is no cosine for an unembedded
+        file, and attaching it answers that question. The strict prompt still
+        refuses when the file does not answer. Scrubbing and fencing are
+        unchanged: an upload is as untrusted as a synced document. Short files go
+        whole, long ones are paged; both end in `_generate`.
         """
         files = [
             AttachedFile(name, text, cut)
@@ -1667,9 +1458,7 @@ class RagPipeline:
             contexts=contexts,
             profile=ATTACHMENT_PROMPT_PROFILE,
         )
-        # `_generate` labels the answer with the agent's own profile; the
-        # attachment is not that agent's corpus, so the label would be a false
-        # provenance claim on the one path where provenance is unambiguous.
+        # No agent label: the attachment is not that agent's corpus.
         return replace(
             result,
             source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE,
@@ -1686,20 +1475,10 @@ class RagPipeline:
     ) -> list[str]:
         """ONE tool round: show previews, let the model pick what to read.
 
-        Returns the contexts for the final grounded generation. Never raises
-        and never returns empty: **every** failure -- a provider with no tool
-        support, an LLM error, a model that asks for nothing, arguments that
-        make no sense -- degrades to the head of each file, which is exactly
-        the truncation behaviour that existed before paging. A worse answer is
-        acceptable here; no answer is not.
-
-        One round, never a loop, matching GitHubAgent. A read is a slice of a
-        string already in memory, so several sections cost one LLM call and no
-        query -- which is what makes a single round enough.
+        Never raises, never empty: any failure falls back to each file's head.
+        One round, not a loop: reads are slices of in-memory text.
         """
-        # The degraded path: each file's head, sharing the inline budget. This
-        # IS the old truncation, kept as the floor so no failure below can
-        # cost the answer entirely.
+        # The floor: each file's head, sharing the inline budget.
         share = max(1, settings.inline_char_budget // len(files))
         fallback = [
             f"Attached file: {f.filename} (first {share} characters)\n\n"
@@ -1720,8 +1499,7 @@ class RagPipeline:
                 tool_choice="auto",
             )
         except NotImplementedError:
-            # A selected model without function calling. The picker offers
-            # several backends, so this is a routine outcome, not a defect.
+            # A model without function calling: routine, not a defect.
             logger.info("Attachments: provider has no tool support; using file heads")
             return fallback
         except LLMProviderError:
@@ -1743,19 +1521,17 @@ class RagPipeline:
         return contexts
 
     def _generate(self, question: str, hits: list[RetrievedChunk], top_score, **kw) -> RagResult:
-        """Grounded generation, plus the graph's facts when a plan is active.
+        """Grounded generation, plus graph facts when a plan is active.
 
-        Facts ride only on RETRIEVED answers with hits (never the attachment
-        path's own ``contexts``), go AFTER the chunks so the documents lead,
-        and never touch the gate: the caller already decided to generate.
+        Facts ride only on retrieved answers with hits, after the chunks, and
+        never touch the gate.
         """
         facts, shaped = (None, False)
         if kw.get("contexts") is None and hits:
             facts, shaped = _graph_facts_block(kw.get("org_id"), self._source_provider)
             tools = _connected_tools(kw.get("org_id"))
             if tools and kw.get("profile") is None:
-                # A connected answer reads several tools, so it cannot keep the
-                # routed agent's "only from <tool>" framing (see prompts).
+                # A connected answer reads several tools, so drop the "only from <tool>" framing.
                 kw["profile"] = connected_prompt_profile(
                     tools, self._prompt_profile.source_label
                 )
@@ -1780,40 +1556,20 @@ class RagPipeline:
         profile: PromptProfile | None = None,
         superseded: frozenset[str] = frozenset(),
     ) -> RagResult:
-        # `contexts` is supplied only by `answer_from_attachments`, where the
-        # text came from a file the asker handed us rather than from
-        # retrieval. Everything below -- the strict prompt, the MODE tag, the
-        # refusal detection, the tone retry, the groundedness audit -- is
-        # reused verbatim, which is the point: an attachment must not get its
-        # own weaker generation path.
+        # `contexts` comes only from `answer_from_attachments`. Everything below
+        # (prompt, MODE tag, refusal, tone retry, audit) is reused: no weaker path.
         if contexts is None:
-            # Only `_whole_scope` can return MORE hits than a ranked read
-            # (`top_k`, or `wide_max_hits` for a wide one); every other
-            # retrieval path caps at that. So this is how generation knows
-            # the caller chose to read a narrow corpus whole, without threading
-            # a budget through sub-question fusion (where two legs would
-            # disagree about which budget won).
-            #
-            # A whole read carries NO second budget, and that is the fix for a
-            # bug this very change introduced: `max_context_chars` is 6000,
-            # sized for five chunks, while a real channel is ~27k -- and
-            # `assemble_context_texts` keeps a PREFIX. Applied to a
-            # time-ordered whole read it would have kept the OLDEST 6k and
-            # dropped every recent thread: the original complaint inverted,
-            # which is worse, because it reads as the bot forgetting this week.
-            # `_whole_scope` already enforced a budget on the same corpus
-            # before deciding to read it whole, so re-applying one here (on a
-            # different denominator, since `describe_hit` adds a provenance
-            # line per chunk) could only ever disagree with it. One budget,
-            # enforced in one place.
+            # Only `_whole_scope` returns more hits than a ranked read, so this is how
+            # generation knows the corpus is read whole. A whole read gets no second
+            # budget: `assemble_context_texts` keeps a prefix and would keep the OLDEST
+            # threads. `_whole_scope` already enforced the budget.
             # ponytail: a whole read of top_k..wide_max_hits chunks looks ranked and
             # gets the wide budget, which already fits that many; thread an explicit
             # flag from `_whole_scope` if the two limits ever diverge.
             whole_read = len(hits) > self._read_settings().ranked_max_hits
             screened = _screen_hits(hits, org_id, self._guard_settings)
             if hits and not screened and not extra_contexts:
-                # Everything retrieved was flagged: refuse without a model call
-                # rather than ask it to answer from nothing.
+                # Everything retrieved was flagged: refuse without a model call.
                 return RagResult(
                     answer=self._settings.fallback_response,
                     answered=False,
@@ -1823,18 +1579,12 @@ class RagPipeline:
                     retrieval_reused=retrieval_reused,
                 )
             hits = screened
-            # A document read LIVE this request is in
-            # `extra_contexts` already; its synced chunks would put a second,
-            # older version of the same page in the prompt and double what the
-            # model and the audit read. They stay in `hits` -- citations and
-            # the next turn's reuse still need to know the document was used.
+            # A document read LIVE is in `extra_contexts`; its synced chunks would be a
+            # second, older copy. They stay in `hits` for citations and reuse.
             prompt_hits = [h for h in hits if h.document_id not in superseded]
             contexts = assemble_context_texts(
-                # Title AND provenance: the provider, who last edited it and
-                # when. All of it was already on the JOINed document row and
-                # was being dropped, so "who wrote this?" refused against data
-                # we had. The date is also what lets a whole read answer
-                # "what happened recently?" at all.
+                # Title and provenance (provider, editor, date), so "who wrote this?" and
+                # "what happened recently?" can be answered.
                 [describe_hit(h) for h in prompt_hits],
                 0 if whole_read else self._read_settings().context_chars_for(len(hits)),
             )
@@ -1843,19 +1593,13 @@ class RagPipeline:
             progress.found(blocks, deep_docs=self._settings.deep_top_docs if deep_read_on() else 0)
         else:
             blocks = [None] * len(contexts)
-        # Files the asker attached go in FIRST, ahead of retrieved chunks.
-        # They are the reason they uploaded: "is this bill claimable?" is a
-        # question about the bill, answered against the policy -- so the
-        # document under discussion leads and the corpus supports it. Both
-        # carry their own provenance line (`describe_hit` for a chunk,
-        # "Attached file: X" for an upload), which is what lets one answer
-        # draw on both and still say where each sentence came from.
+        # Attached files go FIRST: the document under discussion leads and the
+        # corpus supports it. Each block carries its own provenance line.
         progress.report("Writing the answer")
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
-            # A live read is the indexed document, so its block can be cited.
-            # An attachment has no stored address and stays uncitable. A
-            # mismatched list would point a number at the wrong document.
+            # A live read is the indexed document, so it is citable; an attachment is
+            # not. A mismatched list would cite the wrong document.
             lead = list(extra_blocks) if extra_blocks is not None else []
             if len(lead) != len(extra_contexts):
                 lead = [None] * len(extra_contexts)
@@ -1864,9 +1608,7 @@ class RagPipeline:
             contexts = list(contexts) + [graph_facts]
             blocks = blocks + [None]
         tone_source = user_question or question
-        # Tone runs ALONGSIDE generation, not in front of it: the grounded
-        # prompt does not use it, only the (rare) empathy opener composed
-        # afterwards does -- and serially it added 2-10s to every answer.
+        # Tone runs alongside generation; only the empathy opener uses it.
         tone_future = _AUX_POOL.submit(
             contextvars.copy_context().run,
             self._classify_question_tone,
@@ -1884,10 +1626,8 @@ class RagPipeline:
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
             asker_facts=asker,
-            # An override only for the attachment path: the agent's own
-            # profile carries its escalation hint ("your HR team can help"),
-            # which is a wrong contact for a file the asker uploaded --
-            # exactly the failure PromptProfile.escalation_hint documents.
+            # The attachment path drops the agent's escalation hint: wrong contact for
+            # an uploaded file.
             profile=profile or self._prompt_profile,
             focus_rule=self._settings.focus_rule,
             partial_rule=self._settings.partial_rule,
@@ -1906,8 +1646,7 @@ class RagPipeline:
         ).strip()
         mode, text = _parse_tagged_mode(raw)
         if current_live_request() is not None:
-            # Live tools: a handle the model echoed ("per [L1]") is
-            # machinery, never text for the reader or a turn (D4a).
+            # A live handle the model echoed ("per [L1]") is machinery, never shown.
             text = strip_handles(text)
 
         tone_retry_used = False
@@ -1945,8 +1684,7 @@ class RagPipeline:
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
         if answered and leaks_canary(answer):
-            # The model repeated its own instructions: what an injection asking
-            # for "your system prompt" gets. Nothing of it ships.
+            # The model repeated its own instructions (an injection's goal): ship none of it.
             logger.warning("security.canary_leak stage=generate org=%s", org_id)
             answered, answer = False, self._settings.fallback_response
         moderation = None
@@ -1955,7 +1693,7 @@ class RagPipeline:
             # Before the audit, so the audit judges the text that will ship.
             answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
             answer, cited = link_citations(answer, blocks)
-            # In parallel with the audit below (Task 4.1); a no-op when off.
+            # In parallel with the audit below; a no-op when off.
             moderation = _AUX_POOL.submit(
                 answer_is_unsafe, strip_citations(answer), org_id=org_id, stage="generate"
             )
@@ -1991,8 +1729,7 @@ class RagPipeline:
                 answered, answer = False, self._settings.fallback_response
 
         if answered and opener:
-            # Composed after the link rule ran, so it gets its own pass: it is
-            # written from the question alone and never needs a link.
+            # Composed after the link rule, from the question alone: its own pass.
             opener = enforce_link_provenance(opener, [], ())
             answer = compose_supportive_answer(opener, answer)
 
@@ -2051,11 +1788,8 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
     ) -> _RecoveryAttempt:
-        """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
-
-        On any expander/retrieve failure, returns the prior hits unchanged
-        (graceful degradation — never fails the request).
-        """
+        """One bounded recovery: expand → re-retrieve → fuse. Any failure returns
+        the prior hits."""
         del reason
         progress.report("Searching again with different wording")
         queries = self._expand_recovery_queries(
@@ -2176,12 +1910,10 @@ class RagPipeline:
         user_question: str | None = None,
         live_withheld: str | None = None,
     ) -> RagResult:
-        """Internal evidence insufficient: try web search (if enabled), else fallback.
+        """Evidence insufficient: try web search (if enabled), else fallback.
 
-        The single funnel every refusal passes through, which is why the
-        withheld-documents check lives here and not at the three call sites.
-        ``live_withheld`` names the connector whose live read said the item
-        behind this answer is gone or no longer readable (a live read said so).
+        Every refusal passes here, so the withheld-documents check lives here.
+        ``live_withheld`` names the connector whose live read said the item is gone.
         """
         min_stage = self._budget_settings.min_stage_seconds
         web_decided = False
@@ -2191,17 +1923,15 @@ class RagPipeline:
             and current_live_request() is not None
             and budget.can_spend(min_stage * 2)
         ):
-            # Live tools, mode B (plan D6): may ONE of the related items be
-            # read live? Offered only here, on the way to a refusal, and in the
-            # same tool call as the web decision when web search is on.
+            # Live mode B: may ONE related item be read live? Only on the way to a
+            # refusal, in the same call as the web decision.
             outcome, web_decided = self._try_live_decision(
                 question, hits, top_score, budget=budget, org_id=org_id,
                 conversation_id=conversation_id, user_question=user_question,
             )
             if outcome is not None:
                 return outcome
-        # A live-withheld item is internal and the provider just said it is
-        # gone: the web cannot know better, and must not replace that notice.
+        # A live-withheld item is internal: the web must not replace that notice.
         if (
             not live_withheld
             and not web_decided
@@ -2219,9 +1949,8 @@ class RagPipeline:
             if web is not None:
                 return web
 
-        # Checked AFTER web search and only on the way to a refusal: this
-        # never replaces an answer, it only replaces "I don't know" with the
-        # true reason for it. One extra query, on refusals only.
+        # After web search, on refusals only: replaces "I don't know" with the real
+        # reason, never an answer.
         answer = self._settings.fallback_response
         access_restricted = False
         if live_withheld:
@@ -2254,20 +1983,13 @@ class RagPipeline:
         workspace_id: str | None,
         viewer: Viewer,
     ) -> str | None:
-        """"Not shared with you" instead of "I don't know" — when that is TRUE.
+        """"Not shared with you" instead of "I don't know", when TRUE.
 
-        Gated on the same ``similarity_threshold`` the answer path uses, so the
-        claim is exactly "a document that would have PASSED the gate was
-        removed because you cannot read it". A lower bar would send people to
-        ask for access to documents that would have been refused anyway.
-
-        Never raises: a diagnostic must cost the wording of a refusal, never
-        the refusal itself.
+        Uses the answer path's ``similarity_threshold``, so it claims only that a
+        document that would have passed the gate was withheld. Never raises.
         """
-        # A Slack CHANNEL reply reads that channel only (`Viewer.channels`),
-        # so only that channel's threads may confirm a withheld match: a
-        # restricted Drive file elsewhere in the scope is not what this room
-        # was asking about, and "not shared with you" would be about nobody.
+        # A Slack channel reply reads that channel only, so only its threads may
+        # confirm a withheld match.
         channel_tags = [channel_tag(c) for c in viewer.channels if c] or None
         try:
             match = self._store.restricted_match(
@@ -2291,7 +2013,7 @@ class RagPipeline:
             in_channel=bool(channel_tags),
         )
 
-    # -- Phase 8: retrieval reuse (a cheap, deterministic, non-LLM check) ---
+    # -- retrieval reuse (deterministic, no LLM) ---------------------------
 
     def _try_reuse(
         self,
@@ -2300,14 +2022,9 @@ class RagPipeline:
         query_vec: list[float],
         conversation_id: str | None,
     ) -> RetrievalResult | None:
-        """Decide whether to reuse the previous turn's chunks instead of retrieving.
-
-        Purely a similarity comparison in code — no LLM call, the same kind of
-        deterministic gate as the Phase 3 confidence threshold. Returns a
-        ``RetrievalResult`` (reused chunks re-scored against THIS question, best
-        first) when the best cosine similarity clears ``reuse.threshold``, else
-        ``None`` so the caller retrieves normally.
-        """
+        """Reuse the previous turn's chunks when the best cosine clears
+        ``reuse.threshold`` (re-scored against THIS question), else ``None``.
+        No LLM call."""
         if (
             conversation_id is None
             or self._memory is None
@@ -2320,13 +2037,9 @@ class RagPipeline:
         if not prev:
             return None
 
-        # Recompute embeddings for the handful of previous chunks (cheap, local,
-        # deterministic) rather than storing 1024-dim vectors in the DB. A
-        # remembered chunk is the block the answer read, neighbours joined, and
-        # a Deep block ran past the embedding model's 8,194-token limit: the
-        # 400 failed the whole follow-up answer. A chunk-sized slice is enough
-        # to judge similarity, and reuse is a shortcut, so any failure here
-        # retrieves fresh instead.
+        # Re-embed the previous chunks rather than store vectors. Truncated to a
+        # chunk-sized slice: a Deep block overran the embedder's token limit. Any
+        # failure retrieves fresh.
         try:
             prev_vecs = self._embedder.embed([r.content[:DEFAULT_MAX_CHUNK_CHARS] for r in prev])
         except Exception:  # noqa: BLE001 - a shortcut must never cost an answer
@@ -2365,13 +2078,10 @@ class RagPipeline:
     ) -> tuple[RagResult | None, bool]:
         """Mode B: ``(result, web_decided)``. Never raises.
 
-        The model sees handles and titles for the related items retrieval
-        already cleared for this asker, and may name ONE. The gateway resolves
-        the handle from this request's own map, reads it live, and the answer
-        is generated by the unchanged grounded path -- strict prompt, audit,
-        link rule -- with the live block in its context. ``web_decided`` is
-        True when the same call chose (or declined) the web instead, so the
-        caller does not ask the web question twice.
+        The model may name ONE related item already cleared for this asker; the
+        handle resolves from this request's map, is read live, and the answer
+        goes through the normal grounded path. ``web_decided`` means the same
+        call settled the web question.
         """
         from ..config.settings import LiveToolsSettings
         from ..livetools.gateway import candidates as live_candidates
@@ -2451,9 +2161,8 @@ class RagPipeline:
     def _screen_web_results(self, results: list) -> list:
         """Drop (enforce) or log (shadow) snippets that read like an injection.
 
-        One batched call, only on the rare gate-miss web path that already
-        spends two model calls (Task 3.3). A guard failure keeps every result:
-        link provenance and the web fence still apply to them.
+        One batched call. A guard failure keeps every result: link provenance
+        and the web fence still apply.
         """
         guard = self._injection_guard
         if guard is None or not results:
@@ -2492,12 +2201,8 @@ class RagPipeline:
 
     @staticmethod
     def _cosine(a: list[float], b: list[float]) -> float:
-        """Cosine similarity in [-1, 1], matching pgvector's ``1 - cosine_distance``.
-
-        Embeddings are already L2-normalized (BGE-M3), so this reduces to a dot
-        product — but we compute the full form so a non-normalizing backend still
-        yields a comparable score on the same scale as the confidence gate.
-        """
+        """Cosine similarity, on the same scale as pgvector's ``1 - distance``.
+        Full form so a non-normalizing backend still matches the gate."""
         va = np.asarray(a, dtype=np.float32)
         vb = np.asarray(b, dtype=np.float32)
         denom = float(np.linalg.norm(va) * np.linalg.norm(vb))
@@ -2505,7 +2210,7 @@ class RagPipeline:
             return 0.0
         return float(np.dot(va, vb) / denom)
 
-    # -- Capability B: single-step web-search tool use ---------------------
+    # -- web-search tool use (single step) ---------------------------------
 
     def _try_web_search(
         self,
@@ -2519,10 +2224,8 @@ class RagPipeline:
     ) -> RagResult | None:
         """One decision call + at most one search + one answer call.
 
-        Any failure (model declines, search error/timeout, empty results) returns
-        ``None`` so the caller falls back to the fixed internal response.
-        ``decision``: a tool decision already made -- live tools ask the
-        web question in the same call as the live-read question.
+        Any failure returns ``None`` (fixed fallback). ``decision``: one already
+        made in the live-read call.
         """
         if decision is not None:
             return self._run_web_search(decision, question, top_score, org_id=org_id,
@@ -2533,11 +2236,8 @@ class RagPipeline:
         )
         messages = [{"role": "user", "content": decision_prompt}]
         try:
-            # Internal decision, so it bypasses _generate_text's stage split and
-            # must pin the model itself: whether to leave the tenant's own
-            # corpus for the open web is machinery, not prose, and must not
-            # change because a member picked a different model. It also needs
-            # dependable tool calling, which a free model does not guarantee.
+            # Machinery: pinned to the default model, which also needs dependable tool
+            # calling.
             with default_model_only():
                 decision = self._llm.generate_with_tools(
                     messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
@@ -2596,8 +2296,7 @@ class RagPipeline:
         except LLMProviderError:
             return None
 
-        # The Sources list is appended by us from the search results, never by
-        # the model; only the model's own prose is checked.
+        # We append the Sources list; only the model's prose is checked.
         if leaks_canary(raw):
             logger.warning("security.canary_leak stage=web org=%s", org_id)
             return None
@@ -2613,12 +2312,8 @@ class RagPipeline:
         )
 
     def _user_texts(self, latest: str, conversation_id: str | None) -> list[str]:
-        """The asker's own words in this conversation: the web query's word list.
-
-        Earlier QUESTIONS only -- never answers, the summary or documents --
-        so a follow-up ("and their CEO?") can still search for the company the
-        user named two turns ago. One memory read, on the rare web path only.
-        """
+        """The asker's earlier QUESTIONS (never answers or documents), so a
+        follow-up can still search for a name given turns ago."""
         texts = [latest]
         if conversation_id and self._memory is not None:
             try:
@@ -2641,15 +2336,10 @@ class RagPipeline:
         return f"{WEB_ANSWER_LABEL}\n\n{answer}\n\nSources:\n{sources}"
 
     def _normalize_for_retrieval(self, question: str, org_id: str) -> str:
-        """Cheap corpus-vocab spelling fix for the retrieval key (Phase 17).
+        """Corpus-vocab spelling fix for the retrieval key.
 
-        The corpus is passed as a **thunk**, not fetched here. ``list_chunk_texts``
-        is an unbounded ``SELECT content FROM chunks WHERE org_id = ...`` — the
-        org's entire corpus text over the wire — and the normalizer caches its
-        per-org dictionary for the life of the process, so eagerly fetching meant
-        shipping the whole corpus on every question only to discard it unread
-        (and once *per sub-question* on a decomposed query). Now it is read only
-        on a genuine cache miss.
+        The corpus is a thunk: it is the org's entire chunk text, read only on a
+        cache miss of the normalizer's per-org dictionary.
         """
         if not self._query_norm.enabled:
             return question
@@ -2665,7 +2355,7 @@ class RagPipeline:
         except Exception:  # noqa: BLE001
             return question
 
-    # -- Capability A: conversation memory helpers -------------------------
+    # -- conversation memory helpers ---------------------------------------
 
     def _rewrite_question(
         self,
@@ -2695,29 +2385,18 @@ class RagPipeline:
         return first_line
 
     def _update_running_summary(self, conversation_id: str) -> None:
-        """Incrementally fold the turn(s) that just left the verbatim window into
-        the running summary (Phase 8 / 15).
+        """Fold the turn(s) that left the verbatim window into the running summary.
 
-        Scheduled in the background after *every* turn (Phase 15) — ``answer()``
-        does not wait. Once the number of verbatim turns exceeds the window,
-        exactly one turn (the oldest) has fallen out; we merge just that turn with
-        the existing summary — so each update's input is the summary plus a single
-        turn, never the full history, and its cost stays ~constant no matter how
-        long the conversation gets. (If a previous update was skipped on an LLM
-        error, a small backlog is folded in on the next turn — still bounded,
-        never the whole history.)
+        Runs in the background after every turn. Input is the summary plus the
+        turns past the fold marker, so cost stays about constant.
         """
         window = self._memory_settings.recent_turns
         turns = self._memory.get_turns(conversation_id)
         if len(turns) <= window:
             return
 
-        # Turns are KEPT now, not deleted, so "what has already been folded"
-        # is read from the marker rather than inferred from what survives.
-        # Without this the fold would re-read the whole conversation every
-        # turn and re-summarise turns the summary already contains -- the
-        # constant cost this method promises comes from the marker, which is
-        # exactly the job deletion used to do.
+        # Turns are kept, so what is already folded comes from the marker; without
+        # it every turn would re-summarise the whole conversation.
         folded_through = self._memory.get_folded_through(conversation_id)
         newest_to_fold = turns[-window].turn_index - 1 if window > 0 else turns[-1].turn_index
         falling_out = [
@@ -2727,10 +2406,7 @@ class RagPipeline:
             and (folded_through is None or t.turn_index > folded_through)
         ]
         if not falling_out:
-            # Everything outside the window is already in the summary. The
-            # common case once a conversation is long: nothing to do, no LLM
-            # call. (Before the marker this was unreachable -- the rows were
-            # gone, so `len(turns) <= window` caught it instead.)
+            # Everything outside the window is already summarised: no LLM call.
             return
 
         existing = self._memory.get_summary(conversation_id)
@@ -2745,8 +2421,7 @@ class RagPipeline:
             ).strip()
         except LLMProviderError:
             return
-        # Model-written, from turns that may carry injected document text, and
-        # stored: cleaned the way any untrusted text is before it is kept.
+        # Model-written from possibly injected text, and stored: clean it.
         summary = strip_links(scrub_untrusted_text(summary))
         if summary:
             self._memory.set_summary_folded_through(
@@ -2755,13 +2430,7 @@ class RagPipeline:
 
     @staticmethod
     def _is_refusal(text: str, fallback_response: str) -> bool:
-        """True if the model's reply is (essentially) the fixed refusal sentence.
-
-        Robust to trailing punctuation / whitespace / case and to the model
-        wrapping the sentence, so a refusal is never mistaken for a real answer.
-
-        Current implementation of "generation found evidence insufficient" —
-        not the architectural definition of that trigger.
-        """
+        """True if the reply is essentially the fixed refusal (robust to
+        punctuation, case and wrapping)."""
         core = fallback_response.rstrip(".").strip().lower()
         return core in text.strip().lower()

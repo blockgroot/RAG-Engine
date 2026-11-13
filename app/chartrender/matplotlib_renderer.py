@@ -1,12 +1,8 @@
 """Draw a chart panel as a PNG with matplotlib.
 
-The picture follows the web chart's rules (frontend/components/charts/toOption.ts) so a
-chart reads the same in Slack as in the app: time axes stay in time order, a
-long category list becomes a ranked horizontal bar, values carry their unit,
-and every category keeps the colour the web gives it.
-
-Matplotlib is imported inside ``render_png``: it is heavy, and only a Slack
-chart reply ever needs it.
+Follows the web chart's rules (frontend/components/charts/toOption.ts) so
+Slack matches the app. Matplotlib is imported inside ``render_png``: heavy,
+and only a Slack chart needs it.
 """
 
 from __future__ import annotations
@@ -119,11 +115,8 @@ def _short(label: str) -> str:
 
 
 def _pivot(points: list[dict]) -> tuple[bool, list[str], list[str], dict]:
-    """(timed, x keys, series names, {(x, series): value}).
-
-    x is the time bucket when the panel has one, else the category; a series
-    is the measure (``series``) or, on a time axis, the category (``group``).
-    """
+    """(timed, x keys, series names, {(x, series): value}). x is the time
+    bucket, else the category; on a time axis the category is the series."""
     timed = any(p.get("bucket") for p in points)
     xs: list[str] = []
     names: list[str] = []

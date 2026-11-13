@@ -1,29 +1,11 @@
-"""Deferred running-summary fold (Phase 15).
+"""Deferred running-summary fold.
 
-The incremental summary fold (``RagPipeline._update_running_summary``) is pure
-bookkeeping after the answer is already decided — nothing in ``RagResult``
-depends on it. Running it synchronously inside ``answer()`` made every
-conversational turn past the verbatim window pay a full LLM round-trip before
-the caller (and any SSE/CLI stream) saw a single character.
-
-This module schedules the fold on a **single-worker** background executor so
-``answer()`` can return immediately and folds for a given conversation stay
-strictly ordered (the executor's queue is FIFO — no worker-side
-``Future.result()`` chaining, which can deadlock a thread pool).
-
-A barrier before the next turn's rewrite (``wait_for_conversation_fold``) waits
-**specifically on this conversation's own outstanding fold Future** — looked up
-in ``_pending[conversation_id]`` — not on the shared executor's queue in general
-and not on other conversations' folds. (A single-worker FIFO executor means an
-earlier-queued fold for a *different* conversation can still delay when this
-Future actually runs; that is scheduler ordering, not the barrier keying on
-global queue state.) This keeps a turn that left the verbatim window from being
-invisible to both the summary *and* recent turns.
-
-Folds remain best-effort (exceptions are logged, never raised to the caller).
-``shutdown_summary_folds`` / ``wait_for_pending_summary_folds`` drain work on
-process exit and in tests so a mid-shutdown drop is unlikely without a durable
-job queue (deliberately out of scope here).
+The fold is bookkeeping after the answer is decided, so it runs on a
+single-worker executor (FIFO keeps one conversation's folds ordered without
+chaining ``Future.result()``, which can deadlock). The next turn's rewrite
+waits on THIS conversation's pending fold (``wait_for_conversation_fold``),
+so a turn leaving the verbatim window is never invisible. Best-effort:
+failures are logged. ``shutdown_summary_folds`` drains on exit and in tests.
 """
 
 from __future__ import annotations

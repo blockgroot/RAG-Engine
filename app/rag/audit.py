@@ -1,14 +1,8 @@
-"""Post-generation groundedness audit — the validation-layer gap.
+"""Post-generation groundedness audit.
 
-A single bounded LLM call that re-checks an already-drafted Mode A/B answer
-against the same retrieved context, looking for a concrete claim the context
-does not support. This is a second opinion, never a second author: it can
-only downgrade an answer to the fixed fallback, never edit or extend one.
-
-Mirrors the existing bounded-extra-call shapes already in this pipeline
-(retrieval recovery, tone-compliance retry): budget-gated, one attempt, and
-any failure (LLM error, unparseable response) degrades to "skip the audit"
-rather than blocking or corrupting the answer.
+One bounded call that re-checks a drafted Mode A/B answer against the same
+context. A second opinion, never a second author: it can only downgrade to
+the fixed fallback. Any failure skips the audit.
 """
 
 from __future__ import annotations
@@ -30,11 +24,7 @@ class AuditVerdict:
 
 def parse_audit_verdict(raw: str) -> AuditVerdict:
     """Parse the auditor's ``VERDICT: ...`` / ``REASON: ...`` reply.
-
-    Unparseable output (a different aux model, an empty response, a refusal)
-    yields ``grounded=None`` — the caller must treat that as "cannot judge"
-    and leave the answer untouched, never as evidence of ungroundedness.
-    """
+    Unparseable yields ``grounded=None``: "cannot judge", never ungrounded."""
     m = _VERDICT_RE.search(raw)
     if not m:
         return AuditVerdict(grounded=None, reason=None)
@@ -47,17 +37,11 @@ def parse_audit_verdict(raw: str) -> AuditVerdict:
 
 
 # -- LettuceDetect backend (RAG_AUDIT_BACKEND=lettuce) --------------------------
-#
-# A token classifier, not a chatbot: it marks the spans of the answer the
-# context does not support, each with a confidence. No prompt to parse, so no
-# `grounded=None` from a reply worded oddly, and no LLM quota spent. Same
-# contract as the LLM path: it can only downgrade, and any failure is None
-# ("skip the audit"), never evidence of ungroundedness.
+# A token classifier marking unsupported spans with a confidence: no reply to
+# parse, no LLM quota. Same contract: only downgrades; any failure is None.
 
-# ModernBERT reads 8k tokens and TRUNCATES beyond that. A truncated context
-# makes every claim sourced from the cut-off part look invented, so an
-# over-long context is not audited at all rather than audited wrongly. ~4
-# chars/token leaves room for the question and answer.
+# ModernBERT truncates past 8k tokens, which makes cut-off claims look
+# invented, so an over-long context is not audited (~4 chars/token).
 LETTUCE_MAX_CONTEXT_CHARS = 24_000
 
 

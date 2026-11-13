@@ -1,4 +1,4 @@
-"""``/me`` — lets the frontend bootstrap the signed-in user's identity (Phase 13)."""
+"""``/me``: the signed-in user's identity, for the frontend to bootstrap."""
 
 from __future__ import annotations
 
@@ -20,20 +20,13 @@ def _act_on(org_id: str) -> bool:
 
 @router.get("/me")
 def me(session: SessionClaims = Depends(get_session)):
-    """Session bootstrap + org-wide setup readiness.
+    """Session bootstrap and org-wide setup readiness.
 
-    ``ready_to_ask`` is True only after a full *org-wide* ingest job has
-    *succeeded* (and nothing org-wide is still queued/running). Workspace
-    syncs must not unlock (or block) org Ask — they have their own gate on
-    ``GET /workspaces/{id}``.
+    ``ready_to_ask`` needs a succeeded org-wide ingest with nothing org-wide
+    queued; space syncs have their own gate (``GET /workspaces/{id}``).
     """
-    # Org name and the GitHub flag in ONE round trip. They were two separate
-    # `with get_connection()` blocks, which — together with the five queries
-    # content_setup_status used to issue — made this endpoint SEVEN sequential
-    # round trips to Postgres. /me runs on every page load, and on the live
-    # deployment the API is in US-West while the database is in ap-south-1
-    # (Mumbai), so each trip costs ~250ms across the Pacific: ~1.75s of pure
-    # network before the page could render anything. Now two.
+    # Org name and the GitHub flag in one round trip: /me runs on every page
+    # load and each trip to the database can cost ~250ms.
     with get_connection() as conn:
         row = conn.execute(
             """
@@ -93,15 +86,9 @@ def me(session: SessionClaims = Depends(get_session)):
         # What the person asked to be called; None until they have said.
         "name": display_name,
         "role": session.role,
-        # Whether the chat UI should offer its "Code" tab. Reported here rather
-        # than read from /admin/connections because that route is admin-only,
-        # and ordinary members must be able to ask GitHub questions too — they
-        # just can't manage the connection. Only a boolean is exposed: no
-        # repository names, since this is the one endpoint every session can
-        # call and connection detail belongs behind require_admin.
-        # Resolved in the combined query above. `workspace_id IS NULL` is
-        # explicit there: a personal sub-workspace connection must not light up
-        # the org-wide chat's Code tab.
+        # Whether chat offers the "Code" tab. Here because every member may ask
+        # GitHub but /admin/connections is admin-only; a boolean only, no repo names.
+        # Org-wide only (`workspace_id IS NULL` in the query above).
         "github_connected": github_connected,
         # Whether to show Act (writes into connected tools): the company's
         # admins allowed it. The Act page itself says what is switched on.
@@ -109,20 +96,12 @@ def me(session: SessionClaims = Depends(get_session)):
         # Only a self-hosted copy has versions to install; Cloud is kept
         # current for its companies, so it shows no Updates page.
         "selfhosted": UpdateSettings.from_env().deployment == "selfhosted",
-        # Whether the chat UI should offer its "Slack" tab. Deliberately keyed on
-        # ingested Slack *documents*, not on the connection existing: unlike
-        # GitHub (live reads, answerable the moment it is linked) Slack is a
-        # retrieval source, so a connection whose first sync hasn't produced
-        # any threads yet would give an empty tab that can only ever refuse.
+        # "Slack" tab: keyed on ingested threads, not the connection (a retrieval
+        # source with nothing synced can only refuse).
         "slack_ready": slack_ready,
-        # Whether the chat UI should offer its "Linear" tab. Same rule as
-        # slack_ready: keyed on ingested Linear issues, not on a token/connection
-        # existing, so the tab only appears once it can actually answer.
+        # "Linear" tab: same rule, keyed on ingested issues.
         "linear_ready": linear_ready,
-        # Notion and Drive each get their own tab now, never a combined
-        # "Docs" corpus — a company may use the two for unrelated content, so
-        # an answer must be traceable to exactly one (see app/agent/notion_agent.py
-        # / drive_agent.py). Same readiness rule as slack_ready/linear_ready.
+        # Notion and Drive get separate tabs so an answer is traceable to one source.
         "notion_ready": notion_ready,
         "drive_ready": drive_ready,
         **status,

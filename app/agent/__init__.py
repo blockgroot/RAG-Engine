@@ -12,16 +12,9 @@ Public API::
     else:
         print(response.answer)        # the fixed "I don't have information" fallback
 
-The ``Agent`` interface is generic on purpose, and that finally pays off with
-``GitHubAgent``: four implementations now exist, and they do NOT share a shape.
-``PolicyAgent``, ``WorkspaceAgent`` and ``SlackAgent`` are thin adapters over a
-``RagPipeline`` (retrieve → gate → grounded generate) via ``RagPipelineAgent`` —
-``SlackAgent`` differing only in that its pipeline is pinned to one ingested
-source provider. ``GitHubAgent``
-embeds nothing and answers purely from live, bounded GitHub API tool-calls — so
-it implements ``Agent`` directly, with no pipeline behind it. The interface being
-source-agnostic is what lets ``app/api/chat.py`` pick between them without
-knowing any of that.
+RAG agents (policy, workspace and the per-source ones) are adapters over
+``RagPipeline`` via ``RagPipelineAgent``; ``GitHubAgent`` (live reads) and
+``InsightsAgent`` (SQL charts) implement ``Agent`` directly.
 """
 
 from .base import Agent, AgentResponse, Citation

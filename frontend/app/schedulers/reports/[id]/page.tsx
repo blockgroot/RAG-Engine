@@ -13,9 +13,7 @@ const FREQUENCY_LABEL: Record<string, string> = {
   monthly: "Monthly",
 };
 
-/** How to name the window this report covers. "Week of 18 August" reads
- *  naturally; "Week of" on a one-day window did not, which is what the old
- *  weekly-or-else-Period ternary produced for a daily report. */
+/** Names the report's window ("Week of 18 August" only for a week). */
 const WINDOW_NOUN: Record<string, string> = {
   daily: "",
   weekly: "Week of",
@@ -28,11 +26,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   linear: "Linear",
 };
 
-/**
- * "Mon 18 – Mon 25 Aug" — the window the report covers, not when it was sent.
- * Weekday included because "which week was this?" is the question a reader
- * actually has, and a bare date makes them count.
- */
+/** "Mon 18 – Mon 25 Aug": the window covered, not when it was sent. */
 function windowLabel(start: string, end: string): string {
   const from = new Date(start);
   const to = new Date(end);
@@ -73,11 +67,8 @@ function isWebUrl(url: string | null | undefined): url is string {
   return !!url && /^https?:\/\//i.test(url);
 }
 
-/**
- * One activity item as who / where / when / what. A Slack item's text starts
- * with the chunk header ("Channel: #x [05:57] Name: ..."), and its meta repeats
- * the text as a title; shown raw, every row read as a log line twice over.
- */
+/** One activity item as who / where / when / what; strips the Slack chunk
+ *  header the meta already repeats. */
 function tidyItem(item: { summary: string; meta?: string | null }) {
   const meta = item.meta || "";
   const cut = meta.lastIndexOf(" · ");
@@ -187,10 +178,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
 
         <section className="studio-panel report-body" aria-label="Report">
           {report.item_count === 0 ? (
-            // A quiet period is a RESULT, not an error, and the fixed note on
-            // its own read like something had gone wrong. Saying what was
-            // looked at and over which dates is what makes it trustworthy —
-            // and no model is asked to write any of it.
+            // A quiet period is a RESULT: say what was read and when (no model).
             <div className="report-quiet">
               <h2>Nothing happened in this period</h2>
               <p className="muted">

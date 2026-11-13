@@ -48,10 +48,7 @@ function GithubMark({ size }: { size: number }) {
 }
 
 function MailMark({ size }: { size: number }) {
-  // The supplied mail icon: a solid blue disc with a white envelope. Drawn
-  // rather than dropped in as a PNG so it scales at every size the glyph is
-  // used at (18-30px here) and needs no asset step. The `sendgrid` key is
-  // historical — every call site means "email", never the vendor.
+  // Mail icon, drawn so it scales. The `sendgrid` key means "email", not the vendor.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <circle cx="12" cy="12" r="12" fill="#2E77BC" />
@@ -76,10 +73,7 @@ function MailMark({ size }: { size: number }) {
 }
 
 function PrivateMark({ size }: { size: number }) {
-  // The supplied privacy icon: a person on a pink disc with a padlock badge.
-  // Outlined in ink like the source art, which is why it carries strokes the
-  // other marks here do not — it is the one glyph whose meaning ("only these
-  // people, locked") depends on reading two objects at a glance.
+  // Privacy icon: a person with a padlock badge, outlined so both read at a glance.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <circle cx="12" cy="12" r="11.2" fill="#FB6C93" stroke="#111" strokeWidth="1.1" />
@@ -153,10 +147,7 @@ function DocumentMark({ size }: { size: number }) {
 }
 
 function ScheduleMark({ size }: { size: number }) {
-  // A calendar with a clock over it — the same idea as the icon supplied for
-  // the scheduler, redrawn as a 24x24 rounded-square glyph so it sits in the
-  // same family as the other marks here (a full-colour illustration would be
-  // the only glyph on the page with its own outline weight).
+  // Scheduler: a calendar with a clock, as a 24x24 glyph like the others.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <rect width="24" height="24" rx="6" fill="#0f766e" />
@@ -183,9 +174,7 @@ function ScheduleMark({ size }: { size: number }) {
 }
 
 function ChartMark({ size }: { size: number }) {
-  // Bars ON a baseline with an axis, because that is the distinction the
-  // product makes: a chart here is a measurement over recorded rows, not a
-  // decorative sparkline. Three heights, so it reads as a comparison at 18px.
+  // Bars on an axis: a measurement, not a sparkline. Three heights read at 18px.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <rect width="24" height="24" rx="6" fill="#0e7490" />
@@ -198,9 +187,7 @@ function ChartMark({ size }: { size: number }) {
 }
 
 function FormsMark({ size }: { size: number }) {
-  // Google Forms' own mark: a purple sheet with a folded corner and three
-  // answer rows. Drawn rather than added to /public/brands so it scales at
-  // every size a glyph is used at and needs no asset step, like GithubMark.
+  // Google Forms' mark, drawn so it scales, like GithubMark.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <path
@@ -223,10 +210,8 @@ function FormsMark({ size }: { size: number }) {
 }
 
 function SentimentMark({ size }: { size: number }) {
-  // A diverging bar: a centre line with weight either side, which is the shape
-  // the sentiment chart actually draws. Deliberately not a smiley — the
-  // product never reports one company mood, and a single face would promise
-  // exactly that.
+  // A diverging bar, the shape the sentiment chart draws. Not a smiley: there
+  // is no single company mood.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <rect width="24" height="24" rx="6" fill="#4c1d95" />
@@ -242,9 +227,7 @@ function SentimentMark({ size }: { size: number }) {
 }
 
 function ModelMark({ size }: { size: number }) {
-  // A chip with pins: "the model is a component you supply", which is what
-  // bring-your-own-key means here. The spark is the only warm accent, so it
-  // reads as choice rather than as a warning.
+  // A chip with pins: the model is a component you choose.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
       <rect width="24" height="24" rx="6" fill="#1e293b" />

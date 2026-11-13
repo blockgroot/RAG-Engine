@@ -1,16 +1,7 @@
 """The external-source contract the ingestion path depends on.
 
-A *source* is any external system that holds documents we want to ingest —
-Notion now; Google Drive/Docs/Sheets, GitHub, and Slack later. Each gets a
-concrete adapter implementing this one interface, so the ingestion pipeline
-(``app.ingestion.pipeline``) can pull content from any of them without knowing
-which one it is talking to.
-
-The interface is deliberately split into cheap *listing* (metadata only) and
-explicit *fetching* (pulls the full content), which is what makes incremental
-sync possible later (list refs, compare ``last_modified``, fetch only what
-changed). Turning a source's native format into clean plain text is the
-adapter's job — that never leaks into the ingestion pipeline.
+Split into cheap *listing* (metadata) and explicit *fetching* (content), so a
+sync fetches only what changed. Converting to plain text is the adapter's job.
 """
 
 from __future__ import annotations
@@ -22,41 +13,21 @@ from datetime import datetime
 
 @dataclass(frozen=True)
 class DocAccess:
-    """WHO may read one document, as the SOURCE itself reports it.
+    """WHO may read one document, as the SOURCE reports it.
 
-    Document-level access filtering: the smallest private unit used to be a
-    SPACE, because we sync with one admin's token and stored no per-document
-    ACL — so a Drive file shared with two people became readable by everyone
-    in the scope that indexed it. This is the adapter's answer to "and who was
-    it actually shared with?".
+    ``is_public``: public within the indexing scope, not the internet.
+    ``viewers``: ACL entries spelled as ``Viewer.acl`` reads them (lowercased
+    email, ``domain:<host>``, ``group:<address>``; groups expand on the READ side).
+    An entry no viewer can produce fails closed.
 
-    ``is_public`` means public *within the scope that indexed it* — a Drive
-    "anyone with the link" file, or any provider that cannot report sharing at
-    all. It is NOT a claim that the document is public to the internet.
-
-    ``viewers`` are ACL ENTRIES, and their spelling is a contract with
-    ``vectorstore.base.Viewer.acl``: a lowercased email, ``domain:<host>``, or
-    ``group:<address>``. A group is stored as the GROUP and expanded on the
-    READ side from the asker's own memberships (``sources.google_groups``), so
-    the entry survives a change in who is in that group. An entry no ``Viewer``
-    can currently produce — a ``group:`` one while group expansion is switched
-    off — fails CLOSED: the document is withheld rather than shown to the
-    wrong person.
-
-    ``None`` — the absence of a ``DocAccess`` — is NOT "public". It means the
-    adapter could not determine sharing AND could not name anyone who
-    demonstrably can read it, so for an ACL-capable provider the ingestion
-    pipeline skips that document rather than indexing it readable.
+    ``None`` (no ``DocAccess``) is NOT public: for an ACL-capable provider the
+    document is skipped.
     """
 
     is_public: bool
     viewers: tuple[str, ...] = ()
-    #: True when this is a FALLBACK: the source refused to say who the document
-    #: is shared with, so ``viewers`` names only the account that could see it
-    #: rather than its real audience. The document is still indexed (see
-    #: ``owner_only``) but the fact is carried through to the ingest counters,
-    #: because "we know who reads this" and "we guessed conservatively" must not
-    #: report as the same sync.
+    #: True for a FALLBACK: sharing was unreadable, so ``viewers`` names only the
+    #: connected account. Reported in ingest counters apart from a known audience.
     unreadable: bool = False
 
     @classmethod
@@ -72,20 +43,9 @@ class DocAccess:
     def owner_only(cls, account_email: str) -> "DocAccess":
         """Sharing is unreadable: grant ONLY the account that could see the file.
 
-        Onyx's fallback (`ee/onyx/external_permissions/google_drive/doc_sync.py`,
-        "falling back to granting access to retriever user"), and it is better
-        than the skip that shipped here first, for two reasons:
-
-        * the document becomes USABLE by the one person we can prove may read
-          it, instead of vanishing from a corpus they chose to connect;
-        * it EXISTS in the index, so `VectorStore.restricted_match` can see it
-          and a colleague who asks gets "this is not shared with you" instead of
-          "I don't know" — a skipped document has no rows at all, so the honest
-          refusal could never fire for the one case where nobody can see it.
-
-        Still fail-closed, and Onyx says so in the same words: other people may
-        genuinely have access to this file and they are NOT granted it here. An
-        under-shared document is a complaint; an over-shared one is a leak.
+        Better than skipping: that person can use it, and a colleague gets "not
+        shared with you" (`restricted_match`) instead of "I don't know". Still fail
+        closed: others who may have access are not granted it.
         """
         return cls(is_public=False, viewers=(account_email.strip().lower(),), unreadable=True)
 
@@ -101,17 +61,10 @@ class SourceRef:
     title: str
     last_modified: datetime | None = None
     source_uri: str | None = None  # link back to the original (e.g. Notion URL)
-    # Who last edited it, as the source names them. Optional because not every
-    # source exposes one, and a listing must stay cheap -- an adapter that
-    # would need an extra request per document should leave this None rather
-    # than turning one listing into N calls.
+    # Who last edited it, if the listing has it for free; never an extra call per document.
     last_editor: str | None = None
-    # Who may read it, when the LISTING already knows. Drive's per-file
-    # `permissions` ride in the `files.list` we already make, which is what
-    # makes revocation free: an unshared file is re-stamped on the next sync
-    # even though its content never changed and is never re-fetched
-    # (see ingestion.pipeline._plan_refs). ``None`` = this adapter does not
-    # report sharing from a listing.
+    # Who may read it, when the LISTING knows: revocation rides the listing
+    # (ingestion.pipeline._plan_refs). ``None`` = not reported from a listing.
     access: "DocAccess | None" = None
 
 
@@ -125,28 +78,16 @@ class SourceDocument:
     source_uri: str | None = None
     last_modified: datetime | None = None
     last_editor: str | None = None
-    # Per-document hard-filter labels, merged with any run-level tags by the
-    # ingestion pipeline. The adapter owns these because only it knows what
-    # partitions its own source: a run-level tag list is one value for the
-    # whole sync, which cannot express "this thread is in #engineering and
-    # that one is in #random". Use STABLE identifiers, never display names --
-    # a Slack channel rename moves no message id, so a name-based tag would
-    # silently stop matching (see slack_utils.refresh_channel_names).
+    # Per-document hard-filter tags, merged with run-level tags. STABLE ids, never
+    # display names: a rename would silently stop matching.
     tags: list[str] | None = None
-    # Who may read this document (see ``DocAccess``). ``None`` means the
-    # adapter reports no sharing information — which for an ACL-capable
-    # provider means the document is SKIPPED, never indexed readable.
+    # Who may read it (``DocAccess``). ``None`` = no sharing: SKIPPED for an ACL-capable provider.
     access: "DocAccess | None" = None
-    # People, links and containers the adapter saw while fetching (see
-    # ``sources.meta``). Built ONLY from payloads already in hand -- this field
-    # must never be the reason an adapter makes another call. ``None`` = the
-    # adapter captured nothing, which the graph reads as "no edges", not "none
-    # exist".
+    # People, links and containers (``sources.meta``), only from payloads in hand,
+    # never an extra call. ``None`` = nothing captured, not "none exist".
     meta: dict | None = None
-    # Tables the adapter parsed itself (``doctables.extract.RawTable``) --
-    # a Sheet or CSV, where the adapter holds the rows before they are
-    # flattened into text. ``None`` = let the pipeline look for pipe tables
-    # in ``content`` instead (Notion, Google Docs, Word).
+    # Tables the adapter parsed (a Sheet or CSV). ``None`` = the pipeline looks for
+    # pipe tables in ``content``.
     tables: list | None = None
 
 

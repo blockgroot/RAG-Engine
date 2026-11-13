@@ -1,26 +1,14 @@
-"""Act mode end to end: propose one write, then run it once it is approved.
+"""Act mode end to end: propose writes, then run each once it is approved.
 
-``propose`` asks the model to fill in one action's form; code checks the
-person asked for it (the quoted ``request_words`` are in their message),
-resolves the target from their own words with their own token, works out who
-would newly see private content, and stores the frozen proposal. Nothing is
-written.
+``propose`` drafts through the tool loop (``loop.py``; draft checks
+``checks.py``; prompts ``prompts.py``): code checks the person asked for each
+write, resolves targets from their words with their token, and stores the
+frozen proposal with its exposure. Nothing is written. Company content is read
+only through ``SEARCH``, for the asker's own words, found the way Ask finds it.
 
-Company content is read only through the model's read tool
-(``SEARCH``), for words the asker wrote, found the way Ask finds it. Every
-passage it returns is a source; a request written entirely in the asker's own
-words reads nothing, so it never warns about private threads it never used.
-
-The loop is any agent's tool loop, paused at a write: the drafted call is
-answered with what really happened once the person decides the card, and the
-same conversation goes on (``continue_run``). The loop is ``loop.py``, its
-checks on a draft ``checks.py``, and everything the model reads ``prompts.py``.
-
-``confirm`` is the only path to a write. It re-checks everything that can
-change between the card and the click (Act still on, the action still
-enabled, the hourly cap, a working token), then claims the stored row -- the
-single-execution guarantee -- and sends the STORED payload, never one from
-the client. Its outcome is recorded whatever happens.
+``confirm`` is the only path to a write: it re-checks what can change since the
+card, claims the stored row (single execution), and sends the STORED payload.
+Every outcome is recorded.
 """
 
 from __future__ import annotations
@@ -59,11 +47,9 @@ from .prompts import _decided, _fenced, build_revise_prompt
 
 logger = logging.getLogger("actions")
 
-#: Passages shown to the model for drafting. Few, because every one of them is
-#: a source the exposure check must count.
+#: Passages shown for drafting. Few: each is a source the exposure check counts.
 CONTEXT_HITS = 6
-#: The fields that carry drafted words. Every other field is a target, already
-#: required to be in the asker's own words (``draft.require_named``).
+#: Fields carrying drafted words; every other field is a target (``draft.require_named``).
 DRAFT_FIELDS = ("title", "body", "text")
 #: How a passage names the tool it came from (Ask's sources, not Act's tools).
 SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
@@ -73,19 +59,14 @@ SOURCE_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
 #: A word of a request or a tool's text, for ranking when embeddings fail.
 _TOOL_WORD = re.compile(r"[^\W_]{3,}")
 
-#: Embeddings of tool texts, by text. A tool's text changes only when its
-#: server does, so each is embedded once per process.
+#: Tool-text embeddings, once per process (a text changes only with its server).
 _TOOL_VECTORS: dict[str, list[float]] = {}
 
 
 def _fit_tools(offered: list[Action], question: str, embedder, cap: int) -> list[Action]:
-    """At most ``cap`` tools: each connector's ranked by how near its name and
-    description are to the request in meaning, then taken in turns, so a
-    request that spans connectors keeps each one's best. Every tool of every
-    server costs tokens on each call, and OpenAI's models and Groq refuse more
-    than 128 (with every tool of four servers on, every request failed).
-    Narrowing is ranking only: what the model may do with a tool it is offered
-    is checked as always."""
+    """At most ``cap`` tools: each connector's ranked by closeness to the request,
+    taken in turns so each connector keeps its best. Every tool costs tokens and
+    providers refuse more than 128. Ranking only: use is checked as always."""
     if len(offered) <= cap:
         return offered
     from ..core.exceptions import EmbeddingProviderError
@@ -103,18 +84,14 @@ def _fit_tools(offered: list[Action], question: str, embedder, cap: int) -> list
             norm = (sum(a * a for a in q) * sum(b * b for b in v)) ** 0.5
             return dot / norm if norm else 0.0
     except EmbeddingProviderError as exc:
-        # Ranked by the words the request shares with each tool instead: "the
-        # first 40" cut every later connector's last tools, and "…and share it
-        # with Raj" was never offered Share a file.
+        # Fallback: rank by shared words (a plain first-40 cut dropped later connectors' tools).
         logger.warning("Act: ranking %d tools by meaning failed, ranking by words: %s", len(offered), exc)
         asked = set(_TOOL_WORD.findall(question.casefold()))
 
         def score(i: int) -> float:
             return float(len(asked & set(_TOOL_WORD.findall(texts[i].casefold()))))
 
-    # A tool whose own name shares a word with the request comes first, then
-    # by meaning: "…and share it with Raj as an editor" ranked Share a file
-    # below eight other Google tools, and it was not offered at all.
+    # A tool whose name shares a word with the request comes first, then by meaning.
     said = set(_TOOL_WORD.findall(question.casefold()))
     named = [len(said & set(_TOOL_WORD.findall(a.label.split(":", 1)[-1].casefold()))) for a in offered]
     by_server: dict[str, list[int]] = {}
@@ -147,12 +124,9 @@ def indexed_context(
     """Search hits from indexed documents as ``(sources, passages)``: unflagged,
     at most ``CONTEXT_HITS``, and only documents this viewer may read.
 
-    A chunk the injection guard flagged is dropped whatever the guard's mode,
-    because here text can turn into a write. Each document's viewers are read
-    again with the visibility predicate, so a source is exactly as visible as
-    Ask would make it. ``days``: only documents changed in that many days
-    ("this week's Linear issues"); one with no known change date is left out,
-    and the passages say the window was applied.
+    A chunk the guard flagged is dropped in any guard mode: here text can become a
+    write. Viewers are re-read with the visibility predicate. ``days`` keeps only
+    documents changed in that window (undated ones are left out).
     """
     guard = GuardSettings.from_env()
     hits = [h for h in hits if h.injection_score is None or h.injection_score < guard.threshold]
@@ -178,8 +152,7 @@ def indexed_context(
     kept = [h for h in hits if h.document_id in docs][:CONTEXT_HITS]
     if not kept:
         return [], ""
-    # Each passage names its tool, so a draft from several tools can say which
-    # one a point came from instead of blending them.
+    # Each passage names its tool, so a multi-tool draft can attribute points.
     passages = (f"(Only content changed in the last {days} days.)\n\n" if days else "") + "\n\n".join(
         f"[{_tool_label(h)}{docs[h.document_id].title}]\n{scrub_untrusted_text(h.content)}"
         for h in kept
@@ -193,13 +166,9 @@ def _tool_label(hit) -> str:
 
 
 def store_search(embedder, vstore):
-    """A search straight against the store: one meaning-only query for the
-    words naming the content, each hit held to the 0.35 gate. Only for a
-    caller with no Ask pipeline (tests); the app passes ``api.actions.ask_search``.
-
-    Every search returns ``(sources, passages)``. The web and a Slack DM read
-    company-wide as the asker; a Slack CHANNEL passes that channel's tag and
-    the room's viewer, exactly like a channel reply.
+    """A meaning-only store search, each hit held to the 0.35 gate. Only for callers
+    with no Ask pipeline (tests); the app passes ``api.actions.ask_search``.
+    Returns ``(sources, passages)``.
     """
 
     def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None, days=None):
@@ -214,12 +183,8 @@ def store_search(embedder, vstore):
 
 
 def _only_askers_words(args: dict, question: str) -> bool:
-    """True when every drafted field is text the asker typed themselves.
-
-    Then no passage reached the draft, whatever the model was shown, so none
-    is a source: "comment on X: shipped today" carries nothing private.
-    Anything else keeps the rule that every passage shown counts.
-    """
+    """True when every drafted field is text the asker typed: then no passage
+    reached the draft, so none is a source."""
     drafted = [args.get(f) for f in DRAFT_FIELDS if args.get(f) not in (None, "")]
     return bool(drafted) and all(isinstance(v, str) and asked_in(v, question) for v in drafted)
 
@@ -242,8 +207,7 @@ def offered_actions(
         return offered, None
     off = policy.space_off(org_id, workspace_id)
     sources = policy.space_sources(org_id, workspace_id)
-    # Why not: no tool switched on at all, none for this space's connectors or
-    # switched off by its owner, or switched on where they have not signed in.
+    # Why not: nothing on, nothing for this space, or not signed in where it is on.
     on = [s for s in list_servers(org_id) if s.enabled
           and any(s.mode(t.get("name", "")) == "write" for t in s.tools)]
     waiting = [s.name for s in on if policy.server_in_space(s, sources)
@@ -275,15 +239,11 @@ def propose(
     read_context=None,
     search=None,
 ) -> ActOutcome:
-    """``surface`` says where the request came from (web, a Slack DM, a Slack
-    channel) and is built by the caller from the session or the Slack event.
-    ``viewer``, ``scope_workspace_id`` and ``tags`` say what the draft may
-    read there; the caller decides them per surface. ``read_context`` replaces
-    the search when the caller knows exactly what the request is about (a
-    Slack thread it was asked in); it returns ``(sources, passages)``.
-    ``search`` finds the content as ``(sources, passages)`` (Ask's retrieval,
-    ``api.actions.ask_search``; ``store_search`` over ``vstore`` when not
-    given)."""
+    """``surface``: where the request came from. ``viewer``, ``scope_workspace_id`` and
+    ``tags``: what the draft may read there (the caller decides per surface).
+    ``read_context`` replaces the search when the caller knows the context (a Slack
+    thread); ``search`` defaults to ``store_search`` over ``vstore``. Both return
+    ``(sources, passages)``."""
     settings = settings or ActionsSettings.from_env()
     surface = dict(surface or {"kind": "web"})
     kind = surface.get("kind", "web")
@@ -296,9 +256,7 @@ def propose(
 
     from ..llm.routed import use_model
 
-    # The person's pick from the chat's model picker, validated by the route;
-    # None is the default model (Slack, or no pick). Set here, not by the
-    # caller, so a request never inherits another request's choice.
+    # The picked model (None = default). Set here so no request inherits another's.
     use_model(model, org_id=org_id)
     charge_to(user_id, org_id)
     offered = _fit_tools(offered, question, embedder, settings.mcp_max_tools)
@@ -309,10 +267,8 @@ def propose(
     personal = kind in ("web", "slack_dm")
 
     def read(words: str, channel: str | None = None, days: int | None = None) -> tuple[list[Source], str]:
-        # Found the way Ask finds it, from the whole request, with the words
-        # naming the content searched alongside and ordering the results: the
-        # action words ("create an issue … titled … checklist") ranked an
-        # unrelated Atlas page above the Slack message the request meant.
+        # Searched on the whole request with the content words ordering results: action
+        # words alone ranked unrelated pages first.
         if read_context is not None:
             return read_context()
         if channel and personal:
@@ -341,18 +297,14 @@ def propose(
                   scope_workspace_id=scope_workspace_id, settings=settings, model=model)
 
 
-#: How far back, and how many, of the person's own approved cards the next
-#: request is told about ("post the link of the issue we created").
+#: How far back, and how many, of the person's approved cards the next request sees.
 EARLIER_HOURS = 12
 EARLIER_LIMIT = 8
 
 
 def _earlier(org_id: str, user_id: str, workspace_id: str | None, email: str) -> tuple[str, list[Source]]:
-    """What the person's own approved cards made recently, for the next
-    request: each request started fresh, so "DM Raj the link of the Linear
-    issue we created" could not find it (minutes old, not synced, and its
-    title typed without the dash). ``(lines, sources)``: the lines ground its
-    ids and links like a lookup's answer; each source is private to them."""
+    """What the person's approved cards made recently (not synced yet), so "the
+    issue we created" resolves. ``(lines, sources)``; each source is private to them."""
     try:
         with get_connection() as conn:
             rows = conn.execute(
@@ -396,22 +348,18 @@ def _channel_read(org_id: str, workspace_id: str | None, channel: str, days: int
 
 
 def _lookup_sources(looked: set[str], email: str) -> list[Source]:
-    # What a lookup returned is that tool's content, private to the person who
-    # read it: a source like any private passage, so moving it somewhere
-    # others can read needs the tick, and somewhere public is refused.
+    # A lookup's result is private to its reader: a source like any private passage.
     return [Source(f"mcp-lookup:{name}", f"what {name} returned", public=False, viewers=(email.lower(),))
             for name in sorted(looked)]
 
 
 def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, viewer, surface,
            scope_workspace_id, settings, model, step: int = 1, already: frozenset = frozenset()) -> ActOutcome:
-    """The loop's drafts as stored cards, and the reply. The run is kept with
-    its conversation, paused on those calls, so deciding the cards answers
-    them and the request goes on (``continue_run``)."""
+    """The loop's drafts as stored cards, and the reply. The paused run is kept so
+    deciding the cards continues it (``continue_run``)."""
     from . import runs
 
-    # Over the limit: the first ones are drafted and the rest is SAID, never
-    # dropped silently (a fourth action simply vanished).
+    # Over the limit: the rest is SAID, never dropped silently.
     left_out = run.left_out
     drafts, refusals, calls, did, forms = [], list(run.refused), {}, {}, {}
     messages = list(run.messages or [])
@@ -450,24 +398,17 @@ def _cards(run: _Drafting, *, question, sources, found, org_id, user_id, email, 
                                  "calls": calls, "did": did, "forms": forms},
                         action_ids=list(calls), ttl_seconds=settings.ttl_seconds, step=step)
         except DatabaseError:
-            # The cards stand on their own; only going on after them is lost
-            # (e.g. the table not created yet on this database).
+            # The cards stand; only continuing after them is lost (e.g. table missing).
             logger.warning("Act: could not keep the run; it will not continue", exc_info=True)
     return ActOutcome(reply, drafts[0][0], drafts[0][1], tuple(drafts))
 
 
 def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id: str, llm, embedder,
                  settings: ActionsSettings | None = None) -> tuple[ActOutcome, dict] | None:
-    """After a card is decided: when it belongs to a paused run and no card of
-    that run is still pending, answer each paused call with what happened to
-    its card and let the same conversation go on, as ``(outcome, surface)``:
-    where the request was asked, so the caller shows the new cards there.
-    ``None`` when there is nothing to continue, or nothing came of it (every
-    card went through and nothing remains). Every new card is approved on its
-    own, like the first.
-
-    ``viewer_for(surface)`` is who the drafts read as there, decided by the
-    caller per surface exactly as for the first request."""
+    """After the last pending card of a paused run is decided, answer each paused
+    call with its outcome and continue the conversation. Returns ``(outcome,
+    surface)``, or ``None`` when nothing remains. New cards are approved on their own.
+    ``viewer_for(surface)`` is who the drafts read as there."""
     from . import runs
     from ..llm.routed import use_model
 
@@ -486,8 +427,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
         # An approved card's action is done: not drafted again in other words.
         did = kept.get("did") or {}
         keys |= {did[aid] for aid, _name, status, _r in cards if status == "succeeded" and did.get(aid)}
-        # A failed card may be drafted again once what it lacked exists: the
-        # Sheet refused for a missing folder, then blocked as "already decided".
+        # A failed card may be drafted again once what it lacked exists.
         forms = kept.get("forms") or {}
         keys -= {k for aid, _name, status, _r in cards if status == "failed" for k in forms.get(aid, ())}
         if not calls or set(calls) - {aid for aid, *_ in cards}:
@@ -508,8 +448,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
             url = result.get("url") if str(result.get("url") or "").startswith("https://") else None
             said = _decided(label, status, result, url)
             if status == "succeeded":
-                # What an approved write made is the person's own: its link may
-                # go into the next draft, and its id fills the next form.
+                # An approved write's result is the person's own: its link and id may be reused.
                 found.append(said)
                 sources.append(Source(f"act-result:{aid}", f"what {label} made", public=False,
                                       viewers=(email.lower(),), uri=url))
@@ -524,8 +463,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
                            user_id=user_id, email=email, found=found, looked=looked, ran={}, settings=settings,
                            messages=messages, already=keys, sources=tuple(sources), check=check)
         if not loop.picked:
-            # Silent only when nothing the request asked for is left: "…and share
-            # it with Raj" stopped after the text, and its reason went unsaid.
+            # Silent only when nothing the request asked for is left.
             left = _not_asked_yet(loop.messages or [], {a.tool["function"]["name"]: a for a in offered}, check)
             if not left and not loop.refused and all(s in ("succeeded", "rejected") for s in statuses):
                 return None                # all went through and nothing remains: nothing to say
@@ -549,9 +487,8 @@ def _nothing_drafted(run: _Drafting) -> ActOutcome:
 
 def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, surface, kind,
            scope_workspace_id, settings, lookups=""):
-    """One form into one stored proposal, ``(row, exposure)``; or why not, in
-    the person's terms. Each draft is checked on its own: its target, the
-    person's access there, and who would newly see private content."""
+    """One form into one stored proposal, ``(row, exposure)``, or why not, in the
+    person's terms. Each is checked on its own: target, access and exposure."""
     if _only_askers_words(args, question):
         sources = []
     name = action.label.split(":")[0]  # the server's name: "Linear", "GitHub"…
@@ -591,12 +528,10 @@ def edit(
     fields: dict,
     settings: ActionsSettings | None = None,
 ) -> ActionRow:
-    """Replace a pending draft's words with the person's own.
+    """Replace a pending draft's words with the person's own (``Action.edit``).
 
-    Only drafted text changes (``Action.edit``); where it goes, the sources
-    and the exposure verdict stay, because code cannot tell whether an edit
-    still carries private content. The acknowledgement is given with the
-    Approve click, so it is asked for again on the edited text.
+    Target, sources and exposure stay (code cannot tell if an edit still carries
+    private content), so the tick is asked again.
     """
     settings = settings or ActionsSettings.from_env()
     if not policy.act_on(org_id):
@@ -625,11 +560,9 @@ def revise(
     llm,
     model: str | None = None,
 ) -> ActionRow:
-    """Rewrite a pending draft's words as the person asks, then save it as an
-    edit (``Action.edit`` under ``store.update_payload``'s guards). Only words
-    change; the target, sources and exposure stay, and the tick is asked
-    again. Links and @-mentions survive only if the draft they saw or their
-    instruction already had them. Nothing is sent."""
+    """Rewrite a pending draft's words as the person asks, saved as an edit. Target,
+    sources and exposure stay; the tick is asked again. Links and @-mentions
+    survive only if the draft or the instruction had them. Nothing is sent."""
     if not policy.act_on(org_id):
         raise ActionRejected("Your admin has turned off Agent mode.")
     instruction = instruction.strip()[:MAX_INSTRUCTION]
@@ -656,8 +589,7 @@ def revise(
         data = None
     fields = {k: v for k, v in (data or {}).items() if k in current and isinstance(v, str)}
     if not fields or all(fields[k] == current[k] for k in fields):
-        # Only the words are rewritten: "add name, status in the rows as well"
-        # asked for a sheet's rows, which are part of the form, not its text.
+        # Only words are rewritten; rows are part of the form, not its text.
         raise ActionError("I couldn't rework that. I can change only the drafted text; to change rows, "
                           "a target or a setting, cancel and ask again with them.")
     asked = "\n".join([*current.values(), instruction])

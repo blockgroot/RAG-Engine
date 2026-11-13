@@ -1,16 +1,9 @@
 """Document tables in Postgres: write at ingest, list for a viewer, aggregate.
 
-Three rules carry over from ``insights/store.py`` unchanged, because a chart
-of a spreadsheet is still a chart:
-
-- every read is pinned to ``org_id`` and to ONE scope (org-wide = ``IS NULL``,
-  a space = that space, never both);
-- a viewer sees a table only if they may open its DOCUMENT
-  (``visibility_predicate`` on the JOIN) -- a sheet shared with finance is not
-  charted for sales;
-- the only things spliced into SQL are OUR column keys (``c0``...), checked
-  against a regex, a ``date_trunc`` unit from a closed set, and aggregate
-  fragments from a closed map. Every value is bound.
+Every read is pinned to ``org_id`` and ONE scope (org-wide = ``IS NULL``);
+a table is visible only if its DOCUMENT is (``visibility_predicate`` on the
+JOIN); only our column keys (``c0``...), a closed ``date_trunc`` unit and a
+closed aggregate map are spliced into SQL. Every value is bound.
 """
 
 from __future__ import annotations
@@ -104,10 +97,8 @@ def replace_document_tables(
 ) -> int:
     """Swap this document's tables for ``tables``. Returns rows written.
 
-    Delete-then-insert in one transaction: a re-ingested sheet whose rows
-    changed must not keep yesterday's rows beside today's. Raises
-    ``ProviderError``; the ingest caller decides that a table failure costs
-    the chart, never the indexed document.
+    Delete-then-insert in one transaction, so yesterday's rows never sit beside
+    today's. Raises ``ProviderError``; a table failure never costs the document.
     """
     written = 0
     try:
@@ -166,10 +157,8 @@ def replace_attachment_tables(
 ) -> int:
     """Swap one uploaded file's tables (this adapter's only) for ``tables``.
 
-    The attachment row is re-read with its owner in the WHERE, so a caller
-    can never hang tables off a file that is not that person's. Raises
-    ``ProviderError``; the upload caller decides a table failure never
-    fails the upload.
+    The attachment is re-read with its owner in the WHERE, so tables never hang
+    off another person's file. Raises ``ProviderError``; never fails the upload.
     """
     try:
         with get_connection() as conn:
@@ -198,11 +187,8 @@ def replace_attachment_tables(
 
 @dataclass(frozen=True)
 class UploadScope:
-    """Whose uploads may be charted: this person's files in this chat.
-
-    The only key to an upload's tables. Built in ``api/chat.py`` from the
-    session (``user_id``) and the conversation the route already checked.
-    """
+    """Whose uploads may be charted: this person's files in this chat. The
+    only key to an upload's tables, built from the session in ``api/chat.py``."""
 
     conversation_id: str
     user_id: str
@@ -246,10 +232,8 @@ def list_upload_tables(*, org_id: str, uploads: UploadScope | None) -> list[Tabl
 
 @dataclass(frozen=True)
 class DocumentPlace:
-    """A document title this person may know about, and where it lives.
-
-    ``workspace_name`` is None when the document is in the scope being asked.
-    """
+    """A document title this person may know about; ``workspace_name`` is None
+    when it is in the scope being asked."""
 
     title: str
     workspace_name: str | None
@@ -276,9 +260,8 @@ def document_places(
 ) -> list[DocumentPlace]:
     """Titles this viewer may see, in this scope and in workspaces they belong to.
 
-    Used when a chart names a page that was not offered. A page in a workspace
-    they are not a member of is not returned, so Company-wide never learns
-    that a private workspace holds it. No viewer means none.
+    A workspace they are not in is never returned, so Company-wide never learns
+    a private workspace holds the page. No viewer means none.
     """
     if viewer is None or getattr(viewer, "is_unrestricted", False):
         return []
@@ -368,9 +351,8 @@ def find_chart_document(
 ) -> tuple[str, str, str, str] | None:
     """One Notion, Drive, or Linear document in this scope whose title matches, or None.
 
-    ``(id, provider, external_id, title)``. The live chart read uses this so
-    it can only re-read a page the asker may already open here. ``providers``
-    keeps it on the connector the question named.
+    ``(id, provider, external_id, title)``. The live chart read re-reads only a
+    page the asker may open; ``providers`` keeps the connector they named.
     """
     like = _title_like(title_query)
     if not like or viewer is None or getattr(viewer, "is_unrestricted", False):
@@ -405,10 +387,8 @@ def find_chart_document(
     return (row[0], row[1], row[2], row[3])
 
 
-#: Chunks of one page loaded when Chart mode reads its sentences. The text
-#: adapter cuts to its own character cap; this only stops a huge page loading
-#: whole. ponytail: a figure that starts past chunk 8 is unread until the page
-#: is shorter or this cap is raised.
+#: Chunks loaded when Chart mode reads a page's sentences; stops a huge page
+#: loading whole. ponytail: a figure past chunk 8 is unread until this is raised.
 MAX_PROSE_CHUNKS = 8
 
 
@@ -418,10 +398,9 @@ def matching_prose(
 ) -> list[tuple[str, str, str, str, bool]]:
     """Pages whose indexed text matches the question and have no sentence-figures yet.
 
-    ``(document_id, external_id, title, text, truncated)``. The viewer predicate
-    is on the document, in the same WHERE as ``org_id``. An unrestricted viewer
-    gets nothing: this is a person's chart question, not ingest. ``tag`` keeps
-    only documents carrying it (one Slack channel).
+    ``(document_id, external_id, title, text, truncated)``. Viewer predicate in
+    the same WHERE as ``org_id``; an unrestricted viewer gets nothing (this is a
+    person's question, not ingest). ``tag`` keeps one Slack channel's.
     """
     question = (question or "").strip()[:500]
     if not question or viewer is None or getattr(viewer, "is_unrestricted", False):
@@ -517,10 +496,8 @@ def list_tables(
 ) -> list[TableRef]:
     """Every table this viewer may chart in this scope, newest document first.
 
-    ``title_query`` keeps only documents whose title contains that name, so a
-    page they named is found even when newer tables filled the usual list.
-    ``providers`` keeps one connector's documents (a question that names
-    Drive is never charted from Notion); ``tag`` one Slack channel's.
+    ``title_query`` finds a named page even past the usual list; ``providers``
+    keeps one connector's documents; ``tag`` one Slack channel's.
     """
     access, params = _visible(viewer)
     like = _title_like(title_query)
@@ -559,11 +536,9 @@ def get_table(
 ) -> TableRef | None:
     """One table, re-checked against the viewer at RUN time.
 
-    The resolver offered it a moment ago, but a spec can arrive from anywhere
-    (a stored dict, a later turn), so the access check is repeated here rather
-    than trusted. A document's table needs the document predicate; an
-    upload's table needs its uploader and chat (``uploads``), and without
-    them is simply not found.
+    A spec can arrive from anywhere (a stored dict, a later turn), so access is
+    checked again: the document predicate, or for an upload its uploader and
+    chat (``uploads``); without them it is not found.
     """
     access, params = _visible(viewer)
     try:
@@ -665,11 +640,9 @@ def run_table_query(
 ) -> list[TablePoint]:
     """Aggregate one table's rows. The table was already access-checked.
 
-    A DATE grouping becomes the time axis (``date_trunc(period, ...)``) and
-    the split, if any, becomes the series; a category grouping is the
-    category axis. A plain count counts rows; every other measure aggregates
-    one NUMBER column, and a cell that did not parse is simply absent, so it
-    is left out of the sum rather than counted as zero.
+    A DATE grouping is the time axis (``date_trunc``), the split the series. A
+    count counts rows; other measures aggregate one NUMBER column, and an
+    unparsed cell is absent from a sum, never zero.
     """
     if period not in PERIODS:
         raise ValueError(f"unknown period {period!r}")
@@ -853,11 +826,10 @@ def distinct_values(
 
 
 def typed_cells(question: str, tables: list[TableRef]) -> dict[str, tuple[tuple[str, str], ...]]:
-    """``{table id: ((column name, value), ...)}``: the cells of these tables the
-    question types as whole words ("Daniel Reed" is a Profile Name of one
-    sheet only). Read through the cell index, one query. A word inside a
-    header the question names ("applied via") is that column, not a value.
-    The tables were already access-checked. Never raises."""
+    """``{table id: ((column name, value), ...)}``: cells these tables hold that
+    the question types as whole words, via the cell index in one query. A word
+    of a header the question names is that column, not a value. Tables already
+    access-checked. Never raises."""
     from ..insights.tables import _words
 
     # Real rows only: a table read from sentences holds words like "month".
@@ -946,13 +918,8 @@ _MAX_PHRASES = 4000
 
 
 def _phrases(question: str) -> list[str]:
-    """Every whole-word stretch of the question a cell could equal, lowercased.
-
-    ``pick_rows`` keeps a cell only where it stands as whole words of the
-    question; these are exactly those stretches (start and end next to a
-    non-word character), so an exact lookup finds what a scan for each cell
-    inside the question found, through the index. Format only, no word list.
-    """
+    """Every whole-word stretch of the question a cell could equal, lowercased,
+    so an exact index lookup finds what ``pick_rows`` would keep. Format only."""
     asked = (question or "")[:2000].lower()
     n = len(asked)
     starts = [i for i in range(n) if not asked[i].isspace()
@@ -987,12 +954,11 @@ def rows_naming(
 ) -> list[RowHit]:
     """Rows of document tables whose own cell is written in the question.
 
-    "Who was the field officer on L-1008?": the sheet embeds only its columns,
-    so search cannot reach the row. A cell typed verbatim in the question can.
-    Exact text, never a guess: a value counts only as whole words of the
-    question, and only when it names at most ``MAX_LOOKUP_ROWS`` rows (an
-    identifier, not a group); ranked by ``pick_rows``. Same scope and document
-    predicate as every table read; never a viewer-less read. Never raises.
+    A sheet embeds only its columns, so search cannot reach a row. A value
+    counts only as whole words and only when it names at most
+    ``MAX_LOOKUP_ROWS`` rows (an identifier, not a group); ranked by
+    ``pick_rows``. Same scope and document predicate; never viewer-less.
+    Never raises.
     """
     if viewer is None or getattr(viewer, "is_unrestricted", False) or not providers:
         return []
@@ -1069,15 +1035,10 @@ def pick_rows(question: str, found: list[tuple]) -> list[RowHit]:
 
     ``found`` rows are ``(document id, title, provider, uri, table name, row no,
     columns, raw cells, is public, table id)``. A row qualifies only through a
-    value that names at most ``MAX_LOOKUP_ROWS`` rows of ITS table: "Rohan
-    Mehta" is one row of a team sheet and thirty-six of a leads sheet, a name
-    in the first and a group in the second.
-
-    Qualifying rows are ranked by the question's words their cells hold, each
-    word weighted by how few of the found rows hold it. "L-1008" (one row)
-    outweighs "Field Officer" (three), and "October" lifts the October target
-    row above other rows that only share the person's name: a follow-up's row
-    was cut at the cap before. The question's own words, never a list.
+    value naming at most ``MAX_LOOKUP_ROWS`` rows of ITS table (a name in one
+    sheet is a group in another). Ranked by the question's words their cells
+    hold, each weighted by rarity among the found rows, so "L-1008" outweighs
+    "Field Officer". No word list.
     """
     asked = (question or "").lower()
 

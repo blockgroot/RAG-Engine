@@ -1,25 +1,12 @@
 """Does answering this question need the WHOLE corpus, or the best few chunks?
 
-Retrieval ranks by similarity and keeps `RAG_TOP_K` chunks. That is right for
-"what's our leave policy?" and wrong for "summarise everything discussed here":
-measured on a real Slack channel, 5 of 38 chunks reached the model and the
-answer came confidently from the single thread phrased most like a summary. A
-partial answer is worse than a refusal, because nothing signals it.
+Ranked retrieval answers "summarise everything here" from a handful of
+chunks, a partial answer that looks complete. The trigger is the
+question's intent: a word list misfires ("summarise what Sana said about
+X" is specific), and reading whole whenever it fits is not intent.
 
-The trigger is the QUESTION's intent, not a property of the data. Two rejected
-alternatives, and why:
-
-* **A word list** ("overall", "summarise", "everything") misses "what's been
-  going on here" and "give me the gist", and fires on "summarise what Sana said
-  about Notion" -- which is a SPECIFIC question wearing a summary verb.
-* **"Read it whole whenever it fits"** needs no interpretation, but it is not
-  intent: it hands a pointed question the entire corpus and stops scaling the
-  moment one channel gets busy. It also cannot tell the two "summarise"
-  questions above apart, which is the distinction that decides the answer.
-
-So: one small classifier, a CLOSED output set, validated, and fail-open to the
-ranked behaviour that shipped. The model picks a label; it never picks the
-chunks, the query or the count.
+One small classifier with a CLOSED output set, validated, failing open to
+ranked retrieval. It picks a label, never chunks, query or count.
 """
 
 from __future__ import annotations
@@ -28,11 +15,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: Answerable from the most relevant few chunks. The default, and what every
-#: failure degrades to.
+#: Answerable from the most relevant few chunks; what every failure degrades to.
 SPECIFIC = "specific"
-#: Asks about the body of documents AS A WHOLE -- a summary, an overview, the
-#: themes, "what is this about". Needs breadth, not the best match.
+#: About the documents AS A WHOLE (summary, overview, themes): needs breadth.
 OVERVIEW = "overview"
 
 _INTENTS = frozenset({SPECIFIC, OVERVIEW})
@@ -60,14 +45,8 @@ One word:"""
 def classify_scope_intent(question: str, *, llm=None, fail_open: bool = True) -> str:
     """Return ``SPECIFIC`` or ``OVERVIEW`` for ``question``.
 
-    ``fail_open`` keeps a dead or rate-limited classifier from changing any
-    answer: it returns ``SPECIFIC``, which is exactly the ranked retrieval that
-    shipped. A breadth read is an IMPROVEMENT on a narrow one, never a
-    correctness guarantee, so it must never be the thing an outage takes away.
-
-    Validation is the gate, not the prompt: anything outside the closed set is
-    read as ``SPECIFIC`` rather than trusted, so a chatty or hallucinated reply
-    costs nothing.
+    ``fail_open``: an outage returns ``SPECIFIC`` (ranked retrieval). Anything
+    outside the closed set reads as ``SPECIFIC``.
     """
     text = (question or "").strip()
     if not text:
@@ -86,10 +65,8 @@ def classify_scope_intent(question: str, *, llm=None, fail_open: bool = True) ->
             raise
         return SPECIFIC
 
-    # Substring rather than equality: a small model routinely answers
-    # "overview." or "Answer: overview". Checked in a fixed order so a reply
-    # naming both cannot be decided by dict ordering -- and the wider read
-    # loses that tie, because widening on a maybe is the change with a cost.
+    # Substring, not equality ("Answer: overview."). Fixed order, and the wider
+    # read loses a tie: widening on a maybe is the costly change.
     lowered = (reply or "").strip().lower()
     if SPECIFIC in lowered:
         return SPECIFIC

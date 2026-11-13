@@ -1,25 +1,13 @@
-"""REST implementation of ``GitHubReader`` (GitHub Integration Plan Phase 5).
+"""REST ``GitHubReader`` over plain ``httpx`` (no GitHub SDK).
 
-Plain ``httpx`` against GitHub's REST API — no ``PyGithub``, no ``githubkit``,
-for the same reason ``httpx`` backs the Google adapter and ``notion-client`` was
-chosen over the LlamaIndex reader: those libraries pull in dozens of transitive
-dependencies to wrap calls we make in a few lines (CLAUDE.md §1/§2). Zero new
-dependencies.
+Every public method, in this order:
+1. ``resolve_repo`` the model-filled repo string against the authorized scope,
+   BEFORE any network call (``repos.py``).
+2. One bounded request, retrying transient failures only.
+3. Shrink to budget, MARKING truncation.
 
-Every public method follows the same three steps, in this order, and the order is
-the point:
-
-1. ``resolve_repo`` the caller's repo string against the connection's authorized
-   scope. This happens **before** any network call, because that string was
-   filled in by an LLM (see ``repos.py``).
-2. Issue one bounded request with retry on transient failures only.
-3. Shrink the response to the configured budget, **marking** anything truncated
-   so the model can tell partial evidence from complete evidence.
-
-Error mapping worth knowing: GitHub returns **404 for a repo the token cannot
-see**, exactly as Drive does, so 404 is reported as "not found or not
-accessible" rather than assumed deleted — and it is never retried, because
-retrying a permanent answer only burns the request budget.
+404 means "not found or not accessible" (GitHub hides repos the token cannot
+see), never "deleted", and is never retried.
 """
 
 from __future__ import annotations
@@ -66,36 +54,22 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 def _truncate(text: str, max_bytes: int) -> tuple[str, bool]:
-    """Cut ``text`` to ``max_bytes`` and append a visible marker if cut.
-
-    The marker matters more than the cut: a silently-shortened README would let
-    the model answer as though it had read the whole thing.
-    """
+    """Cut ``text`` to ``max_bytes`` with a visible marker, so a partial read never looks whole."""
     if max_bytes <= 0 or len(text.encode("utf-8", errors="ignore")) <= max_bytes:
         return text, False
     encoded = text.encode("utf-8", errors="ignore")[:max_bytes]
     return encoded.decode("utf-8", errors="ignore") + _TRUNCATION_MARKER, True
 
 
-#: How many listing pages one call may walk. Only ever reached when rows are
-#: being dropped after the fetch (state="merged" past a wall of abandoned
-#: branches) -- otherwise the cap is filled by the first page or two.
+#: Listing pages one call may walk; reached only when rows are dropped after the fetch.
 MAX_PULL_REQUEST_PAGES = 5
 
 
 def _commit_author(item: dict, commit: dict) -> str | None:
-    """The commit's author as a GitHub LOGIN where GitHub knows one.
+    """The commit's author as a GitHub LOGIN where known, else the git name.
 
-    Two names exist on every commit payload and they are not the same thing:
-    ``commit.author.name`` is whatever git config wrote ("Sana Asiwal") and
-    ``author.login`` is the GitHub account it resolved to ("18-sana"). Pull
-    requests and reviews only ever carry the login, so preferring the git name
-    made the SAME person two different people across charts -- "who ships the
-    most" could not be compared with "who raises pull requests".
-
-    Falls back to the git name: a commit by an email GitHub cannot match to an
-    account (a bot, a since-deleted user, an unlinked address) still happened
-    and still counts. A gap in the identity is better than dropping the commit.
+    Pull requests carry only the login, so the git name split one person in two
+    across charts. A commit with no matched account still counts.
     """
     login = ((item.get("author") or {}) or {}).get("login")
     return login or (commit.get("author") or {}).get("name")
@@ -104,9 +78,7 @@ def _commit_author(item: dict, commit: dict) -> str | None:
 def _pull_request(full_name: str, item: dict) -> PullRequest:
     """One API object to our shape, keeping the three people distinct.
 
-    ``state`` is OURS, not GitHub's: GitHub reports a merged pull request as
-    "closed", so counting merges off its state would count every abandoned
-    branch as a merge.
+    ``state`` is OURS: GitHub calls a merged pull request "closed".
     """
     user = item.get("user") or {}
     merger = item.get("merged_by") or {}
@@ -135,12 +107,8 @@ def _pull_request(full_name: str, item: dict) -> PullRequest:
 
 
 def _chart_fields(item: dict) -> tuple[tuple[str, object], ...]:
-    """Every simple field of a pull request payload, for charts.
-
-    The author, merger and state already have real columns, so they are not
-    stored twice. Lists are frozen to tuples so the PullRequest stays
-    hashable.
-    """
+    """Every simple field of a pull request payload, for charts, minus real columns.
+    Lists become tuples so the PullRequest stays hashable."""
     from ..insights.fields import simple_fields
 
     found = simple_fields(item, skip=("user", "merged_by", "state", "merged"))
@@ -150,12 +118,7 @@ def _chart_fields(item: dict) -> tuple[tuple[str, object], ...]:
 
 
 def _is_safe_sha(sha: str) -> bool:
-    """A commit-ish must be alphanumeric-ish before it goes into a URL path.
-
-    The sha is model-supplied like the repo name, so it gets the same treatment.
-    Branch names and tags are allowed (they can contain ``/``, ``.``, ``-``, ``_``)
-    but path traversal is not.
-    """
+    """A model-supplied commit-ish must be safe in a URL path: branch/tag characters, no traversal."""
     candidate = (sha or "").strip()
     if not candidate or ".." in candidate:
         return False
@@ -250,8 +213,7 @@ class RestGitHubReader(GitHubReader):
         limit: int = 10,
     ) -> list[CommitSummary]:
         full_name = resolve_repo(self._scope, repo)
-        # Clamp rather than trust: ``limit`` is model-supplied, and an absurd
-        # value would paginate GitHub hard and overflow the prompt.
+        # Clamp: ``limit`` is model-supplied.
         per_page = max(1, min(int(limit or 10), self._settings.max_commits))
 
         params: dict[str, object] = {"per_page": per_page}
@@ -275,8 +237,7 @@ class RestGitHubReader(GitHubReader):
         for item in payload or []:
             commit = item.get("commit") or {}
             author = commit.get("author") or {}
-            # Subject line only — commit bodies are often long and add little
-            # when the model is scanning history.
+            # Subject line only; bodies add little.
             subject = (commit.get("message") or "").split("\n", 1)[0].strip()
             sha = str(item.get("sha") or "")
             summaries.append(
@@ -304,14 +265,9 @@ class RestGitHubReader(GitHubReader):
         full_name = resolve_repo(self._scope, repo)
         cap = max(1, min(int(limit or 100), self._settings.max_pull_requests))
 
-        # The filter goes on the REQUEST. Asking for `all` and keeping the open
-        # ones out of a newest-first window of 20 returns nothing on a busy
-        # repo, because the newest 20 are usually all merged -- and the caller
-        # then says "no open pull requests" while several are open.
+        # Filter on the REQUEST: filtering a newest-20 window of `all` finds no open ones.
         wanted = (state or "all").lower()
-        # "merged" is not a GitHub state: a merged pull request is `closed`, so
-        # ask for closed and drop the ones that were abandoned rather than
-        # merged. Same reason `_pull_request` derives our own `state`.
+        # "merged" is not a GitHub state: ask for closed, drop the unmerged.
         requested = "closed" if wanted == "merged" else (
             wanted if wanted in ("open", "closed") else "all"
         )
@@ -319,17 +275,11 @@ class RestGitHubReader(GitHubReader):
         items: list[PullRequest] = []
         truncated = False
         page = 1
-        # A page must be asked for in FULL when rows can be dropped after the
-        # fetch, because the cap then no longer predicts how many rows we need.
-        # Asking for `cap` rows and stopping when fewer than a full page comes
-        # back is a single-page fetch (20 requested, 20 returned, "short page",
-        # stop) -- so "merged pull requests" silently became "however many
-        # merges sat in the newest 20 closed ones", which is the very bug the
-        # request-side filter was added to fix, moved from `all` onto `closed`.
+        # Ask for FULL pages when rows are dropped after the fetch: a short page is
+        # then no longer "the end", and one page silently became the answer.
         per_page = 100 if wanted == "merged" else min(100, cap)
-        # Sorted by `updated` descending: GitHub cannot sort on merged_at, and
-        # this is the only ordering that lets a `since` window stop early. It
-        # also means a cap drops the OLDEST end, never a random subset.
+        # By `updated` desc (GitHub cannot sort on merged_at): `since` can stop early,
+        # and a cap drops the oldest end.
         while len(items) < cap and page <= MAX_PULL_REQUEST_PAGES:
             payload = self._request(
                 f"{GITHUB_API_BASE}/repos/{full_name}/pulls",
@@ -351,47 +301,33 @@ class RestGitHubReader(GitHubReader):
             for item in payload:
                 updated = _parse_dt(item.get("updated_at"))
                 if since and updated and updated < since:
-                    # The listing is newest-first, so everything after this is
-                    # older too -- stop rather than page through history.
+                    # Newest-first: everything after this is older too.
                     stop = True
                     break
                 pull = _pull_request(full_name, item)
                 if wanted == "merged" and not pull.merged_at:
-                    # Closed without merging. Counted against neither the cap
-                    # nor the answer -- an abandoned branch is not a merge.
+                    # Closed without merging: not a merge, not counted.
                     continue
                 items.append(pull)
 
-            # Against `per_page`, NOT a literal 100: a short page is the only
-            # signal that history ran out, and comparing it to the wrong number
-            # ends the walk after one request.
+            # Against `per_page`: a short page is the only end-of-history signal.
             if stop or len(payload) < per_page:
                 break
             page += 1
 
         if page > MAX_PULL_REQUEST_PAGES and len(items) < cap:
-            # We stopped on the page ceiling rather than on the end of history,
-            # so there may be more merges further back. A repo can hold
-            # hundreds of abandoned branches, none of which fill the cap, and
-            # an unbounded walk to find `cap` merges is how one question turns
-            # into fifty requests against a rate limit.
+            # Stopped on the page ceiling, not the end of history: there may be more.
             truncated = True
 
         if len(items) >= cap:
-            # We filled the cap, so there may be more we did not look at. Said
-            # out loud rather than inferred, because a chart built from the
-            # first N while believing it complete is the failure that matters.
+            # Filled the cap: said out loud, so the first N is not taken as complete.
             truncated = True
 
         return PullRequestPage(items=tuple(items[:cap]), truncated=truncated)
 
     def get_pull_request(self, repo: str, pull_number: int) -> PullRequest | None:
-        """One pull request in full, for ``merged_by``.
-
-        GitHub omits ``merged_by`` from the pulls LIST payload and returns it
-        only here, so a merger can never be read off a listing. One call per
-        pull request: the caller bounds the set.
-        """
+        """One pull request in full, for ``merged_by`` (absent from the LIST payload).
+        One call each: the caller bounds the set."""
         full_name = resolve_repo(self._scope, repo)
         payload = self._request(
             f"{GITHUB_API_BASE}/repos/{full_name}/pulls/{int(pull_number)}",
@@ -451,10 +387,7 @@ class RestGitHubReader(GitHubReader):
     def repo_permission(self, full_name: str, login: str) -> str:
         """``login``'s effective access to ``full_name``: admin/write/read/none.
 
-        GitHub resolves every grant (repo, team, org, enterprise) and needs only
-        the Metadata permission every installation has. 404 = no access.
-        Raises ``httpx.HTTPError`` on anything else, so a failure is never
-        mistaken for an answer.
+        404 = no access. Anything else raises, so a failure is never taken for an answer.
         """
         response = httpx.get(
             f"{GITHUB_API_BASE}/repos/{full_name}/collaborators/{login}/permission",
@@ -474,12 +407,7 @@ class RestGitHubReader(GitHubReader):
         what: str,
         params: dict | None = None,
     ) -> httpx.Response:
-        """One bounded GET, retrying only transient failures.
-
-        Backoff is truncated-exponential and honours ``Retry-After`` when GitHub
-        supplies it (it does on 429), because guessing a shorter delay than the
-        server asked for is how a client earns a longer ban.
-        """
+        """One bounded GET, retrying only transient failures, honouring ``Retry-After``."""
         attempts = max(1, self._settings.max_attempts)
         last_detail = ""
 
@@ -520,8 +448,7 @@ class RestGitHubReader(GitHubReader):
     def _describe_error(status: int, what: str, response: httpx.Response) -> str:
         """Turn a status code into something an admin could act on."""
         if status == 404:
-            # GitHub deliberately 404s resources a token can't see, so this is
-            # genuinely ambiguous and must not be reported as "deleted".
+            # 404 is ambiguous (hidden or missing): never "deleted".
             return (
                 f"Could not read {what}: not found, or not visible to this GitHub "
                 "installation. Check the repository is still included in the "

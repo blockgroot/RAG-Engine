@@ -1,15 +1,8 @@
 """Single construction point for the RAG pipeline.
 
-Callers do ``build_rag_pipeline()`` and get a fully wired ``RagPipeline`` with the
-LLM, embedding provider, vector store, conversation memory, web-search tool, and
-(Phase 6) a hybrid + reranking retriever — all built from configuration. Any
-dependency can be injected instead (mainly for tests, which hold session-scoped
-fixtures) so nothing is constructed twice.
-
-``memory``, ``web_search`` and ``retriever`` use a sentinel default so callers can
-explicitly pass ``None`` to turn a capability OFF (e.g. the Phase 3 grounding
-tests build a pure retrieve-gate-generate pipeline), distinct from omitting the
-argument (build it from config).
+Every dependency is built from config unless injected (tests).
+``memory``, ``web_search`` and ``retriever`` use a sentinel default, so
+passing ``None`` turns that capability OFF, unlike omitting it.
 """
 
 from __future__ import annotations
@@ -72,8 +65,7 @@ def build_rag_pipeline(
         memory = build_conversation_store()
 
     if web_search is _UNSET:
-        # Build the web-search tool only when enabled; degrade quietly if the
-        # provider can't be constructed (e.g. missing optional dependency).
+        # Web search only when enabled; degrade quietly if it cannot be built.
         web_search = None
         if web_settings.enabled:
             try:

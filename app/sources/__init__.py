@@ -1,4 +1,4 @@
-"""External content sources (Notion now; Drive/GitHub/Slack later).
+"""External content sources (Notion, Drive, Slack, Linear).
 
 Public API:
     from app.sources import build_source_adapter

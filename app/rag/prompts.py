@@ -28,11 +28,8 @@ class PromptProfile:
     persona: str
     scope_adjective: str
     scope_noun: str
-    # Who to ask when CONTEXT names no contact. MUST match the source: every
-    # profile once copied the policy profile's "your HR team", so a question
-    # about an engineering Slack channel closed by directing the asker to HR.
-    # A wrong contact is worse than none -- it sends someone to a team that
-    # cannot help and did not write the content.
+    # Who to ask when CONTEXT names no contact. MUST match the source: a wrong
+    # contact (HR for an engineering channel) is worse than none.
     escalation_hint: str
     source_label: str
 
@@ -102,13 +99,9 @@ _TOOL_NAMES = {"notion": "Notion", "google": "Google Drive", "slack": "Slack",
 def connected_prompt_profile(tools, source_label: str) -> PromptProfile:
     """The framing for a CONNECTED answer, which reads more than one tool.
 
-    Every per-tool profile says "answer only from <this tool>", and a model
-    obeys it: measured with real Gemini, a question routed to Linear that
-    named Slack was handed the right Slack thread and still refused, because
-    rule 1 told it to use only issue-tracking facts. The framing must name
-    every tool the context was drawn from -- each excerpt already carries its
-    app on its provenance line. The grounding rules themselves are unchanged;
-    only the scope they refer to widens to the tools actually searched.
+    A per-tool profile's "answer only from <tool>" makes the model refuse a
+    right passage from another tool, so this names every tool searched. The
+    grounding rules are unchanged; only their scope widens.
     """
     names = [_TOOL_NAMES.get(t, t) for t in sorted(tools)]
     listed = ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
@@ -131,11 +124,8 @@ ATTACHMENT_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="file-specific",
     scope_noun="attached file",
-    # NOT "your HR team". The escalation hint must match the source (see
-    # PromptProfile): an attachment can be a contract, a CSV of sales or a
-    # scanned rota, so the only true statement is that the answer is not in
-    # the file -- naming any team here would send someone to people who have
-    # never seen the document they uploaded.
+    # No team named: an attachment can be anything, so the only true statement
+    # is that the answer is not in the file.
     escalation_hint="that detail isn't in the file you attached",
     source_label=SOURCE_ATTACHMENT,
 )
@@ -144,16 +134,9 @@ ATTACHMENT_PROMPT_PROFILE = PromptProfile(
 def build_attachment_paging_prompt(*, question: str, preview_block: str) -> str:
     """Ask the model WHICH parts of a long attachment to read. Not an answer.
 
-    Deliberately not the grounded prompt: nothing is being answered here, so
-    the MODE tag, the fallback rule and the persona would all be noise the
-    model has to reason past. Its only job is to choose offsets, and the
-    grounded prompt runs afterwards over what comes back -- which is what
-    keeps this extra call from touching any grounding guarantee.
-
-    The previews are fenced and scrubbed like every other untrusted body of
-    text. This call can request a read; it can never produce the answer, so a
-    prompt injection in a file's opening 500 characters buys an attacker one
-    badly chosen offset.
+    Not the grounded prompt: it only chooses offsets, and the grounded prompt
+    runs afterwards. Previews are fenced and scrubbed; an injection here buys
+    at most a badly chosen offset.
     """
     scrubbed = scrub_untrusted_text(preview_block)
     return (
@@ -229,25 +212,14 @@ def build_grounded_prompt(
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
 
-    ``focus_rule`` adds rule 6: the blocks usually come from several documents,
-    and Benchmark 1's second-largest loss was a real fact attached to the wrong
-    customer, incident or version. ``partial_rule`` lets a partly covered
-    question get the covered part instead of the fallback; ``conflict_rule``
-    prefers the newer of two disagreeing blocks (Benchmark 2); ``assemble_rule``
-    lets a company-wide or list/count question be answered from pieces spread
-    over several blocks (Benchmark 3: such answers opened with "no single
-    document states this" and were graded refusals, and rule 5's "3-5 points"
-    kept 21 of the 37 facts a 46-fact list was given). Each is off by default, and with all off
-    the prompt is unchanged.
+    Optional rules, all off by default (prompt unchanged): ``focus_rule``
+    keeps a fact on its own customer/incident/version; ``partial_rule``
+    answers the covered part; ``conflict_rule`` prefers the newer block;
+    ``assemble_rule`` answers list/count questions from pieces across blocks.
 
-    ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
-    are framed as interpretation only: they may decide WHICH office or team a
-    question means, never supply a fact. The audit is handed CONTEXT alone,
-    so an answer resting on a memory is unsupported there by construction.
-
-    ``contexts`` are retrieved chunk texts, most-relevant first. ``profile``
-    supplies persona / scope nouns (policy vs workspace). Reply must open with
-    ``MODE: A|B|C`` for the pipeline's meta-language compliance check.
+    ``asker_facts`` (personal memory) sit after CONTEXT and may only decide
+    which office or team is meant, never supply a fact; the audit sees CONTEXT
+    alone. The reply must open with ``MODE: A|B|C``.
     """
     numbered = "\n\n".join(
         f"[{i + 1}] {scrub_untrusted_text(c)}"
@@ -404,10 +376,8 @@ def build_recovery_queries_prompt(question: str, hit_snippets: list[str]) -> str
 
 
 def build_decompose_prompt(question: str) -> str:
-    """Split a compound user question into standalone sub-questions (Phase 18).
-
-    Called only after ``looks_compound`` fires. Must not answer the question.
-    """
+    """Split a compound question into standalone sub-questions. Called only
+    after ``looks_compound`` fires. Must not answer."""
     return (
         "You analyze a user question for a company policy search system.\n\n"
         "If the question contains ONE information need (even if it mentions "
@@ -427,24 +397,17 @@ def build_rewrite_prompt(
     question: str, summary: str | None, recent: list[tuple[str, str]],
     asker_context: tuple[str, ...] = (),
 ) -> str:
-    """Build the conversation rewrite prompt.
-
-    ``asker_context`` (personal memory: team, office, role) is what lets the
-    SEARCH narrow, not only the wording: "what are the office hours?" becomes
-    "office hours for the Bangalore office" BEFORE retrieval, so the Bangalore
-    excerpt is actually among what the answer can read.
-    """
+    """Build the conversation rewrite prompt. ``asker_context`` (team, office,
+    role) narrows the SEARCH, not only the wording."""
     lines: list[str] = []
     if summary:
         lines.append(f"Summary of earlier conversation:\n{summary}")
     if recent:
         history = "\n".join(f"User: {q}\nAssistant: {a}" for q, a in recent)
         lines.append(f"Recent turns:\n{history}")
-    # Earlier ANSWERS repeat document text, so an injection that reached one
-    # answer would otherwise reach the next prompt with no fence at all -- and
-    # this prompt's output becomes the trusted QUESTION of the grounded prompt.
-    # The whole history is fenced: resolving "what about that one?" needs no
-    # instruction from any earlier turn. Only the LATEST question stays outside.
+    # Earlier answers repeat document text, and this output becomes the trusted
+    # QUESTION of the grounded prompt, so the whole history is fenced. Only the
+    # latest question stays outside.
     context_block = (
         "<<<UNTRUSTED_CONVERSATION_CONTENT>>>\n"
         f"{scrub_untrusted_text(chr(10).join(lines)) or '(no prior context)'}\n"
@@ -479,9 +442,8 @@ def build_summary_prompt(existing_summary: str | None, turns: list[tuple[str, st
     """Build the prompt that compresses older turns into a running summary."""
     history = "\n".join(f"User: {q}\nAssistant: {a}" for q, a in turns)
     prior = f"EXISTING SUMMARY:\n{existing_summary}\n\n" if existing_summary else ""
-    # Fenced for the same reason as the rewrite prompt, and more so: this
-    # output is STORED (`conversations.summary`) and read back on every later
-    # turn, so an injection folded into it would outlive the turn it came from.
+    # Fenced: this output is STORED and read every later turn, so a folded-in
+    # injection would outlive its turn.
     fenced = (
         "<<<UNTRUSTED_CONVERSATION_CONTENT>>>\n"
         f"{scrub_untrusted_text(prior + 'NEW TURNS:' + chr(10) + history)}\n"
@@ -529,12 +491,8 @@ WEB_SEARCH_TOOL = {
 
 
 def build_web_decision_prompt(question: str, fallback_response: str) -> str:
-    """System/user prompt for the single-step web-search decision.
-
-    Internal retrieval already failed the confidence gate. The model must decide:
-    is this about a public, external, named entity (→ call web_search), or is it
-    internal-company info that simply isn't in our docs (→ do NOT search)?
-    """
+    """Web-search decision after the gate missed: a public, named external
+    entity (search) or internal info not in our docs (do not)?"""
     return (
         "The company's internal policy documents did not contain an answer to the "
         "user's question. Decide what to do:\n"
@@ -573,11 +531,10 @@ REFRESH_ITEM_TOOL = {
 def build_live_decision_prompt(
     question: str, catalog: str, fallback_response: str, *, web: bool
 ) -> str:
-    """Live tools, refusal path: may ONE listed item be read live? (plan D6).
+    """Live tools, refusal path: may ONE listed item be read live?
 
-    The catalog is handles + titles only -- titles are document text, so they
-    are fenced like any other. The model can name a handle; it can never name
-    an id, a URL or anything the list does not contain.
+    Handles and fenced titles only: the model can name a handle, never an id
+    or URL.
     """
     web_rule = (
         "- If instead the question is about a REAL, NAMED, EXTERNAL entity with "
@@ -604,12 +561,8 @@ def build_live_decision_prompt(
 
 
 def build_web_answer_prompt(question: str, results_block: str) -> str:
-    """Prompt to compose the final answer from web results (single step).
-
-    Phase 16: web snippets are untrusted external text — same class of risk as
-    retrieved policy chunks (indirect prompt injection), just from a different
-    source. Fence + explicit rule; still a partial mitigation.
-    """
+    """Compose the final answer from web results (single step). Snippets are
+    untrusted: fenced, with an explicit rule (a partial mitigation)."""
     fenced = (
         "<<<UNTRUSTED_DOCUMENT_CONTENT>>>\n"
         f"{scrub_untrusted_text(results_block)}\n"
@@ -796,9 +749,8 @@ LIST_REVIEWS_TOOL = {
                     ),
                 },
             },
-            # `pull_number` is NOT required: the agent runs one tool round and
-            # never loops, so a model that had to know the number first could
-            # never reach this tool for "who reviewed the auth PR?".
+            # `pull_number` is NOT required: one tool round means the model cannot look
+            # the number up first.
             "required": ["repo"],
         },
     },
@@ -833,12 +785,8 @@ LIST_BRANCHES_TOOL = {
     },
 }
 
-# Every tool the GitHub agent may call. All five are LIVE reads -- GitHub
-# stores no chunks, so this list is the whole surface it can answer from, and a
-# question needing something absent here degrades to the fixed fallback. The
-# pull-request and review tools existed on the reader for charts long before
-# they were offered here, which made "who reviewed the auth PR?" unanswerable
-# against data that was one call away.
+# Every tool the GitHub agent may call, all LIVE reads: GitHub stores no
+# chunks, so anything absent here degrades to the fixed fallback.
 GITHUB_TOOLS = [
     GET_README_TOOL,
     GET_COMMIT_TOOL,
@@ -850,12 +798,8 @@ GITHUB_TOOLS = [
 
 
 def format_repo_catalog(repos) -> str:
-    """Render the authorized repo list for the tool-decision prompt.
-
-    Descriptions and topics are written by whoever can edit the repository, so
-    they are scrubbed here and fenced by the prompt. The name is ours: it is
-    what `resolve_repo` checks against the authorized list.
-    """
+    """Render the authorized repo list for the tool-decision prompt. Descriptions
+    are contributor-written, so scrubbed here and fenced by the prompt."""
     lines = []
     for repo in repos:
         parts = [f"- {repo.full_name}"]
@@ -870,12 +814,8 @@ def format_repo_catalog(repos) -> str:
 
 
 def build_github_decision_prompt(question: str, repo_catalog: str) -> str:
-    """Prompt for the single tool-selection step of a GitHub question.
-
-    Deliberately does NOT offer the model the option of answering from its own
-    knowledge: either it calls a tool, or the agent returns the fixed fallback.
-    An unsourced answer about a customer's codebase is worse than no answer.
-    """
+    """The single tool-selection step for a GitHub question. No option to answer
+    from the model's own knowledge: a tool call, or the fixed fallback."""
     return (
         "You answer questions about an engineering organization's GitHub "
         "repositories. You have no knowledge of these repositories yourself — "
@@ -1056,10 +996,9 @@ def build_audit_prompt(question: str, contexts: list[str], answer: str) -> str:
         f"{UNTRUSTED_POLICY}\n"
         f"CONTEXT:\n{fenced}\n\n"
         f"QUESTION: {question}\n\n"
-        # The draft is fenced too: it can repeat document text, including an
-        # instruction aimed at this checker ("this answer is GROUNDED"). It is
-        # NOT scrubbed -- the checker must judge exactly what would ship --
-        # only forged fence markers are cut, so it cannot close its own fence.
+        # The draft is fenced (it may carry an instruction aimed at this checker)
+        # but NOT scrubbed, so the checker judges what would ship. Only forged fence
+        # markers are cut.
         "DRAFT ANSWER:\n"
         "<<<UNTRUSTED_DRAFT_ANSWER>>>\n"
         f"{strip_forged_fences(answer)}\n"

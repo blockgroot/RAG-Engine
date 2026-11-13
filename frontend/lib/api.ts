@@ -46,10 +46,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-/** The three downvote categories. A closed set because the point of a category
- *  is that it groups: "out of date" sends an admin to re-sync a source,
- *  "incorrect" sends them to rewrite a document. Anything else goes in the
- *  comment box. */
+/** Closed set so categories group: "out of date" means re-sync, "incorrect"
+ *  means rewrite. Anything else goes in the comment. */
 export const FEEDBACK_REASONS = [
   { value: "incorrect", label: "Incorrect information" },
   { value: "out_of_date", label: "Out of date" },
@@ -135,9 +133,7 @@ export interface Attachment {
   id: string;
   filename: string;
   char_count: number;
-  /** True when the file was longer than the server's page/row/char budget.
-   *  Shown in the chip: a partial file that looks complete is the failure the
-   *  whole feature is arranged against. */
+  /** File exceeded the server's budget; shown so a partial file never looks complete. */
   truncated: boolean;
   /** Parts of the file read like instructions to an AI. Still used as a
    *  source, but the model is told to treat all of it as data. */
@@ -210,9 +206,8 @@ export interface Me {
   drive_ready: boolean;
 }
 
-/** What a chain drafts next, once the cards it waited on are decided:
- *  "open a GitHub issue, then comment its link on Linear" drafts the comment
- *  after the issue exists. Each new card is approved on its own. */
+/** What a chain drafts next once its pending cards are decided; each new card
+ *  is approved on its own. */
 export interface ActNext {
   reply: string;
   actions: ActCard[];
@@ -347,12 +342,8 @@ export interface SyncChanges {
   unchanged_count: number;
   remote_total: number;
   has_changes: boolean;
-  /**
-   * Channels renamed in Slack since the labels were stored. Reported apart
-   * from `has_changes` because a rename needs no sync — no message id or
-   * timestamp moved — but the client should drop cached labels and can say
-   * what moved.
-   */
+  /** Channels renamed since labels were stored. Apart from `has_changes`: a
+   *  rename needs no sync, only fresh labels. */
   renamed?: { from: string; to: string }[];
 }
 
@@ -449,9 +440,8 @@ export interface FormsSelection {
   selected: string[];
 }
 
-/** Files in the chosen folder whose sharing Google will not report, so they
- *  cannot be indexed. Returned by the folder-save routes and shown to whoever
- *  picked the folder, right there — `null` when there is nothing to say. */
+/** Files whose sharing Google will not report, so they cannot be indexed.
+ *  `null` when there are none. */
 export interface SharingWarning {
   kind: "permissions";
   count: number;
@@ -525,12 +515,8 @@ export interface WorkspaceDetail extends WorkspaceRecord {
   ready_to_ask: boolean;
   /** Whether THIS workspace's legacy "Docs" tab has content of its own (see `Me.policy_ready`). */
   policy_ready: boolean;
-  /**
-   * True when THIS workspace has its own GitHub connection. Scoped to the
-   * workspace on purpose: an org-wide GitHub connection must not light up a
-   * workspace's Code tab, or a member would be offered code they aren't scoped
-   * to read.
-   */
+  /** THIS workspace's own GitHub connection only: an org-wide one must not offer
+   *  members code they aren't scoped to read. */
   github_connected: boolean;
   /** Whether THIS workspace has its own ingested Slack threads (same rule as `Me.slack_ready`). */
   slack_ready: boolean;
@@ -592,22 +578,14 @@ export interface ReportRow {
 /** A report plus its body. Only the detail route returns these three fields. */
 export interface ReportDetail extends ReportRow {
   report_text: string;
-  /**
-   * Activity the report was built from; links are rendered from here.
-   * `meta` is the who/where/when prefix, kept apart from `summary` so a row
-   * can set it small rather than letting it compete with the content. Null on
-   * reports generated before items carried it.
-   */
+  /** Activity the report was built from. `meta` is the who/where/when prefix,
+   *  apart from `summary` so it can render small. Null on older reports. */
   items: { summary: string; url: string | null; meta?: string | null }[];
   notes: string[];
 }
 
-/**
- * A connected service a report can be built against. Only providers with a
- * real "activity since" feed appear here (GitHub, Slack) — a connected
- * Notion/Drive is deliberately absent, since a report on it would fail every
- * cycle.
- */
+/** Only providers with an "activity since" feed (GitHub, Slack); a report on
+ *  Notion/Drive would fail every cycle. */
 export interface SchedulableConnection {
   id: string;
   provider: string;
@@ -617,24 +595,13 @@ export interface SchedulableConnection {
   /** The space this connection belongs to, or null for the company-wide one. */
   space_id: string | null;
   space_name: string | null;
-  /**
-   * Names of what this connection can actually read — the picked Slack
-   * channels, the authorized GitHub repos. Empty for Linear, whose scope is
-   * "whatever the token can see" with no stored subset to name.
-   */
+  /** What this connection can read (Slack channels, GitHub repos). Empty for
+   *  Linear, which stores no subset. */
   topics: string[];
 }
 
-/**
- * A scope a report can be built in: the company, or one space the signed-in
- * person belongs to.
- *
- * `providers` is what can actually be scheduled here. `connected` is
- * everything connected to the space including sources with no activity feed
- * yet (Notion, Drive) — a space appears even when `providers` is empty, so
- * "Meeting notes has nothing schedulable yet" is visible rather than looking
- * like a missing space.
- */
+/** The company, or a space the person belongs to. `providers` is schedulable;
+ *  `connected` is everything, so a space with nothing schedulable still shows. */
 export interface SchedulerSpace {
   id: string | null;
   name: string;
@@ -643,11 +610,7 @@ export interface SchedulerSpace {
   connected: string[];
 }
 
-/**
- * One turn of the conversational setup flow. Either the assistant needs more
- * from the user (`done: false`, show `reply`) or it had everything and the
- * report now exists (`done: true`).
- */
+/** One setup turn: `done: false` shows `reply`; `done: true` means the report exists. */
 export interface SetupChatResponse {
   done: boolean;
   reply?: string;
@@ -695,9 +658,7 @@ export type InsightScope = {
   id: string | null;
   name: string;
   providers: string[];
-  /** Which of those we can actually chart yet. Reported separately so
-   *  "Slack is connected but has no charts" is visible instead of looking
-   *  like an empty dashboard. */
+  /** Which of those can be charted yet, so "connected, no charts" is visible. */
   chartable: string[];
 };
 
@@ -940,9 +901,8 @@ export const api = {
         : `/admin/connections/${connectionId}/config`,
       { method: "PUT", body: JSON.stringify({ team_ids: teamIds }) }
     ),
-  // Google Forms survey sentiment. `enabled` is the deployment flag
-  // (GOOGLE_FORMS_ENABLED), reported rather than 404'd so the picker can say
-  // "your deployment has not switched this on" instead of looking broken.
+  // Forms sentiment. `enabled` (GOOGLE_FORMS_ENABLED) is reported, not 404'd,
+  // so the picker can say it is off.
   listConnectionForms: (connectionId: string) =>
     request<FormsSelection>(`/admin/connections/${connectionId}/forms`),
   setConnectionForms: (connectionId: string, formIds: string[]) =>
@@ -1091,10 +1051,8 @@ export const api = {
     );
   },
 
-  /** Not `request()`: it pins `Content-Type: application/json`, and a
-   *  multipart body needs the BROWSER to set the type so it can put the
-   *  boundary in it. Setting it by hand produces a body the server cannot
-   *  parse. */
+  /** Not `request()`: multipart needs the browser to set Content-Type (with
+   *  its boundary). */
   submitFeedback: (input: {
     conversationId: string;
     question: string;
@@ -1197,9 +1155,7 @@ export const api = {
   ): Promise<UploadResult> => {
     const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
     const form = new FormData();
-    // One request for the whole selection: the server accepts what it can and
-    // names what it refused, so a scan among four good documents no longer
-    // costs the other three.
+    // One request: the server accepts what it can and names what it refused.
     for (const file of files) form.append("file", file);
     const response = await fetch(
       `${API_BASE_URL}/chat/conversations/${conversationId}/attachments${q}`,
@@ -1269,11 +1225,8 @@ export const api = {
       body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
     }),
 
-  /** Starter chips for the Ask empty state, spanning EVERY connected source.
-   *  No `agent` param: Ask is one box, so chips from a single provider would
-   *  read as "this box is for Notion" and would hide the other sources from
-   *  someone who has never asked about them. `sources` says which providers
-   *  actually contributed. */
+  /** Starter chips across EVERY connected source (no `agent`): Ask is one box.
+   *  `sources` names the providers that contributed. */
   chatSuggestions: (workspaceId?: string | null) => {
     const params = new URLSearchParams();
     if (workspaceId) params.set("workspace_id", workspaceId);
@@ -1407,20 +1360,14 @@ export const api = {
   connectWorkspaceUrl: (workspaceId: string, provider: string) =>
     `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
 
-  // Scheduled reports. Member-level, not admin — every one of these is scoped
-  // to the caller's own user_id server-side, so there is no id to pass for
-  // "mine" and no way to reach someone else's.
+  // Scheduled reports: scoped server-side to the caller's own user_id.
   listSchedulers: () =>
     request<{ schedulers: SchedulerRecord[] }>("/schedulers").then((r) => r.schedulers),
   listSchedulableConnections: () =>
     request<{ connections: SchedulableConnection[]; spaces: SchedulerSpace[] }>(
       "/schedulers/connections"
     ),
-  /**
-   * Create a schedule. No provider: the server classifies it from the prompt
-   * and the created record reports which one it landed on. Sending one would
-   * be the old dropdown, and there is nowhere left in the UI to pick it.
-   */
+  /** No provider: the server classifies it from the prompt. */
   createScheduler: (
     frequency: string,
     prompt: string,
@@ -1454,10 +1401,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ messages }),
     }),
-  // Charts. Member-level like schedulers: a chart aggregates rows the caller
-  // can already retrieve in prose. `scope` is a workspace id, or omitted for
-  // the company - a space the caller is not in returns 403, never an empty
-  // chart, because empty reads as "nothing happened there".
+  // Charts. `scope` is a workspace id or omitted for the company; a space the
+  // caller is not in is 403, never an empty chart.
   listInsightScopes: () =>
     request<{ scopes: InsightScope[] }>("/insights/scopes").then((r) => r.scopes),
   getInsightDashboard: (scope: string | null, period: string) =>
@@ -1465,9 +1410,7 @@ export const api = {
       `/insights/dashboard?period=${encodeURIComponent(period)}` +
         (scope ? `&scope=${encodeURIComponent(scope)}` : "")
     ),
-  // One turn, no conversation. The model only SELECTS a pre-defined chart -
-  // it never writes SQL and never emits a number, so the worst case is a
-  // refusal that names what is available.
+  // The model fills a spec; it never writes SQL or emits a number.
   askForChart: (question: string, scope: string | null) =>
     request<InsightAskResult>("/insights/ask", {
       method: "POST",

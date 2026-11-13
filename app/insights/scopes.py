@@ -1,15 +1,8 @@
 """What a member may chart, and how fresh each connector is.
 
-Membership is the entire security boundary: a space the asker is not in must
-never leave the database, because its charts would name colleagues and count
-content they cannot read. That is a join against ``workspace_members``, not a
-filter applied afterwards.
-
-Deliberately NOT reusing ``api/schedulers._connected_providers``: that query
-returns strictly less on purpose (no ``last_sync_at``, no ``needs_reauth``,
-because a member picking a service does not need them). The freshness panel
-needs exactly those two, so this is a different question, not a second copy of
-the same one.
+Membership is the security boundary: a join against ``workspace_members``,
+never a filter applied afterwards. Not ``api/schedulers._connected_providers``:
+the freshness panel needs ``last_sync_at`` and ``needs_reauth``, which that omits.
 """
 
 from __future__ import annotations
@@ -27,11 +20,8 @@ WINDOW_DAYS = {"day": 45, "week": 84, "month": 365, "quarter": 730}
 
 
 def may_see_metric(metric, *, role: str, workspace_id: str | None, org_id: str, user_id: str) -> bool:
-    """Whether this caller may see an ``owners_only`` metric.
-
-    Only sentiment is gated. An org admin qualifies everywhere; a space owner
-    qualifies in their own space. Membership itself is checked by the caller.
-    """
+    """Whether this caller may see an ``owners_only`` metric: an org admin
+    anywhere, a space owner in their space. The caller checks membership."""
     if not metric.owners_only:
         return True
     if role == "admin":
@@ -46,12 +36,8 @@ def may_see_metric(metric, *, role: str, workspace_id: str | None, org_id: str, 
 
 @dataclass(frozen=True)
 class Scope:
-    """One thing the scope picker can offer.
-
-    ``id`` is ``None`` for the company, mirroring ``workspace_id IS NULL``
-    everywhere else -- so a caller cannot accidentally pass "org" as a
-    workspace id.
-    """
+    """One thing the scope picker can offer. ``id`` is ``None`` for the
+    company, as ``workspace_id IS NULL`` everywhere else."""
 
     id: str | None
     name: str
@@ -60,13 +46,8 @@ class Scope:
 
 @dataclass(frozen=True)
 class Freshness:
-    """One connector's currency.
-
-    ``needs_reauth`` is separate from an old ``last_sync_at`` because they need
-    different copy: auto-sync skips a dead token entirely, so waiting will
-    never make it current, and reporting only "last synced 6 days ago" invites
-    someone to wait for a sync that can never happen.
-    """
+    """One connector's currency. ``needs_reauth`` is separate: auto-sync skips a
+    dead token, so "last synced 6 days ago" would invite waiting forever."""
 
     provider: str
     last_sync_at: datetime | None
@@ -74,13 +55,8 @@ class Freshness:
 
 
 def member_scopes(org_id: str, user_id: str) -> list[Scope]:
-    """The company, plus every space this member belongs to.
-
-    A space with nothing connected is still returned, carrying an empty
-    ``providers`` list. Dropping it instead would make the space silently
-    vanish from the picker -- the exact confusion the scheduler's space list
-    caused before it started disclosing unschedulable spaces.
-    """
+    """The company, plus every space this member belongs to. A space with
+    nothing connected is kept (empty ``providers``) so it does not vanish."""
     try:
         with get_connection() as conn:
             org_providers = [
@@ -122,12 +98,8 @@ def member_scopes(org_id: str, user_id: str) -> list[Scope]:
 def freshness(
     org_id: str, *, user_id: str, workspace_id: str | None
 ) -> list[Freshness]:
-    """Last sync per connector in one scope.
-
-    Raises ``AuthError`` (from ``assert_member``) for a space the member is not
-    in, rather than returning an empty list: empty reads as "that space has
-    nothing connected", which is a different and misleading claim.
-    """
+    """Last sync per connector in one scope. Raises ``AuthError`` for a space
+    the member is not in: an empty list would claim "nothing connected"."""
     if workspace_id is not None:
         # The one place membership is validated. Do not inline a second check.
         assert_member(workspace_id, org_id, user_id)

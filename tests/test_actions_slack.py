@@ -1,4 +1,4 @@
-"""Agent mode in Slack (docs/plans/2026-10-13-write-actions.md).
+"""Agent mode in Slack (git history: docs/plans/2026-10-13-write-actions.md).
 
 Pinned here:
 - a message that asks, in plain words, for something to be done proposes a

@@ -1,9 +1,5 @@
-"""Tables the document already has, read without AI.
-
-The step-3 behaviour, unchanged, behind the adapter contract: rows a source
-adapter parsed itself (a Sheet's CSV export, a .csv file), else pipe tables in
-the text (Notion pages, Google Docs exported as markdown, Word tables rendered
-by ``render_docx_tables``). Column types are decided by ``extract.profile``.
+"""Tables the document already has, read without AI: rows a source adapter
+parsed itself, else pipe tables in the text. Types from ``extract.profile``.
 """
 
 from __future__ import annotations

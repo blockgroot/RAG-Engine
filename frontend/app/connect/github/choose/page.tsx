@@ -22,11 +22,8 @@ type PendingDetail = {
   switch_account_url: string;
 };
 
-/**
- * After GitHub user OAuth, pick which App installation binds to this Handbook
- * surface (Company Sources vs a space). Auto-pick used to link the same
- * personal account on both — this page is the explicit separation step.
- */
+/** After GitHub OAuth, pick which App installation binds here (company or a
+ *  space), so one personal account is not linked to both. */
 function ChooseGitHubInstallInner() {
   const searchParams = useSearchParams();
   const pending = searchParams.get("pending") || "";

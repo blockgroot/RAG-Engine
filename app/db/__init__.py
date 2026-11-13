@@ -1,9 +1,4 @@
-"""Database infrastructure: connections and schema management.
-
-This package holds the raw Postgres/pgvector plumbing. The rest of the app does
-not import from here directly — it talks to the vector store abstraction
-(``app.vectorstore``), which uses these helpers internally.
-"""
+"""Postgres plumbing: pooled connections (``get_connection``) and schema management."""
 
 from .connection import get_connection, get_pool, close_pool, DatabaseError
 from .migrate import apply_schema

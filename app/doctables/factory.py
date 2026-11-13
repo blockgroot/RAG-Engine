@@ -10,11 +10,8 @@ from .table_adapter import TableAdapter
 
 def build_dataset_adapters(settings: DocTablesSettings | None = None) -> list[DatasetAdapter]:
     """What ingestion runs: the table adapter always; the text adapter when on.
-
-    The text adapter is built without a model, so it uses the background
-    (aux) model and waits for a background slot -- ingest never takes the
-    quota a person is waiting on.
-    """
+    Built without a model, it uses the aux model after a background slot, so
+    ingest never takes a waiting person's quota."""
     settings = settings or DocTablesSettings.from_env()
     adapters: list[DatasetAdapter] = [TableAdapter()]
     if settings.text_enabled:

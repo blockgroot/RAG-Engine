@@ -27,7 +27,7 @@ const Tick = () => (
 );
 
 /**
- * Section 5: the same documents pass through one acx check per person.
+ * Section 5: the same documents pass through one access check per person.
  * Each person's list shows what got through (ticked) and what was held back
  * (locked), so two colleagues visibly get different answers. A light sweeps
  * the gate on a loop (still for reduced motion). Other companies never enter.

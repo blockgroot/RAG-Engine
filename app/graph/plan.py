@@ -1,20 +1,12 @@
 """One graph walk per question, shared by routing, retrieval and the answer.
 
-The graph is consulted three times for one question -- which tool should
-answer (routing), which documents join retrieval, and which connections the
-answer may state -- and each used to be its own walk or none. A ``GraphPlan``
-is built ONCE, at the chat edge, in parallel with routing's own probe, and the
-rest read it: the walk leaves the critical path instead of adding to it.
+Built ONCE at the chat edge, beside routing's probe, so the walk leaves the
+critical path. ``cross`` is False normally (each agent stays on its tool); only a
+connected answer (``connected()``) widens to other tools the graph PROVED are
+connected, re-checked against the viewer.
 
-It also carries the one decision that lets the graph cross tools without
-blending them: ``cross`` is False for a normal question, which keeps every
-agent pinned to its own tool exactly as before; only an explicit connected
-answer (``connected()``) widens the graph's documents and facts to the other
-tools it reached. Normal search legs never widen -- only documents the graph
-PROVED are connected, re-checked against the viewer at search time.
-
-Never raises and never walks without a viewer: a routing or retrieval choice
-informed by content the asker cannot read is a leak (CLAUDE.md, routing).
+Never raises and never walks without a viewer: a choice informed by content the
+asker cannot read is a leak.
 """
 
 from __future__ import annotations
@@ -27,8 +19,7 @@ from ..config.settings import GraphSettings
 
 logger = logging.getLogger(__name__)
 
-#: Facts handed to the answer, at most. A fact is one line naming two things
-#: and how they relate; past a dozen they crowd out the documents themselves.
+#: Facts handed to the answer, at most; more crowd out the documents.
 MAX_FACTS = 12
 MAX_FACTS_CHARS = 1500
 
@@ -69,14 +60,11 @@ class GraphPlan:
     #: Tools this answer may draw graph documents and facts from. ``None`` =
     #: the routed tool only (normal); a set = a connected answer.
     cross: frozenset[str] | None = None
-    #: Tools whose OWN searches join this answer, because the question named
-    #: them ("...in Slack?"). Unlike ``cross`` this needs no graph evidence:
-    #: the asker told us where to look. Viewer-filtered like every search.
+    #: Tools whose OWN searches join this answer because the question named them
+    #: (no graph evidence needed). Viewer-filtered like every search.
     search: frozenset[str] = frozenset()
-    #: Tools the question NAMED -> how many documents in that tool this viewer
-    #: can open in this scope. Stated to the answer (``coverage_lines``) so a
-    #: "no" can be said from evidence -- "Slack was searched, here is what it
-    #: holds" -- rather than refused as if nothing had been looked at.
+    #: Tools the question NAMED -> documents this viewer can open there, stated to
+    #: the answer (``coverage_lines``) so a "no" is said from evidence.
     coverage: tuple[tuple[str, int], ...] = ()
 
     @property
@@ -116,15 +104,9 @@ class GraphPlan:
     def facts(self, routed: str | None) -> list[str]:
         """Readable connections, limited to the tools this answer may use.
 
-        A fact is kept when every tool it touches is allowed: a normal Notion
-        answer states only Notion facts, so it never learns (or says) that a
-        Slack thread exists. ``same_person`` joins are stated only in a
-        connected answer, where crossing tools is the point.
-
-        Grouped per ``(who, relation, tool)``: someone who wrote forty pages is
-        ONE line naming how many were found and the best-matching few, not
-        forty lines that crowd out everyone else. Links arrive best match to
-        the question first (``walk``), so the few named are the relevant ones.
+        A fact is kept only when every tool it touches is allowed; ``same_person``
+        joins only in a connected answer. Grouped per ``(who, relation, tool)`` so one
+        prolific author is one line, best matches first.
         """
         allowed = self.allowed(routed)
         groups: dict[tuple, list] = {}
@@ -218,15 +200,9 @@ _INDEXED = {"notion", "google", "slack", "linear"}
 def connected_tools(plan: GraphPlan | None, routed: str | None, named) -> set[str] | None:
     """The tools a PREDICTIVE connected answer should read, or ``None``.
 
-    Fires when the question names one or more indexed tools other than the one
-    routing picked -- "has the author of the Leave Policy discussed it in
-    Slack?" routed to Notion, or "what has Sana done across Notion, Slack,
-    Linear and Drive?". Each named tool's own searches then run alongside the
-    routed one's (``GraphPlan.search``), with no graph evidence required: the
-    graph proving a connection is one way to know another tool matters, the
-    asker naming it is a stronger one. Only NAMED tools, never "all of them",
-    so this is the corpora the asker pointed at, never the blended one.
-    ``named`` is one tool, a set of them, or nothing.
+    Fires when the question names indexed tools other than the routed one; each
+    named tool's own search runs too (``GraphPlan.search``). Only NAMED tools,
+    never all of them. ``named`` is one tool, a set, or nothing.
     """
     if isinstance(named, str):
         named = {named}
@@ -234,26 +210,18 @@ def connected_tools(plan: GraphPlan | None, routed: str | None, named) -> set[st
     named = asked - {routed}
     if plan is None or routed not in _INDEXED or not named:
         return None
-    # Several tools named ("the latest in Linear and Drive") is a list of
-    # where to look: exactly those, nothing the asker did not mention.
+    # Several tools named: exactly those, nothing the asker did not mention.
     if len(asked) > 1:
         return asked | {routed}
-    # One tool named, plus the tools holding what the question REFERS to:
-    # "has the author of the Leave Policy discussed it in Slack?" routed to
-    # Linear could read Sana's Slack thread but not that she wrote the Leave
-    # Policy -- that fact lives in Notion -- and refused (measured with real
-    # Gemini). Those tools join through the graph's documents and facts only;
-    # their own search legs do not run (``search`` stays the named tools).
+    # One tool named, plus the tools holding what the question REFERS to (who wrote
+    # the page), joined through graph documents and facts only; their search legs
+    # do not run.
     return {routed} | named | (plan.seed_tools & _INDEXED)
 
 
 def escalation_tools(plan: GraphPlan | None, routed: str | None) -> set[str] | None:
-    """The tools a connected RETRY of a refusal should read, or ``None``.
-
-    Only when the graph already proved the question connects to visible
-    documents in other tools; otherwise a refusal stays a refusal and costs
-    nothing more.
-    """
+    """The tools a connected RETRY of a refusal should read, or ``None``: only when the
+    graph already proved a connection to visible documents in other tools."""
     if plan is None or routed not in _INDEXED or plan.cross is not None:
         return None
     others = plan.other_providers(routed, _INDEXED)
@@ -288,12 +256,8 @@ def build_plan(
 
 
 def _coverage(org_id, workspace_id, tools, viewer) -> tuple[tuple[str, int], ...]:
-    """How many documents each NAMED tool holds for this viewer, in scope.
-
-    One grouped COUNT, run only when the question named a tool. The same
-    visibility predicate retrieval uses, so the number never counts a
-    document the asker could not have been shown.
-    """
+    """How many documents each NAMED tool holds for this viewer, in scope: one
+    grouped COUNT under the same visibility predicate as retrieval."""
     if not tools:
         return ()
     from ..db.connection import get_connection

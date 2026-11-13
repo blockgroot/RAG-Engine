@@ -1,13 +1,8 @@
 """Keyless web search via DuckDuckGo (the ``ddgs`` library).
 
-The default provider: no API key, no cost, works out of the box — consistent with
-the project's "runs locally with no external paid dependency" principle. Returns
-titles/URLs/snippets, which is enough for the model to compose a fallback answer.
-
-Tradeoff (documented in CLAUDE.md): DuckDuckGo is unofficial and rate-limits
-aggressive use, so for production quality a ``TavilySearch`` provider can be
-dropped in behind this same interface. Every failure/timeout becomes a
-``WebSearchError`` so the RAG pipeline degrades cleanly to the internal fallback.
+The default: no key, no cost. Unofficial and rate-limited, so a better
+provider can drop in behind the same interface. Every failure becomes a
+``WebSearchError`` so the pipeline falls back cleanly.
 """
 
 from __future__ import annotations
@@ -39,8 +34,7 @@ class DuckDuckGoSearch(WebSearchProvider):
                 raw = ddgs.text(query, max_results=max_results)
         except Exception as exc:  # ratelimit, network, timeout, etc.
             raise WebSearchError(
-                # Never the query: it can carry a fact from a private answer,
-                # and error text lands in logs anyone with log access reads.
+                # Never log the query: it can carry a fact from a private answer.
                 f"DuckDuckGo search failed: {exc}", cause=exc
             ) from exc
 

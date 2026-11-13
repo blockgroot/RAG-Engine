@@ -23,13 +23,8 @@ def _rich_text_to_text(rich_text: list[dict]) -> str:
 
 
 def _collect_rich_text(rich_text: list[dict], sink: dict | None) -> None:
-    """Record the ids a rich_text array carries before it is flattened.
-
-    `_rich_text_to_text` keeps only ``plain_text``, which turns an @-mention
-    into a bare name and a link into its label. The user id, the page id and
-    the href are only here, so they are read in the same pass (Second Brain
-    1.1) — no extra call, the blocks are already fetched.
-    """
+    """Record the ids a rich_text array carries before ``plain_text`` flattens them
+    (mentions and links lose their ids there). Same pass, no extra call."""
     if sink is None:
         return
     for rt in rich_text or []:
@@ -71,8 +66,7 @@ def _parent_container(page: dict) -> dict | None:
     return None
 
 
-#: Rows read from one inline database per page sync. A bound, said out loud
-#: in the page text when it bites.
+#: Rows read from one inline database per page sync; said in the text when it bites.
 _MAX_DATABASE_ROWS = 1000
 
 
@@ -174,13 +168,9 @@ class NotionAdapter(SourceAdapter):
         self._settings = settings
         self._token = resolved
         self._client = Client(auth=resolved)
-        # Notion's page objects carry `last_edited_by` as an ID only, so a name
-        # costs one `GET /users/{id}` per DISTINCT person -- cached for the life
-        # of the adapter, the same trick `slack.py::_display_name` uses. A
-        # workspace of 500 pages edited by 8 people is 8 calls, not 500.
+        # `last_edited_by` is an id only: one `GET /users/{id}` per DISTINCT person, cached.
         self._editor_names: dict[str, str] = {}
-        #: Filled from the same `users.retrieve` reply; empty when the
-        #: integration lacks the "read user emails" capability.
+        #: From the same `users.retrieve` reply; empty without the "read user emails" capability.
         self._editor_emails: dict[str, str] = {}
 
     def list_documents(self) -> list[SourceRef]:
@@ -229,12 +219,9 @@ class NotionAdapter(SourceAdapter):
         )
 
     def _page_meta(self, page: dict, sink: dict) -> dict | None:
-        """Editor, creator, parent and in-body mentions — all already in hand.
+        """Editor, creator, parent and in-body mentions, all already in hand.
 
-        The editor was resolved (and cached) by `_editor_name` just above. The
-        creator is recorded by id, with a name only when that same person was
-        already looked up: resolving a creator separately would be one more
-        `users.retrieve` per distinct person, which this field must never cost.
+        A creator gets a name only when already looked up; never an extra call.
         """
         people = []
         for field, role in (("last_edited_by", "editor"), ("created_by", "creator")):
@@ -256,13 +243,8 @@ class NotionAdapter(SourceAdapter):
         )
 
     def _editor_name(self, page: dict) -> str | None:
-        """Who last edited the page, resolved from its `last_edited_by` id.
-
-        Best-effort and cached: a failed lookup returns None rather than
-        failing the whole sync, because a missing editor name costs one row in
-        one chart while a raised error costs the entire ingest. A bot edit
-        resolves to the integration's own name, which is the truth.
-        """
+        """Who last edited the page, from its `last_edited_by` id. Cached and
+        best-effort: a failed lookup is None, never a failed sync."""
         editor = page.get("last_edited_by") or {}
         user_id = editor.get("id")
         if not user_id:
@@ -279,8 +261,7 @@ class NotionAdapter(SourceAdapter):
         except Exception:  # noqa: BLE001 - see docstring
             logger.debug("Notion users.retrieve(%s) failed", user_id, exc_info=True)
             name = ""
-        # Cached even when empty, so a permanently unresolvable id is looked up
-        # once per sync rather than once per page.
+        # Cached even when empty: an unresolvable id is looked up once per sync.
         self._editor_names[user_id] = name
         return name or None
 
@@ -346,19 +327,15 @@ class NotionAdapter(SourceAdapter):
             cells = data.get("cells", [])
             for cell in cells:
                 _collect_rich_text(cell, sink)
-            # A real pipe row ("| a | b |", a literal | escaped) so the table
-            # reader (`doctables.find_markdown_tables`) can find it; the
-            # parent `table` block adds the header separator below.
+            # A real pipe row (`|` escaped) for `doctables.find_markdown_tables`; the
+            # parent `table` block adds the header separator.
             lines.append(f"{indent}| " + " | ".join(
                 _rich_text_to_text(c).replace("|", "\\|").replace("\n", " ")
                 for c in cells) + " |")
         elif btype == "child_page":
             pass
         elif btype == "child_database":
-            # An inline database ("/table" -> table view) is where most Notion
-            # tables of figures live. Its rows are separate pages whose numbers
-            # sit in PROPERTIES, so the page read as empty: neither answerable
-            # nor chartable. Render it as a real table under its title.
+            # An inline database's figures sit in row PROPERTIES: render it as a table under its title.
             lines.extend(self._database_lines(block.get("id"), data.get("title") or ""))
         else:
             if text:
@@ -371,10 +348,8 @@ class NotionAdapter(SourceAdapter):
             child_depth = depth + 1 if btype in _INDENTING else depth
             children = self._render_children_lines(block["id"], child_depth, budget, sink)
             if btype == "table" and children:
-                # A Notion table's rows arrive as children with no header
-                # marker, so it never read as a table and was never charted.
-                # The first row is the header (Notion's own column header when
-                # the table has one); blank lines keep it apart from prose.
+                # Rows arrive with no header marker: the first row is the header; blank lines
+                # keep the table apart from prose.
                 width = data.get("table_width") or max(children[0].count("|") - 1, 1)
                 children = ["", children[0], "|" + " --- |" * width, *children[1:], ""]
             lines.extend(children)
@@ -382,13 +357,8 @@ class NotionAdapter(SourceAdapter):
         return lines
 
     def _database_lines(self, database_id: str | None, title: str) -> list[str]:
-        """An inline database as a pipe table (header + separator + rows).
-
-        Bounded at ``_MAX_DATABASE_ROWS`` and says so when it stops early.
-        Works with both Notion APIs: data sources (notion-client 3.x) and the
-        older ``databases.query``. Never raises: a database we cannot read
-        costs that table, never the page.
-        """
+        """An inline database as a pipe table, bounded at ``_MAX_DATABASE_ROWS`` (said
+        when cut). Both Notion APIs. Never raises: an unreadable one costs that table only."""
         if not database_id:
             return []
         rows: list[dict] = []
@@ -416,8 +386,7 @@ class NotionAdapter(SourceAdapter):
             return []
         if not rows:
             return []
-        # Column order: the title property first (it names the row), then the
-        # rest as Notion returned them.
+        # The title property first (it names the row), then Notion's order.
         names = list(rows[0].keys())
         names.sort(key=lambda n: (rows[0][n] or {}).get("type") != "title")
 

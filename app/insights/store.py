@@ -1,10 +1,8 @@
 """Execute a registry metric as one scoped, parameterized aggregate.
 
-The whole query is assembled from three sources and no others: a fixed
-fragment from the registry, an identifier looked up in
-``registry.DIMENSIONS``, and bound parameters. Nothing a caller typed ever
-reaches the SQL text -- which matters more here than usual, because ``period``
-and ``group_by`` are grammatically identifiers and so cannot be passed as %s.
+SQL is built only from registry fragments, identifiers looked up in
+``registry.DIMENSIONS`` and bound parameters; nothing a caller typed is
+spliced (``period`` and ``group_by`` are identifiers and cannot be %s).
 """
 
 from __future__ import annotations
@@ -26,11 +24,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Point:
-    """One bar, one dot.
-
-    ``bucket`` is the time bucket; ``group`` is the series within it (an
-    actor, a repo, a state) and is ``None`` when the metric was not grouped.
-    """
+    """One bar, one dot: ``bucket`` is the time bucket, ``group`` the series
+    within it (None when ungrouped)."""
 
     bucket: str
     group: str | None
@@ -43,10 +38,8 @@ class Point:
 def _scoped(sql_where: str, workspace_id: str | None) -> str:
     """The Workspace-within-a-Workspace predicate.
 
-    ``workspace_id=None`` means org-wide and is NOT "any workspace": a space
-    sees only its own rows and the org scope sees only org-wide ones. Written
-    as a WHERE clause rather than a filter applied afterwards, so isolation
-    never depends on the caller remembering to apply it.
+    ``workspace_id=None`` is org-wide, NOT "any workspace". A WHERE clause, so
+    isolation never depends on a caller filtering afterwards.
     """
     return sql_where + (
         " AND workspace_id IS NULL" if workspace_id is None
@@ -57,17 +50,11 @@ def _scoped(sql_where: str, workspace_id: str | None) -> str:
 def _viewer_filter(viewer: "Viewer | None") -> tuple[str, dict]:
     """Drop facts about documents this viewer may not open. ``("", {})`` = no filter.
 
-    A chart counts `activity_facts` rows and its hover lists them, so without
-    this a count included a document the asker cannot open and the hover named
-    its title. A fact from an ACL-capable provider is kept only when its
-    DOCUMENT is visible, checked through the one predicate retrieval uses:
-    `doc_changed` facts carry the document's own external id, and Linear's
-    issue facts (keyed by identifier) carry the issue URL the document stores
-    as `source_uri`. A fact with no visible document is hidden -- a deleted or
-    never-indexed document has no sharing we can check, and hiding it fails
-    closed. GitHub and Forms facts are untouched: GitHub embeds nothing (its
-    boundary is the installation's repos) and Forms responses are never
-    indexed.
+    Without it a count and its hover included documents the asker cannot open.
+    An ACL-capable provider's fact is kept only when its DOCUMENT is visible
+    (the retrieval predicate, matched by external id or, for Linear, the issue
+    URL); no visible document fails closed. GitHub (installation repos) and
+    Forms (never indexed) facts are untouched.
 
     ponytail: the `OR` on url cannot use the unique index; fine at hundreds of
     facts per chart. Store the document key on the fact if charts get slow.
@@ -90,17 +77,9 @@ def _viewer_filter(viewer: "Viewer | None") -> tuple[str, dict]:
 def _floored(inner: str, metric, *, has_series: bool) -> str:
     """Wrap a grouped query in the suppression floor, when the metric has one.
 
-    In SQL rather than applied afterwards, because a small bucket must never
-    leave the database: on a six-person team, "3 of 4 responses in Engineering
-    are negative" identifies people, and a filter in the frontend is one
-    forgotten call site away from rendering them.
-
-    The subtlety is WHAT gets counted. A plain ``HAVING count(*) >= n`` counts
-    each output row, which is right with one dimension and wrong with two: a
-    diverging bar splits each topic across five sentiment labels, so a topic
-    with twenty responses has four per label and would vanish entirely. The
-    floor is a property of the TOPIC, so it is summed across the series with a
-    window function -- which cannot appear in HAVING, hence the subquery.
+    In SQL so a small bucket never leaves the database. The floor is per
+    TOPIC, summed across the series with a window function (a per-row HAVING
+    would hide a 20-response topic split five ways), hence the subquery.
     """
     if metric.min_group_count <= 0:
         return inner
@@ -131,12 +110,9 @@ def _needs_attrs(group_by, split_by, measure, filters, dim=None) -> bool:
 
 
 def _attrs_for(metric, attrs, *, org_id, workspace_id, viewer, **request):
-    """The discovered fields, read only when the request names one.
-
-    A field is usable only if it occurs in THIS scope's rows (and the viewer's),
-    so the store discovers them itself rather than trusting a caller's list --
-    no call site can compile SQL over a field that is not there.
-    """
+    """The discovered fields, read only when the request names one. Discovered
+    here from THIS scope's rows, so no call site compiles SQL over a field
+    that is not there."""
     if attrs is not None or not _needs_attrs(**request):
         return attrs
     from .attr_catalog import for_metric
@@ -175,18 +151,11 @@ def run_metric(
 ) -> list[Point]:
     """Count one registry metric in one scope over one window.
 
-    ``viewer`` narrows the count to documents that person may open
-    (`_viewer_filter`); every product call site passes one.
-
-    ``split_by`` / ``measure`` / ``filters`` are the query grammar
-    (`query.py`), re-validated here so no call site can compile what the
-    grammar does not admit. Filter VALUES must already be resolved against
-    real rows (`list_values`); they are bound, never spliced. With all three
-    left at their defaults the SQL is exactly what it was before them.
-
-    Raises ``KeyError`` for an unknown metric and ``ValueError`` for an unknown
-    period or dimension -- never a sanitized fallback. A chart drawn from a
-    quietly corrected request is a chart nobody asked for.
+    ``viewer`` narrows to documents that person may open (`_viewer_filter`).
+    ``split_by`` / ``measure`` / ``filters`` are re-validated against the
+    grammar (`query.py`); filter values are already resolved and are bound.
+    Raises ``KeyError`` / ``ValueError`` for anything unknown, never a quiet
+    fallback: a corrected request is a chart nobody asked for.
     """
     metric = registry.get(key)
 
@@ -249,12 +218,8 @@ def run_metric(
         """,
         workspace_id,
     )
-    # "commits in the DAO repo" is a FILTER, not a grouping. Without it the
-    # question resolved to "commits by repository" and charted every repo --
-    # a chart that answers a different question than the one asked, which is
-    # worse than a refusal because it looks like an answer. `subject` holds a
-    # VALUE (a repo, a channel, a team, a page title), so unlike `period` and
-    # `group_by` it is bound as a parameter and never spliced.
+    # A focus is a FILTER, not a grouping, else "commits in the DAO repo"
+    # charts every repo. `subject` is a VALUE, so it is bound, never spliced.
     if focus is not None:
         where += " AND subject = %(focus)s"
     filter_sql, filter_params = _filter_clause(metric, filters, attrs)
@@ -332,14 +297,8 @@ def list_facts(
     filters: tuple[tuple[str, str], ...] = (),
     attrs=None,
 ) -> list[Fact]:
-    """The newest rows this chart counted.
-
-    A bar labelled "4" answers "how many" and nothing else -- which commits,
-    by whom, when, and where to read them are the questions that follow
-    immediately, and every one of those columns is already on the row being
-    counted. Returned WITH the chart rather than behind a click, because a
-    number nobody can trace is a number nobody trusts.
-    """
+    """The newest rows this chart counted, returned with it: a number nobody
+    can trace is a number nobody trusts."""
     metric = registry.get(key)
     where = _scoped(
         """
@@ -410,13 +369,10 @@ def list_subjects(
     key: str, *, org_id: str, workspace_id: str | None, days: int,
     viewer: "Viewer | None" = None,
 ) -> list[str]:
-    """Every ``subject`` this metric actually has rows for, in this scope.
+    """Every ``subject`` this metric has rows for, in this scope.
 
-    What a member types is matched against THIS, never used as a filter
-    directly -- so "the DAO repo" either resolves to a repository we have
-    activity for or is refused by name. A filter built from unmatched text
-    silently returns an empty chart, which reads as "no activity" when it
-    means "no such thing".
+    Typed names are matched against THIS, never used as a filter directly: an
+    unmatched filter draws an empty chart that reads as "no activity".
     """
     return list_values(
         key, "subject", org_id=org_id, workspace_id=workspace_id, days=days,
@@ -467,13 +423,8 @@ def list_values(
     viewer: "Viewer | None" = None,
     attrs=None,
 ) -> list[str]:
-    """Every value of ``dim`` this metric has rows for, in this scope.
-
-    The same role as ``list_subjects`` for the grammar's filters: "only
-    Sana's" is resolved against the actors that actually appear, so an
-    unmatched name is refused by name rather than filtering to nothing.
-    Viewer-filtered because the refusal repeats the list back.
-    """
+    """Every value of ``dim`` this metric has rows for, in this scope, so an
+    unmatched name is refused by name. Viewer-filtered: the refusal lists them."""
     metric = registry.get(key)
     attrs = _attrs_for(
         metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
@@ -518,11 +469,8 @@ def scope_names(
     limit: int = MAX_NAMES_SHOWN,
 ) -> dict[tuple[str, str], dict[str, list[str]]]:
     """The real ``subject`` and ``actor`` values per (provider, kind), most
-    active first: what the chart classifier may pick a focus or a person
-    from, so "our team" is not mistaken for a team called "our team".
-
-    One query for every metric, viewer-filtered like ``list_values`` because
-    these names reach a prompt and, through a refusal, the asker.
+    active first: what the classifier may pick a focus or person from ("our
+    team" names nothing). Viewer-filtered: they reach a prompt and a refusal.
     """
     access, access_params = _viewer_filter(viewer)
     where = _scoped(
@@ -588,11 +536,9 @@ def first_fact_at(
 ) -> datetime | None:
     """When measurement began for this provider in this scope.
 
-    Facts only exist from the first sync after this feature deployed, and
-    author names cannot be backfilled at all -- they were never captured. A
-    chart whose axis silently starts on deploy day reads as if nobody worked
-    before it, so the UI renders "measured since <this>". ``None`` means
-    nothing has been recorded yet, which is a different statement from zero.
+    Facts start at the first sync, so the UI says "measured since <this>"
+    instead of implying nobody worked before. ``None`` = nothing recorded yet,
+    which is not zero.
     """
     where = _scoped(
         " WHERE org_id = %(org_id)s AND provider = %(provider)s", workspace_id

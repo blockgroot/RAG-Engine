@@ -1,17 +1,8 @@
 """Org-creation signup request queue.
 
-Replaces immediate self-serve org+admin creation at ``/auth/signup``: a
-brand-new company's first user lands here as ``pending`` instead of getting
-an org synchronously. The platform owner reviews and approves/rejects via
-the one-click links in the owner-notification email
-(``consume_approve_token``/``consume_reject_token``, by possession token) —
-deliberately not a new authenticated HTTP/session surface, just a
-bearer-token action link like ``magic_link.py`` (see CLAUDE.md §2/§4).
-There is intentionally no id-based approve/reject path or CLI here — the
-email flow is the only reviewer-facing surface, kept to exactly one to avoid
-two parallel ways of doing the same thing. Only DB reads/writes live here;
-composing the approval/rejection/notification emails is the caller's job
-(mirrors ``users.py``'s separation of concerns).
+A new company's first user lands here as ``pending``. The platform owner
+approves or rejects only through single-use links in the notification email
+(possession tokens, like ``magic_link.py``). DB only; callers compose emails.
 """
 
 from __future__ import annotations
@@ -43,9 +34,7 @@ class SignupRequest:
     reject_reason: str | None
     org_id: str | None
     created_at: datetime
-    # Only ever populated by create_signup_request, right after the raw
-    # tokens are minted — never recoverable from a DB read (only their
-    # SHA-256 hashes are stored, same trust model as magic_link_tokens).
+    # Set only by create_signup_request; only the SHA-256 hashes are stored.
     approve_token: str | None = None
     reject_token: str | None = None
 
@@ -70,17 +59,11 @@ def _row_to_request(row) -> SignupRequest:
 def create_signup_request(
     email: str, company_name: str, *, settings: AuthSettings | None = None
 ) -> SignupRequest:
-    """Queue a new pending request for ``email``.
+    """Queue a pending request for ``email`` and mint its approve/reject tokens.
 
-    Also mints a pair of single-use possession tokens for the one-click
-    email approve/reject links, valid for ``AuthSettings.signup_action_ttl_hours``.
-    The raw tokens are returned on ``.approve_token``/``.reject_token`` of the
-    result (only this once — only their hashes are stored); the caller
-    (``POST /auth/signup``) uses them to build the owner-notification email.
-
-    Raises ``AuthError`` if a pending request for this email already exists
-    (``idx_org_signup_requests_email_pending``) — re-submitting after a prior
-    request was rejected is fine, since a rejected row no longer collides.
+    The raw tokens are returned once (``.approve_token``/``.reject_token``);
+    only hashes are stored. Raises ``AuthError`` if a pending request for the
+    email exists; one after a rejection is fine.
     """
     settings = settings or AuthSettings.from_env()
     approve_token = secrets.token_urlsafe(_TOKEN_BYTES)
@@ -145,17 +128,10 @@ def get_request_by_reject_token(token: str) -> SignupRequest | None:
 
 
 def consume_approve_token(token: str, *, store) -> tuple[SignupRequest, str]:
-    """Approve a pending request via its one-click email possession token:
-    atomically mark it approved, then create its org + admin user.
+    """Approve a pending request by its email token, then create its org and admin.
 
-    ``store`` is a ``VectorStore`` (e.g. ``PgvectorStore``) used only for
-    ``create_organization`` — kept as a parameter rather than constructed
-    here so this module stays free of a hard dependency on one concrete
-    store implementation, matching the rest of the app's factory-injection
-    convention. Used by the ``/auth/signup-requests/approve`` route reached
-    from the owner-notification email. Raises ``AuthError`` if the token is
-    unknown, expired, or the request is no longer pending (already
-    approved/rejected, or a stale duplicate email link).
+    ``store`` is passed in for ``create_organization`` (factory injection).
+    Raises ``AuthError`` if the token is unknown, expired or no longer pending.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -181,10 +157,9 @@ def consume_approve_token(token: str, *, store) -> tuple[SignupRequest, str]:
 
 
 def consume_reject_token(token: str, reason: str | None = None) -> SignupRequest:
-    """Reject a pending request via its one-click email possession token.
+    """Reject a pending request by its email token.
 
-    Raises ``AuthError`` if the token is unknown, expired, or the request is
-    no longer pending.
+    Raises ``AuthError`` if the token is unknown, expired or no longer pending.
     """
     with get_connection() as conn:
         row = conn.execute(

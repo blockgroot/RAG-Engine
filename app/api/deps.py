@@ -1,10 +1,7 @@
-"""Shared FastAPI dependencies: session auth + role checks (Phase 13).
+"""Shared FastAPI dependencies: session auth and role checks.
 
-Every dependency here reads the session cookie and trusts ONLY what's baked
-into its signed claims — never a header, body field, or URL param — so a
-request can only ever act on the org_id in its own session. This is the one
-place ``org_id`` enters the request lifecycle from the HTTP layer; every
-router downstream must take it from here, never from client input.
+The one place ``org_id`` enters a request: only from the signed session
+cookie, never a header, body or URL.
 """
 
 from __future__ import annotations
@@ -43,9 +40,8 @@ from ..vectorstore.base import Viewer
 logger = logging.getLogger(__name__)
 
 SESSION_COOKIE_NAME = "session"
-# First-party cookie. Safe because the browser talks to the frontend origin
-# (`NEXT_PUBLIC_API_BASE_URL=/api`, rewritten to this API). Keep Lax — do not
-# switch to None to paper over a split vercel.app/onrender.com deploy.
+# First-party cookie: the browser calls the frontend origin's /api. Keep Lax;
+# do not switch to None for a split-domain deploy.
 SESSION_COOKIE_FLAGS: dict = {
     "httponly": True,
     "secure": True,
@@ -57,9 +53,8 @@ SESSION_COOKIE_FLAGS: dict = {
 def public_api_url(request: Request) -> str:
     """Base for links to this API that land in an inbox.
 
-    The address this process sees is not always public: in the self-hosted
-    install it is the container name (`api:8000`). The frontend origin plus
-    `/api` reaches the API everywhere, the same way the browser does.
+    Self-hosted, this process sees a container name; the frontend origin plus
+    `/api` reaches the API everywhere.
     """
     frontend = ApiSettings.from_env().frontend_url
     if frontend:
@@ -69,64 +64,34 @@ def public_api_url(request: Request) -> str:
 
 @lru_cache(maxsize=1)
 def get_policy_agent() -> PolicyAgent:
-    """Process-wide singleton agent (loads embedding/reranker models once).
+    """Process-wide ``PolicyAgent`` (the embedder and reranker load once).
 
-    Building a ``PolicyAgent`` from config loads the local embedding model and
-    cross-encoder reranker — expensive per-call, so it happens once per
-    process and is reused across requests. Local embedder/reranker factories
-    are also process-wide singletons, so a later ``get_workspace_agent()``
-    shares the same weights instead of loading a second copy into RAM.
-
-    Chat routes call this lazily (only when policy answers are needed) — do
-    not ``Depends()`` it alongside ``get_workspace_agent`` on every request.
+    Called lazily by chat routes; do not ``Depends()`` it on every request.
     """
     return build_policy_agent()
 
 
 @lru_cache(maxsize=1)
 def get_workspace_agent() -> WorkspaceAgent:
-    """Process-wide singleton ``WorkspaceAgent`` (Workspace-within-a-Workspace).
-
-    A second, independent pipeline from ``get_policy_agent`` (own prompt
-    framing + fallback string, web-search off) — see
-    ``app/agent/workspace_agent.py``. Still built once per process like the
-    policy agent, for the same reason (embedding/reranker model load cost).
-    """
+    """Process-wide ``WorkspaceAgent``, sharing the same model singletons."""
     return build_workspace_agent()
 
 
 @lru_cache(maxsize=1)
 def get_slack_agent() -> SlackAgent:
-    """Process-wide singleton ``SlackAgent`` (Slack-only retrieval).
-
-    A third independent pipeline alongside policy/workspace — its own prompt
-    framing, fallback string, and (the point of it) a pipeline pinned to
-    ``source_provider="slack"``. Shares the same process-wide embedder/reranker
-    singletons as the others, so this does not load a second copy of the
-    models; see ``get_policy_agent``.
-    """
+    """Process-wide ``SlackAgent`` (pinned to ``source_provider="slack"``)."""
     return build_slack_agent()
 
 
 @lru_cache(maxsize=1)
 def get_linear_agent() -> LinearAgent:
-    """Process-wide singleton ``LinearAgent`` (Linear-only retrieval).
-
-    Same reasoning as ``get_slack_agent`` — its own pipeline pinned to
-    ``source_provider="linear"``, sharing the process-wide embedder/reranker
-    singletons rather than loading a second copy of the models.
-    """
+    """Process-wide ``LinearAgent`` (pinned to ``source_provider="linear"``)."""
     return build_linear_agent()
 
 
 @lru_cache(maxsize=1)
 def get_notion_agent() -> NotionAgent:
-    """Process-wide singleton ``NotionAgent`` (Notion-only retrieval).
-
-    Same reasoning as ``get_slack_agent`` — its own pipeline pinned to
-    ``source_provider="notion"``, so a company with both Notion and Drive
-    connected never gets an answer silently blended from both.
-    """
+    """Process-wide ``NotionAgent``, pinned to Notion so answers never blend with Drive."""
     return build_notion_agent()
 
 
@@ -138,14 +103,9 @@ def get_drive_agent() -> DriveAgent:
 
 @lru_cache(maxsize=1)
 def get_github_agent() -> GitHubAgent:
-    """Process-wide singleton ``GitHubAgent``.
+    """Process-wide ``GitHubAgent`` (no retrieval).
 
-    Cheap to build compared to the other two — no embedding model and no
-    reranker, because this agent has no retrieval at all. Cached anyway for
-    consistency, and safe to cache because it holds **no** tenant state: the
-    GitHub reader (and therefore the installation token and authorized repo
-    scope) is constructed per request from the caller's ``org_id``. See
-    ``app/agent/github_agent.py`` on why ``reader_builder`` is a builder.
+    Holds no tenant state: the GitHub reader is built per request from ``org_id``.
     """
     return build_github_agent()
 
@@ -157,16 +117,10 @@ def get_insights_agent() -> InsightsAgent:
 
 
 def get_session(request: Request) -> SessionClaims:
-    """Decode the session cookie and confirm the user+org still exist.
+    """Decode the session cookie and confirm the user and org still exist.
 
-    A JWT alone is not enough after a DB wipe / org delete: the signed claims
-    can outlive the rows they point at. Without this check, Connect Notion and
-    other FK-backed writes 500 with foreign-key errors instead of a clean 401.
-
-    ``role`` is re-read from ``users`` on every request (not taken from the JWT).
-    Sessions live up to 30 days; promote/demote must take effect immediately
-    without waiting for re-login. The JWT still carries ``role`` for
-    observability / older clients; authorization uses the live value.
+    Signed claims can outlive their rows (a 401, not FK 500s). ``role`` is
+    re-read from ``users`` each request so promote/demote apply at once.
     """
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
@@ -209,14 +163,10 @@ def get_workspace_role(
     workspace_id: str,
     session: SessionClaims = Depends(get_session),
 ) -> str:
-    """Resolve + validate workspace membership; return the caller's role.
+    """Check the caller is a member of ``workspace_id``; return their role.
 
-    Mirrors ``require_admin``'s shape but for the workspace boundary
-    (Workspace-within-a-Workspace) — the ONE place a ``workspace_id`` from a
-    URL path is checked against the session's ``org_id`` + ``user_id`` before
-    any router uses it. ``assert_member`` also checks the workspace's own
-    ``org_id`` against the caller's, so a stale/forged ``workspace_id`` from a
-    different org fails closed here rather than resolving to real data.
+    The one place a path ``workspace_id`` is checked against the session;
+    another org's workspace fails closed (403).
     """
     from ..core.exceptions import AuthError
     from ..workspaces import assert_member
@@ -234,23 +184,11 @@ def require_workspace_owner(role: str = Depends(get_workspace_role)) -> str:
 
 
 def viewer_for(session) -> Viewer:
-    """The ``Viewer`` for a signed-in session — WHO may read which documents.
+    """The ``Viewer`` for a signed-in session: who may read which documents.
 
-    Resolved HERE, from the session, for the same reason ``org_id`` is: the API
-    is the only place identity enters a request, and everything downstream
-    receives it rather than looking it up. A graph node or an agent resolving
-    its own asker is how one path ends up reading as somebody else.
-
-    The email comes from the ``users`` row rather than the JWT so that a
-    session issued before this existed still resolves, with no re-login and no
-    token migration. One indexed primary-key lookup on a path that already
-    spends ~6 LLM calls.
-
-    Falls back to ``Viewer.unrestricted()`` only when there is no session at
-    all (internal and CLI callers). A SIGNED-IN user whose row cannot be read
-    gets ``public_only``, which fails CLOSED: they see scope-public documents
-    and nothing else. The two must not share a value -- "no email" meaning
-    "no filter" is exactly how an identity failure turns into a leak.
+    Resolved here from the session, like ``org_id``; the email comes from the
+    ``users`` row. No session at all is ``unrestricted()`` (internal, CLI); a
+    signed-in user whose row cannot be read is ``public_only``, failing closed.
     """
     if session is None:
         return Viewer.unrestricted()
@@ -261,7 +199,6 @@ def viewer_for(session) -> Viewer:
         return Viewer.public_only_viewer()
     if user is None or not user.email:
         return Viewer.public_only_viewer()
-    # Through `viewer_for_person`, never `Viewer(email=...)`: that is what
-    # attaches the asker's Google Group memberships, and a `group:` grant is
-    # satisfied by nothing else.
+    # Through `viewer_for_person`, never `Viewer(email=...)`: it adds the asker's
+    # Google Group memberships, which `group:` grants need.
     return viewer_for_person(session.org_id, user.email)

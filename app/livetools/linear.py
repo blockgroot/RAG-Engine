@@ -1,9 +1,7 @@
-"""Linear: re-read one issue that retrieval already returned (plan Phase 1).
+"""Linear: re-read one issue retrieval already returned, by its id. Never a search.
 
-Read-only, one fixed query, by the issue's own id from our ``documents`` row --
-never a search. Decides failures by LINEAR'S reason, never the status code
-alone: Linear answers a deleted or unreadable issue with HTTP 200 and a GraphQL
-``Entity not found`` error, and a rate limit with HTTP 400 + ``RATELIMITED``.
+Failures are decided by Linear's REASON: a missing issue is HTTP 200 with
+``Entity not found``, a rate limit HTTP 400 with ``RATELIMITED``.
 """
 
 from __future__ import annotations
@@ -64,8 +62,7 @@ def read_issue(token: str, external_id: str) -> ProviderRead:
     if response.status_code == 404:
         return ProviderRead(base.NOT_ACCESSIBLE, reason="http_404")
     if response.status_code >= 400:
-        # 403 with no reason we recognise, or a 5xx: fall back and log it,
-        # never withhold on a guess (plan §5).
+        # Unrecognised 403 or 5xx: fall back and log; never withhold on a guess.
         return ProviderRead(base.ERROR, reason=f"http_{response.status_code}")
 
     issue = ((payload or {}).get("data") or {}).get("issue")

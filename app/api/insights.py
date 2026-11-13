@@ -1,15 +1,9 @@
-"""``/insights`` — the charts behind the Visualizations section.
+"""``/insights``: the charts behind the Visualizations section.
 
-Member-level, like ``/schedulers``: a chart aggregates rows the asker can
-already retrieve in prose, so gating it behind ``require_admin`` would be
-theatre. What it is NOT allowed to do is widen what they can see, which is why
-``org_id`` and ``user_id`` come only from the signed session and a space scope
-goes through ``assert_member`` before any query runs.
-
-Every number here is computed by SQL over ``activity_facts``. No route on this
-router calls an LLM, and none ever should without the registry in between — a
-prose answer that is wrong hedges and cites, a bar chart that is wrong reads as
-a measurement.
+Member-level (a chart aggregates rows the asker can already read), but
+never wider: ``org_id``/``user_id`` come from the session and a space goes
+through ``assert_member``. Every number is SQL over ``activity_facts``;
+the model only picks registry keys.
 """
 
 from __future__ import annotations
@@ -41,12 +35,9 @@ MAX_QUESTION_CHARS = 400
 
 
 def _scope(session: SessionClaims, scope: str | None) -> str | None:
-    """Resolve the ``scope`` query parameter to a workspace id, or None.
+    """Resolve ``scope`` to a workspace id, or None for the company.
 
-    ``None``/``"org"`` mean the company. Anything else is treated as a
-    workspace id and must survive ``assert_member`` — the one place membership
-    is checked. A caller passing a space they are not in gets 403, never an
-    empty chart, because empty reads as "nothing happened there".
+    A space the caller is not in is 403, never an empty chart.
     """
     if scope in (None, "", "org"):
         return None
@@ -58,15 +49,10 @@ def _scope(session: SessionClaims, scope: str | None) -> str | None:
 
 
 def _may_see(metric, session: SessionClaims, workspace_id: str | None) -> bool:
-    """Whether this caller may see an ``owners_only`` metric.
+    """Whether this caller may see an ``owners_only`` metric (sentiment).
 
-    Only sentiment is gated, and not because counting is privileged: everything
-    else aggregates rows the asker can already retrieve in prose. A reading of
-    colleagues' expressed opinions is a different kind of claim, so it stays
-    with the people already accountable for the space or the org.
-
-    An org admin qualifies everywhere; a space owner qualifies in their own
-    space. Membership itself was already checked by ``_scope``.
+    Colleagues' opinions stay with org admins (everywhere) and a space's owner
+    (in that space).
     """
     return scopes.may_see_metric(
         metric,
@@ -90,9 +76,7 @@ def _period(period: str) -> str:
 def list_scopes(session: SessionClaims = Depends(get_session)):
     """The company plus every space this member is in, each with its providers.
 
-    A space with an empty ``providers`` list is still returned: "this space has
-    nothing connected" is an answer, and dropping it makes the space silently
-    vanish from the picker.
+    A space with no providers is still returned, so it stays in the picker.
     """
     found = scopes.member_scopes(session.org_id, session.user_id)
     return {
@@ -101,9 +85,7 @@ def list_scopes(session: SessionClaims = Depends(get_session)):
                 "id": s.id,
                 "name": s.name,
                 "providers": s.providers,
-                # Which of this scope's providers we can actually chart yet.
-                # Stated separately so "Drive is connected but has no charts"
-                # is visible rather than looking like an empty dashboard.
+                # Which providers can chart yet, so "connected but no charts" is visible.
                 "chartable": [p for p in s.providers if panel_defs.for_provider(p)],
             }
             for s in found
@@ -117,12 +99,7 @@ def dashboard(
     period: str = Query(default="month"),
     session: SessionClaims = Depends(get_session),
 ):
-    """Every chart for one scope, already computed.
-
-    One round trip on purpose. Six panels firing six requests means six cold
-    starts on a free instance, and a dashboard that arrives in pieces reads as
-    broken rather than slow.
-    """
+    """Every chart for one scope in one round trip (no dashboard arriving in pieces)."""
     workspace_id = _scope(session, scope)
     period = _period(period)
     days = _WINDOW_DAYS[period]
@@ -141,9 +118,7 @@ def dashboard(
     out = []
     for provider in found.providers:
         for panel in panel_defs.for_provider(provider):
-            # Omitted entirely rather than returned empty: an empty sentiment
-            # chart would still announce that sentiment is being measured, to
-            # exactly the people it is being measured on.
+            # Omitted, not empty: an empty sentiment chart still says sentiment is measured.
             if not _may_see(registry.get(panel.metric), session, workspace_id):
                 continue
             try:
@@ -157,9 +132,7 @@ def dashboard(
                     viewer=viewer,
                 )
             except ProviderError:
-                # One broken panel must not blank the page. It reports itself
-                # as unavailable, which is honest; omitting it would read as
-                # "no activity".
+                # One broken panel reports itself unavailable; it must not blank the page.
                 logger.warning("insights: panel %s failed", panel.id, exc_info=True)
                 out.append(_panel_payload(provider, panel, None, None))
                 continue
@@ -197,9 +170,8 @@ def _panel_payload(provider, panel, points, begun):
              "value": p.value}
             for p in points
         ],
-        # Facts only exist from the first sync after this shipped, and author
-        # names cannot be backfilled at all. Without this the axis silently
-        # starts on deploy day and reads as if nobody worked before it.
+        # Facts start at the first sync; without this the axis looks like nobody
+        # worked before it.
         "measured_since": begun.isoformat() if begun else None,
     }
 
@@ -217,8 +189,8 @@ def answer_chart_question(
 ) -> dict:
     """Turn a question into ONE chart, or a refusal naming what is available.
 
-    Shared by ``POST /insights/ask`` and Ask chat. The model only selects a
-    registry key -- it never writes SQL and never emits a number.
+    Shared by ``POST /insights/ask`` and chat; the model picks a registry key,
+    never SQL or a number.
     """
     found = next(
         (s for s in scopes.member_scopes(session.org_id, session.user_id)
@@ -237,18 +209,13 @@ def answer_chart_question(
         return {"charted": False, "message": str(exc)}
 
     if not _may_see(registry.get(spec.metric), session, workspace_id):
-        # Phrased as unavailable rather than forbidden. "You are not allowed to
-        # see the sentiment chart" confirms it exists and is being collected,
-        # which is the thing the gate is protecting.
+        # "Unavailable", not "forbidden": forbidden confirms sentiment is collected.
         return {
             "charted": False,
             "message": "I can't chart that here.",
         }
 
-    # The SAME runner Ask chat uses, not a second copy: this route used to
-    # call `run_metric` itself and silently dropped `focus` (and would have
-    # dropped every grammar slot), charting all repositories for "commits in
-    # the DAO repo".
+    # The same runner chat uses; calling `run_metric` here dropped `focus`.
     from ..agent.insights_agent import _run_spec
 
     try:
@@ -278,9 +245,7 @@ def ask(
 ):
     """Turn a question into ONE chart, or refuse and say what is available.
 
-    Rate-limited per org like every other LLM-backed route: this is the only
-    dedicated insights path that spends a model request. Ask chat has its own
-    limiter and calls ``answer_chart_question`` directly.
+    Rate-limited per org: this route spends a model request.
     """
     limit_question(session)
     workspace_id = _scope(session, body.scope)
@@ -290,12 +255,7 @@ def ask(
 
 
 def _ask_title(metric, group_by: str | None) -> str:
-    """A title the member can recognise as their own question's answer.
-
-    Built from the registry rather than echoing the question back: a question
-    is untrusted text, and putting it in a heading is how a heading becomes an
-    injection surface for whoever reads the page next.
-    """
+    """A title built from the registry, never the question (untrusted text in a heading)."""
     if not group_by:
         return metric.label
     by = {"actor": "person", "subject": registry.subject_label(metric.provider),
@@ -304,7 +264,7 @@ def _ask_title(metric, group_by: str | None) -> str:
 
 
 # --------------------------------------------------------------------------
-# Pins. Personal, like a scheduler -- never published to anyone.
+# Pins. Personal, like a scheduler.
 # --------------------------------------------------------------------------
 
 
@@ -322,12 +282,9 @@ def list_pins(session: SessionClaims = Depends(get_session)):
 
 @router.post("/pins", status_code=201)
 def create_pin(body: PinRequest, session: SessionClaims = Depends(get_session)):
-    """Keep a chart. Validated against the registry, not trusted from the body.
+    """Keep a chart, validated against the registry, not trusted from the body.
 
-    A pin is re-run on every page load, so an unvalidated one would be a
-    stored request to `run_metric` with caller-controlled identifiers -- the
-    one place in this feature where a bad value would persist rather than fail
-    once.
+    A pin re-runs on every page load, so a bad value would persist.
     """
     workspace_id = _scope(session, body.scope)
     try:
@@ -339,9 +296,7 @@ def create_pin(body: PinRequest, session: SessionClaims = Depends(get_session)):
     if body.group_by is not None and body.group_by not in metric.dims:
         raise HTTPException(status_code=400, detail="That chart cannot be grouped that way.")
     if not _may_see(metric, session, workspace_id):
-        # A pin outlives the role that created it, so this is checked here AND
-        # on every read -- a member demoted from owner must not keep a pinned
-        # sentiment chart working.
+        # Checked here and on every read: a demoted owner must not keep a sentiment pin.
         raise HTTPException(status_code=403, detail="Not available in this scope.")
 
     pin_id = pins.create_pin(
@@ -366,11 +321,9 @@ def freshness(
     scope: str | None = Query(default=None),
     session: SessionClaims = Depends(get_session),
 ):
-    """Last sync per connector — the panel that makes the rest trustworthy.
+    """Last sync per connector, so a number can be judged current.
 
-    A number is worthless if nobody can tell whether it is current, and
-    ``needs_reauth`` is reported separately from an old date because auto-sync
-    skips a dead token entirely: waiting will never fix it.
+    ``needs_reauth`` is separate: auto-sync skips a dead token, so waiting never fixes it.
     """
     workspace_id = _scope(session, scope)
     rows = scopes.freshness(

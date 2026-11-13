@@ -1,25 +1,18 @@
 """AI usage limits: tokens per minute per model, and dollars per day.
 
-Two layers, as Anthropic, LiteLLM and Kong's AI gateway limit:
-
-* Tokens a minute, per answering model, input and output apart, for the
-  person and the company (``token_buckets``). Each model has its own buckets,
-  so a person who used up Sonnet's minute can still ask Haiku.
-* Dollars a day, for the person and the company (``spend_buckets``), one
+* Tokens a minute per answering model, input and output apart, for the
+  person and the company (``token_buckets``).
+* Dollars a day for the person and the company (``spend_buckets``), one
   wallet whichever model answers.
 
-Request limits (``rate_limit.py``) count questions, but one question can cost
-ten times another (Claude benchmarks: median ~6k tokens, largest ~33k) and the
-answering models differ twentyfold in price. So every paid model call is
-charged its real cost (tokens x that model's price) to the person's and the
-company's dollar buckets, and a question is refused once one is empty
-(``rate_limit.question_decision``). The cost is known only after the call, so a
-bucket may go below zero by one request; the next waits until it refills.
+One question can cost ten times another and models differ twentyfold in
+price, so every paid call is charged its real cost and a question is
+refused once a bucket is empty (``rate_limit.question_decision``). Cost is
+known only after the call, so a bucket may overdraw by one request.
 
-Who pays is set per request with ``charge_to``, where the answering model is
-chosen (inside the stream that answers: a ContextVar set in the route is not
-reliably the context the answer runs in). A call with nobody set, or on a model
-with no price (Gemini background work), is not charged.
+``charge_to`` is set where the answering model is chosen (inside the
+stream). Nobody set, or an unpriced model (Gemini background work): not
+charged.
 """
 
 from __future__ import annotations
@@ -47,12 +40,8 @@ def charge_to(user_id: str | None, org_id: str | None) -> None:
 
 
 def _listed(model: str | None, rows: tuple[tuple, ...]) -> tuple | None:
-    """The row whose model id ``model`` is, or None.
-
-    A vendor prefix (``anthropic/``) and a dated suffix (``-20261009``) still
-    match their base id; the longest listed id wins, so ``claude-sonnet-5-5`` is
-    never read as ``claude-sonnet-5``.
-    """
+    """The row whose model id ``model`` is, or None. Vendor prefixes and dated
+    suffixes match their base id; the longest listed id wins."""
     name = (model or "").strip().lower().rsplit("/", 1)[-1].replace(".", "-")
     best: tuple | None = None
     for row in rows:
@@ -72,9 +61,8 @@ def price_of(model: str | None, settings: RateLimitSettings) -> tuple[float, flo
 def token_buckets(
     user_id: str | None, org_id: str | None, model: str | None, settings: RateLimitSettings
 ) -> tuple[list[Bucket], list[Bucket]]:
-    """``(input buckets, output buckets)`` for this model: the person's and the
-    company's, each holding a minute of tokens and refilling it every minute.
-    Keyed by the model's listed id, so a dated id shares its base's buckets."""
+    """``(input buckets, output buckets)`` for this model, person and company,
+    each a minute of tokens. Keyed by the listed id (dated ids share)."""
     row = _listed(model, settings.ai_token_limits)
     if row is None:
         return [], []
@@ -109,9 +97,8 @@ def cost_of(
 def spend_buckets(
     user_id: str | None, org_id: str | None, settings: RateLimitSettings
 ) -> list[Bucket]:
-    """The person's and the company's day buckets, in dollars. A day bucket
-    refills evenly over the day, so a limit hit at noon frees a little at a
-    time rather than all at midnight."""
+    """The person's and the company's day buckets in dollars, refilling evenly
+    over the day."""
     buckets = []
     if user_id and settings.ai_person_dollars_per_day:
         buckets.append(Bucket(f"ai:user:day:{user_id}", settings.ai_person_dollars_per_day,
@@ -128,12 +115,9 @@ def charge_call(
     output_tokens: int | None,
     settings: RateLimitSettings | None = None,
 ) -> float:
-    """Charge one finished model call to whoever this request is for: its
-    tokens to that model's minute buckets, its cost to the dollar buckets.
-
-    Returns the dollars charged (0 when nobody pays or the model is unpriced).
-    A store fault is logged and the call stands: accounting never fails an answer.
-    """
+    """Charge one finished call: tokens to the model's minute buckets, cost to
+    the dollar buckets. Returns dollars charged. A store fault is logged and
+    the call stands."""
     user_id, org_id = _SPENDER.get()
     if not (user_id or org_id):
         return 0.0

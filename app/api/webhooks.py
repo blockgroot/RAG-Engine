@@ -1,21 +1,10 @@
 """Push receivers: a provider says something changed, we flag a sync.
 
-Every handler here does ONE thing -- flag the connection(s) the push is about
-and, after answering the provider, queue their sync (`autosync._flag_and_start`)
--- and never ingests inline. Queuing is a no-op while a sync is active and
-skipped within 3 minutes of the last one, so fifty pushes still make one job;
-what is not queued waits on the flag for the tick (CLAUDE.md §3 Automatic
-freshness). Each handler answers inside the provider's deadline (Linear: 5 s;
-Slack: 3 s, handled in ``slack_events.py``).
-
-A push never carries content we trust: it only moves a sync earlier. That is
-why a forged or replayed push is harmless beyond one extra listing diff -- and
-why each route still verifies its signature: an unauthenticated flag is a free
-way to spend a tenant's provider quota.
-
-Every route is CLOSED (404) until its secret is configured, the
-``INTERNAL_TICK_SECRET`` posture. The one exception is Notion's verification
-handshake, which by design arrives before the secret exists.
+A handler only flags the connection and, after answering, queues its sync
+(`autosync._flag_and_start`); never ingests inline, and answers inside the
+provider's deadline. A push carries nothing trusted, but each signature is
+still verified (a forged flag spends a tenant's quota). Every route is 404
+until its secret is set, except Notion's verification handshake.
 """
 
 from __future__ import annotations
@@ -73,13 +62,11 @@ async def notion_webhook(
     background: BackgroundTasks,
     x_notion_signature: str | None = Header(default=None),
 ):
-    """Notion events, one subscription for the whole public integration.
+    """Notion events for the whole public integration.
 
-    Setup is a handshake Notion runs once: it POSTs ``{"verification_token":
-    ...}`` unsigned, a person pastes that token back into the subscription's
-    Verify form, and the SAME token is then the HMAC key for every event. So
-    the token is logged here for the operator to copy into both Notion and
-    ``NOTION_WEBHOOK_VERIFICATION_TOKEN``. Events are refused until it is set.
+    Notion first POSTs an unsigned ``verification_token``; it is logged for the
+    operator to paste into Notion and ``NOTION_WEBHOOK_VERIFICATION_TOKEN``, and
+    is the HMAC key for every event. Events are refused until it is set.
     """
     body = await request.body()
     payload = _json(body)
@@ -101,9 +88,8 @@ async def notion_webhook(
     if not x_notion_signature or not hmac.compare_digest(expected, x_notion_signature):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad signature")
 
-    # `workspace_id` is "the workspace ID where the event originated from" --
-    # the same id the OAuth exchange stored as `external_workspace_id`.
-    # Logged so "did Notion call us?" has an answer; ids and type only, no content.
+    # `workspace_id` is the OAuth exchange's `external_workspace_id`.
+    # Logged (ids and type only) so "did Notion call us?" has an answer.
     entity = payload.get("entity") if isinstance(payload.get("entity"), dict) else {}
     logger.info(
         "notion webhook: %s for %s %s in workspace %s",
@@ -124,10 +110,8 @@ async def linear_webhook(
 ):
     """Linear data-change events for every workspace that installed the app.
 
-    Configured once on the OAuth application (Linear then creates a webhook
-    per authorizing workspace). ``Linear-Signature`` is the bare hex
-    HMAC-SHA256 of the raw body, and ``webhookTimestamp`` (ms) must be within
-    a minute, which is what stops a captured delivery being replayed.
+    ``Linear-Signature`` is hex HMAC-SHA256 of the raw body; ``webhookTimestamp``
+    must be within a minute (no replay).
     """
     secret = WebhookSettings.from_env().linear_secret
     if not secret:
@@ -162,18 +146,14 @@ async def drive_webhook(
     x_goog_channel_token: str | None = Header(default=None),
     x_goog_resource_state: str | None = Header(default=None),
 ):
-    """A Drive ``changes.watch`` notification. The body is always empty.
+    """A Drive ``changes.watch`` notification (empty body).
 
-    No signature exists; the channel token we chose is the proof
-    (``drive_watch.connection_for_notification``). An unknown or unproven
-    channel still gets a 200 -- anything else makes Google retry a
-    notification we will never accept.
+    The channel token we chose is the proof. An unknown channel still gets 200,
+    else Google retries forever.
     """
     if not WebhookSettings.from_env().drive_push_base_url:
         raise _not_found()
-    # `sync` is the channel-opened handshake, not a change. Google documents the
-    # change state as both `change` and `changed`, and says to expect new
-    # states, so anything that is not `sync` counts.
+    # `sync` is the channel-opened handshake; any other state counts as a change.
     if (x_goog_resource_state or "").lower() == "sync":
         return {"ok": True}
     background.add_task(_flag_drive, x_goog_channel_id or "", x_goog_channel_token or "")

@@ -1,9 +1,4 @@
-"""Single construction point for the LLM provider.
-
-Callers do ``build_llm_provider()`` and get back something satisfying the
-``LLMProvider`` interface, wired from configuration. Swapping the backend later
-(e.g. to a LiteLLM-based impl for native features) means editing only this file.
-"""
+"""Single construction point for the LLM provider."""
 
 from __future__ import annotations
 
@@ -18,16 +13,9 @@ from .routed import RoutedLLMProvider
 def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     """Build the main LLM provider, wrapped for per-request model selection.
 
-    The wrapper is transparent when nothing is selected: it delegates straight
-    to the configured default, so a deployment that never sets
-    ``OPENROUTER_API_KEY`` behaves exactly as it did before this feature.
-
-    Note this is the MAIN provider only. ``build_aux_llm_provider`` is
-    deliberately left unrouted — see ``routed`` for why ingestion must not be
-    routable.
-
-    Outermost is identifier masking (``masking``), so whichever model the
-    request routes to, it never sees an Aadhaar, PAN, card or mobile number.
+    With nothing selected it delegates to the configured default. Outermost is
+    identifier masking (``masking``), so no model ever sees an Aadhaar, PAN,
+    card or mobile number.
     """
     settings = settings or LLMSettings.from_env()
     routed = RoutedLLMProvider(
@@ -64,25 +52,15 @@ def aux_endpoint(settings: LLMSettings) -> adapters.Endpoint:
 
 
 def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
-    """Build the auxiliary LLM for cheap classification-style stages (Phase 19).
+    """Build the auxiliary LLM for background and classification stages.
 
-    Deliberately NOT wrapped for per-request model routing: that absence is
-    what makes ingest contextualization unroutable, so chunks authored by
-    different models are never ranked against each other inside one index
-    (CLAUDE.md §3). ``test_model_selection`` asserts it by reading this
-    function's source, so do not name the routing wrapper here even in prose.
+    Never wrapped for per-request model selection: ingest contextualization
+    must be written by one model across a corpus. A test reads this source.
 
     Uses its own endpoint (``LLM_AUX_ADAPTER`` or ``LLM_AUX_BASE_URL``, plus
-    ``LLM_AUX_API_KEY``) when BOTH halves are set, so
-    background work can draw from its own rate limit. Unset — the default —
-    falls back to the main endpoint, byte-identical to the behaviour before
-    those settings existed. Falling back per-field would be worse than not
-    supporting this at all: a foreign base_url with the main key 401s on every
-    contextualization and degrades *silently* to un-prefixed chunks, which is
-    exactly the class of failure this codebase keeps paying for.
-
-    Identifier masking (``masking``) still applies: background work reads
-    whole documents, so it is where most identifiers would otherwise leave.
+    ``LLM_AUX_API_KEY``) only when BOTH halves are set, so background work has
+    its own rate limit; otherwise the main endpoint. Never per field: a foreign
+    URL with the main key fails silently. Identifier masking still applies.
     """
     settings = settings or LLMSettings.from_env()
     return MaskingLLMProvider(

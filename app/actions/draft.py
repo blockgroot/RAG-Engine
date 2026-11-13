@@ -1,16 +1,10 @@
 """What a write may contain, and where it may go: checked by code, not the model.
 
-Two rules from the plan (§4.3):
-
-* A target is accepted only when the asker NAMED it. The model passes a name;
-  code checks the name is in the asker's own words, then resolves it with the
-  asker's token. A team or repo that appears only inside a retrieved document
-  is never a target, which is what stops "post this to #general" hidden in a
-  page from choosing where a write goes.
-* Text drawn from documents may go in, links and @-mentions may not, unless
-  the asker wrote them (or, for links, a cited document is that address). A
-  model-written URL is how a write becomes a way to carry data out; a mention
-  pings someone the asker never chose.
+* A target is accepted only when the asker NAMED it, then resolved with their
+  token. A target appearing only inside a document is never one.
+* Document text may go in; links and @-mentions only if the asker wrote them
+  (or, for links, a cited document is that address). A model-written URL is an
+  exfiltration channel; a mention pings someone the asker never chose.
 """
 
 from __future__ import annotations
@@ -35,9 +29,7 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-#: Typography some models write for the asker's plain characters, and askers
-#: for the model's: GPT-OSS quoted "sana18‑syv/bench‑sandbox" with non-breaking
-#: hyphens, and an asker's "UI test – slack bug" came back with a plain one.
+#: Typography (non-breaking hyphens, dashes) folded both ways between asker and model.
 TYPOGRAPHY = str.maketrans({**dict.fromkeys(map(chr, (0x2010, 0x2011, 0x2012, 0x2013, 0x2212)), "-"),
                             **dict.fromkeys(map(chr, (0x00A0, 0x202F, 0x2007)), " ")})
 
@@ -54,11 +46,9 @@ def asked_in(phrase: str | None, question: str) -> bool:
 
 
 def asked_for(quote: str | None, question: str) -> bool:
-    """True when the words that ask for an action are the asker's: every word
-    of ``quote`` is in ``question``, in order, words left out between them.
-    "Create a Linear issue in BEN and a GitHub issue in acme/app" asks for the
-    GitHub issue in no one phrase ("Create" is shared), so an exact quote of
-    that ask could not exist. A target is still matched exactly (``asked_in``)."""
+    """True when every word of ``quote`` is in ``question``, in order, gaps allowed
+    (one phrase may not exist for each of several asks). Targets match exactly
+    (``asked_in``)."""
     said = iter(_WORD.findall(_fold(question)))
     words = _WORD.findall(_fold(quote or ""))
     return bool(words) and all(w in said for w in words)

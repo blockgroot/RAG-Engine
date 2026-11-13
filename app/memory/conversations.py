@@ -1,14 +1,7 @@
 """Listing, reading and deleting a person's own conversations.
 
-Separate from `pg_store.ConversationStore`, which is the RAG pipeline's
-working memory (summary + recent turns, keyed only by `conversation_id`).
-This module answers the product's questions instead -- "which chats are mine?",
-"show me that one", "delete it" -- and every one of them is scoped
-`(org_id, user_id, workspace_id)`, the shape `schedulers` and `insight_pins`
-already use for a personal surface.
-
-The split matters: the pipeline must not learn about users, and this must not
-be reachable without one.
+Apart from `pg_store.ConversationStore` (the pipeline's working memory, which
+knows no users). Everything here is scoped `(org_id, user_id, workspace_id)`.
 """
 
 from __future__ import annotations
@@ -19,22 +12,16 @@ from datetime import datetime
 
 from ..db.connection import get_connection
 
-#: How long a conversation survives. Deliberately the same number the UI
-#: states ("kept for 30 days"): a retention promise nobody can read is not a
-#: promise. The sweep IS the list length -- there is no separate display cap,
-#: because two numbers that must agree eventually do not (CLAUDE.md records
-#: exactly that failure for FREQUENCIES/_FREQUENCY_INTERVAL/_FIRST_WINDOW),
-#: and a chat alive but off the end of a capped list is unreachable and
-#: undeletable, which is the bug this feature exists to remove.
+#: How long a conversation survives; the UI states the same number. The
+#: sweep is the only cap: a live chat off the end of a capped list would be
+#: unreachable and undeletable.
 DEFAULT_CONVERSATION_TTL_DAYS = 30
 
 
 @dataclass(frozen=True)
 class ConversationSummaryRow:
     id: str
-    #: The title the person gave it, else the first question asked. Never
-    #: generated: a model-written title is a second thing to keep true, and
-    #: the first question is what people recognise a chat by.
+    #: The person's title, else the first question. Never generated.
     title: str | None
     turn_count: int
     attachment_count: int
@@ -45,9 +32,8 @@ class ConversationSummaryRow:
     renamed: bool = False
 
 
-#: A stored chart larger than this keeps its bars and drops its hover rows: a
-#: turn row is read on every reopen, and a few hundred detail rows is the
-#: bulk of a panel.
+#: Past this a stored chart keeps its bars and drops hover rows (read on
+#: every reopen).
 MAX_CHART_BYTES = 200_000
 
 
@@ -90,10 +76,8 @@ def meta_for_history(raw) -> dict | None:
 
 
 def set_last_turn_meta(conversation_id: str, question: str, meta: dict) -> None:
-    """Label the conversation's latest turn, only if it is this question's.
-
-    Matched on the question too: a turn that failed to save must not lend its
-    label to the answer before it.
+    """Label the latest turn, only if it is this question's (a failed save
+    must not label the turn before it).
     """
     with get_connection() as conn:
         conn.execute(
@@ -124,10 +108,8 @@ def chart_for_history(raw) -> dict | None:
 
 
 def cited_for_history(raw) -> list[dict]:
-    """The stored source list, with anything that is not a document link dropped.
-
-    A reopened chat renders this. A url that is not http(s) is cleared: the
-    column is ours, but a bad row must not become a link.
+    """The stored source list; a url that is not http(s) is cleared, so a bad
+    row never becomes a link.
     """
     if isinstance(raw, str):
         try:
@@ -173,15 +155,9 @@ class ConversationTurnRow:
 def list_conversations(
     *, org_id: str, user_id: str, workspace_id: str | None
 ) -> list[ConversationSummaryRow]:
-    """This person's chats in this scope, most recently used first.
-
-    Every surviving conversation, not a capped window -- see
-    ``DEFAULT_CONVERSATION_TTL_DAYS``.
-
-    Empty chats are omitted: `ensureConversation` creates a row before the
-    first question is sent, so a refresh or an abandoned visit leaves one with
-    nothing in it, and a list of blank entries is worse than a short list. They
-    are still swept on the TTL like any other.
+    """This person's chats in this scope, most recently used first, uncapped
+    (see ``DEFAULT_CONVERSATION_TTL_DAYS``). Empty chats are omitted; the
+    TTL still sweeps them.
     """
     with get_connection() as conn:
         rows = conn.execute(
@@ -221,12 +197,7 @@ def list_conversations(
 def get_conversation_turns(
     *, conversation_id: str, org_id: str, user_id: str, workspace_id: str | None
 ) -> list[ConversationTurnRow]:
-    """The full transcript, oldest first.
-
-    Full because the fold stopped deleting: turns beyond the memory window are
-    marked (`conversations.folded_through`), not removed, so what is returned
-    here is the whole conversation rather than the tail the model still reads.
-    """
+    """The full transcript, oldest first (folded turns are kept)."""
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -251,14 +222,10 @@ def get_conversation_turns(
 def delete_last_turn_if(
     *, conversation_id: str, org_id: str, question: str, answer: str
 ) -> bool:
-    """Remove the NEWEST turn when it is exactly ``(question, answer)``.
+    """Remove the newest turn when it is exactly ``(question, answer)``.
 
-    A connected answer is a retry of a refusal (``api/chat.py``): the refusal
-    was already appended as a turn, and leaving it in place would give the
-    chat two turns for one question -- and would hand the retry's own
-    follow-up rewrite a context that already contains the question it is
-    answering. Matching on the exact pair means a concurrent turn, or a
-    refusal someone else's code already replaced, is never the one deleted.
+    A connected answer retries a refusal already saved as a turn; this keeps
+    one turn per question. The exact pair means no other turn is deleted.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -285,14 +252,8 @@ def delete_conversation(
 ) -> bool:
     """Delete one chat. True when a row went; False is a 404 for the caller.
 
-    Turns, attachments and the last-retrieval row go with it by cascade, so
-    "delete this chat" removes the uploaded file too -- which is what someone
-    pressing it means, and is why the attachment sweep is a backstop rather
-    than the mechanism.
-
-    `user_id` is in the WHERE clause even though a conversation is already
-    personal: this is the one destructive route a member can call, and a
-    missing predicate here deletes someone else's chat rather than failing.
+    Turns, attachments and the last-retrieval row cascade. `user_id` is in
+    the WHERE: without it this deletes someone else's chat.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -352,11 +313,7 @@ def purge_expired_conversations(
 ) -> int:
     """Delete conversations past the retention horizon. Returns how many.
 
-    Keyed on last ACTIVITY, not creation: a chat someone returned to yesterday
-    is not 30 days old just because it started then.
-
-    A NULL `user_id` row predates the owner column and has no owner to keep it
-    for, so it ages out on the same clock rather than living forever.
+    Keyed on last activity, not creation. Ownerless rows age out the same way.
     """
     with get_connection() as conn:
         rows = conn.execute(

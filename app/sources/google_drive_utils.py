@@ -1,14 +1,8 @@
-"""Parse / validate a Google Drive folder URL/ID (Phase 4 of the Google
-Integration Plan).
+"""Parse and validate a Google Drive folder URL or id.
 
-Google Drive has no equivalent of Notion's "whatever's shared with the
-integration" model — a Drive OAuth grant that isn't scoped down to a specific
-folder is both a tenant-isolation risk and broader than Google's OAuth scope
-policy expects. The settled design (see CLAUDE.md)
-is: the admin pastes a folder URL or raw id into the Sources page, and we parse
-it into a folder id here, once, so both the admin API and the Drive adapter
-work from the same normalized id. Kept as a standalone module (no adapter
-import) so URL parsing stays usable without pulling in the full adapter.
+A Drive grant must be scoped to one folder (unlike Notion's shared pages), so
+the admin's pasted URL or id is normalized here once for the API and the adapter.
+No adapter import, so parsing stays light.
 """
 
 from __future__ import annotations
@@ -26,41 +20,20 @@ logger = logging.getLogger(__name__)
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 
-# A Drive folder URL: https://drive.google.com/drive/folders/<id>[/...][?...]
-# or the "switch account" variant with /u/<n>/ before "folders/". Google does
-# not document a fixed length for the id, so we don't hardcode one — just
-# capture the plausible id charset up to the next path segment or query string.
+# A Drive folder URL, incl. the /u/<n>/ variant. Id length is undocumented.
 _FOLDER_URL_RE = re.compile(
     r"drive\.google\.com/drive/(?:u/\d+/)?folders/([A-Za-z0-9_-]+)"
 )
 
-# A bare folder id pasted directly, with no URL around it. Drive ids are
-# typically 25-44 chars of [A-Za-z0-9_-], but that's not a documented
-# guarantee, so this only rejects obviously-not-an-id input (empty, whitespace,
-# something containing URL/path characters that isn't a matched URL above).
+# A bare folder id; rejects only what is obviously not one (ids are undocumented).
 _BARE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 
 
 def extract_drive_folder_id(value: str) -> str:
-    """Return the bare Drive folder id from a pasted URL or raw id.
+    """Return the bare Drive folder id from a pasted folder URL (incl. ``/u/0/``) or raw id.
 
-    Examples::
-
-        extract_drive_folder_id(
-            "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz?usp=sharing"
-        ) == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
-
-        extract_drive_folder_id(
-            "https://drive.google.com/drive/u/0/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz"
-        ) == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
-
-        extract_drive_folder_id("1AbCdEfGhIjKlMnOpQrStUvWxYz") == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
-
-    Raises:
-        ConfigurationError: if ``value`` is empty or doesn't look like either
-            a Drive folder URL or a plausible bare folder id (e.g. a Google
-            Doc/Sheet link, which points at a *file* not a folder and is a
-            different scope entirely).
+    Raises ``ConfigurationError`` for anything else, e.g. a Doc/Sheet link (a file,
+    not a folder).
     """
     candidate = (value or "").strip()
     if not candidate:
@@ -83,20 +56,12 @@ def extract_drive_folder_id(value: str) -> str:
 
 
 def validate_drive_folder(token: str, folder_id: str, *, timeout: float = 15.0) -> dict:
-    """Confirm ``folder_id`` is accessible and is actually a Drive folder.
+    """Confirm ``folder_id`` is accessible and is a Drive folder, so a pasted Doc
+    id fails now rather than as an empty ingest later.
 
-    Calls ``files.get`` with the admin's live OAuth token so a pasted Doc/Sheet
-    id or an inaccessible folder fails immediately with an actionable message,
-    rather than silently producing an empty ingest later.
-
-    Returns:
-        ``{"folder_id": ..., "folder_name": ...}`` suitable for
-        ``set_connection_config``.
-
-    Raises:
-        ConfigurationError: not a folder, or the id isn't accessible with this
-            token (Drive returns 404 for both missing and invisible files).
-        SourceError: unexpected Drive/HTTP failure.
+    Returns ``{"folder_id", "folder_name"}`` for ``set_connection_config``.
+    Raises ``ConfigurationError`` (not a folder, or 404: missing or invisible) or
+    ``SourceError`` (unexpected failure).
     """
     try:
         response = httpx.get(
@@ -141,10 +106,7 @@ def validate_drive_folder(token: str, folder_id: str, *, timeout: float = 15.0) 
     }
 
 
-#: How many files a preflight looks at. This is a check run while someone
-#: waits on a button, not a sync -- one `files.list` page is enough to tell
-#: "this folder's sharing is readable" from "none of it is", which is the only
-#: question being asked.
+#: Files a preflight looks at: one `files.list` page, while someone waits on a button.
 PREFLIGHT_SAMPLE = 25
 
 
@@ -153,28 +115,11 @@ def preflight_folder_sharing(
 ) -> dict:
     """Can we read WHO the files in this folder are shared with?
 
-    Document-level access filtering only indexes a file when Drive tells us its
-    audience. Drive omits `permissions` when the connected account is not
-    entitled to see a file's sharing -- typically when it is merely a reader or
-    commenter on a file it does not own, or the Workspace has switched off
-    "viewers and commenters can see who else has access". Those files are left
-    out of the index rather than shown to the wrong people.
+    Files whose sharing Drive omits are indexed for the connected account only, so
+    this is asked on the picker, when the fix (make the account an owner or editor)
+    is actionable. It names the files: the picker can already open them.
 
-    Asked HERE, while the person is still standing on the folder picker, rather
-    than reported after the fact: this is the one moment they are thinking
-    about this folder, and the fix ("make the connected account an owner or
-    editor") is one they can act on immediately. Waiting until after a sync
-    means the first they learn of it is a question that will not answer.
-
-    Unlike the notification bell, this NAMES the files: whoever is choosing the
-    folder can already open it in Drive, so listing what is in it discloses
-    nothing they do not have in front of them, and "which ones?" is the
-    immediate next question.
-
-    Never raises. A preflight that can fail the save it precedes would turn a
-    diagnostic into an outage; an unknown answer is reported as "we could not
-    check", which is honest and costs nothing.
-
+    Never raises: an unknown answer is "could not check".
     Returns ``{checked, unreadable, files, truncated, failed}``.
     """
     empty = {"checked": 0, "unreadable": 0, "files": [], "truncated": False, "failed": False}
@@ -202,9 +147,7 @@ def preflight_folder_sharing(
         logger.warning("Drive sharing preflight failed for folder %s", folder_id, exc_info=True)
         return {**empty, "failed": True}
 
-    # Subfolders are not documents and carry no sharing question of their own
-    # here -- the files inside them do, and those are a deeper walk than a
-    # preflight should make. `truncated` is what says the answer is partial.
+    # Subfolders are not walked here; `truncated` says the answer is partial.
     files = [
         f for f in payload.get("files", []) if f.get("mimeType") != _FOLDER_MIME
     ]
@@ -215,8 +158,7 @@ def preflight_folder_sharing(
     return {
         "checked": len(files),
         "unreadable": len(unreadable),
-        # A handful is enough to recognise the pattern; a wall of filenames in
-        # a warning box is not read.
+        # A handful is enough to recognise the pattern.
         "files": [str(f.get("name") or "Untitled") for f in unreadable[:5]],
         "truncated": bool(payload.get("nextPageToken")) or has_subfolders,
         "failed": False,
@@ -231,29 +173,11 @@ def _escape_drive_query_value(value: str) -> str:
 def search_drive_folders(
     token: str, query: str = "", *, page_size: int = 20, timeout: float = 8.0
 ) -> list[dict]:
-    """List Drive folders the connected account can see, optionally name-filtered.
+    """List Drive folders the connected account can see, optionally name-filtered,
+    for the picker. Most recently modified first; ``[]`` for no match.
 
-    Powers a folder-picker dropdown (search-as-you-type) so connecting a
-    folder no longer requires the admin/workspace-owner to copy-paste its URL
-    out of Drive — they just pick from folders Drive already says they can
-    see, with the id resolved server-side. Uses the same live OAuth token as
-    ``validate_drive_folder``.
-
-    Returns:
-        ``[{"id": ..., "name": ...}, ...]``, most-recently-modified first.
-        Empty list for no matches — never raises for "nothing found".
-
-    Raises:
-        SourceError: unexpected Drive/HTTP failure (network, non-2xx).
-
-    Note on ``timeout``: this powers a type-ahead dropdown, so it is bounded far
-    below the usual API timeout deliberately. It used to be 15s, which meant a
-    slow Drive response left the picker showing "Searching…" for fifteen seconds
-    before surfacing anything — indistinguishable, to the person waiting, from a
-    permanently hung UI (reported in production). Nobody waits 8s for a dropdown
-    either, but at least the failure becomes an actionable error instead of an
-    endless spinner. The user can always paste a folder URL instead, which needs
-    no search at all.
+    Raises ``SourceError`` on an unexpected failure. ``timeout`` is short on
+    purpose: a hung type-ahead looks broken; pasting a URL needs no search.
     """
     q_parts = [f"mimeType='{_FOLDER_MIME}'", "trashed=false"]
     clean_query = (query or "").strip()
@@ -278,10 +202,7 @@ def search_drive_folders(
     except httpx.HTTPError as exc:
         raise SourceError(f"Google Drive files.list failed: {exc}", cause=exc) from exc
     finally:
-        # Logged because this call is the one part of the folder picker we cannot
-        # measure from outside: a slow picker could be our own DB round trips,
-        # the token refresh, or Drive itself, and guessing between them is how
-        # the ingest OOM took four attempts to diagnose. `elapsed` attributes it.
+        # Logged: `elapsed` tells Drive's latency from our own in a slow picker.
         logger.info(
             "drive.folder_search elapsed=%.2fs filtered=%s",
             time.monotonic() - started,

@@ -1,15 +1,10 @@
-"""Trim retrieved chunk text to a char budget before the grounded prompt.
-
-Shorter context → fewer prompt tokens → faster LLM generation. We keep chunk
-order (most relevant first) and prefer the head of each chunk so lead policy
-sentences survive truncation.
-"""
+"""Trim retrieved chunk text to a char budget before the grounded prompt,
+keeping order (most relevant first) and each chunk's head."""
 
 from __future__ import annotations
 
 
-#: Human names for the provenance line. A member asked "who wrote this?" about
-#: a Notion page, not about a "notion" string.
+#: Human names for the provenance line ("Notion", not "notion").
 _PROVIDER_LABEL = {
     "notion": "Notion",
     "google": "Google Drive",
@@ -20,16 +15,10 @@ _PROVIDER_LABEL = {
 
 
 def describe_hit(hit) -> str:
-    """One provenance line, then the chunk text.
+    """One provenance line (title, app, editor, date), then the chunk text.
 
-    Retrieval already JOINed the document row, and "who wrote this?", "when was
-    it last updated?" and "which app is this from?" are among the most common
-    things anyone asks about a document -- yet only the title used to reach the
-    model, so every one of those became a refusal against data we already had.
-
-    Only states what the source actually told us. An unknown editor is omitted
-    rather than rendered as "Unknown": a placeholder in the context invites the
-    model to answer "who wrote this?" with it.
+    States only what the source told us: an unknown editor is omitted, not
+    "Unknown", which the model would repeat as an answer.
     """
     parts: list[str] = []
     title = (getattr(hit, "document_title", None) or "").strip()

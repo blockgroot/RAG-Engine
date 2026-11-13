@@ -1,17 +1,9 @@
 """Is there a newer Handbook than this copy, and what changed?
 
-Every install, Cloud or self-hosted, reads one public list of releases
-(``UpdateSettings.feed_url``, written by ``.github/workflows/release.yml``).
-Nothing about the company is sent: it is a plain GET of a static file.
-
-What an admin may DO with the answer depends on who runs the copy. Cloud is
-one copy for every company, so we update it and admins are told what changed.
-A self-hosted copy is the company's, so its admins are offered the update and
-the updater container (``deploy/updater/``) carries it out.
-
-Nothing here is stored: the bell and the page derive everything from the feed
-and ``HANDBOOK_VERSION``, so a notice disappears the moment the copy runs the
-new version (the same rule as ``app/api/notifications.py``).
+Every install reads one public release list (``UpdateSettings.feed_url``) with
+a plain GET; nothing about the company is sent. Cloud admins are told what
+changed; self-hosted admins are offered the update (``deploy/updater/``).
+Nothing is stored: a notice vanishes once the copy runs the new version.
 """
 
 from __future__ import annotations
@@ -138,10 +130,9 @@ def source_version() -> str | None:
     """The version a copy run from the source code is at, from git: "0.2.1"
     on a release tag, "0.2.1-66-g732955e" past one (66 changes after it).
 
-    Only for a copy with no version set (a development checkout); an image
-    has no git and says None. Read once per process, two seconds at most.
-    The dashed form fails ``VERSION_RE``, so it is shown but never checked
-    against the release feed: it is not a release.
+    Only with no version set (a dev checkout); an image says None. Read once,
+    two seconds at most. The dashed form is shown, never checked against the
+    feed.
     """
     if not _SOURCE_VERSION:
         import subprocess
@@ -163,10 +154,8 @@ def update_status(settings: UpdateSettings | None = None) -> UpdateStatus:
     settings = settings or UpdateSettings.from_env()
     selfhosted = settings.deployment == "selfhosted"
     if not selfhosted and settings.build_commit:
-        # Cloud built from main runs the newest code, which holds every tagged
-        # release: a HANDBOOK_VERSION left on the host goes stale on the next
-        # push and made Cloud say "0.3.0 is available" while running it. Its
-        # admins have nothing to update, so they are shown the newest notes.
+        # Cloud runs main, which holds every release; a stale HANDBOOK_VERSION
+        # made it offer the version it ran. Show the newest notes instead.
         latest = max(fetch_releases(settings), key=lambda r: version_key(r.version), default=None) \
             if settings.check_enabled else None
         whats_new = latest if latest and _is_recent(latest.date) else None

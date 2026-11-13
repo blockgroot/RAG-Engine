@@ -5,18 +5,9 @@ import { ApiError, FEEDBACK_REASONS, FeedbackReason, api } from "@/lib/api";
 import { ChatDonePayload } from "@/lib/sse";
 
 /**
- * Thumbs on one answer, plus the three-way reason picker a downvote opens.
- *
- * A downvote asks WHAT went wrong because the three answers lead to three
- * different fixes — re-sync a source, rewrite a document, shorten the prompt —
- * and a bare thumbs-down tells an admin only that somebody was unhappy. The
- * comment box is optional on purpose: a required one turns every downvote into
- * a form, and the vote is the part that has to be cheap.
- *
- * An ungrounded answer is ALREADY recorded as a documentation gap by the
- * backend, without anyone clicking anything, so nothing here is the only way a
- * problem gets reported — this is the extra signal for answers that came back
- * confident and wrong, which no gate can catch.
+ * Thumbs on one answer. A downvote asks WHAT went wrong (each reason has its
+ * own fix); the comment is optional so voting stays cheap. Catches confident
+ * wrong answers; ungrounded ones are already recorded as gaps.
  */
 export function AnswerFeedback({
   conversationId,
@@ -66,9 +57,7 @@ export function AnswerFeedback({
   }
 
   async function handleDown() {
-    // Recorded on the CLICK, before the reason is picked. Someone who closes
-    // the panel without choosing still meant "this was wrong", and losing that
-    // because they did not fill in a form would drop the majority of votes.
+    // Recorded on the CLICK, before a reason: closing the panel still counts.
     if (await send(-1)) setAsking(true);
   }
 

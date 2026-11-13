@@ -1,18 +1,12 @@
 """MCP servers an admin added, and what each of their tools may do.
 
-Every tool starts OFF. An admin sets each one to "lookup" (a read Handbook may
-run while drafting, with the person's own sign-in, no card) or "write"
-(drafted, shown on a card and run only on approval, like every action). The
-choice is stored with the hash of the tool's schema and description: a tool
-the server later changes is OFF again until an admin looks at it, so an
-update on the server's side never widens what Handbook may do.
+Every tool starts OFF; an admin sets each to "lookup" (a read while drafting,
+no card) or "write" (a card, run on approval). The choice is stored with a hash
+of the tool's schema and description: a changed tool is OFF again.
 
-Nothing is blocked: the admin decides. A tool whose name says it deletes,
-merges, closes or rewrites is labelled DESTRUCTIVE, and its card says it
-cannot be undone.
-Like every write it still runs only on the person's approval. A server's own hints are only hints (MCP says so),
-so "read-only" never makes a tool a lookup by itself; the admin must choose
-it, and only a tool the server ALSO marks read-only can be a lookup.
+Nothing is blocked: the admin decides. A tool whose NAME deletes, merges,
+closes or revokes is labelled DESTRUCTIVE. A lookup must also be marked
+read-only by the server (or preset); hints alone never make one.
 """
 
 from __future__ import annotations
@@ -30,12 +24,8 @@ from ..db.connection import get_connection
 
 MODES = ("off", "lookup", "write")
 
-#: Names that delete, merge, close or revoke things, which cannot be taken
-#: back: destructive, whatever the server says. Creating a branch, committing
-#: or renaming can be undone, so they are ordinary writes. Decided by the NAME only: MCP's ``destructiveHint``
-#: also covers ordinary updates (Linear marks ``save_issue`` and ``save_comment``
-#: destructive because they can edit), which would label creating an issue
-#: as something that cannot be undone.
+#: Names that delete, merge, close or revoke: destructive, whatever the server
+#: says. By NAME only: ``destructiveHint`` also marks ordinary saves (``save_issue``).
 _DESTRUCTIVE = re.compile(
     r"(^|[_\-.\s])(delete|remove|destroy|drop|purge|archive|trash|retire|unshare|unpublish|"
     r"close|merge|revoke|transfer|"
@@ -94,10 +84,8 @@ def tool_hash(tool: dict) -> str:
 
 
 def tool_title(tool: dict, server: str = "") -> str:
-    """A tool's name as people read it: the server's own short title, else the
-    name in words without the server's prefix ("notion-create-pages" in Notion:
-    "Create pages"; "save_issue": "Save issue"). A sentence-long title (Google
-    gives "Returns a range of values…") is a description, not a name."""
+    """A tool's name as people read it: the server's short title, else the name in
+    words without its prefix. A sentence-long title is a description, not a name."""
     own = str(tool.get("title") or (tool.get("annotations") or {}).get("title") or "").strip()
     if own and len(own) <= 48 and not own.endswith("."):
         return own
@@ -136,12 +124,10 @@ def list_servers(org_id: str) -> list[McpServer]:
 
 
 def _move_retired(org_id: str, servers: list[McpServer]) -> bool:
-    """Move rows on a retired vendor address onto the preset that replaced it
-    (``mcp_presets.RETIRED``): same row and on/off switch, the new address, and
-    no tools or sign-ins (the tools differ and old sign-ins lack the scopes).
-    A second row for the same replacement (Drive and Sheets) is removed.
-    Returns whether anything changed; a replacement that cannot be set up yet
-    (its app not configured) leaves the row as it was."""
+    """Move rows on a retired vendor address onto its replacement preset
+    (``mcp_presets.RETIRED``), keeping the switch, dropping tools and sign-ins
+    (scopes differ); a duplicate replacement row is removed. Returns whether
+    anything changed; an unconfigured replacement leaves the row."""
     from ..core.exceptions import ActionError
     from .mcp_client import discover
     from .mcp_presets import PRESETS, RETIRED
@@ -208,10 +194,8 @@ def set_mode(org_id: str, server: McpServer, tool_name: str, mode: str) -> None:
 
 
 def set_modes(org_id: str, server: McpServer, modes: dict[str, str]) -> None:
-    """Set several tools in ONE write that changes only those tools, merged in
-    the database: "Turn all on" was a write and a re-read per tool (68 for
-    Linear), slow enough for the proxy to cut it off half done, and two quick
-    switches each rewrote the whole map, so one undid the other."""
+    """Set several tools in ONE write merged in the database: a write per tool was
+    slow enough to be cut off, and whole-map rewrites raced each other."""
     on = {name: {"mode": mode, "hash": tool_hash(server.tool(name))}
           for name, mode in modes.items() if mode != "off" and server.tool(name) is not None}
     off = [name for name in modes if name not in on]

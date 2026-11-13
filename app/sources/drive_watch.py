@@ -1,28 +1,16 @@
 """Drive push notifications: one ``changes.watch`` channel per Google connection.
 
-Drive never pushes unasked. We open a channel with ``changes.watch``, Google
-POSTs an EMPTY notification to ``<DRIVE_PUSH_BASE_URL>/webhooks/google`` when
-the connected account's change log moves, and the handler only flags a sync
-(``autosync.request_sync_connection``) -- the next tick's listing diff decides
-what actually changed, exactly as for a poll.
+Google POSTs an EMPTY notification when the account's change log moves; the
+handler only flags a sync (``autosync.request_sync_connection``).
 
-Three properties of Drive's channels shape this module:
+* Channels expire (at most a week) and are never auto-renewed: the tick
+  re-watches inside ``RENEW_BEFORE``, new channel first, so overlap only
+  duplicates a flag.
+* No signature: the proof is our channel token, stored as SHA-256.
+* The change log is the whole account's, so any change flags a sync.
+  ponytail: filter `changes.list` against the folder if that wastes syncs.
 
-* **They expire and are never renewed for you** -- at most a week for
-  ``changes`` ("there's no automatic way to renew a notification channel"), so
-  the tick re-watches any channel inside ``RENEW_BEFORE`` of expiry. Replacing
-  a channel opens a new one first and stops the old one after, so the overlap
-  can only duplicate a flag, never drop one.
-* **A notification carries no signature.** Its only proof is the channel token
-  we chose (``X-Goog-Channel-Token``); we store its SHA-256 and compare.
-* **The change log is the whole account's, not the folder's.** Any change in
-  that Drive flags a sync; the sync is one listing diff, and the flag coalesces,
-  so the cost is at most one no-op sync per tick.
-  ponytail: filter on `changes.list` against the folder if that ever shows up
-  as wasted syncs.
-
-Off unless ``DRIVE_PUSH_BASE_URL`` is set. Every failure leaves the connection
-on the hourly poll, which is where it was before this existed.
+Off unless ``DRIVE_PUSH_BASE_URL`` is set; any failure leaves the hourly poll.
 """
 
 from __future__ import annotations
@@ -93,8 +81,7 @@ def _watch(token: str, address: str, channel_id: str, secret: str) -> tuple[str,
     response = httpx.post(
         f"{_API}/changes/watch",
         params={
-            # Required though the reference omits it (Google's manage-changes
-            # guide says so); the page token "doesn't expire".
+            # Required though the reference omits it; the page token does not expire.
             "pageToken": start.json()["startPageToken"],
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
@@ -129,11 +116,8 @@ def _stop(token: str, channel_id: str, resource_id: str) -> None:
 
 
 def ensure_watches(settings: WebhookSettings | None = None) -> int:
-    """Open or renew channels for connections that need one. Returns channels opened.
-
-    Runs on the tick. Never raises: a connection whose watch fails is simply
-    polled, and is retried on the next tick.
-    """
+    """Open or renew channels that need one; returns channels opened. Never raises
+    (a failed watch is just polled)."""
     settings = settings or WebhookSettings.from_env()
     if not settings.drive_push_base_url:
         return 0
@@ -174,11 +158,8 @@ def ensure_watches(settings: WebhookSettings | None = None) -> int:
 
 def connection_for_notification(channel_id: str, channel_token: str) -> str | None:
     """The connection a notification is about, or ``None`` if it proves nothing.
-
-    Matched on the channel id AND the token's hash: a replaced channel's late
-    notifications (the overlap Google warns about) name an id we no longer
-    store, and are ignored rather than trusted.
-    """
+    Matched on channel id AND token hash, so a replaced channel's late
+    notifications are ignored."""
     if not channel_id or not channel_token:
         return None
     with get_connection() as conn:

@@ -1,8 +1,5 @@
-"""``live_tool_calls``: one row per live read (plan D14).
-
-Never the token, never the result text. Best-effort by construction: an audit
-failure is logged and swallowed, because a missing row is a gap in a log and a
-failed answer is a failed answer.
+"""``live_tool_calls``: one row per live read. Never the token or the result
+text. Best-effort: a failure is logged, never fails the answer.
 """
 
 from __future__ import annotations

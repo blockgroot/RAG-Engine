@@ -1,9 +1,4 @@
-"""Single construction point for a content-source adapter.
-
-Callers do ``build_source_adapter()`` and get back something satisfying the
-``SourceAdapter`` interface. Adding Google Drive / GitHub / Slack later means
-adding a branch here (keyed on ``SOURCE_TYPE``) — callers don't change.
-"""
+"""Single construction point for a content-source adapter (``build_source_adapter``)."""
 
 from __future__ import annotations
 
@@ -16,28 +11,13 @@ from .notion import NotionAdapter
 from .slack import SlackAdapter
 
 
-#: Providers with a `SourceAdapter` below, i.e. the ones that write
-#: `documents`/`chunks` rows. The single source of truth for "does disconnecting
-#: this leave a corpus behind?" — `api/connection_ops` and `insights/facts` both
-#: kept their own copy, and one of them was missing Linear, so a disconnected
-#: Linear stayed fully indexed and answerable.
+#: Providers with a `SourceAdapter` (they write `documents`/`chunks`). The one
+#: answer to "does disconnecting this leave a corpus behind?": hand-kept copies missed Linear.
 INDEXED_PROVIDERS: tuple[str, ...] = ("notion", "google", "slack", "linear")
 
-#: Providers whose adapter reports a per-document ACL (`base.DocAccess`).
-#: Document-level access filtering applies to these and ONLY these — every
-#: other provider keeps scope-level visibility, which is what it had before.
-#:
-#: Membership is what switches on FAIL-CLOSED ingestion: a provider in here
-#: that hands back a document with `access is None` has told us it could not
-#: read the sharing, and the pipeline skips that document rather than indexing
-#: it readable. A provider NOT in here never reports access, so an unconditional
-#: skip would silently empty every Notion corpus.
-#:
-#: Drive: per-file sharing. Slack: a private channel's members. Linear: a
-#: private team's members plus users an issue was shared with. Notion is absent
-#: because its API exposes no per-page permissions at all (Onyx does not sync
-#: Notion permissions either), so a space mixing Notion with the others enforces
-#: per-document access on every half but Notion's. Say that in the UI; a
+#: Providers whose adapter reports a per-document ACL (`base.DocAccess`); only
+#: these fail closed when `access is None` (a skip elsewhere would empty Notion).
+#: Notion is absent: its API has no per-page permissions. Say so in the UI; a
 #: half-enforced guarantee that reads as whole is worse than none.
 ACL_CAPABLE: frozenset[str] = frozenset({"google", "slack", "linear"})
 
@@ -51,25 +31,12 @@ def build_source_adapter(
 ) -> SourceAdapter:
     """Build the configured source adapter (defaults to Notion).
 
-    Two independent, non-fallback-linked ways to select a credential (never
-    mix them for one call — each is its own explicit source of truth):
+    Two credential paths, never mixed: ``token`` (already resolved, e.g. an OAuth
+    connection) or ``token_name`` (a ``NOTION_TOKEN_<NAME>`` env var, no fallback to
+    another org's). Neither: the default ``NOTION_TOKEN``.
 
-    - ``token``  the exact secret to use, already resolved by the caller. This
-      is how Phase 12's job worker points ingestion at an org's *OAuth-connected*
-      credential (``app.auth.get_live_connection_token``) without touching env vars.
-    - ``token_name``  selects a ``NOTION_TOKEN_<NAME>`` env var (Phase 9), resolved
-      via ``NotionSettings.resolve_token`` with **no** fallback to another org's
-      token. Used only when ``token`` is not supplied.
-
-    When neither is given, the default ``NOTION_TOKEN`` is used (Phase 4).
-
-    ``config`` is the optional provider-specific ingestion scope from
-    ``oauth_connections.source_config`` (Google Integration Phase 6). Notion
-    ignores it (visibility is already scoped by what was shared with the
-    integration). Google requires ``config["folder_id"]`` — a Drive OAuth
-    grant has no equivalent implicit scoping — and ``token`` must already be
-    an OAuth-resolved access token (never a ``token_name`` env lookup; that
-    plumbing is Notion-Phase-9-specific).
+    ``config`` is the connection's ``source_config`` scope; Notion ignores it,
+    Google requires ``config["folder_id"]`` and an OAuth ``token``.
     """
     source_type = (source_type or DEFAULT_SOURCE_TYPE).lower()
 
@@ -110,10 +77,7 @@ def build_source_adapter(
     if source_type == "linear":
         settings = LinearSettings.from_env()
         if token:
-            # A directly-passed token means the OAuth-connected path (the job
-            # worker's get_live_connection_token) — Linear sends the header
-            # differently for an OAuth token vs. a personal API key, so this
-            # is what tells LinearAdapter which one it holds.
+            # A passed token is OAuth: Linear sends it as Bearer, a personal key raw.
             team_ids = (config or {}).get("team_ids")
             if not team_ids:
                 raise ConfigurationError(

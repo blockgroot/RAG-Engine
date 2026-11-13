@@ -1,22 +1,8 @@
-"""Slack implementation of the ``OAuthProvider`` interface.
+"""Slack ``OAuthProvider``: one bot token per Slack team via "Add to Slack" v2.
 
-Phase 1 of the Slack Integration Plan (git history: docs/plans/2026-08-17-slack-integration.md,
-decision D6): one bot token per Slack team, installed once via the standard
-"Add to Slack" v2 OAuth flow. This module only gets the bot token connected
-and saved — no channel picker, no adapter, no ingestion yet (later phases).
-
-Structurally closest to ``google_oauth.py`` (public OAuth2 endpoints over
-plain ``httpx``, zero new dependencies), with one Slack-specific wrinkle:
-
-**Slack's token endpoint returns HTTP 200 even on failure.** Errors are
-signalled by ``"ok": false`` + an ``"error"`` field in an otherwise-200
-response, never an HTTP error status — so ``response.raise_for_status()``
-alone would silently accept a failed exchange. Every response is checked for
-``ok`` explicitly before anything else is read from it.
-
-``refresh()`` is intentionally left as the ABC's default ``NotImplementedError``:
-a standard (non-token-rotation) Slack app install issues a bot token that does
-not expire, the same non-expiring shape as Notion's internal-integration token.
+Slack's token endpoint returns HTTP 200 on failure, so every response's
+``ok`` is checked explicitly. A standard bot token does not expire, so
+``refresh()`` stays ``NotImplementedError``.
 """
 
 from __future__ import annotations

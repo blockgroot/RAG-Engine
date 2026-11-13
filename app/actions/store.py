@@ -1,10 +1,8 @@
-"""``actions``: the approval queue and the audit log, one row per proposed write.
+"""``actions``: the approval queue and audit log, one row per proposed write.
 
-Every query is pinned to ``org_id``, and every person-facing one to
-``user_id`` too: a proposal is its proposer's, and no one else can approve,
-reject or even see it. ``claim`` is the single-execution guarantee -- one
-conditional UPDATE that only one caller can win -- so a double click, two tabs
-or a replayed request run a write at most once.
+Pinned to ``org_id``, and person-facing queries to ``user_id``: only the
+proposer sees or decides it. ``claim`` is one conditional UPDATE, so a write
+runs at most once.
 """
 
 from __future__ import annotations
@@ -135,11 +133,8 @@ def claim(
     shown_hash: str,
     acknowledged: bool = False,
 ) -> ActionRow:
-    """Move a proposal to ``executing`` if, and only if, it may run now.
-
-    All conditions sit in ONE UPDATE, so two concurrent approvals cannot both
-    win. When nothing matched, the row is read back only to say why.
-    """
+    """Move a proposal to ``executing`` only if it may run now, in ONE UPDATE.
+    When nothing matched, the row is read back only to say why."""
     with get_connection() as conn:
         r = conn.execute(
             f"""
@@ -186,10 +181,8 @@ def update_payload(
 ) -> ActionRow:
     """Replace a pending draft with the person's edit, in ONE guarded UPDATE.
 
-    Same conditions as ``claim`` (the proposer, still proposed, not expired,
-    the version they saw), so an edit can never race an approval into
-    sending something unseen. The target, sources, exposure and expiry stay
-    as they were; the model's first draft is kept in ``original_payload``.
+    Same conditions as ``claim``, so an edit cannot race an approval. The model's
+    first draft is kept in ``original_payload``.
     """
     row = get(org_id, user_id, action_id)
     if row is None:
@@ -239,9 +232,8 @@ def reject(org_id: str, user_id: str, action_id: str) -> bool:
 
 
 def expire_stale(limit: int = 500) -> int:
-    """Mark timed-out proposals ``expired``. Bounded by a CTE (a ``LIMIT`` in
-    an ``IN`` subquery does not bound an UPDATE). ``claim`` already refuses
-    them by time; this keeps the log honest."""
+    """Mark timed-out proposals ``expired``, bounded by a CTE (a ``LIMIT`` in an
+    ``IN`` subquery does not bound an UPDATE). ``claim`` already refuses them."""
     with get_connection() as conn:
         cur = conn.execute(
             """

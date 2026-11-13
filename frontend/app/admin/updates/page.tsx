@@ -3,11 +3,8 @@
 /**
  * Admin-only: which Handbook version this copy runs, and what is newer.
  *
- * Cloud is updated by us, so its admins only read what changed. A self-hosted
- * copy offers the update: the button asks the updater container to back up,
- * switch versions and restart, which takes this API down for a minute. The
- * progress poll therefore treats a failed request as "restarting", not as an
- * error, and reloads the page once the updater reports the new version is up.
+ * Self-hosted only offers the update (backup, switch, restart). The API is down
+ * for a minute, so the poll reads a failed request as "restarting".
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";

@@ -1,27 +1,9 @@
-"""Outbound email for magic links and the signup-approval queue (Phase 13).
+"""Outbound email: magic links, signup approval, invites, report notices.
 
-Minimal pluggable sender — not a full provider/factory package since there is
-only one real capability (send a message); the interface is a tiny function
-dispatch rather than a full ABC. Backends:
-
-- ``console`` (default) prints the link — local / self-hosted with zero
-  extra dependency, per CLAUDE.md §1.
-- ``smtp``  STARTTLS to a mail host. Works on a VPS or a *paid* Render
-  instance. Render's **free** web services block outbound ports 25/465/587
-  (Errno 101 Network is unreachable) — Gmail SMTP will never connect there.
-- ``resend``  HTTPS POST to Resend (port 443, already used for OAuth/LLM).
-  A Render-free-compatible path, but its sandbox sender
-  (``onboarding@resend.dev``, used before a custom domain is verified) can
-  only deliver to the Resend account's own email — every other recipient is
-  rejected with a 403. Fine for the owner-notification email; not for a
-  magic link addressed to an actual admin/employee.
-- ``sendgrid``  HTTPS POST to SendGrid (port 443, same reasoning as Resend).
-  Unlike Resend, SendGrid's **Single Sender Verification** lets one address be
-  verified with no DNS/domain at all, and once verified it can send to ANY
-  recipient — this is the free, no-domain-owned path to real delivery.
-
-Callers schedule sends via FastAPI ``BackgroundTasks`` rather than blocking
-the HTTP response on a remote round-trip.
+Backends: ``console`` (default; prints), ``smtp`` (STARTTLS; Render's free
+tier blocks its ports), ``resend`` (HTTPS; its sandbox sender reaches only
+the account's own address) and ``sendgrid`` (HTTPS; a verified Single Sender
+reaches anyone with no domain). Callers send from ``BackgroundTasks``.
 """
 
 from __future__ import annotations
@@ -57,14 +39,10 @@ def _dispatch(
     *,
     html_body: str | None = None,
 ) -> None:
-    """Shared console/smtp send, factored out so each template function stays
-    a one-liner (subject + body) instead of re-implementing dispatch.
+    """Shared send for every template.
 
-    ``html_body``, when given, is sent as a ``multipart/alternative`` next to
-    the plain-text ``body`` — every real mail client renders the HTML part;
-    ``body`` is what a plain-text client (or this function's ``console``
-    mode) falls back to. Console mode only ever prints ``body``: there's no
-    inbox to render HTML in, and the plain text already has usable URLs.
+    ``html_body`` goes as ``multipart/alternative`` beside the plain ``body``;
+    console mode prints only ``body``.
     """
     settings = settings or EmailSettings.from_env()
 
@@ -184,12 +162,7 @@ def _send_sendgrid(
     *,
     html_body: str | None,
 ) -> None:
-    """SendGrid's v3 Mail Send API. Unlike Resend's sandbox sender, a
-    SendGrid **Single Sender** (verified by clicking a confirmation link —
-    no DNS/domain required) can deliver to any recipient, which is why this
-    backend exists: it is the free, no-domain-owned path to real delivery
-    for magic links addressed to actual admins/employees, not just the
-    account owner's own inbox."""
+    """SendGrid v3 Mail Send: a verified Single Sender reaches any recipient, no domain needed."""
     if not settings.sendgrid_api_key:
         raise ConfigurationError(
             "EMAIL_SENDER=sendgrid requires EMAIL_SENDGRID_API_KEY"
@@ -213,9 +186,8 @@ def _send_sendgrid(
         "from": sender,
         "subject": subject,
         "content": content,
-        # Off: click tracking rewrites every link through sendgrid.net, so a
-        # sign-in link showed as a 300-character tracker URL and its single-use
-        # token passed through a third party first.
+        # Off: click tracking rewrote sign-in links through sendgrid.net, passing
+        # their single-use token to a third party first.
         "tracking_settings": {"click_tracking": {"enable": False, "enable_text": False}},
     }
     try:
@@ -357,13 +329,10 @@ def send_workspace_invite_email(
     inviter_email: str | None = None,
     settings: EmailSettings | None = None,
 ) -> None:
-    """Sent when an existing org member is added to someone's personal
-    sub-workspace (Workspace-within-a-Workspace). Membership is already
-    granted in the DB by the time this fires, so this is a courtesy
-    notification with a sign-in shortcut, never a gate: if the link's token
-    expires unused, the person still has access and can sign in the
-    ordinary way from the login page, where the workspace is already
-    waiting in their list."""
+    """Sent when a member is added to someone's space.
+
+    Access is already granted; the link is a shortcut, never a gate.
+    """
     who = f"{inviter_email} added you" if inviter_email else "You've been added"
     body = (
         f'{who} to the "{workspace_name}" workspace.\n\n'
@@ -404,24 +373,11 @@ def send_scheduler_report_email(
     space_name: str | None = None,
     settings: EmailSettings | None = None,
 ) -> None:
-    """Tell someone their report is ready and link them to it.
+    """Tell someone their report is ready and link to it.
 
-    The report itself is NOT in the mail. It lives in the app (see
-    ``app/schedulers/reports.py``) and this is a notification, for three
-    reasons:
-
-    - A report is a formatted document — prose, an activity list with real
-      links, coverage notes. Plain-text mail flattens all of it, and an HTML
-      mail carrying the whole thing renders differently in every client.
-    - Source links belong beside the activity they came from, laid out on a
-      page. Twenty bare URLs in a mail body is the version nobody reads.
-    - Storing first and mailing second means a delivery failure costs a
-      notification, not the run's work — the report is already readable.
-
-    Deliberately no excerpt of the report text: a two-line preview of a
-    grounded summary is exactly where "several things changed" gets read as
-    the whole answer. Counts and scope are facts; the prose is not summarised
-    a second time.
+    The report stays in the app: mail flattens its layout and links, and a
+    failed send then costs only a notice. No excerpt: a two-line preview of a
+    summary reads as the whole answer.
     """
     where = f" · {space_name}" if space_name else ""
     activity = (
@@ -466,13 +422,10 @@ def send_scheduler_report_email_safe(
     item_count: int,
     space_name: str | None = None,
 ) -> bool:
-    """Worker wrapper: a mail failure must not fail the scheduler run.
+    """Send a report notice; a mail failure must not fail the scheduler run.
 
-    Returns whether the send was accepted, so the caller can record delivery
-    honestly rather than assume it. Swallowing is deliberate: the report is
-    already saved and readable, so a transient mail error costs a
-    notification — while raising would retry the whole run and risk sending
-    the same report twice.
+    Returns whether it was accepted. Swallows errors: raising would retry the
+    run and could send the report twice.
     """
     try:
         send_scheduler_report_email(
@@ -534,12 +487,8 @@ def send_signup_rejected_email_safe(to: str, reason: str | None = None) -> None:
         logger.warning("Signup-rejected email to %s failed: %s", to, exc)
 
 
-# Inline styles only — most mail clients (Gmail, Outlook, Apple Mail) strip
-# <style> blocks or gradients, so every rule that matters is set directly on
-# the element, and `background-color` is a plain fallback next to the
-# gradient. Colors are the same tokens as frontend/app/globals.css's
-# "Harbor Desk" palette (--accent/--accent-strong for approve,
-# --ink/--ink-muted grays for the summary rows).
+# Inline styles only: most mail clients strip <style> and gradients, so
+# `background-color` backs each gradient. Colors match frontend/app/globals.css.
 _EMAIL_APPROVE_BUTTON_STYLE = (
     "display:block;text-align:center;text-decoration:none;"
     "font-family:-apple-system,'Segoe UI',Arial,sans-serif;font-weight:700;font-size:14px;"
@@ -565,11 +514,10 @@ def send_signup_request_notification_email(
     *,
     settings: EmailSettings | None = None,
 ) -> None:
-    """Sent to the platform owner (``EmailSettings.owner_notification_email``)
-    when a new org-creation request lands in ``org_signup_requests``. Each
-    button opens a confirmation page — clicking it does not itself approve/
-    reject, so a mail client or scanner prefetching the link can't trigger
-    the action (see ``app/api/auth.py``'s GET-then-POST confirm routes)."""
+    """Sent to the platform owner when an org-creation request lands.
+
+    Each button opens a confirmation page, so a prefetching scanner cannot act.
+    """
     body = (
         f"New organization request:\n\n"
         f"  Email:   {email}\n"

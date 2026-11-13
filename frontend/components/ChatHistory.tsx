@@ -3,20 +3,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, ConversationSummary } from "@/lib/api";
 
-/** The list of this person's chats in this scope.
- *
- * Why it exists: `conversationId` used to live in a React ref, so a refresh
- * started a new chat and the old one became unreachable -- with its uploaded
- * files still attached to it and no way to remove them. The list is what gives
- * that control back, and it is also the only sensible home for "delete this
- * chat", which had no home at all.
- *
- * Every surviving chat is shown. There is deliberately NO display cap: a cap
- * plus a longer retention leaves a live chat off the end of the list,
- * unreachable and undeletable, which is the bug this replaces. Retention is
- * the list length, and the panel says so out loud -- silent deletion of
- * someone's work is fine when disclosed and a complaint when discovered.
- */
+/** This person's chats in this scope. NO display cap: a capped chat would be
+ * unreachable and undeletable. The panel states retention out loud. */
 
 function ChatBubbleIcon() {
   return (
@@ -232,10 +220,7 @@ export function ChatHistory({
     }
   }
 
-  // Always rendered, even empty. Unmounting it moved Ask sideways the moment
-  // the first chat was saved -- a layout jump on the one interaction this
-  // column exists for -- and it took "New chat" away from the person with no
-  // chats, who is exactly who needs it.
+  // Always rendered, even empty: no layout jump, and "New chat" stays.
   return (
     <aside
       className={`chat-history${collapsed ? " is-collapsed" : ""}`}

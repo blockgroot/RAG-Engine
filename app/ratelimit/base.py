@@ -3,7 +3,7 @@
 A bucket holds up to ``burst`` requests and refills at ``per_minute``. A person
 can ask a few questions quickly, then is held to the steady rate; someone
 refused is told how many seconds until the next request is free, not to wait
-out a whole window (the comparison is docs/plans/2026-11-03-rate-limiting.md).
+out a whole window.
 
 Several buckets are taken in ONE step (the person's and their company's): a
 request refused by either takes from neither, so a refused person never spends

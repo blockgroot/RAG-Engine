@@ -1,15 +1,8 @@
-"""Contextual retrieval (Phase 6, ingest-time).
+"""Contextual retrieval at ingest: prepend a short generated context to each
+chunk before embedding, so it carries what it is about into both indexes.
 
-When a document is split into chunks, each chunk loses the surrounding context
-that told you what it was about ("Part-Time" might only appear in a heading two
-chunks up). Following Anthropic's "contextual retrieval" idea, we prepend a short
-LLM-generated context to each chunk *before* embedding + storing it, so the chunk
-carries its own situating context into both the vector embedding and the keyword
-index. This runs once per chunk at ingestion — never at query time — so it adds no
-query latency.
-
-The stored chunk becomes ``"<context>\\n\\n<original chunk>"``. Best-effort: if the
-LLM call fails or returns nothing, we fall back to the original chunk unchanged.
+Stored as ``"<context>\\n\\n<original chunk>"``. Best-effort: on failure the
+chunk is stored bare. No query-time cost.
 """
 
 from __future__ import annotations
@@ -35,14 +28,9 @@ from ..security.untrusted import (
 # large documents (a couple of thousand tokens of surrounding context is plenty).
 MAX_DOC_CHARS = 8000
 
-# The generated context is written by OUR model, but from a document anyone may
-# have authored, and it is then stored as part of the chunk -- embedded, keyword
-# indexed, fed to every later prompt as document text, and hidden from the
-# citation UI. So it is untrusted text we would otherwise persist: a poisoned
-# document could have our own model write an instruction into the index. A real
-# context is one or two plain sentences, so anything longer, anything the
-# scrubber would cut, and any link or mention is refused, and the chunk is
-# stored bare (the same outcome as a failed call).
+# The context is written from untrusted text and persisted into the index, so
+# a poisoned document could plant an instruction. A real one is a sentence or
+# two: anything longer, scrubbed, or with a link or mention is refused.
 MAX_PREFIX_CHARS = 700
 _MENTION = re.compile(r"<[@!#]|@(?:channel|here|everyone)\b", re.IGNORECASE)
 
@@ -58,20 +46,12 @@ def _safe_derived(text: str) -> str | None:
         return None
     return flat
 
-# Ingest is an offline batch job, so a couple of retries cost little and recover
-# transient endpoint blips that would otherwise silently cost a chunk its
-# context prefix.
+# Offline batch: retries are cheap and recover transient blips.
 _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 0.5
 
-# A quota rejection is NOT a transient blip and must not be retried on the
-# generic backoff. Observed against Gemini's free tier: a hard 15 requests per
-# minute, with the server itself asking for a ~41s wait. Retrying that after
-# 0.5s just spends another request against the same exhausted budget — it makes
-# the rate limiting worse and still ends in a silent quality loss. So when the
-# server names a delay we honour it, capped so one bad chunk cannot stall a
-# whole ingest run; when it names one longer than the cap, we stop retrying
-# rather than pretend a shorter wait will help.
+# A 429 is the quota, not a blip: honour the server's named delay up to a cap
+# (one chunk must not stall the ingest), and stop when it asks for longer.
 _MAX_RATE_LIMIT_WAIT_SECONDS = 45.0
 
 
@@ -113,11 +93,8 @@ def _build_prompt(document_text: str, chunk: str, *, hypothetical_questions: boo
 
 
 def _parse_context_and_questions(raw: str) -> tuple[str, list[str]]:
-    """Split the ``CONTEXT: ...`` / ``QUESTIONS: - ...`` reply apart.
-
-    Tolerant of a model that doesn't follow the shape exactly: an unparseable
-    reply is treated as a plain context sentence with no questions, never as
-    an error (same "best-effort" philosophy as the rest of this module).
+    """Split the ``CONTEXT: ...`` / ``QUESTIONS: - ...`` reply apart; an
+    unparseable reply is a plain context with no questions.
     """
     context_match = re.search(r"CONTEXT:\s*(.+?)(?:\n\s*QUESTIONS:|$)", raw, re.DOTALL | re.IGNORECASE)
     context = context_match.group(1).strip() if context_match else raw.strip()
@@ -142,30 +119,14 @@ def contextualize_chunk(
 ) -> str:
     """Prepend a short generated context to a single chunk (best-effort).
 
-    Retries a bounded number of times before giving up. "Best-effort" is the
-    right *failure* policy — a chunk without its context prefix is still a
-    usable chunk, and failing the whole ingest over one call would be worse —
-    but it degrades **silently**, so a transient blip costs that chunk its
-    retrieval context with nothing in the result to say so. Since ingest is an
-    offline batch job, a short backoff is nearly free and turns most transient
-    failures into successes. This matters more now that these calls run
-    concurrently: more in-flight requests means more chances to hit a
-    rate limit, and every one of them would otherwise be a silent quality loss.
-
-    ``hypothetical_questions``: fold 2-3 LLM-generated example questions this
-    chunk would answer into the SAME call (never a second round-trip), and
-    append them to the stored text so a rephrased user question can match one
-    of them via vector or keyword search. Default off — see
-    ``ContextualSettings.hypothetical_questions``.
+    Bounded retries: a failure degrades silently, so a cheap backoff is worth it.
+    ``hypothetical_questions`` asks for 2-3 example questions in the same call
+    and appends them, so a rephrased question can match (default off).
     """
     prompt = _build_prompt(document_text, chunk, hypothetical_questions=hypothetical_questions)
     for attempt in range(_MAX_ATTEMPTS):
-        # Yield to live traffic BEFORE spending a request. Ingest now runs
-        # unattended (app/jobs/autosync.py), so this enrichment can be in
-        # flight exactly when someone asks a question — and the two share one
-        # rate limit. A refused slot degrades this chunk, which the retry loop
-        # below already treats as acceptable; a 429 on the answer path does not
-        # degrade, it fails.
+        # Yield to live traffic first: background work keeps LLM_RESERVE_RPM
+        # free, since a 429 on the answer path fails while this only degrades.
         if not wait_for_background_slot():
             return chunk
         try:
@@ -213,22 +174,9 @@ def contextualize_chunks(
 ) -> list[str]:
     """Contextualize every chunk of one document, in order.
 
-    With ``concurrency > 1`` the per-chunk calls are issued from a bounded
-    thread pool. This was *the* ingestion bottleneck: one page of 10 chunks
-    meant 10 strictly-serial network round trips, and a whole workspace meant
-    hundreds — minutes of wall clock spent waiting, not computing. The calls
-    are independent by construction (each sees the same document text and its
-    own chunk), so ordering only matters for the *result*, which
-    ``Executor.map`` preserves regardless of completion order.
-
-    Safe to parallelize because ``LLMProvider.generate`` holds no per-call
-    state and the underlying ``openai``/``httpx`` client is thread-safe. The
-    one shared mutable field is ``last_usage``, read by ``log_llm_call`` for
-    token metering — under concurrency those per-chunk token counts become
-    approximate (a call may read a sibling's usage). That is an accepted cost:
-    metering is observability, and ingest-context is the one stage where the
-    numbers are least load-bearing. Set ``concurrency=1`` to get exact
-    accounting back.
+    ``concurrency > 1`` uses a bounded thread pool (serial calls were the
+    ingest bottleneck); ``Executor.map`` keeps order. ``last_usage`` metering
+    becomes approximate under concurrency; ``concurrency=1`` makes it exact.
     """
     if len(chunks) <= 1 or concurrency <= 1:
         return [

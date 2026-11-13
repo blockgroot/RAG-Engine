@@ -1,27 +1,16 @@
-"""Act from Slack: ask the bot, in plain words, to do something in a tool.
+"""Act from Slack: ask the bot in plain words to do something in a tool.
 
-``@Handbook create a Linear issue in Platform about this thread`` in a channel,
-or the same words in a DM. A separate mode from answering: one small model
-check reads whether the message ASKS for an action and quotes the words that
-do; code keeps the verdict only when that quote is in the message
-(``slack_request``). A question, or a failed check, is answered exactly as
-before. ``act <request>`` still forces a draft without the check. Either way
-the result is only a draft: nothing runs until the asker approves. Each
-place is handled apart, because each is a different permission decision:
+A model check reads whether a message ASKS for an action; kept only when its
+quoted words are in the message (``slack_request``). ``act <request>`` skips
+the check. Either way it is a draft until the asker approves.
 
-* **DM** -- the person's own surface. The draft may read company-wide content
-  as THEM (their ``Viewer``), like the web Act page. The approval card is a
-  message in the DM.
-* **Channel** (public or private) -- other people are in the room. The draft
-  may read only THAT channel's own content as the room's viewer (public-only
-  plus that channel), exactly like a channel answer, so it can never carry the
-  asker's private documents into the room. The card is ephemeral: only the
-  asker sees the draft and the buttons. A Slack post from a channel can only
-  be a reply in the same thread.
+* DM: drafts as the person (their ``Viewer``); the card is a DM message.
+* Channel: reads only that channel, as the room (public-only plus the
+channel), so no private document enters the room; the card is ephemeral
+and a post can only reply in the same thread.
 
-An admin turns each surface on apart (Admin › Actions). Approve works only for
-the person who asked, and only for the payload that was shown. The click is
-verified like every Slack request, acknowledged at once, and handled after.
+Each surface has its own admin switch. Approve works only for the asker and
+the payload shown.
 """
 
 from __future__ import annotations
@@ -77,10 +66,10 @@ USAGE = (
 
 
 def act_request(text: str) -> str | None:
-    """The request after an explicit ``act`` command, or ``None`` when the
-    message is not one. Bot mentions are dropped first, so both
-    ``@Handbook act …`` and a DM's ``act …`` count. An exact command word,
-    not a guess at intent: a question is never turned into a write."""
+    """The request after an explicit ``act`` command, or ``None``.
+
+    Bot mentions are dropped first. An exact command word, never a guess at intent.
+    """
     match = _ACT.match(_MENTION.sub(" ", text or "").strip())
     if not match:
         return None
@@ -132,9 +121,8 @@ def asks_to_act(text: str, *, llm=None) -> bool:
 def slack_request(text: str, *, org_id: str, is_dm: bool, llm=None) -> str | None:
     """The request to draft from this message, or ``None`` to answer it.
 
-    Nothing is a request until an admin allowed Act for the company. Then
-    ``act …`` is always one. Plain words are one only where an admin
-    switched Act on for this surface, so nobody pays for the check otherwise.
+    Needs the company's Act switch; plain words count only where that surface is
+    on, so nobody pays for the check otherwise.
     """
     try:
         if not policy.act_on(org_id):
@@ -290,10 +278,10 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
 
 def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, channel: str, thread_ts: str | None, is_dm: bool,
                in_thread: bool = False) -> None:
-    """Propose one write for a Slack ``act`` command and show the card. Never raises.
+    """Propose one write for a Slack request and show the card; never raises.
 
-    Asked inside a channel THREAD, a draft that refers to it reads that thread
-    live (``thread_context``), never a search of the channel."""
+    Inside a channel thread, the thread is read live (``thread_context``), never a channel search.
+    """
     send = lambda text, blocks=None: _say(  # noqa: E731
         token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm,
         text=text, blocks=blocks)
@@ -301,9 +289,8 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
     if not request:
         send(USAGE)
         return
-    # Drafting reads documents and calls the model: seconds of silence that
-    # read as "ignored". In a DM the note becomes the first reply (edited in
-    # place); an ephemeral one cannot be edited, so in a channel it stays.
+    # Drafting takes seconds; show a note. In a DM it is edited into the reply;
+    # an ephemeral one cannot be edited, so in a channel it stays.
     placeholder = [_drafting(token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm)]
 
     def say(text, blocks=None):
@@ -312,9 +299,7 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
                                                      **({"blocks": blocks} if blocks else {})})):
             send(text, blocks)
 
-    # A space's Slack connection carries the same bot: which connection posts
-    # never decides what a draft may read (a DM reads as the person, a channel
-    # only that channel, as the room).
+    # Which connection posts never decides what a draft may read.
     if is_dm:
         workspace_id, tags = None, None
         surface = {"kind": "slack_dm", "slack_user": slack_user, "channel": channel}
@@ -448,11 +433,12 @@ def _outcome_text(row: ActionRow) -> str:
 
 
 def _clicker(payload: dict, response_url: str | None, container: dict):
-    """Who clicked, and how to answer them where the card is: ``(org_id, token,
-    user, reply)``, or ``None``. ``reply(body, replace=)`` sends a Slack message
-    body (text and/or blocks). A private card in a thread is removed and the
-    answer posted privately in that thread: a response-URL reply to it lands
-    at the bottom of the channel."""
+    """Who clicked and how to answer them: ``(org_id, token, user, reply)``, or ``None``.
+
+    ``reply(body, replace=)`` sends a Slack body. A private card in a thread is
+    removed and the answer posted privately there (a response-URL reply would
+    land at the channel's bottom).
+    """
     from .slack_events import _org_for_team, _slack_email
 
     team_id = (payload.get("team") or {}).get("id") or (payload.get("user") or {}).get("team_id") or ""
@@ -589,9 +575,8 @@ def decide(payload: dict, act: dict) -> None:
     except ProviderError:
         return
     slack_user = (payload.get("user") or {}).get("id") or ""
-    # A private card inside a thread is not replaced in place by Slack: the
-    # response URL's reply lands at the bottom of the channel. So there the
-    # card is removed and the outcome is posted privately in that thread.
+    # A private card in a thread cannot be replaced in place, so remove it and
+    # post the outcome privately in the thread.
     container = payload.get("container") or {}
     in_thread = container.get("is_ephemeral") and container.get("thread_ts") and container.get("channel_id")
 
@@ -654,10 +639,9 @@ async def slack_interactivity(
     x_slack_request_timestamp: str | None = Header(default=None),
     x_slack_signature: str | None = Header(default=None),
 ):
-    """Slack's Interactivity Request URL: Approve / Cancel on an Act card.
+    """Slack's Interactivity URL: Approve / Cancel on an Act card.
 
-    Verified with the signing secret like ``/slack/events``, acknowledged at
-    once (Slack allows three seconds), and decided in the background.
+    Signature-verified, acknowledged within Slack's three seconds, decided in the background.
     """
     return await _interact(
         request, background, x_slack_request_timestamp, x_slack_signature,

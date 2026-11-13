@@ -1,10 +1,8 @@
 """Remembers that a page's sentences were read and held no series.
 
-Figures in prose are read inline: at ingest (``ingestion.pipeline._store_tables``)
-and, for a page ingest did not read, when someone asks for its chart. A page
-whose sentences held nothing is marked ``done`` in ``doc_text_queue`` so the
-next chart question does not pay for the same model call. The row cascades
-with the document, so a re-ingested (edited) page is read again.
+Marked ``done`` in ``doc_text_queue`` so the next chart question does not pay
+for the same model call. Cascades with the document, so an edited page is
+read again.
 """
 
 from __future__ import annotations
@@ -32,10 +30,7 @@ def mark_read(document_id: str, *, org_id: str, workspace_id: str | None,
 def note_unreadable(document_id: str, *, org_id: str, workspace_id: str | None,
                     external_id: str, title: str) -> int:
     """Count a read whose reply could not be used; returns the count so far.
-
-    Not "no figures": the page is read again on a later sync, up to the
-    caller's cap, because a cut or garbled reply says nothing about the page.
-    """
+    Not "no figures": a later sync reads it again, up to the caller's cap."""
     with get_connection() as conn:
         row = conn.execute(
             """

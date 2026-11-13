@@ -1,4 +1,4 @@
-"""Act mode, Phase 0 (docs/plans/2026-10-13-write-actions.md).
+"""Act mode, Phase 0 (git history: docs/plans/2026-10-13-write-actions.md).
 
 Pinned here:
 - the exposure verdict: private content never reads as safe for an audience

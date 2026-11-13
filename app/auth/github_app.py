@@ -1,30 +1,10 @@
-"""GitHub App authentication primitives (GitHub Integration Plan, Phase 1).
+"""GitHub App authentication: the App JWT and installation tokens.
 
-Two responsibilities live here, both independent of the database and of any
-``org_id`` — the credentials layer (``credentials.py``) owns that context and
-calls into this module:
-
-1. ``build_app_jwt`` signs the short-lived RS256 JWT that authenticates us as
-   the **App itself** (not as an installation, and not as a user). GitHub
-   constrains this token tightly: ``exp`` must be no more than 10 minutes out,
-   and it recommends backdating ``iat`` by 60 seconds against clock drift.
-   Both are enforced here rather than left to callers, because getting either
-   wrong produces an opaque 401 rather than a useful error.
-2. ``mint_installation_token`` exchanges that App JWT for a 1-hour
-   **installation access token**, which is the credential that actually reads
-   repo content.
-
-**Why nothing is persisted here** (plan decision D2): an installation token
-lasts an hour and can be re-minted at any moment from the private key plus the
-installation id, so storing one would add a refresh lifecycle that buys
-nothing. What *is* stored on the ``oauth_connections`` row is the user access
-token (proof of who connected) and the ``installation_id`` in
-``source_config``.
-
-Zero new dependencies: ``pyjwt`` already signs session tokens in
-``app/auth/session.py`` and ``cryptography`` already backs
-``app/security/crypto.py`` — RS256 needs exactly those two (plan decision D7,
-the same dependency-light reasoning as ``httpx``-over-``google-api-python-client``).
+``build_app_jwt`` enforces GitHub's limits (``exp`` within 10 minutes,
+``iat`` backdated 60s), since a mistake there is an opaque 401.
+``mint_installation_token`` trades it for a 1-hour installation token.
+Nothing is stored: a token can be re-minted any time from the key and
+``installation_id``.
 """
 
 from __future__ import annotations
@@ -54,11 +34,8 @@ def github_headers(
 ) -> dict[str, str]:
     """Standard GitHub REST headers.
 
-    ``X-GitHub-Api-Version`` is pinned deliberately: GitHub's REST API is
-    versioned by date and an unpinned client silently inherits whatever the
-    current default is. ``accept`` is a parameter because several endpoints we
-    need return meaningfully different payloads per media type (raw file
-    contents, commit diffs), and that choice belongs to the caller.
+    ``X-GitHub-Api-Version`` is pinned so the API cannot change under us;
+    ``accept`` is the caller's (raw contents, diffs).
     """
     return {
         "Authorization": f"Bearer {token}",
@@ -68,13 +45,9 @@ def github_headers(
 
 
 def build_app_jwt(*, client_id: str | None, private_key_pem: str | None) -> str:
-    """Sign a short-lived RS256 JWT authenticating as the GitHub App.
+    """Sign a short-lived RS256 JWT as the GitHub App (``iss`` = client id).
 
-    ``iss`` is the App's client id (GitHub accepts either the client id or the
-    numeric app id; the client id is what the rest of this integration already
-    configures). Raises ``ConfigurationError`` when either credential is
-    missing, so a misconfigured deployment fails with an actionable message
-    instead of a 401 from GitHub.
+    Raises ``ConfigurationError`` when a credential is missing, instead of a 401.
     """
     if not client_id or not private_key_pem:
         raise ConfigurationError(
@@ -114,11 +87,9 @@ _NO_READ_LEVEL = frozenset({"workflows"})
 def installation_permissions(
     installation_id: str, settings: GitHubSettings | None = None
 ) -> dict[str, str]:
-    """What the installation's owner has granted the App, e.g. ``{"issues": "write"}``.
+    """What the installation's owner granted the App, e.g. ``{"issues": "write"}``.
 
-    Read from GitHub each time, never cached here: a newly requested
-    permission takes effect only once the owner approves it, and Act asks this
-    to tell "not approved yet" from "approved".
+    Never cached: Act tells "not approved yet" from "approved" with it.
     """
     permissions = _installation(installation_id, settings).get("permissions") or {}
     return {str(k): str(v) for k, v in permissions.items()}
@@ -127,11 +98,9 @@ def installation_permissions(
 def installation_settings_url(
     installation_id: str, settings: GitHubSettings | None = None
 ) -> str | None:
-    """GitHub's own settings page for this installation, as GitHub gives it.
+    """GitHub's settings page for this installation, as GitHub gives it.
 
-    Built by hand it was always ``/settings/installations/<id>``, which is a
-    404 for an installation on an ORGANIZATION (that page lives under
-    ``/organizations/<org>/settings/installations/<id>``).
+    A hand-built ``/settings/installations/<id>`` is a 404 for an organization.
     """
     url = str(_installation(installation_id, settings).get("html_url") or "")
     return url if url.startswith("https://github.com/") else None
@@ -170,14 +139,10 @@ def mint_installation_token(
 ) -> InstallationToken:
     """Exchange an App JWT for a 1-hour, READ-ONLY installation access token.
 
-    Repositories are not narrowed: the installation *is* the tenant's declared
-    scope, and re-declaring it here would let our copy drift from GitHub's.
-    Permissions ARE narrowed, to ``read`` on everything the owner granted:
-    the App may also hold write permissions for Act, which writes only with a
-    person's own token, so a token minted for reading and syncing must never
-    be able to write ("cannot be granted permissions that the app was not
-    granted" -- asking read of a write grant only lowers it). Fails closed:
-    if the grant cannot be read, no token is minted.
+    Repositories are not narrowed (the installation is the tenant's scope).
+    Permissions are narrowed to ``read`` on every grant: the App also holds
+    writes for Act, which writes only with a person's token. Fails closed: no
+    readable grant, no token.
     """
     settings = settings or GitHubSettings.from_env()
     permissions = read_only(installation_permissions(installation_id, settings))

@@ -1,9 +1,5 @@
-"""Local, in-process embedding provider using sentence-transformers.
-
-Loads the model directly into the Python process: no server, no API key, no
-per-token cost, and document text never leaves the machine — which matters for
-multi-tenant policy data.
-"""
+"""Local, in-process embedding provider using sentence-transformers: no
+server, no key, and document text never leaves the machine."""
 
 from __future__ import annotations
 
@@ -14,11 +10,8 @@ DEFAULT_MODEL = "BAAI/bge-m3"
 
 
 class LocalEmbeddingProvider(EmbeddingProvider):
-    """Embed text locally with a sentence-transformers model.
-
-    The model is downloaded once (cached under the Hugging Face cache dir) and
-    loaded into memory at construction time.
-    """
+    """Embed text locally with a sentence-transformers model, loaded at
+    construction (downloaded once to the Hugging Face cache)."""
 
     def __init__(
         self,
@@ -35,17 +28,15 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         if not self.model_name:
             raise ConfigurationError("Missing required embedding config: EMBEDDING_MODEL")
 
-        # Cap BLAS/tokenizer threads before torch loads. Unbounded OpenMP on
-        # Apple Silicon + two large models is a common "whole Mac freezes"
-        # pattern while the process is still technically making progress.
+        # Cap BLAS/tokenizer threads before torch loads: unbounded OpenMP with two
+        # large models can freeze the machine.
         import os
 
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-        # Import lazily so the app doesn't pay the (heavy) import cost unless
-        # local embeddings are actually used.
+        # Lazy import: heavy, and only needed for local embeddings.
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:

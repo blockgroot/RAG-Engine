@@ -1,24 +1,10 @@
-"""Run one scheduler: fetch activity → write the report → email it.
+"""Run one scheduler: fetch activity, write the report, email it.
 
-Kept separate from ``worker.py`` (which owns claiming and status
-bookkeeping) so this function is a pure "do the work" unit with no queue
-knowledge — that is what makes it testable without a database, and what lets
-the worker decide independently whether a raised exception means retry or
-retire.
+No queue knowledge here; ``worker.py`` decides retry or retire.
 
-Failure policy, which is the interesting part:
-
-- A fetch or LLM failure **raises**, so the worker records it and retries.
-  There is no report to deliver, so a silent success would leave the user
-  waiting a full cycle for a mail that is never coming.
-- An email failure is **swallowed** by ``..._safe``. The expensive work is
-  already done; retrying the whole run on a transient mail error risks
-  delivering the same report twice, which is worse than dropping one.
-
-The report is **saved before the mail is attempted**, and the mail is only a
-notification with a link into the app. That ordering is what makes the
-swallowed email failure cheap: the run's output is already readable, so what
-a failed send costs is the nudge, not the report.
+- A fetch or LLM failure raises, so the worker retries.
+- An email failure is swallowed: retrying could deliver the report twice.
+  The report is saved before the mail, so a failed send loses only the nudge.
 """
 
 from __future__ import annotations
@@ -42,34 +28,12 @@ from .store import Scheduler
 
 logger = logging.getLogger(__name__)
 
-# Window used for a scheduler's very first run, when there is no last_run_at
-# to measure from.
-#
-# It is deliberately NOT the cadence. A cadence-sized first window made the
-# first report -- the only one anybody judges the feature by -- describe a
-# period that happened before the scheduler existed: a weekly GitHub report
-# created on a Tuesday reported on the previous Tuesday-to-Tuesday, found four
-# commits from July outside it, and said "nothing happened" about a repository
-# with plenty in it. Correct by its own definition, and useless.
-#
-# So the first run is a CATCH-UP: look back far enough to describe what is
-# actually there, then tile normally from that run onwards. Every subsequent
-# report still starts exactly at the previous one's end, so nothing is ever
-# reported twice.
-#
-# 90 days, one number for every cadence, because the cadence describes how
-# often someone wants to hear from us and says nothing about how far back the
-# interesting content sits. It is bounded in the direction that matters:
-# every fetcher caps its item count and pages newest-first (GitHub's
-# max_commits per repo, Slack's per-channel split, the indexed providers'
-# LIMIT), so a wider window returns the newest N of a bigger set rather than an
-# unbounded read. The reader is told which run this is, because "3 months" on
-# a weekly report is otherwise indistinguishable from a bug.
+# First run is a catch-up, not one cadence: a cadence-sized first window
+# reported "nothing happened" on busy repos. Bounded: every fetcher caps its
+# item count newest-first. Later runs start at the previous one's end.
 FIRST_RUN_LOOKBACK = timedelta(days=90)
 
-#: Appended to the first report's coverage notes. The window is in the report
-#: header either way; this says WHY it is wider than the cadence, which is the
-#: part a reader cannot infer.
+#: Says why the first window is wider than the cadence.
 FIRST_RUN_NOTE = (
     "First report for this schedule, so it covers the last 90 days rather than "
     "one period. The next one starts where this one ends."
@@ -77,13 +41,9 @@ FIRST_RUN_NOTE = (
 
 
 def window_start(scheduler: Scheduler) -> datetime:
-    """When this run's activity window begins.
-
-    ``last_run_at`` if the scheduler has run before — so consecutive reports
-    tile the timeline with no gap and no overlap. Note the queue deliberately
-    does *not* advance ``last_run_at`` on failure, which is what makes a
-    retried run still cover everything since the last **delivered** report
-    rather than silently dropping the activity in between.
+    """When this run's window begins: ``last_run_at``, so reports tile with no
+    gap or overlap. The queue does not advance it on failure, so a retry still
+    covers everything since the last delivered report.
     """
     if scheduler.last_run_at:
         return scheduler.last_run_at
@@ -91,11 +51,8 @@ def window_start(scheduler: Scheduler) -> datetime:
 
 
 def report_link(report_id: str, settings: ApiSettings | None = None) -> str:
-    """Where a reader opens this report.
-
-    Built against the FRONTEND origin, never the API host: the session cookie
-    is ``SameSite=Lax`` and would not travel to a different origin, so a link
-    to the API would land the reader on a login page (CLAUDE.md §5).
+    """Where a reader opens this report: the frontend origin, never the API
+    host, whose link would miss the ``SameSite=Lax`` cookie and hit login.
     """
     settings = settings or ApiSettings.from_env()
     base = (settings.frontend_url or "").rstrip("/")
@@ -108,15 +65,12 @@ def run_scheduler_once(
     llm: LLMProvider | None = None,
     workspace_id: str | None = None,
 ) -> str:
-    """Produce and email one report. Returns the report text (for tests/logs).
-
-    Raises on a fetch or LLM failure so the caller can record it; never
-    raises for a mail problem (see the module docstring).
+    """Produce and email one report; returns its text. Raises on fetch or LLM
+    failure, never for mail.
     """
     user = get_user(scheduler.user_id)
     if user is None or not user.email:
-        # The owning user was deleted between claim and run. Not retryable —
-        # raise so the worker records it and the attempts cap retires it.
+        # Owner deleted: raise so the attempts cap retires it.
         raise ConfigurationError(
             f"Scheduler {scheduler.id} has no deliverable owner (user "
             f"{scheduler.user_id} is gone)."
@@ -126,18 +80,13 @@ def run_scheduler_once(
     since = window_start(scheduler)
     # The row's own scope wins; the argument is a test/manual override only.
     scope_id = workspace_id or scheduler.workspace_id
-    # Snapshotted into the report so an archived one keeps reading correctly
-    # after the space is renamed — or deleted.
+    # Snapshotted so an archived report survives a space rename or delete.
     space_name = (
         get_workspace_name(scheduler.org_id, scope_id) if scope_id else None
     )
-    # An indexed report is only as current as the last sync, so ask for one
-    # before reading. Fire-and-forget on purpose: the ingest queue is durable
-    # and an ingest takes minutes, so WAITING for it would hold a claimed
-    # scheduler row open through a fetch+embed run and make the report's
-    # latency depend on the size of the corpus. This report reads what is
-    # indexed NOW and discloses when that was synced; the request is what keeps
-    # the *next* one current. GitHub reads live and needs nothing.
+    # Fire-and-forget sync: waiting would hold the claimed row through an
+    # ingest. This report reads what is indexed now; the sync keeps the next
+    # one current. GitHub reads live.
     if scheduler.provider != "github":
         try:
             from ..jobs.autosync import request_sync
@@ -146,13 +95,9 @@ def run_scheduler_once(
         except Exception:  # noqa: BLE001 - a report must not fail over this
             logger.debug("Could not request a pre-report sync", exc_info=True)
 
-    # A scheduler created against a sub-workspace's connection must keep
-    # reading that connection, never silently fall back to the org-wide one —
-    # a space sees ONLY its own rows (CLAUDE.md §3).
-    # A scheduler is PERSONAL, so the digest reads the index as the person who
-    # created it: document-level access applies here exactly as it does to a
-    # question they type. Without this, a weekly Drive digest would mail them
-    # the contents of every file in the folder they were never shared on.
+    # A space's scheduler reads only that space's rows, never org-wide ones
+    # (CLAUDE.md §3), and as its creator: document access applies, or a Drive
+    # digest would mail files they were never shared on.
     digest = fetch_activity(
         scheduler.provider,
         scheduler.org_id,
@@ -165,34 +110,22 @@ def run_scheduler_once(
         notes.append(FIRST_RUN_NOTE)
 
     if not digest:
-        # Skip the LLM entirely — there is nothing to summarise, and a model
-        # handed an empty context is exactly where invention happens. Same
-        # instinct as the RAG confidence gate refusing before generating.
-        # Note `digest` is falsy on *items*, not notes: a run that only
-        # learned "channels checked: …" still has nothing to report on.
+        # No LLM on an empty context: that is where invention happens.
+        # `digest` is falsy on items, not notes.
         report = NO_ACTIVITY_NOTE
     else:
-        # The background (aux) provider since 9 Oct 2026: the main model is
-        # Claude Haiku for interactive chat, and reports stay on Gemini, the
-        # model that wrote them before (LLM_AUX_MODEL=gemini-3.1-flash-lite).
-        # Keep LLM_AUX_MODEL on a full model, not a lite classifier: an
-        # earlier aux model produced one-line summaries of substantial content.
+        # Background work runs on the aux model. Keep it a full model: a lite
+        # one wrote one-line summaries of substantial content.
         llm = llm or build_aux_llm_provider()
         prompt = build_scheduler_report_prompt(
             scheduler.prompt, digest, scheduler.provider
         )
-        # Reports always run on the configured model. A scheduled run is
-        # UNATTENDED: a chat answer from a flaky model costs one retry the
-        # person can see, while a failed report burns retry attempts and is
-        # noticed only when the mail never arrives. Explicit rather than
-        # relying on the worker's context happening to be unset.
+        # Unattended: always the configured model, never a picked one.
         with default_model_only():
             report = llm.generate(prompt).strip()
 
-    # Items and notes are stored as structured data, not folded into the
-    # model's prose: the report page renders each source link itself so a link
-    # can never be invented or dropped, and the coverage notes reach the reader
-    # even when the model declines to mention them.
+    # Items and notes stored as data, so links are never invented or dropped
+    # and notes reach the reader even if the model omits them.
     saved = reports.save_report(
         scheduler_id=scheduler.id,
         org_id=scheduler.org_id,
@@ -206,9 +139,6 @@ def run_scheduler_once(
             {"summary": i.summary, "url": i.url, "meta": i.meta}
             for i in digest.items
         ],
-        # The first run's note goes on the REPORT, not into the prompt: it is a
-        # fact about the window, and the coverage strip is where facts about
-        # the window already live. A model asked to mention it might not.
         notes=notes,
         window_start=since,
         window_end=window_end,
@@ -224,9 +154,7 @@ def run_scheduler_once(
         space_name=space_name,
     )
     if delivered:
-        # Stamped only on an accepted send, so "was this actually emailed?"
-        # stays answerable rather than assumed — the report is readable either
-        # way, which is the point of saving first.
+        # Stamped only on an accepted send.
         reports.mark_delivered(saved.id, user.email)
 
     logger.info(

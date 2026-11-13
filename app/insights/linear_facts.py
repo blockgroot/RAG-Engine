@@ -1,16 +1,9 @@
 """Linear charts: throughput, states, load, cycle time.
 
-Linear already produces `doc_changed` facts through ``facts.py`` like every
-other indexed source, but "how many tasks did each team complete" cannot come
-from the index: the state, the assignee and the team live inside chunk prose,
-not in a column. So this reads the adapter's structured issue feed -- a query
-we already make -- and records what is countable.
-
-**Why this rides the ingest job rather than the sync tick.** Unlike GitHub,
-Linear also ingests. If its facts were recorded on the tick, the ingest path's
-``_stamp_attempted`` would already have made the connection not-due, so the
-facts would silently never run. The ingest job is also the one place a built
-adapter already exists, so this costs no extra authentication.
+State, assignee and team live in chunk prose, so this reads the adapter's
+structured issue feed and records what is countable. Rides the ingest job,
+not the sync tick: the ingest stamp would make the connection not-due on the
+tick, and the job already holds a built adapter.
 """
 
 from __future__ import annotations
@@ -38,10 +31,8 @@ KIND_STATE = "issue_state"
 #: state, so "completed" is decided once, here, instead of in every query.
 KIND_COMPLETED = "issue_completed"
 
-#: Linear's own lifecycle categories. ``completed`` is the only success:
-#: ``canceled`` is terminal but abandoning work must never read as finishing
-#: it, and counting off the state NAME would break the moment a team renames
-#: "Done" to "Shipped".
+#: Linear's own lifecycle categories. Only ``completed`` is success (canceled
+#: is not finishing), and never by state NAME, which teams rename.
 _COMPLETED_TYPE = "completed"
 #: The attrs key the state's type is kept under (see `_issue_attrs`).
 STATE_TYPE_ATTR = "state_type"
@@ -49,11 +40,7 @@ STATE_TYPE_ATTR = "state_type"
 
 def record_linear_facts(org_id: str, *, workspace_id: str | None, adapter) -> int:
     """Record countable issue facts for this connection. Returns rows written.
-
-    Never raises. It runs inside a job that has ALREADY succeeded, so raising
-    would fail finished work and turn it into a retry loop -- the same reason
-    ``worker._record_insight_facts`` is wrapped.
-    """
+    Never raises: the job already succeeded, and raising would make it retry."""
     since = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
 
     try:
@@ -78,13 +65,8 @@ def record_linear_facts(org_id: str, *, workspace_id: str | None, adapter) -> in
 
 
 def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
-    """One state row always, plus a completion row when it finished.
-
-    ``external_id`` is the issue identifier, so re-reading the same issue
-    UPDATES its rows rather than adding more -- which is what lets an
-    in-progress issue become a completion on a later sync instead of appearing
-    twice.
-    """
+    """One state row always, plus a completion row when it finished. Keyed by
+    the issue identifier, so a later sync UPDATES the rows, never doubles them."""
     identifier = (issue.get("identifier") or "").strip()
     if not identifier:
         return []
@@ -129,12 +111,9 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
 
 
 def _issue_attrs(issue: dict) -> Jsonb:
-    """Every simple field of the issue (`insights.fields`), as the feed
-    already returned it -- see `sources.linear._chart_fields` -- plus
-    ``state_type``: Linear's OWN category for the state (backlog, unstarted,
-    started, completed, canceled). It is what decides "open" and "closed"
-    (`store.state_types`), so a team's custom "Shipped" counts as finished
-    because Linear says so, not because its name is on a list."""
+    """Every simple field of the issue (`insights.fields`) plus ``state_type``,
+    Linear's OWN state category, which decides "open"/"closed"
+    (`store.state_types`), never a list of state names."""
     fields = dict(issue.get("fields")) if isinstance(issue.get("fields"), dict) else {}
     state_type = (issue.get("state_type") or "").strip().lower()
     if state_type:
@@ -142,12 +121,8 @@ def _issue_attrs(issue: dict) -> Jsonb:
     return Jsonb(fields)
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:
-    """Upsert every row in one statement.
-
-    The conflict target must match one of the two PARTIAL unique indexes, and
-    which applies depends on the scope -- Postgres treats NULLs as distinct in
-    a plain UNIQUE, which is why they are partial.
-    """
+    """Upsert every row in one statement. The conflict target must match the
+    scope's PARTIAL unique index (NULLs are distinct in a plain UNIQUE)."""
     if not rows:
         return 0
 

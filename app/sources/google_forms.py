@@ -1,21 +1,11 @@
-"""Google Forms responses — read live, deliberately NEVER indexed.
+"""Google Forms responses: read live, NEVER indexed.
 
-Not a ``SourceAdapter``, and that is the whole design. Every other source here
-gets chunked and embedded so anyone in the org can ask questions of it. A
-survey response must not go into that corpus: it would make
-"what did Ada say about management?" an answerable question, which is the exact
-opposite of what an anonymous survey promises. So responses are read, classified
-once into a sentiment label (``app/insights/sentiment.py``), and the RESPONSE
-TEXT IS DISCARDED — only the label and the topic are stored.
+Not a ``SourceAdapter``: an anonymous survey must not become answerable
+("what did Ada say?"). Responses are classified once into a sentiment label
+(``app/insights/sentiment.py``) and the text is discarded.
 
-Same shape as ``app/githublive/``: bounded live reads, no vectors.
-
-**Scope.** Reading responses needs
-``https://www.googleapis.com/auth/forms.responses.readonly``, which is NOT in
-this codebase's default Google scopes: adding it would force every existing
-tenant to reconnect. It is opt-in through ``GOOGLE_FORMS_ENABLED`` (see
-``GoogleSettings``), and a token without it fails with a message that says to
-reconnect rather than a bare 403.
+Needs ``forms.responses.readonly``, opt-in via ``GOOGLE_FORMS_ENABLED`` (adding
+it by default would force every tenant to reconnect).
 """
 
 from __future__ import annotations
@@ -34,11 +24,9 @@ _DRIVE_API = "https://www.googleapis.com/drive/v3"
 _FORMS_API = "https://forms.googleapis.com/v1"
 _FORM_MIME = "application/vnd.google-apps.form"
 
-#: Forms are found through Drive (the Forms API has no "list my forms"), so
-#: this bounds that walk the same way ``google_drive`` bounds its own.
+#: Forms are found through Drive (no Forms listing API); bounds that walk.
 MAX_FORMS = 25
-#: Per form. A survey with more responses than this is summarised from the most
-#: recent ones, and the caller says so.
+#: Per form; past this, the most recent responses are used and the caller says so.
 MAX_RESPONSES = 500
 
 
@@ -51,19 +39,13 @@ class FormRef:
 @dataclass(frozen=True)
 class FormQuestion:
     question_id: str
-    #: The question text. This is what becomes a chart's topic, so it is the
-    #: one piece of form *content* that is kept.
+    #: The question text: the chart's topic, the only form content kept.
     title: str
 
 
 @dataclass(frozen=True)
 class FormAnswer:
-    """One person's answer to one question.
-
-    Carries no respondent identity at all — not even an opaque id. There is no
-    per-person view of this data anywhere in the product, so storing a handle
-    would only create the possibility of one.
-    """
+    """One person's answer to one question, with no respondent identity at all."""
 
     question_id: str
     question_title: str
@@ -106,10 +88,7 @@ class GoogleFormsReader:
             raise SourceError(f"Google Forms request failed: {exc}", cause=exc) from exc
 
         if response.status_code in (401, 403):
-            # The overwhelmingly likely cause is a token issued before Forms
-            # access was enabled. Saying "reconnect" is actionable; "403" is
-            # not, and would send someone hunting a permissions bug that isn't
-            # one.
+            # Most likely a token from before Forms access: say "reconnect", not 403.
             raise SourceError(
                 "Google Forms access was refused. Reconnect Google to grant "
                 "response access (the earlier connection did not include it)."
@@ -124,11 +103,7 @@ class GoogleFormsReader:
         return response.json() or {}
 
     def list_forms(self) -> list[FormRef]:
-        """Every form this token can see, bounded.
-
-        Through Drive, because the Forms API has no listing endpoint of its
-        own — only ``forms.get`` and ``forms.responses.list`` by id.
-        """
+        """Every form this token can see, bounded, via Drive (Forms has no listing)."""
         payload = self._get(
             f"{_DRIVE_API}/files",
             {
@@ -143,12 +118,7 @@ class GoogleFormsReader:
         ]
 
     def fetch_responses(self, form: FormRef) -> FormResponses:
-        """Free-text answers to one form, with the questions they answer.
-
-        Only free text is returned. A multiple-choice answer is already a
-        category and needs no model to classify it; running one over "Yes"
-        would spend a request to learn nothing.
-        """
+        """Free-text answers to one form, with their questions (choices are already categories)."""
         structure = self._get(f"{_FORMS_API}/forms/{form.form_id}")
         questions = _text_questions(structure)
         if not questions:
@@ -187,11 +157,7 @@ class GoogleFormsReader:
 
 
 def _text_questions(structure: dict) -> dict[str, FormQuestion]:
-    """Free-text questions only, keyed by the id answers arrive under.
-
-    A choice question is skipped: its answers are already categories, so
-    classifying them would spend a model request to rediscover the options.
-    """
+    """Free-text questions only, keyed by the id answers arrive under."""
     out: dict[str, FormQuestion] = {}
     for item in structure.get("items", []) or []:
         question = (item.get("questionItem") or {}).get("question") or {}

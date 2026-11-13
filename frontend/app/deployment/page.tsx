@@ -15,11 +15,8 @@ export const metadata: Metadata = {
 };
 
 /*
- * The two ways a company runs Handbook, in plain words. Every claim here
- * comes from docs/deployment-options.md and the self-hosted package
- * (deploy/selfhost/: install.sh, upgrade.sh, backup.sh, docs/). Public page:
- * no vendor, model or company names. Laid out open (rules, paths, a stack)
- * rather than as cards: the opening picture carries the idea.
+ * The two ways a company runs Handbook. Claims come from deploy/selfhost/.
+ * Public page: no vendor, model or company names.
  */
 
 

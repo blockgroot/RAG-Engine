@@ -24,42 +24,27 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 _SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 _CSV_MIME = "text/csv"
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-# Sheets and CSVs are indexed as TABLES (app/doctables): their rows are kept
-# for charts and only a description of the columns is embedded -- never the
-# cells, because a figure read back out of chunk text cannot be checked.
+# Sheets and CSVs are TABLES (app/doctables): rows kept for charts, only a column
+# description embedded (a figure read back from chunk text cannot be checked).
 _TABLE_MIMES = {_SHEET_MIME, _CSV_MIME, _XLSX_MIME}
 _SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME} | _TABLE_MIMES
-# `lastModifyingUser` costs nothing here: it rides along in the files.list
-# request we already make, which is why "top editors" needs no extra call.
-# `permissions` is the document-level ACL, and like `lastModifyingUser` it
-# costs NOTHING extra: Drive returns it in the `files.list` request we already
-# make on every sync. That is also what makes revocation work without a second
-# sync loop -- an unshared file is re-stamped on the next listing even though
-# its content never changed and is therefore never re-fetched.
+# `lastModifyingUser` and `permissions` ride the files.list we already make, so
+# an unshared file is re-stamped on the next listing without a re-fetch.
 _PERMISSION_FIELDS = "permissions(type,emailAddress,domain,deleted)"
-# The editor's email and permissionId ride the same `files.get` the fetch
-# already makes: the id is Drive's stable per-person key and the email is what
-# links them to a Handbook account (Second Brain 1.1). Display name alone could
-# only ever be joined by NAME, which the graph must never do.
+# Editor email and permissionId (stable key) link a person to a Handbook account;
+# the graph never joins by display name.
 _EDITOR_FIELDS = "lastModifyingUser(displayName,emailAddress,permissionId)"
 _LIST_FIELDS = (
     "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,parents,"
     f"lastModifyingUser(displayName),{_PERMISSION_FIELDS})"
 )
-#: Sentinel for "the connected account has not been looked up yet", which is
-#: not the same as "looked up and Drive would not name it".
+#: Sentinel: "not looked up yet", unlike "looked up and Drive would not name it".
 _UNSET = object()
 _MAX_WALK_DEPTH = 20  # guard against pathological trees; Drive's own limit is ~100.
 
 
 def _editor_name(file: dict) -> str | None:
-    """Display name of whoever last modified the file, if Drive told us.
-
-    Drive omits `lastModifyingUser` for some files (a service account edit, a
-    deleted account, a shared drive with restricted metadata). None is the
-    honest answer -- those rows simply do not appear in an editor chart, which
-    is better than attributing them to someone.
-    """
+    """Display name of whoever last modified the file, or None when Drive omits it (never guessed)."""
     user = file.get("lastModifyingUser") or {}
     name = (user.get("displayName") or "").strip()
     return name or None
@@ -87,43 +72,21 @@ def _file_access(
 ) -> DocAccess | None:
     """Translate Drive's `permissions` array into a `DocAccess`.
 
-    Drive omits `permissions` for real and it is not an error: reading a file's
-    sharing list needs more than read access to the file, so a connecting
-    account that is merely a viewer (or a Workspace with "viewers can see who
-    else has access" switched off) gets the field left out.
+    Drive omits `permissions` when the connecting account may not read the sharing.
+    Then: ``owner_only(fallback_email)``, or ``None`` (skipped) with no fallback.
 
-    That case falls back to ``DocAccess.owner_only(fallback_email)`` -- indexed,
-    but readable by the connected account alone. Without a ``fallback_email``
-    there is nobody we can prove may read it, so this returns ``None`` and the
-    pipeline SKIPS the document: indexing it readable would publish a file whose
-    sharing we demonstrably could not read.
-
-    Drive's four grant types map as:
-      * ``anyone``  -> public within the scope ("anyone with the link")
-      * ``user``    -> that person's email
-      * ``domain``  -> ``domain:<host>``, matched against the asker's own host
-      * ``group``   -> ``group:<address>``, which NO viewer can satisfy
-
-    A `group` grant is stored as the GROUP, never expanded into its members:
-    `sources.google_groups` resolves the asker's own memberships at query time
-    instead, so the stored row keeps saying what Drive actually said and a new
-    joiner is covered without touching a document. With GOOGLE_GROUPS_ENABLED
-    off (the default) no viewer can satisfy a `group:` entry, so such a file
-    stays withheld -- fail-closed on purpose, since the alternative is showing
-    it to the whole scope, which is the bug this exists to fix.
+      * ``anyone``  -> public within the scope
+      * ``user``    -> that email
+      * ``domain``  -> ``domain:<host>``
+      * ``group``   -> ``group:<address>``, expanded at read time from the asker's
+        memberships (``google_groups``); with GOOGLE_GROUPS_ENABLED off it matches
+        no one, so the file stays withheld (fail closed).
     """
     permissions = file.get("permissions")
     if permissions is None:
-        # Onyx's fallback: index it for the ONE account that could see the file
-        # rather than dropping it. Retrying with `permissions.list` would be
-        # pointless for us -- Drive omits the field precisely because this token
-        # is not entitled to the sharing, and we have exactly one identity.
-        # (Onyx's retry ladder pays off only because they impersonate a
-        # retriever user, a fallback user and a Workspace admin in turn.)
-        # A CALLABLE, resolved only here: a folder whose sharing is readable --
-        # the normal case -- must not pay an `about.get` it never needs, and
-        # `tests/test_google_drive_source.py` counts the calls a listing makes
-        # for exactly this reason (the Slack `users.info` lesson, CLAUDE.md §5).
+        # Index for the ONE account that could see the file: retrying with
+        # permissions.list is pointless with the same token. A callable, so the normal
+        # case pays no `about.get` (tests/test_google_drive_source.py counts calls).
         account = fallback_email() if fallback_email else None
         return DocAccess.owner_only(account) if account else None
 
@@ -167,17 +130,14 @@ def _extract_docx_text(data: bytes) -> str:
 
     document = docx.Document(BytesIO(data))
     text = "\n\n".join(p.text for p in document.paragraphs)
-    # `paragraphs` skips tables entirely, so every Word table was missing from
-    # the index. Rendered as pipe tables: readable for Q&A, and the form
-    # `doctables.find_markdown_tables` keeps as rows for charts.
+    # `paragraphs` skips tables: render them as pipe tables (readable, and kept as rows).
     tables = render_docx_tables(document)
     return f"{text}\n\n{tables}" if tables else text
 
 
 def _table_document(text: str, *, name: str, sheet: bool):
-    """``(content, tables)`` for a Sheet or CSV: a column description to embed,
-    and the parsed rows for charts. A sheet whose export yields no usable
-    table is still indexed, as its raw text, exactly as before it was a table."""
+    """``(content, tables)`` for a Sheet or CSV: a column description to embed and
+    the rows for charts. No usable table: indexed as raw text."""
     from ..doctables.extract import describe, parse_csv, profile
 
     raw = parse_csv(text, name=name)
@@ -185,8 +145,7 @@ def _table_document(text: str, *, name: str, sheet: bool):
     if table is None:
         return text, None
     if sheet:
-        # `files.export` to CSV returns the FIRST tab only; saying so on the
-        # chart is the difference between a partial answer and a wrong one.
+        # CSV export is the FIRST tab only: the chart says so.
         raw = type(raw)(name=raw.name, header=raw.header, rows=raw.rows,
                         truncated=raw.truncated,
                         notes=("Only the first tab of this Google Sheet is read.",))
@@ -194,9 +153,7 @@ def _table_document(text: str, *, name: str, sheet: bool):
 
 
 def _workbook_document(data: bytes, *, name: str):
-    """``(content, tables)`` for a workbook: EVERY tab, read by the one
-    workbook reader (`doctables.extract.workbook_tables`). The content is
-    each table's column description, as for a single sheet."""
+    """``(content, tables)`` for a workbook: every tab via `doctables.extract.workbook_tables`."""
     from ..doctables.extract import describe, profile, workbook_tables
 
     raws = workbook_tables(name, data)
@@ -252,9 +209,7 @@ class GoogleDriveAdapter(SourceAdapter):
         limits = settings or GoogleSettings.from_env()
         self._max_walk_folders = max(1, limits.max_walk_folders)
         self._max_documents = max(1, limits.max_documents)
-        #: Lazily resolved connected-account address, for the unreadable-sharing
-        #: fallback. `_UNSET` distinguishes "not looked up yet" from "looked up
-        #: and Drive would not say", so a failed lookup is not retried per file.
+        #: Lazily resolved connected-account address for the fallback; `_UNSET` = not looked up yet.
         self._account: str | None | object = _UNSET
 
     # -- interface ---------------------------------------------------------
@@ -341,13 +296,8 @@ class GoogleDriveAdapter(SourceAdapter):
     # -- HTTP helpers --------------------------------------------------------
 
     def _account_email(self) -> str | None:
-        """The address this connection authenticates as, or ``None``.
-
-        Resolved ONCE per adapter and reused, because it is the same answer for
-        every file in the walk and the fallback path would otherwise spend a
-        call per unreadable document. Never raises: failing to name the account
-        only costs the fallback, which degrades to the skip that shipped first.
-        """
+        """The address this connection authenticates as, or ``None``. Once per adapter;
+        never raises (a failure just degrades the fallback to a skip)."""
         if self._account is not _UNSET:
             return self._account  # type: ignore[return-value]
         self._account = None
@@ -451,9 +401,8 @@ class GoogleDriveAdapter(SourceAdapter):
         return self._export(file_id, "text/markdown")
 
     def _sheet_document(self, file_id: str, name: str):
-        """Every tab of a Google Sheet, exported as .xlsx. Drive refuses an
-        export past its size limit; then the CSV export (first tab only) is
-        read and the chart says so, rather than indexing nothing."""
+        """Every tab of a Google Sheet, exported as .xlsx. Past Drive's export limit, the
+        CSV export (first tab only) is read and the chart says so."""
         try:
             data = self._export_bytes(file_id, _XLSX_MIME)
         except SourceError:

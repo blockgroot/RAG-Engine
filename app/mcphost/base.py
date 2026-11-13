@@ -1,16 +1,10 @@
 """Handbook's own MCP servers: a vendor's REGULAR API behind the MCP protocol.
 
-Slack's hosted MCP server accepts only internal or Marketplace apps, and
-Google's (Drive, Sheets) only projects in its Workspace Developer Preview. Their
-regular APIs have neither gate, so Handbook serves those tools itself
-(docs/plans/2026-10-22-mcp-only-actions.md), the way Onyx calls them directly.
-Agent mode still reaches them only through MCP: the presets point at
-``/mcp/<name>``, so cards, approvals, grounding and space rules are unchanged,
-and the package can move to its own service by changing that address.
+Slack's and Google's hosted MCP servers are gated, so Handbook serves those
+tools at ``/mcp/<name>``; Agent mode still reaches them only through MCP.
 
-A server holds no credentials. Each call carries the PERSON's own token as the
-bearer (their Slack or Google sign-in under Account → Agent); the server only
-forwards it to the vendor, so it can do nothing that person cannot.
+A server holds no credentials: each call's bearer is the PERSON's own token,
+only forwarded, so it can do nothing that person cannot.
 """
 
 from __future__ import annotations

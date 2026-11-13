@@ -4,10 +4,8 @@
  * The chart under an answer: an ECharts drawing, its numbers as a table, and
  * PNG/CSV downloads.
  *
- * Every number rendered here was computed by SQL on the server. Shapes and
- * ordering live in `charts/toOption.ts` (pure, checked by
- * `npm run check:charts`); ECharts itself is loaded only when a chart is on
- * screen, so a text answer never pays for it.
+ * Numbers come from SQL. Shapes live in `charts/toOption.ts`; ECharts loads
+ * only when a chart is on screen.
  */
 import dynamic from "next/dynamic";
 import { useCallback, useMemo, useRef, useState } from "react";

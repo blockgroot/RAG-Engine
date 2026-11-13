@@ -1,13 +1,9 @@
 """Email a self-hosted copy's admins once when a newer Handbook is out.
 
-The bell and Admin › Updates only tell someone who opens Handbook; an admin
-away for a week heard nothing for a week. The worker's hourly pass reads the
-same release list the bell does and mails every admin about the newest
-release, once: ``update_notices`` holds the versions already announced, and
-the row is claimed BEFORE sending so two workers never both send. If every
-send fails, the claim is released and the next pass tries again.
-
-Cloud is kept current for its companies, so it announces nothing.
+The bell reaches only someone who opens Handbook. The hourly pass mails every
+admin about the newest release once: the ``update_notices`` row is claimed
+before sending, so two workers never both send, and released if every send
+fails. Cloud announces nothing.
 """
 
 from __future__ import annotations

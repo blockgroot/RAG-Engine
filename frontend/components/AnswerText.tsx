@@ -5,9 +5,7 @@ import { LABELS } from "./ProvenanceStripe";
 const CITATION_MARKERS = /\s?(\[\d+\])+/g;
 const MARKER = /\[(\d+)\]/g;
 const BULLET = /^\s*(?:[-*]|\d+\.)\s+(.*)$/;
-// Nothing asks the model for headings, but a report-length answer routinely
-// emits them anyway — and an unhandled "## What shipped" renders as literal
-// hashes in the middle of the page. Cheaper to render them than to strip them.
+// Long answers emit headings unasked; render them rather than show literal hashes.
 const HEADING = /^\s{0,3}(#{1,4})\s+(.*)$/;
 
 type Sources = Map<number, CitedSource>;
@@ -26,9 +24,7 @@ function sourceLabel(s: CitedSource): string {
 
 function CitationMark({ source }: { source: CitedSource }) {
   const label = sourceLabel(source);
-  // Superscript, the usual reference mark. A filled chip on every sentence
-  // reads as a button and crowds a list that all cites one page; the document
-  // is named once, under the answer. Only a link taken from the stored document.
+  // A gray superscript, not a chip. Links come only from the stored document.
   const mark = <sup>{source.n}</sup>;
   return source.url ? (
     <a
@@ -132,10 +128,8 @@ function parseBlocks(text: string): Block[] {
 }
 
 export function AnswerText({ text, cited }: { text: string; cited?: CitedSource[] }) {
-  // Without a citation map (still streaming, or a turn saved before sources
-  // were kept) every marker is stripped. One document is named once under the
-  // answer, so the marks in the sentences are stripped too. Two or more keep
-  // a superscript so a sentence can point at the right line.
+  // No citation map (streaming, old turn) or one source: strip every marker.
+  // Two or more sources keep a superscript.
   const sources: Sources = new Map((cited || []).map((s) => [s.n, s]));
   const inline: Sources = sources.size > 1 ? sources : new Map();
   const cleaned = inline.size ? text : text.replace(CITATION_MARKERS, "");

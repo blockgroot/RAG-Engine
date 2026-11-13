@@ -2,15 +2,9 @@
  * The one runnable check on chart colour. From `frontend/`:
  *   npm run check:colors
  *
- * No bundler and no test framework: Node strips the types itself, which is
- * why the import carries an explicit `.ts` and why this directory is
- * excluded from tsconfig -- Next's compiler rejects that extension.
- *
- * There is no React test stack here on purpose (CLAUDE.md: do not add one as a
- * side effect of a chart), but colour assignment is pure logic with a defect
- * history -- index-based colouring made "Done" teal in one chart and orange in
- * the next -- so it gets a check that imports the REAL implementation and
- * cannot drift from it. Exits non-zero on failure.
+ * Node strips the types, so the import carries `.ts` and this directory is
+ * excluded from tsconfig. Imports the REAL implementation; exits non-zero on
+ * failure.
  */
 import { cappedCategories, categoryColors, pick } from "../chartColors.ts";
 
@@ -76,9 +70,7 @@ if (!pick(empty, null)) fail("a null category has no colour");
 console.log("ok   unnamed categories resolve");
 
 
-// 5. Categories are capped to the palette, so a legend can never carry two
-//    identical swatches. Eleven real Notion pages drew eleven slices over six
-//    colours -- five of them duplicates.
+// 5. Categories are capped to the palette: no two identical swatches.
 const eleven = [
   "Compensatory Leave Policy", "Employee Referral Policy", "Leave Policy",
   "Mental Health Policy", "Office Parties Policy", "Office Regularization Policy",

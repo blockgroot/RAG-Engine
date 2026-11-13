@@ -1,15 +1,9 @@
 """A company's own Google or Slack app (``org_connector_apps``).
 
-Our shared Google app is in Testing, so only listed test users can sign in and
-their tokens die in 7 days; publishing it means a yearly paid audit for
-``drive.readonly``. Our shared Slack app, installed in other workspaces without
-Marketplace approval, reads history at about one request a minute. A company's
-own app has neither problem: Google treats it as Internal, Slack as internal.
-Onyx and Glean ask for the same thing.
-
-The keys from ``.env`` stay the fallback: a self-hosted install's ``.env`` IS
-the company's own app. Hosted Handbook leaves those keys unset, which is what
-makes the company's own app required there.
+A shared Google app in Testing limits users and expires tokens in 7 days; a
+shared unlisted Slack app reads history at ~1 request a minute. A company's
+own app is internal to both. ``.env`` keys are the fallback (self-hosted);
+hosted leaves them unset, so there the own app is required.
 """
 
 from __future__ import annotations
@@ -53,8 +47,8 @@ def _check(provider: str) -> None:
 def app_key(org_id: str, provider: str) -> str:
     """This company's key for ``provider``, created on first use.
 
-    Created before the keys are saved because it is written into the Slack app
-    template the admin pastes before Slack shows them any keys."""
+    Needed before the keys are saved: it goes into the Slack app template.
+    """
     _check(provider)
     with get_connection() as conn:
         conn.execute(
@@ -108,12 +102,11 @@ def save_org_app(
     client_secret: str,
     signing_secret: str | None = None,
 ) -> OrgApp:
-    """Save the company's app. Existing connections must reconnect.
+    """Save the company's app and flag this provider's connections for reconnect.
 
-    A token belongs to the app that issued it: Google refuses to refresh it with
-    any other app's keys, and a Slack bot token from another app answers to
-    that app's events. So every connection of this provider in the company,
-    spaces included, is asked to reconnect, rather than failing later."""
+    A token belongs to the app that issued it (Google will not refresh it with
+    other keys; a Slack bot token answers to its own app's events).
+    """
     _check(provider)
     client_id, client_secret = client_id.strip(), client_secret.strip()
     signing_secret = (signing_secret or "").strip() or None
@@ -181,10 +174,10 @@ def has_app(org_id: str, provider: str) -> bool:
 
 
 def missing_app_reason(org_id: str, provider: str) -> str | None:
-    """Why a connection of ``provider`` cannot work: its company has no app.
+    """Why a ``provider`` connection cannot work: its company has no app.
 
-    Such a row is only flagged when its token is next used, and a Slack bot
-    token is used only by a sync, so a list showed it as healthy for weeks."""
+    A row is flagged only when its token is next used, so lists showed it healthy.
+    """
     if provider not in OWN_APP_PROVIDERS or has_app(org_id, provider):
         return None
     return f"Set up your company's own {_NAMES[provider]} app under Sources, then reconnect."

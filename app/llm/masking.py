@@ -1,17 +1,9 @@
 """Mask personal identifiers in every prompt; restore them in every reply.
 
-**Why here.** Every model call in the app — answers, rewrites, audits, live
-reads, charts, Agent drafts, ingest contextualization — goes through one of
-the two factory-built providers, so wrapping them covers all of it without
-touching a single caller. The reply is restored before it leaves this wrapper,
-so citations, link provenance, caching, storage and Slack see real values
-exactly as before.
-
-**Tool calls.** Arguments are restored before the caller sees them: a GitHub
-lookup or a draft needs the real value, never a placeholder.
-
-**Failure.** If the text cannot be checked, the call fails as an
-``LLMProviderError`` — every caller already handles that — and nothing is sent.
+Every model call goes through one of the two factory-built providers, so
+wrapping them covers all of it. Replies and tool-call arguments are
+restored before any caller sees them. If the text cannot be checked, the
+call fails as ``LLMProviderError`` and nothing is sent.
 """
 
 from __future__ import annotations

@@ -1,18 +1,6 @@
-"""LLM implementation using the official OpenAI Python client.
-
-The ``openai`` client speaks the OpenAI wire format, which most providers expose
-an endpoint for. Switching provider is a config change (``base_url`` + ``model``
-+ key) with no code change:
-
-    OpenAI   -> base_url unset (default),  model=gpt-5
-    Gemini   -> base_url=https://generativelanguage.googleapis.com/v1beta/openai/
-    Claude   -> base_url=https://api.anthropic.com/v1/
-    FreeLLMAPI / self-hosted -> base_url=http://localhost:3001/v1, model=auto
-
-Note: the Anthropic and Gemini OpenAI-compatible endpoints are provider-labelled
-as beta/testing (no prompt caching, some params dropped). If we later need those
-native features, this class can be swapped for a LiteLLM-backed one behind the
-same ``LLMProvider`` interface — nothing downstream changes.
+"""LLM implementation using the official OpenAI client against any
+OpenAI-compatible endpoint (Anthropic, Gemini, OpenRouter, self-hosted).
+Switching provider is config only: ``base_url`` + ``model`` + key.
 """
 
 from __future__ import annotations
@@ -43,9 +31,8 @@ logger = logging.getLogger(__name__)
 def _charge(model: str, usage: TokenUsage) -> None:
     """Charge the asker for a finished call (``security/ai_spend.py``).
 
-    Here, not in the callers: every model call in Handbook passes through this
-    provider, so no new call site can forget to be paid for. Before the reply
-    is checked, because a reply we reject was still billed.
+    Here, so no call site can forget. Before the reply is checked: a rejected
+    reply was still billed.
     """
     try:
         from ..security.ai_spend import charge_call
@@ -57,10 +44,8 @@ def _charge(model: str, usage: TokenUsage) -> None:
 DEFAULT_TIMEOUT = 60.0
 
 
-# Providers advertise the wait differently. Gemini's OpenAI-compatible endpoint
-# does not set Retry-After; it puts the delay in the body ("retryDelay": "41s",
-# and prose like "Please retry in 41.35s"). Read the header first, then fall
-# back to the body, so a quota rejection can be honoured rather than guessed at.
+# Gemini puts the delay in the body, not Retry-After: read the header, then
+# the body, so a quota rejection's wait is honoured.
 _RETRY_DELAY_PATTERNS = (
     re.compile(r"'?retryDelay'?\s*:\s*'?\"?(\d+(?:\.\d+)?)s"),
     re.compile(r"retry in (\d+(?:\.\d+)?)s"),
@@ -90,12 +75,8 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     return None
 
 
-#: What each (base_url, model) turned out to accept of our optional extras,
-#: learned from its own 400s (``_repair_extras``). Clients are built per
-#: request, so this lives for the process, not the client: one rejection buys
-#: the answer for every later request to that model.
-#: Keyed on our extras too: what a model taught us about one set of fields
-#: never applies to a different set (OpenRouter's required privacy fields).
+#: What each (base_url, model, extras) accepts of our optional extras,
+#: learned from its own 400s (``_repair_extras``), for the process.
 _LEARNED_EXTRAS: dict[tuple[str | None, str, str], dict | None] = {}
 
 
@@ -121,11 +102,8 @@ def _value_named(message: str, field: str):
 
 
 class OpenAICompatProvider(LLMProvider):
-    """Chat provider backed by the OpenAI client against any compatible endpoint.
-
-    Prefer building this via ``factory.build_llm_provider`` so configuration
-    comes from a single place.
-    """
+    """Chat provider backed by the OpenAI client. Build via
+    ``factory.build_llm_provider``."""
 
     def __init__(
         self,
@@ -149,36 +127,21 @@ class OpenAICompatProvider(LLMProvider):
         self.base_url = base_url
         self.timeout = timeout
         self.last_usage: TokenUsage | None = None
-        #: Non-OpenAI request fields merged into every call. Used for
-        #: OpenRouter's routing preferences (``provider.data_collection``,
-        #: ``require_parameters``) — they must ride on EVERY request rather
-        #: than an account-level setting, so a training provider can never be
-        #: routed to for one tenant's content.
+        #: Non-OpenAI fields merged into every call (OpenRouter's no-training and
+        #: tool-support preferences ride on EVERY request).
         self._extra_body = dict(extra_body) if extra_body else None
         #: The extras as configured, before anything a model taught us.
         self._configured_extras = self._extra_body
         if self._extra_body:
             self._extra_body = _LEARNED_EXTRAS.get(
                 _learned_key(base_url, model, self._extra_body), self._extra_body)
-        #: May ``extra_body`` be DROPPED if the endpoint rejects the request?
-        #:
-        #: True only where the extras are a per-vendor WORKAROUND. NVIDIA NIM
-        #: is why this exists: we send ``chat_template_kwargs`` because its
-        #: DeepSeek-v4 reasoning models hang without it, and NIM answers that
-        #: field with a 400 for every model family that does not read it — so
-        #: a fix for one model made every other NVIDIA model unusable, and the
-        #: admin's "Test and save" failed with the provider's words about a
-        #: field they never typed.
-        #:
-        #: False for OpenRouter, and that is load-bearing: its extras carry
-        #: ``data_collection: "deny"``. Retrying without them would send the
-        #: tenant's retrieved private content to a provider that may train on
-        #: it — the request must FAIL instead (CLAUDE.md §3).
+        #: May ``extra_body`` be DROPPED if the endpoint rejects it? True only for
+        #: per-vendor workarounds (NVIDIA's field 400s on most of its models).
+        #: False for OpenRouter: its extras carry ``data_collection: "deny"``, so
+        #: the request must FAIL rather than reach a training provider.
         self._extra_body_optional = bool(extra_body_optional)
-        #: The model the endpoint said actually answered. With a router or a
-        #: provider fallback this differs from ``model``, and it is the only
-        #: honest thing to show a reader — "auto" is not an answer to "which
-        #: model wrote this?".
+        #: The model the endpoint said answered (differs from ``model`` behind a
+        #: router): the honest label for a reader.
         self.last_resolved_model: str | None = None
         # base_url=None makes the client use OpenAI's default endpoint.
         self._client = OpenAI(
@@ -186,20 +149,14 @@ class OpenAICompatProvider(LLMProvider):
             base_url=base_url,
             timeout=timeout,
             default_headers=default_headers or None,
-            # The SDK retries twice by default, so `timeout` is really 3x that
-            # wall clock. These routes run in a shared threadpool, so an
-            # unresponsive endpoint must be allowed to fail fast.
+            # The SDK retries twice, so `timeout` is ~3x wall clock; shared threadpool,
+            # so fail fast.
             **({} if max_retries is None else {"max_retries": max_retries}),
         )
 
     def _with_extras(self, kwargs: dict) -> dict:
-        """One request's kwargs plus the per-provider ``extra_body``.
-
-        Returns a NEW dict rather than mutating the caller's: the retry in
-        ``_create`` re-sends the original kwargs without extras, and a mutating
-        merge left ``extra_body`` on them — so the "retry without it" resent
-        exactly the request that had just been rejected.
-        """
+        """One request's kwargs plus ``extra_body``, as a NEW dict: ``_create``
+        re-sends the original kwargs, and mutating them resent the rejected request."""
         if not self._extra_body:
             return kwargs
         return {
@@ -210,15 +167,9 @@ class OpenAICompatProvider(LLMProvider):
     def _create(self, kwargs: dict):
         """One request, retried with optional extras adjusted if the endpoint 400s.
 
-        Both call sites go through here rather than each handling it, because
-        the failure is per-endpoint, not per-call: an endpoint that rejects our
-        extra fields rejects them on the probe, on chat and on a tool call
-        alike, and fixing it in one place is the only version that cannot drift.
-
-        The repair is STICKY (``_LEARNED_EXTRAS``) so one 400 buys the
-        knowledge for the process instead of paying a rejected request on
-        every question. Logged at warning, because a silently modified request
-        is how a provider quirk becomes folklore.
+        One place for every call (an endpoint rejects our extras everywhere).
+        The repair is STICKY per process (``_LEARNED_EXTRAS``) and logged at
+        warning.
         """
         try:
             return self._client.chat.completions.create(**self._with_extras(kwargs))
@@ -226,8 +177,8 @@ class OpenAICompatProvider(LLMProvider):
             fixed = self._repair_extras(exc)
             if fixed is False:
                 raise
-            # Kept only if the retry works: a 400 that was not about our
-            # fields (a prompt too long) must not cost them for good.
+            # Kept only if the retry works: a 400 about something else (prompt too
+            # long) must not cost our fields for good.
             response = self._client.chat.completions.create(
                 **({**kwargs, "extra_body": {**fixed, **kwargs.get("extra_body", {})}} if fixed else kwargs))
             logger.warning("%s / %s: our request fields %s did not work; using %s from now on.",
@@ -238,17 +189,12 @@ class OpenAICompatProvider(LLMProvider):
             return response
 
     def _repair_extras(self, exc: Exception):
-        """What to send instead of our OPTIONAL extras after this 400, or
-        ``False`` when they are required (OpenRouter's ``data_collection:
-        "deny"`` must fail, never be dropped) or there are none.
+        """What to send instead of our OPTIONAL extras after this 400, or ``False``
+        when they are required (OpenRouter's) or there are none.
 
-        No model or vendor is named here. Our extras are per-vendor workarounds
-        (thinking or reasoning off, a template switch); a model may want another
-        form, or none. For each field of ours the error names: the value it says
-        to send instead (Sonnet 5.5 names ``"thinking": {"type":
-        "between_tools"}``), else that field dropped. A 400 naming none of our
-        fields: try without them. ``_create`` keeps the answer only if the
-        retry works, then remembers it per (base_url, model) for the process.
+        No model is named here. Per field the error names: the value it says to
+        send instead, else the field dropped; naming none of ours, try without
+        them. ``_create`` keeps it only if the retry works.
         """
         if not (self._extra_body and self._extra_body_optional):
             return False
@@ -296,8 +242,7 @@ class OpenAICompatProvider(LLMProvider):
         if not response.choices:
             raise LLMProviderError("LLM returned no choices in the response")
 
-        # Recorded before content handling so a resolved model is available
-        # even on a response we go on to reject as empty.
+        # Recorded first, so the model is known even on a reply rejected as empty.
         self.last_resolved_model = getattr(response, "model", None) or self.model
 
         usage = response.usage
@@ -310,12 +255,8 @@ class OpenAICompatProvider(LLMProvider):
         choice = response.choices[0]
         content = choice.message.content
         if content is None or not str(content).strip():
-            # Name the model and WHY, because the bare message cost a
-            # production debugging session: a reasoning model spends the whole
-            # ``max_tokens`` budget on internal reasoning and returns empty
-            # content with finish_reason="length". Without these fields the log
-            # says only "empty content" and gives no hint which of the four
-            # selectable models did it, or that the cap was the cause.
+            # Name the model and why: a reasoning model can spend all of ``max_tokens``
+            # thinking and return empty content with finish_reason="length".
             finish = getattr(choice, "finish_reason", None)
             used = getattr(response.usage, "completion_tokens", None) if response.usage else None
             detail = f"model={self.last_resolved_model or self.model}"
@@ -331,8 +272,7 @@ class OpenAICompatProvider(LLMProvider):
                 )
             raise LLMProviderError(f"LLM returned an empty message content: {detail}")
         if getattr(choice, "finish_reason", None) == "length":
-            # Non-empty but CUT: the reader sees an answer ending mid-word
-            # ("a combination of pre-") and nothing else says why.
+            # Non-empty but CUT at the cap: log it, nothing else says why.
             self.last_truncated = True
             logger.warning(
                 "llm.truncated model=%s max_tokens=%s completion_tokens=%s -- raise "
@@ -381,8 +321,7 @@ class OpenAICompatProvider(LLMProvider):
         if not response.choices:
             raise LLMProviderError("LLM returned no choices in the response")
 
-        # Recorded before content handling so a resolved model is available
-        # even on a response we go on to reject as empty.
+        # Recorded first, so the model is known even on a reply rejected as empty.
         self.last_resolved_model = getattr(response, "model", None) or self.model
 
         usage = response.usage

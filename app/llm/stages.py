@@ -1,10 +1,5 @@
-"""Canonical names for LLM call stages (Phase 19 cost logging + aux routing).
-
-Every ``RagPipeline``/``contextualize.py`` call site that names a stage (for
-``log_llm_call`` and for picking the main vs. aux model) imports the constant
-here instead of retyping the string, so the aux-routing set below can never
-silently drift from what a call site actually passes.
-"""
+"""Canonical names for LLM call stages (cost logging, main vs aux model).
+Call sites import these so the sets below cannot drift from what they pass."""
 
 from __future__ import annotations
 
@@ -22,9 +17,8 @@ STAGE_WEB_ANSWER = "web-answer"
 STAGE_AUDIT = "audit"
 STAGE_MEMORY_EXTRACT = "memory-extract"
 
-# Stages that use the auxiliary (cheaper) model when one is configured
-# (``LLM_AUX_MODEL``, Phase 19) — cheap/mechanical steps, never the final
-# grounded/web answer generation.
+# Stages on the auxiliary (cheaper) model when configured: mechanical steps,
+# never the answer.
 AUX_LLM_STAGES = frozenset(
     {
         STAGE_REWRITE,
@@ -39,24 +33,10 @@ AUX_LLM_STAGES = frozenset(
 )
 
 
-# Stages whose output the USER ACTUALLY READS. Only these follow a member's
-# model choice (Multi-Model Selection); every other stage stays on the
-# deployment's configured model.
-#
-# The split is not about cost, it is about what a selected model is allowed to
-# influence. Rewriting a follow-up, deciding whether to search the web,
-# classifying tone, and — above all — AUDITING an answer for groundedness are
-# machinery: the grounding guarantees depend on them behaving consistently, and
-# handing them to whichever free model a member picked from a dropdown would
-# make the product's core promise vary per request. A groundedness auditor
-# running on an unknown model is worse than no auditor, because it still
-# reports a verdict.
-#
-# It also means one OpenRouter call per question rather than several, which
-# matters on a 50-request/day free tier.
-#
-# EMPATHY_OPENER is here because it is prose prepended to the answer — the
-# reader sees one voice, so it must come from the same model as the answer.
+# Stages whose output the reader SEES: only these follow a member's model
+# choice. Rewrite, web decision, tone and above all the groundedness audit
+# are machinery the guarantees rest on, so they stay on the configured
+# model. EMPATHY_OPENER is prose in the answer, so it uses the answer's model.
 USER_FACING_LLM_STAGES = frozenset(
     {
         STAGE_GENERATE,

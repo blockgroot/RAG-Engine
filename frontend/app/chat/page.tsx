@@ -120,25 +120,19 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // The deployment's own model name, shown on the default option instead of
   // "Auto". Falls back until /chat/models answers.
   const [defaultLabel, setDefaultLabel] = useState("Auto");
-  // "auto" = send no model at all, i.e. the deployment's configured default.
-  // Restored from localStorage so a preference survives a reload; a stale id
-  // that has since left the catalog is discarded on load rather than sent and
-  // rejected with a 400.
+  // "auto" sends no model (the deployment default). A stored id no longer in
+  // the catalog is dropped on load, not sent and rejected.
   const [model, setModel] = useState<string>("auto");
-  // Chart mode: like attaching a file, a choice made beside the message box.
-  // On, the answer is a chart or a plain refusal; off, charts are never
-  // guessed, so a normal question skips the chart check entirely.
+  // Chart mode: the answer is a chart or a refusal. Off, charts are never guessed.
   const [chartMode, setChartMode] = useState(false);
-  // Deep analysis: the top documents are read nearly whole, for broad
-  // questions (a whole project, a summary, "list everything"). More tokens per
-  // answer, no extra AI call. Never on together with Chart.
+  // Deep analysis: top documents read nearly whole for broad questions. More
+  // tokens, no extra AI call. Never on with Chart.
   const [deepMode, setDeepMode] = useState(false);
   // Deep's opt-in for company-wide and list questions: reads many documents as
   // well as deeply, and answers longer. Costs more, so it is off unless chosen.
   const [extraEffort, setExtraEffort] = useState(false);
-  // Act: ask Handbook to DO something in a connected tool. A separate mode and
-  // a separate endpoint (/act): the reply is a draft card, nothing is sent
-  // until the person approves it, and the turn is not saved as a chat answer.
+  // Agent mode (/act): replies with draft cards; nothing is sent until approved,
+  // and the turn is not saved as a chat answer.
   const [actMode, setActMode] = useState(false);
   // In a space, Act also needs that space's own switch (its owner's choice,
   // within what the company allows). Company-wide, the company switch alone.
@@ -160,25 +154,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const [workspaceRole, setWorkspaceRole] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
-  // Attachments live for this conversation only. The chip row is the ONLY
-  // place the corpus-bypass is visible, so it doubles as the explanation for
-  // why the routing pill says "attachment" instead of naming a source.
+  // Attachments live for this conversation only; the chips explain why the
+  // routing pill says "attachment".
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  // True when this page load adopted a conversation from a previous one. The
-  // transcript is NOT restored (see the resume effect), so the UI has to say
-  // so rather than present an empty log as the whole chat.
-  // Bumped after each answer so a brand-new chat shows up in the list without
-  // a reload; the list is otherwise loaded once per scope.
+  // Bumped after each answer so a new chat appears in the list without a reload.
   const [historyKey, setHistoryKey] = useState(0);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  // True while files are dragged over the page: the whole chat is the drop
-  // target, as in ChatGPT and Claude, so nobody has to aim at the + button.
+  // True while files are dragged over the page: the whole chat is the drop target.
   const [dragging, setDragging] = useState(false);
   const attachRef = useRef<(files: FileList | null) => void>(() => undefined);
-  // The names of files currently in flight. A boolean is enough to disable
-  // a button but not to tell someone WHICH of the four files they picked is
-  // still going, which is the only question they have while waiting.
+  // Names of files in flight, so the person sees WHICH are still uploading.
   const [pending, setPending] = useState<string[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -384,23 +370,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // key would hand a space's chat id to company Ask, where it 404s.
   const convKey = `chat.conversation.${workspaceId ?? "org"}`;
 
-  // Resume the conversation this tab was last using, and re-show its files.
-  //
-  // `conversationId` is a ref, so before this a refresh silently started a new
-  // chat and the old one became UNREACHABLE -- with its attachments still
-  // attached to it. The member could not remove a file they had uploaded,
-  // because the x that removes it had gone with the page. The sweep in
-  // `attachments/store.py` bounds how long that text lives; this is what gives
-  // them the control back.
-  //
-  // sessionStorage, not localStorage: it survives a refresh and dies with the
-  // tab, which is how people already think about a chat. localStorage would
-  // resume last week's conversation in a new window.
-  //
-  // The transcript is deliberately NOT restored. `set_summary_and_prune`
-  // DELETES older turns once they are folded into the summary, so what is
-  // still in `conversation_turns` is a WINDOW, not the conversation -- showing
-  // it would draw a chat that appears to have started later than it did.
+  // Open a conversation with its transcript and files, so a refresh never
+  // strands uploaded files the person can no longer remove.
   const openConversation = useCallback(
     async (id: string) => {
       conversationId.current = id;
@@ -412,11 +383,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       } catch {
         /* storage blocked; the chat still works */
       }
-      // The FULL transcript, not a window. `set_summary_and_prune` used to
-      // delete folded turns, so this could only ever have drawn the tail of a
-      // conversation while looking like the whole of it; the fold now marks
-      // turns instead (`conversations.folded_through`), which is what makes
-      // reopening a chat honest.
+      // The FULL transcript: folding marks turns (`folded_through`), never deletes.
       const [turns, files] = await Promise.all([
         api.getConversation(id, workspaceId).then((r) => r.turns).catch(() => []),
         api.listAttachments(id, workspaceId).then((r) => r.attachments).catch(() => []),
@@ -439,9 +406,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     [convKey, workspaceId],
   );
 
-  // Resume the conversation this tab was last using. sessionStorage, not
-  // localStorage: it survives a refresh and dies with the tab, which is how
-  // people already think about a chat.
+  // Resume this tab's last conversation. sessionStorage: survives a refresh,
+  // dies with the tab.
   useEffect(() => {
     let saved: string | null = null;
     try {
@@ -450,9 +416,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       // Private mode / blocked storage. Nothing to resume; not an error.
     }
     if (!saved) return;
-    // Validated before it is trusted, the `chat.model` pattern above: a stale
-    // id (deleted chat, different account, another scope) 404s and is dropped
-    // rather than sent with the next question.
+    // Validated first: a stale id 404s and is dropped, never sent.
     api
       .getConversation(saved, workspaceId)
       .then(() => openConversation(saved as string))
@@ -476,9 +440,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setAttachments([]);
     setActiveConversation(null);
     setUploadError(null);
-    // Drop ?c= or the param effect re-opens the chat we just left. `replace`,
-    // not `push`: "new chat" is not a place to go back to — it is an empty
-    // state that the previous chat's entry already covers.
+    // Drop ?c= or the param effect re-opens the chat we left. `replace`: an
+    // empty chat is no back-button entry.
     if (searchParams.get("c")) router.replace(pathname);
   }
 
@@ -486,26 +449,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const conversationParam = searchParams.get("c");
 
   useEffect(() => {
-    // Only open a conversation that is not ALREADY open. Without this guard,
-    // `ensureConversation` writing the new id into the URL bounced straight
-    // back here and re-opened the chat that was mid-answer: `openConversation`
-    // replaces `messages` with the server's turns, the answer is not stored
-    // yet, so the transcript emptied — taking the question and the streaming
-    // bubble with it — and the next token indexed `messages[-1]` of an empty
-    // array and threw. The screen reset, then went white.
-    //
-    // `conversationId.current` is assigned before the `router.replace`, so by
-    // the time this runs the ids already match and it correctly does nothing.
+    // Only open a conversation not ALREADY open: re-opening one mid-answer
+    // empties the transcript and the next token throws. `conversationId.current`
+    // is set before `router.replace`, so a new chat's id already matches.
     if (conversationParam && conversationParam !== conversationId.current) {
       void openConversation(conversationParam);
     }
   }, [conversationParam, openConversation]);
 
-  // Only "new chat" is an event now. Opening a conversation goes through the
-  // URL (`?c=`), so the `open-conversation` listener that used to live here
-  // had no dispatcher left — a second, invisible way to change which chat is
-  // showing, which is exactly how the address bar and the transcript drifted
-  // apart in the first place.
+  // Only "new chat" is an event; opening a chat goes through the URL (`?c=`),
+  // the one source of truth for which chat shows.
   useEffect(() => {
     function onNew() {
       startNewChat();
@@ -536,11 +489,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       const { conversation_id } = await api.createConversation(workspaceId);
       conversationId.current = conversation_id;
       setActiveConversation(conversation_id);
-      // The URL is the source of truth for WHICH chat is open, so a chat born
-      // from typing a question has to appear there too -- otherwise a refresh
-      // lands on an empty chat while the transcript sits one id away.
-      // `replace`: the empty state before the first question is not a place
-      // worth a back-button entry.
+      // The URL says WHICH chat is open, so a new chat goes there too or a
+      // refresh lands empty. `replace`: no back-button entry for the empty state.
       router.replace(`${pathname}?c=${encodeURIComponent(conversation_id)}`);
       try {
         sessionStorage.setItem(convKey, conversation_id);
@@ -612,9 +562,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       return;
     }
     try {
-      // ONE request for the whole selection. Uploading in a loop and stopping
-      // at the first failure made a single bad file cost every file after it,
-      // and the member could not tell which one was at fault.
+      // ONE request for the selection, so one bad file never costs the rest.
       const result = await api.uploadAttachments(convId, Array.from(files), workspaceId);
       setAttachments((prev) => [...prev, ...result.attachments]);
       if (result.rejected.length > 0) {
@@ -703,9 +651,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
-    // Always create a conversation now. Which agent answers is decided by the
-    // backend, per question, including GitHub. The id is what the history
-    // list reopens.
+    // Always create a conversation; the backend picks the agent per question.
     const convId = await ensureConversation();
 
     await streamChat(
@@ -723,10 +669,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         },
         onToken: (chunk) => {
           setMessages((prev) => {
-            // Spreading `prev[-1]` throws, and a TypeError inside a React
-            // updater takes the whole page white rather than dropping one
-            // token. Anything that empties the transcript mid-stream is a bug
-            // worth fixing at its source, but it must not cost the app.
+            // Spreading `prev[-1]` of an empty list throws and blanks the page;
+            // drop the token instead.
             if (prev.length === 0) return prev;
             const next = [...prev];
             const last = next[next.length - 1];
@@ -766,10 +710,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   }
 
-  // "Open interactive chart" from Slack: /chat?mode=chart&q=... asks the
-  // question here, once, as whoever opened it -- their own access decides
-  // what the chart shows. Two steps so Chart mode (and a chart-capable model)
-  // is in place before the question goes.
+  // Slack's "Open interactive chart" (/chat?mode=chart&q=...) asks once, as the
+  // clicker. Two steps so Chart mode is on before the question goes.
   useEffect(() => {
     if (!workspaceId || !me?.act_enabled) {
       setSpaceActOn(true);
@@ -889,10 +831,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     );
   }
 
-  // One box, so one set of copy. It says what the reader gets, not how the
-  // product works: which source answered is shown on the answer itself, and
-  // explaining the routing here read like release notes rather than an
-  // invitation to type.
+  // One box, one set of copy: what the reader gets, not how routing works.
   const connectedNames = [
     notionAvailable && "Notion",
     driveAvailable && "Drive",
@@ -1124,9 +1063,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 <ChatMessageView
                   message={m}
                   conversationId={conversationId.current}
-                  // The question this answer replied to is the message before
-                  // it, and only the page knows that — a bubble holds one
-                  // message.
+                  // The question is the previous message; a bubble holds only one.
                   question={messages[i - 1]?.role === "user" ? messages[i - 1].text : ""}
                   workspaceId={workspaceId}
                   onEnableChart={() => toggleChartMode(true)}

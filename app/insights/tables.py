@@ -1,18 +1,10 @@
 """Charts of tables inside documents: offering them, and validating a pick.
 
-The chart classifier (`resolve.py`) sees a handful of tables the ASKER may
-open, as request-local handles (``T1``, ``T2``) -- the model never types a
-database id, and an invented handle resolves to nothing (the
-`livetools/handles.py` rule). It picks a table and names columns BY THEIR
-HEADER TEXT; this module maps each name to the table's own column key and
-refuses, naming the options, anything that does not fit: a sum of a text
-column, a grouping by free text, a filter on a number.
-
-Which tables are offered is the same merge Ask uses: the question against
-each table's document embedding, and the any-word keyword match on that
-document's text and title. Reciprocal rank fusion orders them. A table is
-never dropped for a low score: a page that is mostly numbers embeds poorly,
-and the words the asker used are what still find it.
+The classifier sees tables the ASKER may open as request-local handles
+(``T1``...), never database ids; an invented handle resolves to nothing. It
+names columns BY HEADER; this module maps them to column keys and refuses,
+naming the options, anything that does not fit. Tables are offered by RRF of
+document cosine and Ask's keyword match, never dropped for a low score.
 """
 
 from __future__ import annotations
@@ -23,12 +15,9 @@ from dataclasses import dataclass
 from ..doctables import store as table_store
 from ..doctables.store import AGGREGATES, TableRef
 
-#: How many tables a chart question may see. At 6, then 10, the leads sheet was
-#: not among them: a sheet embeds only its column names, so "revenue by region"
-#: or "target vs achieved" matched its "Deal Value" by nothing, and pages with
-#: many tables ranked above it. Only the model can tell those apart, so it is
-#: shown many -- the first ``FULL_DETAIL`` with their values, the rest as one
-#: short line of headers (``catalogue(full=...)``).
+#: How many tables a chart question may see: a sheet embeds only its column
+#: names, so at 6 and 10 the right one was missed; the model tells them apart.
+#: The first ``FULL_DETAIL`` carry values, the rest headers only.
 # ponytail: one ranked list capped here; a two-step pick when scopes hold far more tables.
 MAX_OFFERED = 30
 FULL_DETAIL = 8
@@ -41,10 +30,8 @@ MEASURES = ("count",) + tuple(AGGREGATES)
 MAX_FILTER_VALUES = 6
 
 def distinct(tables: list[TableRef]) -> list[TableRef]:
-    """One of each copy of a sheet: the same title but for a file extension
-    ("Sales Targets 2026.csv"), the same columns and the same row count. Two
-    copies took two of the six chart slots and pushed the leads sheet out. A
-    template's monthly reports differ in title, so they all stay."""
+    """One of each copy of a sheet (title equal but for a file extension, same
+    columns and row count): copies pushed the right sheet out of the list."""
     def stem(text: str | None) -> str:
         return re.sub(r"\.[a-z0-9]{2,5}$", "", (text or "").strip().lower())
 
@@ -62,13 +49,9 @@ def distinct(tables: list[TableRef]) -> list[TableRef]:
 def document_similarity(
     question: str, tables: list[TableRef], *, org_id: str, workspace_id: str | None,
 ) -> tuple[dict[str, float], dict[str, float]] | None:
-    """Cosine and keyword score of the question against each table's document.
-
-    ``(cosine, keywords)`` by document id. The keyword score is the any-word
-    match Ask uses, on the chunk text or the document title, whichever is
-    stronger. ``None`` when it cannot be measured (no embedder, no database):
-    the caller then offers the newest tables instead.
-    """
+    """``(cosine, keywords)`` of the question per table's document id; keywords
+    are Ask's any-word match on chunk text or title. ``None`` when it cannot be
+    measured: the caller offers the newest tables."""
     ids = sorted({t.document_id for t in tables if t.document_id})
     if not question or not ids:
         return {}, {}
@@ -110,10 +93,8 @@ def _words(text: str) -> set[str]:
 
 
 def label_hits(question: str, table: TableRef) -> int:
-    """How many of the question's words are the table's OWN labels: its name,
-    its column names and the values seen in them. "Units by each plant" finds
-    the table with a Plant column among eleven tables of one report, which a
-    document-level score cannot tell apart. The data's words, not a list."""
+    """How many of the question's words are the table's OWN labels (name,
+    columns, values seen), telling apart tables of one report. No list."""
     own = _words(table.name)
     for c in table.columns:
         own |= _words(str(c.get("name", "")))
@@ -129,11 +110,8 @@ def rank(
 ) -> list[TableRef]:
     """Tables closest to the question first, capped at ``limit``.
 
-    ``scores`` is the cosine half of ``document_similarity``. Below ``floor``
-    is order, never removal. ``keywords`` is the any-word half; the two lists
-    are merged with the same reciprocal-rank fusion Ask uses, so a page the
-    question names can lead even when its text embeds as numbers. ``None``
-    scores (unmeasurable) keep the given order -- newest document first.
+    Cosine and keyword lists merged by Ask's reciprocal-rank fusion; below
+    ``floor`` is order, never removal. ``None`` scores keep newest-first.
     """
     if scores is None:
         return list(tables)[:limit]
@@ -172,13 +150,9 @@ def rank(
 
 
 def _documents_first(ordered: list[TableRef], limit: int) -> list[TableRef]:
-    """At most ``PER_DOCUMENT`` tables of one document until every ranked
-    document had its turn, then the rest in order.
-
-    A document's similarity is shared by all its tables, so one page with
-    seven tables took five of ten slots and the leads sheet the question was
-    about was never offered. A page the asker NAMED is offered whole by the
-    caller (``routing._document_tables``), before this list."""
+    """At most ``PER_DOCUMENT`` tables per document until every document had
+    its turn, then the rest: one page's tables share its score and crowded
+    out the rest. A NAMED page is offered whole by the caller first."""
     taken: list[TableRef] = []
     count: dict[str, int] = {}
     later: list[TableRef] = []
@@ -199,10 +173,8 @@ def _typed_note(table: TableRef) -> str:
 
 
 def catalogue(tables: list[TableRef], *, full: int | None = None) -> str:
-    """The prompt section: one line per offered table, handle first.
-
-    The first ``full`` (all, when None) carry each column's type and values;
-    the rest only their headers, so a long list stays short in the prompt."""
+    """The prompt section, one line per table: the first ``full`` (all when
+    None) with types and values, the rest headers only."""
     lines = []
     for i, table in enumerate(tables, start=1):
         if full is not None and i > full:
@@ -294,10 +266,8 @@ def _find(table: TableRef, name, *, types: tuple[str, ...], role: str) -> str | 
 
 
 def _holding(table: TableRef, values: list[str]) -> str | None:
-    """The one category column whose listed values hold every one of ``values``.
-
-    Only a column whose samples are complete can say a value is absent; two
-    columns holding them all name neither."""
+    """The one category column whose complete samples hold every one of
+    ``values``; two such columns name neither."""
     found = []
     for c in table.columns:
         known = {str(x).lower() for x in c.get("samples") or ()}
@@ -342,9 +312,8 @@ def _phrase(text: str) -> str:
 def pick_named(table: TableRef, question: str, requested: str | None) -> TablePick:
     """A chart of the one table the question named, when the model did not pick it.
 
-    A column header is used when that header is a whole phrase in the
-    question. A single column of that type is used when the question names
-    none. Two unnamed candidates are refused, with their names.
+    A header that is a whole phrase in the question is used, else the single
+    column of that type; two unnamed candidates are refused by name.
     """
     asked = f" {_phrase(question)} "
 
@@ -388,10 +357,8 @@ def pick_named(table: TableRef, question: str, requested: str | None) -> TablePi
 
 def table_shape(table: TableRef, group_by: str | None, split_by: str | None,
                 requested: str | None) -> str:
-    """The requested shape when this table's form allows it, else the default.
-
-    A date breakdown is a time axis, with the split (if any) as its series;
-    otherwise each breakdown counts (``registry.shapes_for``)."""
+    """The requested shape when this table's form allows it
+    (``registry.shapes_for``), else the default."""
     from .registry import shapes_for
 
     timed = bool(group_by) and (table.column(group_by) or {}).get("type") == "date"
@@ -407,12 +374,9 @@ def table_shape(table: TableRef, group_by: str | None, split_by: str | None,
 
 
 def prose_chart(table: TableRef) -> TablePick | None:
-    """The one chart of a table just read from sentences, or None.
-
-    One number column. When a second category is a period (Q1, 2026), the
-    other category is the series, which is a grouped bar. Two number columns
-    are not guessed between.
-    """
+    """The one chart of a table read from sentences, or None. One number
+    column; a period category makes the other the series. Two number columns
+    are not guessed between."""
     from ..doctables.extract import PERIOD_TOKEN
 
     categories = [c for c in table.columns if c.get("type") == "category"]
@@ -466,9 +430,8 @@ def is_period_filter(table: TableRef, key: str, value) -> bool:
 def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     """Validate the model's table pick. None = it did not pick a table.
 
-    Raises ``TableRefusal`` for a pick that names a real table but does not
-    fit it. A handle that was never offered is not a table at all, so it
-    returns None and the ordinary metric path decides.
+    Raises ``TableRefusal`` for a real table the pick does not fit; a handle
+    never offered returns None and the metric path decides.
     """
     handle = data.get("table")
     if not isinstance(handle, str) or handle.strip().upper() not in handles:
@@ -556,13 +519,9 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
 
     requested = data.get("chart") if isinstance(data.get("chart"), str) else None
     if group_by is None:
-        # No breakdown is one bar of every row added up, labelled with
-        # nothing: "tickets per month" came back from Claude Haiku with the
-        # month in the activity `period` field and no column, and drew 11,050
-        # under "Unknown". A table's axis is its first column that can be one
-        # (a read page's period, a real table's row label); a date column
-        # first when there is exactly one, since that IS a time axis.
-        # A date filtered to a period is still the time axis it was.
+        # With no breakdown, the axis is the first column that can be one (the
+        # only date column first), not one unlabelled bar of every row. A date
+        # filtered to a period stays the time axis.
         filtered = {k for k, v in filters if not is_period_filter(table, k, v)}
         dates = [c["key"] for c in table.columns if c.get("type") == "date"]
         axis = [c["key"] for c in table.columns

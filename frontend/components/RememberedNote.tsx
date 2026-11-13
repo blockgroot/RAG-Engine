@@ -6,10 +6,7 @@ import { api } from "@/lib/api";
 
 /**
  * "Remembered: works in the Bangalore office · Undo".
- *
- * Personal memory is saved automatically, and this line is what keeps that
- * from being silent: the person sees exactly what was kept, in the moment, and
- * one click takes it back. Everything remembered is also on the account page.
+ * Memory is saved automatically; this shows what was kept, with one-click undo.
  */
 export function RememberedNote({ facts }: { facts: { id: string; text: string }[] }) {
   const [kept, setKept] = useState(facts);

@@ -1,34 +1,14 @@
-"""Lightweight query spelling normalization (Phase 17).
+"""Lightweight query spelling normalization.
 
-Why this shape
---------------
-First-time / standalone questions were embedded raw. Only conversational
-follow-ups get an LLM rewrite, and recovery spelling only fires *after* a
-gate miss or refusal — so a typo'd but answerable question can rank the right
-chunk mid-pool and never recover (ARCHITECTURE.md: "protien suppliments
-reimbersed" at ~#18–24).
+A typo'd question can rank the right chunk mid-pool, and an always-on LLM
+rewrite would cost every request. So: SymSpell against the org's own chunk
+vocabulary, seeded with common query words.
 
-An always-on LLM rewrite would fix phrasing but add a permanent latency/cost
-regression on every request — against this project's preference for the
-cheapest mechanism that works (same reasoning as retrieval-reuse using cosine
-instead of an LLM).
-
-Choice: **SymSpell against the org's own chunk vocabulary** (``symspellpy``),
-seeded with a small set of common English *query* words.
-- Local, deterministic, milliseconds, no API key.
-- Corrects toward *document* terms (reimbursed, supplements, …) — the
-  vocabulary retrieval actually needs to match.
-- Common question words (many, what, does, …) are seeded so they are never
-  "corrected" toward a rare corpus near-miss (e.g. many→main when "main"
-  appears once in a policy). Corpus terms are frequency-boosted so genuine
-  domain typos still prefer document spellings when edit distance ties.
-- Only replaces tokens that are missing from the combined vocab and have a
-  close suggestion (edit distance ≤ configured max, default 1).
-- Capitalized OOV tokens are left alone (named entities like Cigna/Niva);
-  distance-2 was observed to map them onto unrelated corpus words.
-
-Not in scope here: LLM rephrase toward document style, HyDE, or decomposition.
-Those remain optional escalations if corpus-vocab spelling proves insufficient.
+- Local, deterministic, milliseconds; corrects toward document terms.
+- Seeded question words are never "corrected" to a rare corpus near-miss;
+  corpus terms are boosted so real domain typos prefer document spellings.
+- Only OOV tokens with a suggestion within max edit distance (default 1).
+- Capitalized OOV tokens (names) are left alone.
 """
 
 from __future__ import annotations
@@ -47,10 +27,8 @@ logger = logging.getLogger(__name__)
 
 _TOKEN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+|[^\w\s]", re.UNICODE)
 
-# High-frequency question English that rarely appears in terse policy text.
-# Without these, SymSpell treats them as OOV and can map them onto a rare
-# corpus near-miss (observed: "many" → "main"). Keep this list query-shaped,
-# not a full dictionary — domain typos must still resolve to corpus terms.
+# Question English that terse policy text rarely holds; without it SymSpell
+# maps "many" to "main". Query-shaped, not a full dictionary.
 _COMMON_QUERY_ENGLISH: frozenset[str] = frozenset(
     {
         "about",
@@ -149,14 +127,9 @@ _ENGLISH_SEED_FREQ = 2
 
 
 def _looks_like_inflection_variant(original: str, suggestion: str) -> bool:
-    """True when suggestion only appends a verbal/adverbial inflection.
-
-    Blocks provide→provided when the corpus uses a different tense. Does *not*
-    treat a lone trailing ``s``/``es`` as inflection — that also matches
-    truncated typos (wellnes→wellness) which we *do* want to fix. Plural ``s``
-    damage is instead avoided by seeding common query nouns in
-    ``_COMMON_QUERY_ENGLISH``.
-    """
+    """True when the suggestion only appends a verbal/adverbial inflection
+    (provide→provided). A trailing ``s``/``es`` is not counted: that also fixes
+    truncated typos (wellnes→wellness)."""
     a, b = original.lower(), suggestion.lower()
     if a == b:
         return True
@@ -195,16 +168,10 @@ def build_vocab_counts(texts: Iterable[str], *, min_word_length: int) -> Counter
 
 
 class CorpusSpellNormalizer:
-    """Per-org SymSpell corrector built from that org's stored chunk text.
+    """Per-org SymSpell corrector built from that org's chunk text.
 
-    ``_by_org`` is an LRU cache bounded at ``settings.cache_max_orgs`` — kept
-    unbounded for a long time (CLAUDE.md's query-latency section flagged this
-    as a known, never-fixed slow-leak: each org's dictionary is cached for the
-    life of the process and nothing ever evicted it). A single-org or
-    small-org deployment never touches the eviction path at all; this only
-    changes behavior once more orgs have queried than the cap allows, and even
-    then the only cost is rebuilding a dictionary on that org's next query
-    (the same one-time cost every org already pays on its first query).
+    ``_by_org`` is an LRU bounded at ``settings.cache_max_orgs``; an evicted
+    org rebuilds its dictionary on its next query.
     """
 
     def __init__(self, settings: QueryNormSettings | None = None) -> None:
@@ -231,15 +198,9 @@ class CorpusSpellNormalizer:
     ) -> str:
         """Return ``question`` with OOV tokens corrected toward corpus vocab.
 
-        If normalization is disabled or the corpus is empty, returns ``question``
-        unchanged. Never raises — spelling is best-effort bookkeeping for recall.
-
-        ``corpus_texts`` may be a **callable** returning the texts, which is how
-        callers should pass it: the per-org dictionary is cached for the life of
-        the process, so on every query after the first the texts were fetched,
-        shipped over the wire, and thrown away unread. Passing a thunk means the
-        corpus is only read on an actual cache miss. A plain iterable still
-        works (tests, scripts) and behaves identically.
+        Unchanged when disabled or the corpus is empty. Never raises.
+        ``corpus_texts`` may be a callable, read only on a dictionary cache miss
+        (pass it that way); a plain iterable also works.
         """
         if not self._settings.enabled or not question.strip():
             return question
@@ -262,9 +223,7 @@ class CorpusSpellNormalizer:
                 if lower in sym.words:
                     out.append(tok)
                 elif tok[0].isupper():
-                    # Proper-noun / sentence-initial OOV: never invent a corpus
-                    # near-miss (Niva→five, Compare→company). Typos we care about
-                    # are almost always lowercase mid-question tokens.
+                    # Capitalized OOV: never invent a near-miss (Niva→five).
                     out.append(tok)
                 else:
                     suggestions = sym.lookup(
@@ -281,8 +240,8 @@ class CorpusSpellNormalizer:
             else:
                 out.append(tok)
 
-        # Join: no space before bare punctuation; space between word-like tokens
-        # (including apostrophe forms like Bupa's — str.isalpha() is False for those).
+        # No space before bare punctuation; spaces between word-like tokens
+        # (str.isalpha() is False for "Bupa's").
         buf: list[str] = []
         for tok in out:
             if not buf:
@@ -307,9 +266,7 @@ class CorpusSpellNormalizer:
                 self._by_org.move_to_end(org_id)
                 return cached
 
-        # Only now is the corpus actually needed. Resolving the thunk here
-        # rather than at the call site is the whole point: the early return
-        # above is taken on every query after the first.
+        # Only now is the corpus needed: the early return above is the common case.
         texts = corpus_texts() if callable(corpus_texts) else corpus_texts
 
         counts = build_vocab_counts(

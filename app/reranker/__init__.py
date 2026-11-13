@@ -1,4 +1,4 @@
-"""Cross-encoder reranking (Phase 6).
+"""Cross-encoder reranking.
 
 Public API:
     from app.reranker import build_reranker

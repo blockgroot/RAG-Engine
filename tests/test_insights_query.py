@@ -1,6 +1,6 @@
 """The chart query grammar (`app/insights/query.py`).
 
-Step 1 of docs/plans/2026-09-30-open-ended-charts.md: the model may compose a
+Step 1 of git history: docs/plans/2026-09-30-open-ended-charts.md: the model may compose a
 chart -- a measure, a second grouping, a person/state filter -- over one
 registry metric, instead of only picking a finished chart. Pinned here:
 

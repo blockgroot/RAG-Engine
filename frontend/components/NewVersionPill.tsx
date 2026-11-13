@@ -1,16 +1,9 @@
 "use client";
 
 /**
- * "A new version is ready": a release went live while this tab was open. The
- * server's /build-id (the newest release it carries, next.config.js; an
- * ordinary deploy of main keeps it) is read when the tab opens and again every
- * few minutes and when the tab comes back into view; the pill shows when it
- * changes, and Refresh loads the new version.
- *
- * The first answer is the baseline, never the id baked into this page: a
- * reload that still got an older page (a cached copy, a deploy rolling out)
- * showed the pill again straight after Refresh, and nothing the person could
- * do would clear it.
+ * "A new version is ready" when the server's /build-id changes while this tab
+ * is open (polled, and on focus). The baseline is the server's first answer,
+ * never the id baked into the page, or a cached page shows the pill forever.
  */
 
 import Link from "next/link";

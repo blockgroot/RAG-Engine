@@ -1,16 +1,8 @@
-"""Slack channel picker plumbing (Phase 3 of the Slack Integration Plan).
+"""Slack channel picker plumbing, and the bot's Slack Web API calls.
 
-Slack's OAuth grant screen doesn't let the installer pick channels the way
-GitHub's own install screen does (see the plan's §5) — so a second step is
-needed after connect: list what the bot can already see, let the admin pick,
-then save that as the ingestion scope. Mirrors ``google_drive_utils.py``'s
-role (kept standalone, no adapter import, so channel listing stays usable
-without pulling in the full ``SlackAdapter``).
-
-Decision D2 (never "connect all channels" implicitly) means channel
-membership is always something the admin actively chooses here, not
-inferred. Decision D7 (no auto-join for private channels; public channels
-may be auto-joined once selected) is implemented by ``join_public_channels``.
+Slack's install screen picks no channels, so after connect the admin picks from
+what the bot can see; never "all channels" implicitly. Public channels may be
+auto-joined; private ones need a human ``/invite``. No adapter import.
 """
 
 from __future__ import annotations
@@ -26,25 +18,17 @@ logger = logging.getLogger(__name__)
 
 _API_BASE = "https://slack.com/api"
 _TIMEOUT = 10.0
-# Bound the channel-listing walk itself — same "cap the walk, not just what it
-# produces" discipline as Google's folder crawl and the Notion fetch-size fix.
-# 10 pages * 200/page = 2000 channels, comfortably above any real workspace.
+# Bound the listing walk: 10 pages * 200 = 2000 channels.
 _MAX_LIST_PAGES = 10
-# Bound the member walk the same way — a channel with more members than this
-# is truncated rather than issuing an unbounded number of users.info calls.
+# Bound the member walk; a larger channel is truncated.
 _MAX_CHANNEL_MEMBERS = 500
 
 
-# One place that says how a Slack channel becomes a `documents.tags` entry, so
-# the ingest side (slack.py) and the ask side (api/slack_events.py) can never
-# drift into two spellings of the same label. Namespaced so a future source
-# tagging its own partitions cannot collide with a channel id.
+# The one spelling of a channel's `documents.tags` entry, shared by ingest and ask.
 _CHANNEL_TAG_PREFIX = "slack:channel:"
 
 
-# Every bot message is sent with previews OFF. Slack fetches a URL to build a
-# preview, so a URL steered into an answer is a zero-click leak: the fetch
-# alone delivers whatever the query string carries to the attacker's server.
+# Previews OFF on every bot message: Slack fetching a steered URL is a zero-click leak.
 _NO_UNFURL = {"unfurl_links": False, "unfurl_media": False}
 
 
@@ -56,16 +40,9 @@ def channel_tag(channel_id: str) -> str:
 def post_message(
     token: str, channel: str, text: str, thread_ts: str | None = None
 ) -> str | None:
-    """Post one message, optionally into a thread. Never raises.
-
-    A failed post costs the reply, never the request that triggered it: the
-    caller is a background task started AFTER Slack was already acknowledged,
-    so raising here could only produce an unhandled task error nobody sees.
-
-    Returns the message ``ts`` so a placeholder can later be REPLACED by the
-    real answer (`update_message`); ``None`` when the post failed, which the
-    caller must read as "there is nothing to update".
-    """
+    """Post one message, optionally into a thread. Never raises (the caller runs
+    after Slack was acknowledged). Returns the message ``ts`` for `update_message`,
+    or ``None`` when the post failed."""
     payload: dict = {"channel": channel, "text": text, **_NO_UNFURL}
     if thread_ts:
         payload["thread_ts"] = thread_ts
@@ -87,18 +64,10 @@ def post_message(
 
 
 def update_message(token: str, channel: str, ts: str, text: str) -> bool:
-    """Replace the text of a message we posted. Never raises.
+    """Replace the text of a message we posted, to show progress. Never raises.
 
-    This is how the bot shows progress. Slack's purpose-built status API
-    (`assistant.threads.setStatus`) is NOT usable here: it only applies inside
-    an assistant-thread container, which requires the app to be configured as
-    an AI assistant and to handle `assistant_thread_started`. This bot answers
-    `app_mention` in ordinary channels and plain DMs, where no such thread
-    exists. It is also mid-deprecation toward `agents.sessions.setStatus`,
-    whose status is a closed enum with no free text.
-
-    Editing our own placeholder needs only `chat:write`, which every tenant
-    already granted -- so progress costs no new scope and no reconnect.
+    `assistant.threads.setStatus` only works in assistant threads, not the
+    `app_mention`/DM surfaces this bot answers; editing needs only `chat:write`.
     """
     try:
         response = httpx.post(
@@ -117,8 +86,7 @@ def update_message(token: str, channel: str, ts: str, text: str) -> bool:
         return False
 
 
-#: Bytes go to Slack's upload host, not the API: a 1-2 MB PNG on a slow link
-#: needs longer than an API call, but still a bound.
+#: Upload timeout: bytes go to Slack's upload host, slower than an API call, still bounded.
 _UPLOAD_TIMEOUT = 30.0
 
 
@@ -133,14 +101,9 @@ def upload_file(
     initial_comment: str | None = None,
     thread_ts: str | None = None,
 ) -> str:
-    """Share a file into a channel or thread. Never raises.
-
-    Slack's two-step external upload (`files.upload` was sunset 2025-11-12):
-    ask for an upload URL, send the bytes there, then complete the upload
-    into the channel. Returns ``"ok"``, ``"missing_scope"`` (the connection
-    predates `files:write`, so an admin must reconnect), or ``"error"``; the
-    caller falls back to text on anything but ``"ok"``.
-    """
+    """Share a file into a channel or thread via Slack's two-step external upload.
+    Never raises. Returns ``"ok"``, ``"missing_scope"`` (reconnect for `files:write`)
+    or ``"error"``; the caller falls back to text unless ``"ok"``."""
     auth = {"Authorization": f"Bearer {token}"}
     step = "files.getUploadURLExternal"
     try:
@@ -216,16 +179,9 @@ def _post(token: str, method: str, data: dict, *, timeout: float = _TIMEOUT) -> 
 
 
 def list_slack_channels(token: str) -> list[dict]:
-    """List public + private channels this bot token can already see.
-
-    Returns ``[{"id", "name", "is_private", "is_member"}, ...]``. A private
-    channel the bot hasn't been invited to never appears here at all — Slack
-    only returns channels the token has *some* visibility into, which for a
-    private channel means membership already exists (there is no "private
-    channel that exists but I can't see it" listing in Slack's API).
-
-    Raises:
-        SourceError: unexpected Slack/HTTP failure.
+    """List public + private channels this bot token can see:
+    ``[{"id", "name", "is_private", "is_member"}, ...]``. A private channel appears
+    only when the bot is already in it. Raises ``SourceError`` on failure.
     """
     channels: list[dict] = []
     cursor = None
@@ -263,25 +219,9 @@ def relabel_indexed_channel(
 ) -> int:
     """Repoint already-indexed Slack content at a channel's NEW name.
 
-    Every Slack chunk begins with a ``Channel: #name`` header this adapter
-    writes (``fetch_document``), and each document is titled ``#name: snippet``.
-    After a rename those strings still say the old name, so asking about the
-    new one retrieves nothing: BM25 has no matching token and the vector side
-    only sees a generic "what was discussed" query, so the confidence gate
-    refuses. Observed exactly that — "No answer found" for #rag-updates while
-    six chunks sat there under #hand-book-testing.
-
-    Only the leading header and the title prefix are rewritten — both authored
-    by us. A message BODY that happens to mention the old name is left alone:
-    that is what somebody actually wrote, and rewriting history to match a
-    rename would be a lie in the record.
-
-    ``content_tsv`` is a GENERATED column, so keyword search corrects itself on
-    this UPDATE. Embeddings still encode the old token, which is why this is a
-    repair and not a substitute for re-ingesting — but retrieval is hybrid, so
-    the keyword side is enough to surface the chunk again immediately.
-
-    Returns how many chunks were repointed.
+    Rewrites only the ``Channel: #name`` header and ``#name:`` title prefix we wrote,
+    never a message body. ``content_tsv`` is generated, so keyword search recovers at
+    once; embeddings keep the old name until re-ingest. Returns chunks repointed.
     """
     if not (_SAFE_CHANNEL.match(old) and _SAFE_CHANNEL.match(new)) or old == new:
         return 0
@@ -342,23 +282,10 @@ def relabel_indexed_channel(
 def refresh_channel_names(org_id: str, workspace_id: str | None = None) -> list[tuple[str, str]]:
     """Re-read each connected channel's CURRENT name and persist it.
 
-    ``source_config.channel_names`` is a snapshot written when someone picked
-    the channels, and a Slack rename touches no message id or timestamp — so
-    change detection correctly reports "up to date" while every label goes on
-    showing the old name: the suggested questions, a report's coverage note,
-    "#old-name" inside an activity item.
-
-    Channel *ids* are stable across a rename, which is what makes this safe:
-    only labels move, never which channels are connected. A channel missing
-    from the listing keeps its stored name — a name we once knew beats a bare
-    id.
-
-    Lives here (with the other Slack API knowledge) rather than in the API
-    layer, because the consumers are the ingest worker and the scheduler, and
-    a domain module must not import from ``app/api``. Returns the
-    ``(old, new)`` pairs that changed. Best-effort: a Slack or DB failure
-    returns ``[]``, since a stale label must never break a sync, a report, or
-    the page that was only checking for changes.
+    A rename moves no message id, so change detection sees "up to date" while labels
+    show the old name. Ids are stable, so only labels move; a channel missing from
+    the listing keeps its stored name. Returns changed ``(old, new)`` pairs.
+    Best-effort: any failure returns ``[]``.
     """
     from ..auth import get_live_connection_token
     from ..auth.credentials import get_connection_config, set_connection_config
@@ -399,9 +326,7 @@ def refresh_channel_names(org_id: str, workspace_id: str | None = None) -> list[
         logger.info(
             "Refreshed Slack channel names for org %s (%s renamed)", org_id, len(renamed)
         )
-    # Labels in the CONFIG are only half of it: already-indexed content still
-    # carries the old name in the header we wrote, so a question about the new
-    # name retrieves nothing until this runs.
+    # Indexed content also carries the old name in our header: repoint it too.
     for old, new in renamed:
         relabel_indexed_channel(org_id, old, new, workspace_id)
     return renamed
@@ -412,18 +337,8 @@ def join_public_channels(
 ) -> None:
     """Auto-join any of ``channel_ids`` that are public and not yet joined.
 
-    Decision D7: public channels may be auto-joined (``conversations.join``
-    needs no human action); private channels have no such API — a human must
-    ``/invite`` the bot in Slack, which this function does not attempt.
-    Failures are swallowed per-channel (best-effort) so one already-archived
-    or unreachable channel doesn't abort saving the rest of the picker
-    selection — the picker's "Ready"/"Invite the bot" badges are the source
-    of truth for what actually worked, re-checked on the next listing.
-
-    ``known`` lets a caller that already listed channels (e.g.
-    ``validate_slack_channels``, moments earlier in the same request) pass
-    that result through instead of paying a second full paginated
-    ``conversations.list`` scan for the same data.
+    Private channels need a human ``/invite``. Per-channel failures are swallowed;
+    the picker's badges show what worked. ``known`` reuses an existing listing.
     """
     if known is None:
         known = {c["id"]: c for c in list_slack_channels(token)}
@@ -438,18 +353,10 @@ def join_public_channels(
 
 
 def list_channel_members(token: str, channel_id: str) -> list[dict]:
-    """List real (non-bot) members of one channel, with email for matching.
+    """List real (non-bot) members of one channel: ``[{"id", "name", "email"}, ...]``.
 
-    Returns ``[{"id", "name", "email"}, ...]``. A member is skipped (not an
-    error) if they're a bot, deleted, or Slack simply has no email on file for
-    them (``profile.email`` absent) — this connector never fails wholesale
-    because of one un-matchable Slack account. Requires the ``users:read.email``
-    scope; without it every member is skipped rather than raising, so an
-    org running on the old scope just sees an empty list until it reconnects.
-
-    Raises:
-        SourceError: unexpected Slack/HTTP failure on the channel-membership
-            call itself (not on a per-user lookup, which is best-effort).
+    A bot, deleted or email-less member is skipped (needs ``users:read.email``).
+    Raises ``SourceError`` only on the membership call itself.
     """
     member_ids: list[str] = []
     cursor = None
@@ -498,17 +405,9 @@ def validate_slack_channels(
 ) -> dict:
     """Confirm every requested channel id is one the bot can currently see.
 
-    Returns ``{"channel_ids": [...], "channel_names": {id: name}}`` suitable
-    for ``set_connection_config`` (same shape convention as
-    ``validate_drive_folder``'s ``{"folder_id", "folder_name"}``).
-
-    ``known`` lets a caller pass an already-fetched channel listing (see
-    ``join_public_channels``) instead of triggering a second full
-    ``conversations.list`` scan in the same request.
-
-    Raises:
-        ConfigurationError: an empty selection, or a channel id Slack doesn't
-            currently return for this token (never silently drops it).
+    Returns ``{"channel_ids", "channel_names"}`` for ``set_connection_config``.
+    ``known`` reuses an existing listing. Raises ``ConfigurationError`` on an empty
+    selection or an unseen id (never silently dropped).
     """
     if not channel_ids:
         raise ConfigurationError("Select at least one Slack channel to connect.")

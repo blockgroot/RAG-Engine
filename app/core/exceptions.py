@@ -1,16 +1,8 @@
-"""Shared exception hierarchy for the whole app.
-
-Callers only ever need to catch ``ProviderError`` (or a subclass) instead of
-dealing with provider-specific error types from underlying SDKs.
-"""
+"""Shared exception hierarchy: callers catch ``ProviderError``, never SDK types."""
 
 
 class ProviderError(Exception):
-    """Base class for any failure raised by a provider.
-
-    The original underlying exception (if any) is preserved on ``.cause`` and
-    also chained via ``raise ... from`` so tracebacks stay useful.
-    """
+    """Base for every provider failure; the cause is kept on ``.cause`` and chained."""
 
     def __init__(self, message: str, *, cause: Exception | None = None) -> None:
         super().__init__(message)
@@ -26,21 +18,11 @@ class LLMProviderError(ProviderError):
 
 
 class LLMRateLimitError(LLMProviderError):
-    """Raised when the LLM endpoint rejects a call for quota/rate reasons (429).
+    """The LLM endpoint refused for quota (429).
 
-    Kept distinct from a generic ``LLMProviderError`` because the *correct
-    response differs*: a connection blip is worth retrying in milliseconds,
-    while a quota rejection must be retried only after the window the server
-    names — retrying a per-minute quota after 500ms simply burns another
-    request against the same exhausted budget and makes the problem worse.
-
-    Subclasses ``LLMProviderError`` deliberately, so every existing
-    ``except LLMProviderError`` site keeps working unchanged and only callers
-    that want the distinction have to care.
-
-    ``retry_after`` is the server-advertised wait in seconds when it supplies
-    one (``Retry-After`` header, or a provider-specific hint in the body),
-    otherwise ``None``.
+    Separate from ``LLMProviderError`` because a quota is retried only after the
+    server's window (``retry_after`` seconds, or ``None``); retrying sooner burns
+    the same budget. Subclasses it so existing handlers still catch it.
     """
 
     def __init__(
@@ -79,14 +61,9 @@ class OAuthError(ProviderError):
 
 
 class OAuthReauthRequiredError(OAuthError):
-    """Raised when a token refresh fails terminally (e.g. Google's
-    ``invalid_grant`` from a revoked/expired/rotated-out refresh token).
+    """A token refresh failed for good (e.g. Google ``invalid_grant``).
 
-    Distinct from a generic ``OAuthError`` so callers (the job worker, admin
-    API routes) can surface an actionable "reconnect this provider" message
-    instead of a bare failure, and so they know NOT to retry — a terminal
-    refresh failure will not succeed on a later attempt without the admin
-    re-completing the OAuth consent flow.
+    Callers show "reconnect this provider" and do not retry: only a new consent fixes it.
     """
 
 
@@ -100,10 +77,9 @@ class NotFoundError(ProviderError):
 
 
 class ActionError(ProviderError):
-    """Raised when an Act-mode write cannot be proposed or run.
+    """An Act-mode write cannot be proposed or run.
 
-    Every subclass is shown to the person in plain words; none is retried
-    automatically, because a retried write can be a duplicate write.
+    Shown to the person; never retried, because a retried write can duplicate.
     """
 
 
@@ -125,8 +101,7 @@ class ActionOutcomeUnknown(ActionError):
 
 
 class RateLimiterError(ProviderError):
-    """The rate-limit store (Redis) could not be reached or answered badly.
+    """The rate-limit store could not be reached or answered badly.
 
-    Callers let the request through on this: a limiter fault must never take
-    the product down (``app/security/rate_limit.py``).
+    Callers let the request through: a limiter fault must not take the product down.
     """

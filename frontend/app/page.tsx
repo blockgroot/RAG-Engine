@@ -21,12 +21,8 @@ import { homePathFor } from "@/lib/routing";
  * knowing what Handbook DOES for them, in their words: ask your own tools a
  * question and get a checkable answer, a chart, or a summary in your inbox.
  *
- * Copy rule for this page and /how-it-works: describe the outcome, never the
- * machinery. "Grounded", "org-scoped", "retrieval" and "the confidence gate"
- * are all real and all documented in CLAUDE.md — a visitor deciding whether to
- * try this does not need any of them, and naming them made the page read like
- * an internal design doc. Say "your documents" and "your tools", not "your
- * content" or "the corpus".
+ * Copy rule (here and /how-it-works): the outcome, never the machinery. Say
+ * "your documents" and "your tools", not "retrieval" or "the corpus".
  */
 export default function RootPage() {
   const router = useRouter();

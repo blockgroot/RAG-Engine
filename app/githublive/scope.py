@@ -1,17 +1,8 @@
-"""Reading and refreshing a connection's stored GitHub scope (Plan Phase 4).
+"""Reading and refreshing a connection's stored GitHub scope (the DB half).
 
-``repos.py`` is pure: it talks to GitHub and validates names, with no database.
-This module is the thin DB-facing half — it knows about ``org_id``,
-``oauth_connections.source_config``, and how to mint a token. Splitting them
-this way keeps the allowlist logic (``resolve_repo``) unit-testable with no
-database at all, which matters because that function is a security boundary.
-
-Why the scope is *stored* rather than fetched per question: it changes only when
-an admin edits the installation on GitHub, so re-listing every repo on every
-question would spend rate limit and latency to re-learn something static. The
-trade-off is that a change made on GitHub isn't visible until the scope is
-refreshed — which is why ``refresh_installation_scope`` exists and is called
-both on connect and (Phase 7) from the Sources UI.
+Kept apart from ``repos.py`` so the ``resolve_repo`` security boundary is
+testable without a database. Stored, not fetched per question; refreshed by
+``refresh_installation_scope``.
 """
 
 from __future__ import annotations
@@ -28,11 +19,8 @@ PROVIDER = "github"
 
 
 def load_scope(org_id: str, workspace_id: str | None = None) -> InstallationScope:
-    """Return the stored scope for this org's GitHub connection.
-
-    Raises ``ConfigurationError`` when GitHub isn't connected at all, so callers
-    can distinguish "not connected" from "connected but nothing authorized".
-    """
+    """The stored scope for this org's GitHub connection. Raises
+    ``ConfigurationError`` when not connected (unlike "nothing authorized")."""
     config = get_connection_config(org_id, PROVIDER, workspace_id)
     if not config:
         raise ConfigurationError(
@@ -45,12 +33,8 @@ def load_scope(org_id: str, workspace_id: str | None = None) -> InstallationScop
 def refresh_installation_scope(
     org_id: str, workspace_id: str | None = None
 ) -> InstallationScope:
-    """Re-read the authorized repo list from GitHub and persist it.
-
-    Preserves the existing ``installation_id``/``account_login`` (they identify
-    the connection and are not GitHub's to change here) and replaces only the
-    ``repository_selection`` + repo list, so this is safe to call repeatedly.
-    """
+    """Re-read the authorized repo list from GitHub and persist it, keeping
+    ``installation_id``/``account_login``. Idempotent."""
     config = get_connection_config(org_id, PROVIDER, workspace_id) or {}
     installation_id = str(config.get("installation_id") or "")
     if not installation_id:
@@ -67,8 +51,7 @@ def refresh_installation_scope(
         repository_selection=selection,
         repos=tuple(repos),
     )
-    # Merge rather than overwrite: a future provider-specific key added to this
-    # config by another feature shouldn't be dropped by a scope refresh.
+    # Merge, so other keys in this config survive a refresh.
     merged = {**config, **scope_to_config(scope)}
     url = _settings_url(installation_id)
     if url:
@@ -78,9 +61,8 @@ def refresh_installation_scope(
 
 
 def with_manage_url(org_id: str, workspace_id: str | None, config: dict | None) -> dict | None:
-    """The config with GitHub's own settings page for the installation
-    (``manage_url``), read once from GitHub and kept. A connection made before
-    it was stored gets it the first time its card is shown."""
+    """The config with the installation's GitHub settings page (``manage_url``),
+    read once and kept; older connections get it when their card is first shown."""
     if not config or config.get("manage_url") or not config.get("installation_id"):
         return config
     url = _settings_url(str(config["installation_id"]))

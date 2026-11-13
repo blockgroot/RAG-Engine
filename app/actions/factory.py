@@ -1,9 +1,6 @@
-"""The actions this person may be offered right now: MCP tools only.
-
-Agent mode writes into a tool only through that tool's MCP server, added by an
-admin (``mcp_presets`` for the connectors), each tool in the mode the admin
-chose. Offered means: an admin allowed Agent mode here, the server is on, the
-tool is set to "write" (or "lookup"), and the person signed in to that server.
+"""The actions this person may be offered now: MCP tools only, where Agent mode
+is allowed, the server is on, the tool is "write" or "lookup", and the person
+signed in to that server.
 """
 
 from __future__ import annotations

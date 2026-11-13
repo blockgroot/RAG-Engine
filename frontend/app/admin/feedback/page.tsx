@@ -10,9 +10,7 @@ import { useMe } from "@/lib/useMe";
  * meaning. Only what an admin can fix: a missing or outdated document. Chart
  * refusals and figure-reading failures are ours and are not shown here. A
  * space's topics go to that space's owner, at /workspaces/<id>/feedback.
- *
- * Not in the sidebar: an admin arrives from a bell alert, which names the
- * topic. The page exists so that alert can show how people asked it.
+ * Reached from a bell alert, not the sidebar.
  */
 export default function FeedbackPage() {
   const { me, loading } = useMe({ requireAdmin: true });

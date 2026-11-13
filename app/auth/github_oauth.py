@@ -1,37 +1,14 @@
-"""GitHub implementation of the ``OAuthProvider`` interface (Plan Phase 2).
+"""GitHub ``OAuthProvider``.
 
-Structurally this sits beside ``notion_oauth.py`` and ``google_oauth.py``, but
-GitHub's flow differs from both in three ways that are worth understanding
-before changing anything here:
-
-1. **Connect starts with user OAuth; install is only if needed.**
-   ``authorize_url`` returns ``/login/oauth/authorize``. That always returns
-   to our callback even when BrowseSource is *already* installed (common when
-   org Sources connected first, then a workspace). If OAuth finds no
-   installation, the callback redirects to ``install_url``
-   (``/apps/<slug>/installations/new``). Repo access is still granted on
-   GitHub's install screen — the tenant's repo scope is enforced by GitHub,
-   not by a column in our database (plan decision D1).
-
-2. **The ``installation_id`` from the redirect is untrusted input.** GitHub's
-   documentation states plainly that "bad actors can hit this URL with a
-   spoofed ``installation_id``", and recommends generating a user access token
-   and confirming the installation belongs to that user. Skipping that would
-   let an attacker bind a *victim's* GitHub organization to their own tenant
-   and read its repositories through us. ``_verify_installation`` closes it via
-   ``GET /user/installations``, and the identity we persist comes from that
-   verified response — never from the query parameter. This is why the flow
-   needs ``exchange_code_with_installation`` rather than the bare
-   ``exchange_code`` the other two providers use.
-
-3. **The token we store is not the token we read repos with.** The exchange
-   yields a *user* access token, which proves who connected. Repository content
-   is read with a short-lived *installation* token minted on demand from the
-   App's private key (``github_app.mint_installation_token``, wired into
-   ``credentials.get_live_connection_token``) — so nothing long-lived and
-   repo-scoped is ever persisted (plan decision D2).
-
-Zero new dependencies: plain ``httpx``, exactly as ``google_oauth.py`` does.
+1. Connect starts with user OAuth, which always returns to our callback; the
+install screen is shown only when no installation is found. GitHub
+enforces which repos a tenant granted.
+2. The redirect's ``installation_id`` is untrusted (GitHub warns it can be
+spoofed): ``_verify_installation`` checks it via ``/user/installations``
+and the stored identity comes from that response, else an attacker could
+bind a victim's org to their tenant.
+3. The stored user token only proves who connected; repos are read with
+short-lived installation tokens (``github_app.mint_installation_token``).
 """
 
 from __future__ import annotations
@@ -69,18 +46,10 @@ class GitHubAppProvider(OAuthProvider):
     # -- interface ---------------------------------------------------------
 
     def authorize_url(self, state: str) -> str:
-        """Start with *user* OAuth so reconnect works when the App is already installed.
+        """Start with user OAuth so reconnect works when the App is already installed.
 
-        The old flow sent people straight to ``/apps/<slug>/installations/new``.
-        That is correct for a first install, but when BrowseSource is already
-        installed on the account (common: org Sources connected earlier, then a
-        workspace tries to connect), GitHub opens the *settings* page for the
-        existing installation instead of completing our callback — Handbook never
-        gets ``code``/``state``, so the workspace row is never created. Org
-        "Refresh list" still works because that row already existed.
-
-        User OAuth always returns to our callback. If the App is not installed
-        yet, the callback redirects to the install screen (with a fresh state).
+        Sending people straight to the install page opens GitHub's settings for an
+        existing install and never returns to our callback.
         """
         return (
             "https://github.com/login/oauth/authorize?"
@@ -98,12 +67,9 @@ class GitHubAppProvider(OAuthProvider):
         return f"{base}?{urlencode({'state': state})}"
 
     def exchange_code(self, code: str) -> OAuthTokens:
-        """Not usable for GitHub — the installation id must be verified too.
+        """Not usable for GitHub: the installation id must be verified too.
 
-        Raising here (rather than quietly succeeding) keeps a caller that
-        treats GitHub like Notion/Google from persisting a connection with no
-        installation id, which would otherwise only surface much later as an
-        unexplained ingestion failure.
+        Raises so no caller stores a connection with no installation id.
         """
         raise OAuthError(
             "GitHub requires the callback's installation_id as well as the code — "
@@ -113,11 +79,9 @@ class GitHubAppProvider(OAuthProvider):
     def exchange_code_with_installation(
         self, code: str, installation_id: str
     ) -> tuple[OAuthTokens, str]:
-        """Exchange the code, then verify the claimed installation belongs to the user.
+        """Exchange the code and verify the claimed installation is the user's.
 
-        Returns the tokens (with ``external_workspace_id`` set to the verified
-        GitHub account login) and the verified installation id, which the
-        caller persists to ``oauth_connections.source_config``.
+        Returns the tokens (workspace id = verified login) and the installation id.
         """
         if not installation_id:
             raise OAuthError("GitHub callback did not include an installation_id.")
@@ -148,13 +112,10 @@ class GitHubAppProvider(OAuthProvider):
     def exchange_code_list_installations(
         self, code: str
     ) -> tuple[str, str | None, datetime | None, list[dict]]:
-        """Exchange ``code`` and list App installations this user can see.
+        """Exchange ``code`` and list the App installations this user can see.
 
-        Used by the connect callback when GitHub did not already hand an
-        ``installation_id``: we park the user token and let the UI prompt
-        which account to bind (Company Sources vs a space) instead of
-        silently auto-picking — that auto-pick is how the same personal
-        install ended up on both surfaces.
+        The UI then asks which to bind; auto-picking put one personal install on
+        both Company and a space.
         """
         data = self._post_token_exchange(code)
         access_token = data.get("access_token")
@@ -202,15 +163,11 @@ class GitHubAppProvider(OAuthProvider):
         *,
         prefer_user_account: bool = False,
     ) -> tuple[OAuthTokens, str] | None:
-        """Exchange ``code``, then pick an installation this user already has.
+        """Exchange ``code`` and pick one of the user's installations.
 
-        Kept for unit tests and offline callers. The HTTP connect callback
-        no longer auto-picks — it uses ``exchange_code_list_installations``
-        and the install-chooser UI instead.
-
-        ``prefer_user_account=True`` (workspace connect) prefers a User
-        installation over an Organization one, so a personal space does not
-        silently bind the company GitHub org install when both exist.
+        For tests and offline callers; the HTTP callback uses the chooser instead.
+        ``prefer_user_account=True`` (space connect) prefers a User install over an
+        Organization one.
         """
         access_token, refresh_token, expires_at, installations = (
             self.exchange_code_list_installations(code)
@@ -232,14 +189,7 @@ class GitHubAppProvider(OAuthProvider):
         )
 
     def refresh(self, refresh_token: str) -> OAuthTokens:
-        """Refresh the *user* token.
-
-        Note this is not on the critical path for reading repositories:
-        installation tokens are minted from the App private key and never
-        refreshed (plan decision D2). Implemented because GitHub Apps with
-        expiring user tokens enabled do issue refresh tokens, and
-        ``get_live_connection_token`` may want the user token to stay valid.
-        """
+        """Refresh the user token (repo reads use installation tokens, never refreshed)."""
         try:
             response = httpx.post(
                 _TOKEN_URL,
@@ -274,21 +224,15 @@ class GitHubAppProvider(OAuthProvider):
     def identify_user(self, code: str) -> tuple[str, str | None]:
         """``(login, display_name)`` of whoever authorized, for account linking.
 
-        Second Brain 1.2: exchanges the code, reads ``GET /user`` once and
-        DISCARDS the token -- linking needs proof of who you are on GitHub, not
-        ongoing access, and a stored user token would be a credential with no
-        reason to exist. Works whether or not the App is installed anywhere:
-        user-to-server tokens can always read ``/user``.
+        Reads ``/user`` once and discards the token: linking needs proof, not access.
         """
         return self._user(self._user_access_token(self._post_token_exchange(code)))
 
     def exchange_user_code(self, code: str) -> tuple[OAuthTokens, str, str | None]:
-        """The person's own user-to-server token, KEPT, for Act mode.
+        """The person's own user-to-server token, kept, for Agent mode.
 
-        Unlike ``identify_user`` this token has a reason to exist: the person
-        asked Handbook to act for them, and GitHub attributes what it does to
-        them. Returns ``(tokens, login, display_name)``; the token expires
-        after eight hours and carries a single-use refresh token.
+        Returns ``(tokens, login, display_name)``; it expires in eight hours with a
+        single-use refresh token.
         """
         payload = self._post_token_exchange(code)
         token = self._user_access_token(payload)
@@ -334,9 +278,7 @@ class GitHubAppProvider(OAuthProvider):
     def _post_token_exchange(self, code: str) -> dict:
         """POST the code exchange.
 
-        ``Accept: application/json`` is load-bearing: without it GitHub returns
-        a **form-encoded** body and ``response.json()`` blows up — a classic
-        first-integration trap.
+        ``Accept: application/json`` is required: otherwise GitHub returns a form-encoded body.
         """
         try:
             response = httpx.post(
@@ -387,11 +329,8 @@ class GitHubAppProvider(OAuthProvider):
                 return installation
 
         if prefer_user_account:
-            # A workspace connect is explicitly "connect MY personal GitHub".
-            # Falling back to an Organization installation here is how a personal
-            # space silently became a window onto the whole company org — so
-            # return None instead and let the caller send them to GitHub's
-            # install screen, where they can install on their own account.
+            # A space connect means "my personal GitHub": falling back to an Organization
+            # install exposed the company org, so return None and send them to install.
             return None
 
         # Org-wide connect: prefer an Organization installation but accept any,
@@ -401,11 +340,9 @@ class GitHubAppProvider(OAuthProvider):
     def _verify_installation(
         self, user_access_token: str, installation_id: str
     ) -> tuple[str, str | None]:
-        """Confirm ``installation_id`` is one this user actually has access to.
+        """Confirm the user can access ``installation_id`` (the spoofing defence).
 
-        See the module docstring (point 2) — this is the spoofing defence, not
-        a nicety. Returns the account login/type taken from GitHub's response
-        so the persisted identity can never be attacker-supplied.
+        Returns login/type from GitHub's response, so the stored identity is never attacker-supplied.
         """
         installations = self._list_installations(user_access_token)
         for installation in installations:

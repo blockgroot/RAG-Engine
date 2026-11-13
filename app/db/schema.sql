@@ -1,16 +1,10 @@
--- RAG Engine — database schema (Postgres + pgvector)
+-- Handbook database schema (Postgres + pgvector). Multi-tenant: every tenant
+-- table carries org_id (tests/test_isolation.py). Idempotent: safe to rerun.
 --
--- Multi-tenant policy Q&A store. Three tables, all organization-scoped so we can
--- prove strict isolation between tenants (see tests/test_isolation.py).
---
--- IMPORTANT: the embedding column dimension below (1024) MUST match the output
--- dimension of the configured embedding model (BGE-M3 = 1024). If the model
--- changes, this schema and DatabaseSettings.embedding_dim must change together.
--- See CLAUDE.md.
---
--- Embeddings are stored as `halfvec` (2 bytes a dimension): half the table and a
--- third of the HNSW index of full `vector`, with no measurable loss in ranking.
--- A query vector must be bound or cast as halfvec too, or the index is skipped.
+-- The embedding dimension (1024) must match the embedding model and
+-- DatabaseSettings.embedding_dim. Embeddings are `halfvec` (half the table, a
+-- third of the HNSW index); bind or cast a query vector as halfvec too, or the
+-- index is skipped.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -39,10 +33,8 @@ CREATE INDEX IF NOT EXISTS idx_documents_org ON documents (org_id);
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_external_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_modified TIMESTAMPTZ;
 
--- Sync state is partitioned per provider (Google Integration Phase 1): without
--- this, a Google sync in an org that also has Notion would compute
--- removed = every Notion page id and delete the whole Notion corpus. See
--- CLAUDE.md.
+-- Sync state is per provider: otherwise a Google sync would see every Notion
+-- page as removed and delete it.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_provider TEXT;
 UPDATE documents SET source_provider = 'notion'
     WHERE source_provider IS NULL AND source_external_id IS NOT NULL;
@@ -52,27 +44,12 @@ DROP INDEX IF EXISTS idx_documents_org_external;
 -- unique indexes — see the Workspace-within-a-Workspace block further down.
 DROP INDEX IF EXISTS idx_documents_org_provider_external;
 
--- Hard metadata filter (production-RAG comparison gap #3, department/tag
--- half — date-range shipped first via source_last_modified above). A
--- generic, source-agnostic tag list rather than a fixed "department" column:
--- nothing here decides WHERE a tag comes from (an admin-set field, a Notion
--- property, a folder mapping) — that is a product decision for whoever
--- calls the ingest/store functions with a value, mirroring how
--- source_provider/workspace_id are pure pass-through scoping with no
--- built-in population logic. NULL/empty (the default) never excludes a
--- document from an unfiltered query, matching every other optional filter
--- in this schema.
+-- Generic tag filter (e.g. `slack:channel:<id>`); callers decide where tags
+-- come from. NULL/empty never excludes a document from an unfiltered query.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS tags TEXT[];
 
--- Ask-in-Slack backfill: tag every already-indexed Slack thread with its
--- channel, so an in-channel question can be answered from that channel only
--- without waiting for each thread to change and re-ingest (a quiet channel
--- might never change). Same shape as the source_provider backfill above.
---
--- The channel id is already the first half of the Slack external id
--- (`<channel>:<thread_ts>`, see sources/slack.py), so this needs no API call
--- and no channel-NAME lookup -- which also means a renamed channel backfills
--- correctly. Idempotent: only rows missing the tag are touched.
+-- Backfill: tag each indexed Slack thread with its channel (the first half of
+-- its `<channel>:<thread_ts>` id; no API call). Idempotent.
 UPDATE documents
    SET tags = coalesce(tags, '{}') || ('slack:channel:' || split_part(source_external_id, ':', 1))
  WHERE source_provider = 'slack'
@@ -80,56 +57,28 @@ UPDATE documents
    AND position(':' in source_external_id) > 1
    AND NOT coalesce(tags, '{}') && ARRAY['slack:channel:' || split_part(source_external_id, ':', 1)];
 
--- Who last edited the source document, as the source names them. Captured at
--- ingest so a "top editors" chart is a GROUP BY rather than an API call per
--- page load -- Drive returns it in the `files.list` we already make, and Notion
--- needs one cached `GET /users/{id}` per distinct person.
---
--- NOT backfillable: it was never captured before, so a chart grouped by editor
--- necessarily starts at the first sync after this shipped (which is why
--- `insights.store.first_fact_at` exists). Inventing a name would be worse than
--- starting late.
+-- Who last edited the source document, captured at ingest so "top editors" is
+-- a GROUP BY. Not backfillable, so editor charts start at the first sync after
+-- it shipped (`insights.store.first_fact_at`).
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_editor TEXT;
 CREATE INDEX IF NOT EXISTS idx_documents_tags ON documents USING gin (tags);
 
--- Document-level access filtering. The smallest private unit used to be a
--- SPACE: we sync with one admin's token, so a Drive file shared with two
--- people became readable by everyone in the scope that indexed it. These two
--- columns are the whole mechanism -- who may retrieve this row, captured at
--- sync from the source's own sharing rules.
---
--- `doc_is_public` DEFAULTS TRUE, and that default is the migration: every row
--- written before this shipped keeps exactly its old meaning ("readable by the
--- scope that indexed it"), so nothing goes dark at deploy and no backfill is
--- needed. It also stays TRUE for every provider that cannot report an ACL
--- (see sources.factory.ACL_CAPABLE) -- Notion has no per-page permission API,
--- so pretending otherwise would be a claim we cannot keep.
---
--- `doc_viewers` holds ACL ENTRIES, not user ids: a lowercased email, or
--- `domain:<host>`. Emails rather than `users.id` because a file is routinely
--- shared with someone who has not signed up yet -- storing the id would mean
--- inventing an account at sync time, and the entry starts matching by itself
--- the day they log in. Ignored entirely when `doc_is_public`.
---
--- Fail-closed lives at WRITE time, not here: an ACL-capable provider that
--- cannot read a file's permissions skips the document rather than indexing it
--- public (app/ingestion/pipeline.py). A NULL `doc_viewers` with
--- `doc_is_public = FALSE` is therefore "nobody but the connecting admin",
--- which is the correct reading of "we could not determine sharing".
+-- Document-level access, captured at sync from the source's sharing.
+-- `doc_is_public` defaults TRUE (old rows and providers with no ACL, e.g.
+-- Notion, keep "readable by the indexing scope"). `doc_viewers` holds ACL
+-- entries (lowercased emails, `domain:<host>`, `channel:<id>`), not user ids,
+-- since files are shared before people sign up; ignored when public.
+-- Fail-closed happens at write time (app/ingestion/pipeline.py): no readable
+-- sharing means the connected account only.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_is_public BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_viewers TEXT[];
 -- GIN, because the retrieval predicate is an array OVERLAP (`&&`) evaluated
 -- per candidate row inside the same WHERE clause that already pins org_id.
 CREATE INDEX IF NOT EXISTS idx_documents_viewers ON documents USING gin (doc_viewers);
 
--- Slack channel-ACL backfill: a PRIVATE channel's threads carry a
--- `channel:<id>` entry (sources/slack.py::_channel_entry) so a reply posted in
--- that channel -- which reads as public_only plus that one channel -- can
--- quote them. Threads indexed before the entry existed lack it, so the bot
--- refused inside the very channel it was reading ("not shared with you")
--- until each thread happened to change. The channel id is the first half of
--- the external id, so no API call is needed. Private rows only (a public
--- channel's threads are scope-public and need no entry); idempotent.
+-- Backfill: a PRIVATE channel's threads carry `channel:<id>`, so a reply in
+-- that channel (public_only plus the channel) can quote them. From the
+-- external id, no API call; private rows only; idempotent.
 UPDATE documents
    SET doc_viewers = coalesce(doc_viewers, '{}') || ('channel:' || split_part(source_external_id, ':', 1))
  WHERE source_provider = 'slack'
@@ -137,24 +86,16 @@ UPDATE documents
    AND position(':' in source_external_id) > 1
    AND NOT coalesce(doc_viewers, '{}') && ARRAY['channel:' || split_part(source_external_id, ':', 1)];
 
--- Second Brain 1.1: the people, links and containers an adapter saw while
--- fetching (`sources.meta`), captured with ZERO extra API calls. The knowledge
--- graph is rebuilt from these rows and never by re-calling a provider, so a
--- field not stored here does not exist for it. NULL = nothing captured yet
--- (every row written before this shipped, until the bounded metadata refresh
--- in `ingestion.pipeline` reaches it).
---
--- `source_editor_key` is the IDENTITY behind `source_last_editor`
--- (`slack:U123`, `email:ada@x.com`), never a display name: two people called
--- Priya are two people. `source_last_editor` stays exactly as it was for
--- provenance lines and charts.
+-- Knowledge-graph metadata an adapter saw while fetching (`sources.meta`), at
+-- no extra API cost; the graph is rebuilt only from these rows. NULL = not
+-- captured yet. `source_editor_key` is the editor's identity (`slack:U123`,
+-- `email:ada@x.com`), never a display name.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_meta JSONB;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_editor_key TEXT;
 
 
--- A chunks table from before it was partitioned by organization is moved aside
--- here, and copied into the partitioned table at the end of this file (once all
--- its columns exist). Its index names are freed for the new table's.
+-- A chunks table from before per-org partitioning is moved aside here and
+-- copied into the partitioned table at the end of this file.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_class WHERE oid = to_regclass('chunks') AND relkind = 'r') THEN
@@ -165,11 +106,9 @@ BEGIN
     END IF;
 END $$;
 
--- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
--- so every retrieval query can filter by tenant without a join). One partition
--- per organization (created and dropped with it, end of this file), so a
--- search walks only that organization's vectors: a shared index returns the
--- nearest vectors of EVERY tenant and leaves the filter to drop most of them.
+-- Chunks of a document with their embedding. org_id is denormalized for the
+-- tenant filter. One partition per organization (end of this file), so a
+-- search walks only that org's vectors.
 CREATE TABLE IF NOT EXISTS chunks (
     id          UUID NOT NULL DEFAULT gen_random_uuid(),
     org_id      UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -184,31 +123,22 @@ CREATE TABLE IF NOT EXISTS chunks (
 -- No org_id index: within a partition every row has the same org_id, and
 -- given one the planner preferred it to the vector index below.
 
--- The approximate-nearest-neighbour index (`idx_chunks_embedding`) is created
--- after the halfvec conversion below (search "embeddings_halfvec"): Postgres
--- checks the operator class before IF NOT EXISTS, so creating it here fails on a
--- database whose column is still `vector`.
+-- `idx_chunks_embedding` is created after the halfvec conversion below:
+-- Postgres checks the operator class before IF NOT EXISTS.
 
--- Full-text search column for hybrid (keyword/BM25-style) retrieval (Phase 6).
--- GENERATED from content so it stays in sync automatically (existing rows get it
--- backfilled when this runs); the GIN index makes keyword lookups fast. Used
--- alongside vector search and fused via Reciprocal Rank Fusion — see
--- app/rag/retrieval.py.
+-- Generated full-text column for hybrid retrieval, fused with vector search by
+-- RRF (app/rag/retrieval.py).
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS
     content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
 CREATE INDEX IF NOT EXISTS idx_chunks_content_tsv ON chunks USING gin (content_tsv);
 
--- Prompt-injection score of the chunk (app/guard/, Llama Prompt Guard 2). The
--- RAW probability, so a threshold change needs no rescan; the model name, so a
--- model change does. NULL = unscored (guard off, or a rate-limited call the
--- tick's backfill will retry) -- never read as clean or as flagged.
+-- Prompt-injection score (app/guard/): the RAW probability (threshold changes
+-- need no rescan) and the scoring model. NULL = unscored, never clean or flagged.
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS injection_score REAL;
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS injection_model TEXT;
 
--- Conversations (Phase 5): group a sequence of question/answer turns so a
--- follow-up can be resolved against prior context. Org-scoped like everything
--- else, so one tenant's conversation history is isolated from another's.
--- `summary` holds the running compression of older turns (see app/rag/pipeline).
+-- Conversations: turns grouped for follow-ups; `summary` is the running
+-- compression of older turns.
 CREATE TABLE IF NOT EXISTS conversations (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -217,9 +147,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_org ON conversations (org_id);
 
--- One question + its answer within a conversation. `org_id` is denormalized for
--- the same tenant-filter reason as chunks. Older turns may be pruned once
--- compressed into conversations.summary.
+-- One question and its answer in a conversation (org_id denormalized).
 CREATE TABLE IF NOT EXISTS conversation_turns (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
@@ -231,13 +159,9 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 );
 CREATE INDEX IF NOT EXISTS idx_turns_conversation ON conversation_turns (conversation_id);
 
--- Last-turn retrieved chunks (Phase 8): one row per conversation (upserted each
--- turn) holding the chunks retrieved on the most recent turn, as a JSON array of
--- {content, document_id, chunk_index, org_id}. The pipeline reads this to decide,
--- via a cheap non-LLM embedding-similarity check, whether the previous chunks
--- still cover the next question — if so it reuses them and skips retrieval.
--- Embeddings are NOT stored here (no vector column): they are recomputed from
--- `content` on demand, keeping the schema simple. Cascades with its conversation.
+-- Last turn's retrieved chunks, one row per conversation, as JSON. The pipeline
+-- reuses them when the next question is close enough (no LLM call). No vectors
+-- stored; recomputed from `content`. Cascades with its conversation.
 CREATE TABLE IF NOT EXISTS conversation_last_retrieval (
     conversation_id UUID PRIMARY KEY REFERENCES conversations (id) ON DELETE CASCADE,
     org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -245,18 +169,11 @@ CREATE TABLE IF NOT EXISTS conversation_last_retrieval (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Domain-based auto-join (org_domains: admin-typed domain + auto_join_enabled,
--- no DNS proof) was removed in favor of direct admin-invited members — see
--- CLAUDE.md §2/§4. Dropped rather than left unused since nothing reads it any
--- more; revive by restoring this table + app/auth/domains.py from git history
--- if/when self-serve multi-company onboarding is actually needed.
+-- Domain auto-join (org_domains) was removed in favour of explicit invites.
 DROP TABLE IF EXISTS org_domains;
 
--- Application users (Phase 10). `org_id` is nullable only for the brief window
--- before an org is resolved (an admin's own org at signup, or a specific
--- email an admin invites directly); a user in that state is NEVER issued a
--- session (see app/api/auth.py) so a null-org row can't act on any tenant's
--- data. `role` gates admin-only endpoints.
+-- Application users. A NULL org_id user is never issued a session. `role`
+-- gates admin-only endpoints.
 CREATE TABLE IF NOT EXISTS users (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email      TEXT NOT NULL UNIQUE,
@@ -270,25 +187,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 -- the email ("sana.asiwal" -> "Sana") was wrong for many addresses.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 
--- `owner_email_whitelist` (pre-approved-list gate on POST /auth/signup) was
--- REPLACED by the signup-approval queue below — see CLAUDE.md §2/§4. A
--- static whitelist still required editing it out-of-band before every new
--- owner could sign up; the approval queue lets ANY email request an org and
--- gates creation on a human decision instead, so there's no list to
--- pre-populate. Dropped rather than left unused. Revive by restoring this
--- table + app/auth/owner_whitelist.py from git history if a pre-approved-list
--- gate is ever wanted again instead of (or alongside) review-based approval.
+-- `owner_email_whitelist` was replaced by the signup-approval queue below.
 DROP TABLE IF EXISTS owner_email_whitelist;
 
--- Self-serve org creation request queue: a brand-new company's first user no
--- longer creates an org+admin synchronously at /auth/signup — they land here
--- as `pending` until the platform owner approves via the one-click email
--- links below (see CLAUDE.md §2/§4) — the ONLY review surface, no CLI or
--- admin UI. No session/login/cookie surface — the email links carry a
--- single-use possession token, same trust model as magic_link_tokens, not a
--- second auth system. This is a plain CREATE TABLE (no ALTER on an existing
--- table), so it carries none of the ALTER-ordering hazard documented near
--- `ingestion_jobs`/`workspace_id` below.
+-- Org-creation request queue: a new company's first user waits as `pending`
+-- until the platform owner approves from the email (single-use possession
+-- tokens, the only review surface).
 CREATE TABLE IF NOT EXISTS org_signup_requests (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email         TEXT NOT NULL,
@@ -301,40 +205,19 @@ CREATE TABLE IF NOT EXISTS org_signup_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_org_signup_requests_status ON org_signup_requests (status);
 
--- One-click email approve/reject: two single-use possession tokens
--- generated together at request-creation time (only their SHA-256 hashes
--- are ever stored, like magic_link_tokens). No separate "consumed" flag is
--- needed — approve_signup_request/reject_signup_request already guard
--- atomically on status='pending', so the request's own status transition
--- IS the one-time-use gate; a token stays hash-verifiable after use, but
--- re-attempting the action is a no-op, not a double-action. This ALTER is
--- safe immediately after this table's own CREATE TABLE above (no ordering
--- hazard — see the gotcha in §4 about which schema changes DO have one).
+-- Approve/reject tokens, stored as SHA-256 hashes only. The status guard
+-- (status='pending') is the one-time-use gate.
 ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS approve_token_hash TEXT;
 ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS reject_token_hash TEXT;
 ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS action_expires_at TIMESTAMPTZ;
 
--- One PENDING request per email at a time (partial unique index, same
--- pattern as idx_oauth_connections_org_provider_orgwide below): a second
--- signup attempt while one is already pending conflicts; re-submitting after
--- a rejection is allowed since a rejected row no longer matches this index.
+-- One PENDING request per email; re-submitting after a rejection is allowed.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_org_signup_requests_email_pending
     ON org_signup_requests (email) WHERE status = 'pending';
 
--- Employee-created sub-workspaces (Workspace-within-a-Workspace). A
--- sub-workspace nests INSIDE its parent org — every row it owns still
--- carries org_id, so the org_id isolation proof stays a strict subset of
--- this new boundary rather than a second, parallel mechanism. `created_by`
--- is the employee who created it (always an org member, enforced at the
--- API layer, never a cross-org id).
--- created_by/invited_by below use ON DELETE SET NULL (not the default NO
--- ACTION) so that deleting an org cascades cleanly: organizations -> users
--- and organizations -> workspaces both cascade from the SAME org_id delete,
--- with no guaranteed ordering between them, so a plain NO ACTION reference
--- from workspace rows back to users can transiently violate the FK mid-
--- cascade. SET NULL sidesteps the ordering dependency entirely; the
--- workspace/membership row itself is still removed via its own org_id/
--- workspace_id cascade regardless.
+-- Spaces (sub-workspaces) nest inside their org: every row still carries
+-- org_id. created_by/invited_by are ON DELETE SET NULL because org delete
+-- cascades to users and workspaces in no fixed order.
 CREATE TABLE IF NOT EXISTS workspaces (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -348,12 +231,8 @@ ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_created_by_fkey;
 ALTER TABLE workspaces ADD CONSTRAINT workspaces_created_by_fkey
     FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
 
--- Membership in a sub-workspace. A member must already belong to the same
--- org as the workspace (enforced in app/workspaces/, not by a DB constraint
--- alone, since that requires a cross-table check) — a sub-workspace can
--- never admit someone from a different tenant. `role` mirrors org roles
--- (owner = created it / can invite+connect sources, member = can only ask
--- questions).
+-- Space membership. Same-org membership is enforced in app/workspaces/.
+-- owner = can invite and connect sources; member = can ask.
 CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id UUID NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
     user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -367,22 +246,13 @@ ALTER TABLE workspace_members DROP CONSTRAINT IF EXISTS workspace_members_invite
 ALTER TABLE workspace_members ADD CONSTRAINT workspace_members_invited_by_fkey
     FOREIGN KEY (invited_by) REFERENCES users (id) ON DELETE SET NULL;
 
--- Workspace-within-a-Workspace: NULL = org-wide (unchanged default; every
--- existing row and every existing query path is unaffected), non-NULL =
--- scoped to that sub-workspace. Never query workspace_id alone — always
--- paired with org_id (see app/rag/scope.py).
+-- NULL = org-wide, else that space. Never query workspace_id alone; always
+-- with org_id (app/rag/scope.py).
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents (workspace_id);
 
--- Provider-partitioned sync uniqueness (org_id, source_provider,
--- source_external_id) must ALSO be scoped by workspace_id, or the same
--- external file synced into a personal workspace collides with the org-wide
--- copy's row on INSERT. Same reasoning as oauth_connections above: Postgres
--- treats NULL as distinct-from-NULL in a plain multi-column UNIQUE, so a
--- naive UNIQUE(org_id, source_provider, source_external_id, workspace_id)
--- would let unlimited "duplicate" org-wide (workspace_id IS NULL) rows
--- through. Two partial unique indexes instead: one for the org-wide
--- connection, one for a specific workspace's connection.
+-- Sync uniqueness must include workspace_id. NULLs are distinct in a plain
+-- UNIQUE, so two partial unique indexes: org-wide and per space.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_provider_external_orgwide
     ON documents (org_id, source_provider, source_external_id)
     WHERE workspace_id IS NULL AND source_external_id IS NOT NULL;
@@ -396,27 +266,13 @@ CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks (workspace_id);
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations (workspace_id);
 
--- A conversation is PERSONAL, like schedulers/insight_pins/scheduler_reports —
--- chat history is the most sensitive of the four and was the only one scoped by
--- org alone, so any member holding another's conversation_id could resume it and
--- read the history. NULL = a row predating this column: still resumable by
--- anyone in scope (we cannot invent an owner for it), never silently reassigned.
+-- A conversation is PERSONAL. NULL = a row from before this column: still
+-- resumable in scope (no owner can be invented).
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
 
--- How far the running `summary` has folded, as a `conversation_turns.turn_index`.
--- NULL = nothing folded yet.
---
--- This REPLACES deleting folded turns. The fold has to know which turns are
--- already in the summary or it would re-fold the whole history every turn, and
--- deletion used to be how it knew -- cheap, and it made the transcript the
--- model's working memory rather than the person's record. Those are two
--- different jobs: `get_context` already bounds what the LLM sees with its own
--- `ORDER BY turn_index DESC LIMIT`, so nothing ever needed the rows GONE.
---
--- Marking instead of deleting is what makes chat history possible at all: with
--- MEMORY_RECENT_TURNS=3, a ten-turn conversation kept its last three messages
--- and silently lost the rest, so a history page would have drawn a transcript
--- that looks complete and is not.
+-- How far `summary` has folded, as a `turn_index`; NULL = nothing yet.
+-- Folded turns are marked, not deleted, so chat history stays complete;
+-- `get_context` bounds what the model sees on its own.
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS folded_through INT;
 
 -- A title the person typed (NULL = the first question, as before) and when
@@ -428,30 +284,20 @@ CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
 
--- The source list drawn under the answer. NULL on a turn saved before this
--- column: a reopened chat shows sources only when they were kept. The link
--- was already checked to be http(s) when the answer was written.
+-- The sources shown under the answer (links already checked http(s)). NULL
+-- before this column.
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cited JSONB;
 
--- The chart drawn with the answer, as it was drawn: `{"panel": …, "period": …}`.
--- A SNAPSHOT, unlike `pinned_charts` (which stores the spec so it stays
--- current): a turn is a record of what was answered, and its text talks about
--- these numbers -- re-running would let the chart disagree with the words
--- beside it. NULL for a turn without a chart or saved before this column.
+-- The chart as drawn: a SNAPSHOT, so a reopened chart never disagrees with the
+-- words beside it. NULL without a chart.
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS chart JSONB;
 
 -- Who answered: the provenance pill's inputs (source, agent, tools, files,
--- live reads, model, how many passages). Written when the answer finishes;
--- NULL on a turn saved before this column, which reopens without a pill.
+-- live reads, model, passage count). NULL before this column.
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS meta JSONB;
 
--- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
--- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
--- Tokens are encrypted at rest (see app/security/crypto.py); this table never
--- stores plaintext. UNIQUE (org_id, provider) makes cross-tenant ambiguity
--- structurally impossible: every lookup MUST filter by org_id, and there is
--- at most one row per org per provider, so a query can never accidentally
--- return another org's connection by provider or workspace id alone.
+-- Per-org, per-provider OAuth credentials, encrypted at rest
+-- (app/security/crypto.py). Every lookup filters by org_id.
 CREATE TABLE IF NOT EXISTS oauth_connections (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id                  UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -468,74 +314,38 @@ CREATE TABLE IF NOT EXISTS oauth_connections (
 CREATE INDEX IF NOT EXISTS idx_oauth_connections_org ON oauth_connections (org_id);
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS external_workspace_name TEXT;
 
--- Workspace-within-a-Workspace: a personal connection (e.g. an employee's
--- own Notion "Meeting Notes" page) is scoped to their sub-workspace, not the
--- org. workspace_id NULL = today's org-wide admin connection (behavior
--- unchanged). The uniqueness must include workspace_id or a second member's
--- personal connection for the same provider would collide with (and via the
--- existing ON CONFLICT upsert, silently overwrite) an unrelated workspace's
--- connection or the org-wide one.
---
--- Two PARTIAL unique indexes, not one UNIQUE(org_id, provider, workspace_id):
--- Postgres treats NULL as distinct-from-NULL in a plain multi-column UNIQUE,
--- which would let unlimited org-wide (workspace_id IS NULL) rows through —
--- exactly the ambiguity this table exists to prevent. Splitting by
--- "IS NULL" / "IS NOT NULL" keeps "at most one org-wide row per provider"
--- exactly as before, while giving each real workspace_id its own row. Also
--- lets ON CONFLICT target the right index by matching its WHERE clause (see
--- app/auth/credentials.py::save_connection).
+-- workspace_id NULL = org-wide, else a space's connection. Two partial unique
+-- indexes, since NULLs are distinct in a plain UNIQUE; ON CONFLICT targets one
+-- by its WHERE (app/auth/credentials.py::save_connection).
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 ALTER TABLE oauth_connections DROP CONSTRAINT IF EXISTS oauth_connections_org_id_provider_key;
--- DROP + recreate (not just IF NOT EXISTS) because an earlier iteration of
--- this schema briefly created a COALESCE-expression index under this same
--- name before landing on the partial-index form below; IF NOT EXISTS alone
--- would silently keep that stale definition on any DB that already applied
--- the earlier version, causing ON CONFLICT to fail to match this index.
+-- DROP + recreate: an earlier COALESCE index had this name, and IF NOT EXISTS
+-- would keep it and break ON CONFLICT.
 DROP INDEX IF EXISTS idx_oauth_connections_org_provider_workspace;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_connections_org_provider_orgwide
     ON oauth_connections (org_id, provider) WHERE workspace_id IS NULL;
 CREATE UNIQUE INDEX idx_oauth_connections_org_provider_workspace
     ON oauth_connections (org_id, provider, workspace_id) WHERE workspace_id IS NOT NULL;
 
--- Provider-specific ingestion scope config (Google Integration Phase 4). Unlike
--- Notion (which always ingests every page shared with the integration token),
--- some sources need the admin to designate an in-scope subset up front — e.g.
--- Google Drive requires a specific folder id, since un-scoped Drive access is
--- both a tenant-isolation risk and broader than Google's OAuth scope policy
--- allows. Deliberately generic (JSONB, no Google-specific columns) so a future
--- GitHub adapter's repo name or Slack adapter's channel list fits the same
--- column. Nullable with no default: most providers (Notion) never set it.
+-- Provider-specific scope config (JSONB): Drive folder, Slack channels,
+-- Linear teams, Forms ids. NULL for providers that need none (Notion).
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS source_config JSONB;
 
--- Connection health: sticky "needs reconnect" so Sources can show a Reconnect
--- CTA after an admin leaves / token dies, without relying on in-memory React
--- state from the last failed change-check. Cleared on reconnect or a successful
--- live call; set when refresh or an upstream 401/unauthorized hits.
+-- Sticky "needs reconnect" for the Sources card. Set on a failed refresh or an
+-- upstream 401; cleared on reconnect or a successful live call.
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
 
--- Automatic sync (freshness without a human). Two columns, because there are
--- exactly two reasons to sync: a service TOLD us something changed
--- (``sync_requested_at``, stamped by a webhook handler) or enough time has
--- passed that we should look anyway (``last_sync_at`` + the configured
--- interval). The poll is the floor, not the plan: it covers Drive (whose push
--- notifications need a Google-verified domain we do not own) and any webhook
--- that was dropped while the free-tier box was asleep.
---
--- ``sync_requested_at`` is a FLAG, not a queue: a burst of fifty Slack
--- messages stamps it fifty times and produces one job, because the tick reads
--- it once and clears it. That is the whole debounce -- no timer, no counter.
--- The webhook handler must never ingest inline: Slack requires a 3-second ack.
+-- Automatic sync: a service flagged a change (`sync_requested_at`, from a
+-- webhook) or the interval passed (`last_sync_at`). The poll is the floor
+-- (Drive, and pushes lost while the box slept). The flag is not a queue: fifty
+-- pushes make one job. Webhooks never ingest inline.
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS sync_requested_at TIMESTAMPTZ;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ;
 
--- Drive push (`sources/drive_watch.py`): one `changes.watch` channel per Google
--- connection. Drive is the one source that cannot push without us asking, and a
--- channel EXPIRES (at most a week for `changes`) with no automatic renewal, so
--- the tick re-watches before `expires_at`. `token_hash` is the SHA-256 of the
--- secret we hand Google as the channel token; a notification whose
--- X-Goog-Channel-Token does not hash to it is ignored. It can only ever flag a
--- sync, but an unauthenticated flag is still a free way to spend quota.
+-- Drive push: one `changes.watch` channel per Google connection, re-watched
+-- before `expires_at` (channels expire within a week). `token_hash` is the
+-- SHA-256 of the channel token; a notification that does not match is ignored.
 CREATE TABLE IF NOT EXISTS drive_watch_channels (
     connection_id UUID PRIMARY KEY REFERENCES oauth_connections (id) ON DELETE CASCADE,
     channel_id    TEXT NOT NULL UNIQUE,
@@ -551,10 +361,8 @@ CREATE INDEX IF NOT EXISTS idx_oauth_connections_sync_requested
     ON oauth_connections (sync_requested_at)
     WHERE sync_requested_at IS NOT NULL;
 
--- Admin-triggered ingestion jobs (Phase 10/12). A durable, pollable record of a
--- background fetch->chunk->embed->store run so an admin sees progress instead
--- of a blocking script. Consumed by a Postgres-backed worker (app/jobs/), not
--- an in-process background task, so a crashed worker never loses the job.
+-- Ingestion jobs: a durable, pollable record drained by a Postgres-backed
+-- worker (app/jobs/), so a crashed worker never loses a job.
 CREATE TABLE IF NOT EXISTS ingestion_jobs (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id        UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -569,68 +377,38 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_org ON ingestion_jobs (org_id);
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
 
--- Workspace-within-a-Workspace: which sub-workspace (if any) this job's
--- fetched content should be stored under (NULL = today's org-wide admin
--- job, unchanged). Must come AFTER this CREATE TABLE — on a fresh database
--- this ALTER would otherwise fail since the table wouldn't exist yet.
+-- The space the fetched content belongs to (NULL = org-wide). After the CREATE
+-- TABLE, or a fresh database fails.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
--- Live progress. Without these a job is binary (queued -> running -> succeeded)
--- and `doc_count` is only written at the very end, so every poll during a
--- multi-minute sync returned byte-identical JSON and the UI could only spin —
--- indistinguishable, to the person watching, from a hung sync. These columns
--- are what make the spinner truthful. Same ALTER-after-CREATE ordering rule as
--- `workspace_id` above.
+-- Live progress, so polling shows a moving sync instead of a spinner that
+-- looks hung. ALTER after CREATE, as above.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS phase TEXT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS total_documents INT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS processed_documents INT NOT NULL DEFAULT 0;
 
--- Crash-loop breaker. `requeue_interrupted_running()` returns orphaned
--- `running` jobs to `queued` on worker start, so a sync survives a normal
--- restart. But with no attempt counter that behaviour is unbounded: a job that
--- kills its own process (OOM) is requeued on the next boot, claimed, and kills
--- it again — an infinite, unattended crash loop that burns the whole instance
--- and is independent of WHY the job died. Two live production incidents were
--- this loop, not the underlying bug. Counting attempts lets the requeue refuse
--- a job that has already taken the process down `INGEST_MAX_JOB_ATTEMPTS`
--- times, so a poison job fails loudly instead of looping forever. Same
--- ALTER-after-CREATE ordering rule as the columns above.
+-- Crash-loop breaker: orphaned `running` jobs are requeued on worker start,
+-- but a job that kills its process (OOM) would loop forever. After
+-- `INGEST_MAX_JOB_ATTEMPTS` it fails loudly instead.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
 
--- Liveness heartbeat, written on every progress report.
---
--- `reap_stuck()` used to decide a job was dead from `started_at` alone, i.e.
--- from how long it had been running rather than from whether it was still doing
--- anything. So a healthy-but-slow ingest (a large folder, or contextualization
--- against a 15-rpm endpoint) was marked `failed` at the timeout while it carried
--- on working, and the UI reported a failure for a run that was fine. The
--- evidence of liveness already existed -- `update_progress` writes phase and
--- counters as each document lands -- it just had no timestamp for the reaper to
--- read. Same wrong-gauge mistake as measuring memory with `ru_maxrss`: the
--- number was real, it just wasn't the number that answers the question.
+-- Liveness heartbeat, written on every progress report: `reap_stuck()` judges
+-- a job dead by silence, not by how long it has run.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ;
 
--- How many files this run could not read the SHARING of (document-level
--- access filtering). Stored on the JOB rather than the connection because it
--- is the outcome of one sync, and reading only the LATEST job per connection
--- is what keeps the notification derived: the moment a later sync reports 0,
--- the bell item disappears on its own. A notification that outlives its cause
--- is why people stop reading them (app/api/notifications.py).
+-- Files this run could not read the SHARING of. On the job, not the
+-- connection, so the notification (latest job only) clears itself on a later 0.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS permission_unreadable_documents INT NOT NULL DEFAULT 0;
 
--- At most one queued/running job per connection. Without this, two parallel
--- POST /ingest calls can both pass has_active_job() and enqueue twice — the
--- second run often re-embeds the same pages and makes Update look "stuck".
+-- At most one queued/running job per connection (two parallel POST /ingest
+-- calls both passed has_active_job()).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ingestion_jobs_one_active_per_connection
     ON ingestion_jobs (connection_id)
     WHERE status IN ('queued', 'running');
 
--- Single-use magic-link login tokens (Phase 13). Only a HASH of the token is
--- stored (never the token itself), so a DB read can't be used to log in as
--- someone. `consumed_at` makes a token single-use even if it leaks (e.g. in a
--- mail server log) before it expires; `expires_at` bounds its lifetime
--- regardless. A session is only ever issued from a verify call that
--- successfully consumes one of these rows (see app/api/auth.py).
+-- Single-use magic-link tokens: only a hash is stored; `consumed_at` keeps a
+-- leaked token single-use, `expires_at` bounds it. Sessions come only from a
+-- successful consume.
 CREATE TABLE IF NOT EXISTS magic_link_tokens (
     token_hash  TEXT PRIMARY KEY,
     email       TEXT NOT NULL,
@@ -640,14 +418,9 @@ CREATE TABLE IF NOT EXISTS magic_link_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_email ON magic_link_tokens (email);
 
--- A member's PRIOR sign-in addresses, kept when they change their email
--- (`auth/email_change.py`). Document access is keyed on EMAIL (a file is shared
--- with someone before they sign up), so without this a changed address stops
--- matching every grant the person still holds in Drive/Slack/Linear. Onyx's
--- `prior_emails`. One owner per address (PRIMARY KEY), and every row was PROVEN:
--- it was this person's verified login until they replaced it. Read side
--- ignores an alias another `users` row now signs in with, so an address that
--- is reassigned never matches two people.
+-- A member's PRIOR sign-in addresses (`auth/email_change.py`), so grants to an
+-- old address keep matching. One owner per address; every row was proven.
+-- An alias another `users` row signs in with is ignored on read.
 CREATE TABLE IF NOT EXISTS user_email_aliases (
     email      TEXT PRIMARY KEY,
     user_id    UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -655,11 +428,9 @@ CREATE TABLE IF NOT EXISTS user_email_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_user_email_aliases_user ON user_email_aliases (user_id);
 
--- A pending "change my email" request: a single-use token mailed to the NEW
--- address. Separate from magic_link_tokens on purpose -- a consumed magic link
--- signs in whoever owns its email, and this token must never be usable as a
--- login. Hashed like magic links; `user_id` is bound at request time from the
--- session, so the link proves the inbox and the session proved the account.
+-- A pending email change: a single-use token mailed to the NEW address. Apart
+-- from magic_link_tokens so it can never log anyone in; hashed; `user_id`
+-- bound from the session.
 CREATE TABLE IF NOT EXISTS email_change_requests (
     token_hash  TEXT PRIMARY KEY,
     user_id     UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -670,11 +441,8 @@ CREATE TABLE IF NOT EXISTS email_change_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_email_change_requests_user ON email_change_requests (user_id);
 
--- Single-use OAuth `state` values (Phase 13) — CSRF/replay protection for the
--- admin "Connect X" flow. Stored server-side (not just a signed JWT) so a
--- state can be validated AND immediately consumed on lookup in the callback;
--- scoped to the admin's org_id at issue time so the callback resolves the
--- right tenant without trusting anything client-supplied.
+-- Single-use OAuth `state` (CSRF/replay), consumed on lookup and scoped to the
+-- admin's org_id at issue, so the callback trusts nothing from the client.
 CREATE TABLE IF NOT EXISTS oauth_states (
     state       TEXT PRIMARY KEY,
     org_id      UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -684,23 +452,15 @@ CREATE TABLE IF NOT EXISTS oauth_states (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Workspace-within-a-Workspace: when a "Connect" flow is for a personal
--- sub-workspace source rather than the org-wide one, the state row records
--- which workspace so the callback knows to save the resulting connection
--- scoped to it (NULL = today's org-wide connect flow, unchanged).
+-- The space a connect flow is for (NULL = org-wide).
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
--- Second Brain 1.2: the PERSON who started a flow, for flows that bind to a
--- person rather than a scope ("Link your GitHub account"). NULL for every
--- connect flow. The callback reads the user from HERE, never from the request,
--- so a captured link can only ever attach an account to whoever clicked.
+-- The PERSON who started a person-bound flow ("Link your GitHub account");
+-- NULL for connect flows. Read from here, never the request.
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
 
--- GitHub connect: after user OAuth, the callback lists every App installation
--- this user can see and parks the user token here so the frontend can prompt
--- "which account?" before we bind Company Sources vs a space. Single-use,
--- short TTL — same trust model as oauth_states / magic_link_tokens. Tokens
--- are Fernet-encrypted at rest; only hashes aren't needed because possession
--- of the random ``token`` is the capability (like oauth state).
+-- GitHub connect: the user token parked while they choose which installation
+-- to bind. Single-use, short TTL, Fernet-encrypted; holding the random
+-- ``token`` is the capability.
 CREATE TABLE IF NOT EXISTS github_install_pending (
     token                      TEXT PRIMARY KEY,
     org_id                     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -724,20 +484,10 @@ DROP TABLE IF EXISTS query_answer_cache;
 -- Redis now (app/ratelimit); the counters held nothing worth keeping.
 DROP TABLE IF EXISTS api_rate_counters;
 
--- Prompt-Driven Activity Scheduler (Phase 1, org scope): a user-authored
--- recurring question against one already-connected service. The row IS the
--- queue entry (definition + run state combined, same shape as
--- ingestion_jobs) — no separate run-history table for Phase 1 (YAGNI; add
--- one if per-run history is ever needed). Any org member may create one
--- against any org-wide connection; list/edit/delete are scoped to the
--- owning user_id, not the whole org, per "see/edit/remove their OWN
--- schedulers". Phase 1 supports github/slack only — provider is unchecked
--- here (same discipline as ingestion_jobs.status: validated by the
--- application, not a CHECK constraint) so adding a source later needs no
--- migration.
--- NOTE: the ONLY tenant table scoped by (org_id, user_id) — a scheduler is
--- personal, so every read/write must filter on BOTH. Do not copy this shape
--- for shared org data; every other table here is org_id (+ workspace_id) only.
+-- Recurring activity reports: a member's question against one connected
+-- service. The row is also the queue entry (definition + run state).
+-- Provider is validated by the app, not a CHECK. Personal: every read and
+-- write filters on BOTH org_id and user_id.
 CREATE TABLE IF NOT EXISTS schedulers (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id        UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -757,28 +507,17 @@ CREATE INDEX IF NOT EXISTS idx_schedulers_org ON schedulers (org_id);
 CREATE INDEX IF NOT EXISTS idx_schedulers_user ON schedulers (user_id);
 CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE status = 'active';
 
--- Workspace-within-a-Workspace: a scheduler may target either the org-wide
--- connection (NULL, the default) or one sub-workspace's own connection. Nested
--- INSIDE org_id like every other workspace_id here — never valid alone. The
--- fetchers already take workspace_id; this column is what lets a saved
--- scheduler remember which scope it was created for.
+-- The scope a scheduler targets: NULL = org-wide, else a space's connection
+-- (always with org_id).
 ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS workspace_id UUID
     REFERENCES workspaces (id) ON DELETE CASCADE;
 
--- NOTE: a `schedulers.model` column briefly existed (per-scheduler model
--- choice) and was removed — reports always run on the configured model, since
--- a scheduled run is unattended. Databases migrated during that window keep an
--- unused nullable column; harmless, and not worth a destructive migration.
+-- A `schedulers.model` column briefly existed and was removed (reports run on
+-- the configured model); old databases keep an unused nullable column.
 
--- One generated report, kept so the email can be a short "it's ready" note
--- plus a link instead of a wall of plain text, and so a report survives a
--- failed send (the run's work is no longer lost with the mail).
---
--- Deliberately snapshotted, not joined: ``prompt``, ``provider``, ``frequency``
--- and ``space_name`` are copied at generation time. A report is an immutable
--- record of what was asked and what came back — re-resolving them later would
--- silently rewrite history when someone edits their scheduler or renames a
--- space, and would delete archived reports when a space is deleted.
+-- One generated report, so the email is a short "ready" note and a failed send
+-- loses nothing. Labels are SNAPSHOTTED: a report is an immutable record, not
+-- rewritten when a scheduler or space changes.
 CREATE TABLE IF NOT EXISTS scheduler_reports (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     scheduler_id UUID REFERENCES schedulers (id) ON DELETE CASCADE,
@@ -797,33 +536,17 @@ CREATE TABLE IF NOT EXISTS scheduler_reports (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- NOTE: a `scheduler_reports.model` column briefly existed alongside
--- `schedulers.model` and was removed with it. Same story as above.
+-- `scheduler_reports.model` was removed with `schedulers.model`.
 -- Every read is "this person's reports, newest first".
 CREATE INDEX IF NOT EXISTS idx_scheduler_reports_owner
     ON scheduler_reports (org_id, user_id, created_at DESC);
 
--- One countable event from a connected source. The ONLY numeric substrate for
--- the visualizations section: every chart in the product is a GROUP BY over
--- this table, so no chart can ever contain a number an LLM invented. A prose
--- answer that is wrong hedges and cites; a bar chart that is wrong reads as a
--- measurement, and neither the confidence gate nor the strict prompt can check
--- arithmetic.
---
--- Deliberately narrow and denormalized. A wide per-provider table (pr_author,
--- issue_assignee, message_channel) makes every cross-provider chart a join
--- somebody has to write; one actor/subject/state triple makes it a WHERE
--- clause. `value` carries the one number a fact may have (a lead time in
--- seconds, a sentiment score) and is NULL for pure count facts.
---
--- Scoped like every other tenant table: org_id always, workspace_id nested
--- inside it (NULL = org-wide).
---
--- GitHub DOES write rows here, and that is not a break with "GitHub embeds
--- nothing": that rule is about vectors -- no documents, no chunks, no
--- embeddings, no SourceAdapter -- and a counter is not a chunk. Facts are
--- written by a facts-only sync path that never enqueues an ingestion job, so
--- "Unknown source type: 'github'" stays impossible.
+-- One countable event from a connected source: every activity chart is a
+-- GROUP BY here, so no chart holds a model-invented number. Narrow and
+-- denormalized (actor/subject/state) so cross-provider charts are a WHERE.
+-- `value` is the one number a fact may carry (NULL for counts). Scoped by
+-- org_id, workspace_id nested. GitHub writes facts here through a facts-only
+-- path; "GitHub embeds nothing" is about vectors.
 CREATE TABLE IF NOT EXISTS activity_facts (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -847,12 +570,8 @@ CREATE INDEX IF NOT EXISTS idx_activity_facts_scope
 CREATE INDEX IF NOT EXISTS idx_activity_facts_space
     ON activity_facts (org_id, workspace_id, provider, occurred_at DESC);
 
--- Re-syncing the same document or pull request must not double every count.
--- Partial unique indexes because NULL workspace_id means "org-wide" and
--- Postgres treats NULLs as distinct in a plain UNIQUE -- the same trap
--- oauth_connections already hit. A NULL external_id is exempt: a fact the
--- source gave us no stable id for cannot be deduplicated, and pretending
--- otherwise would collapse every such fact onto one row.
+-- Re-syncing must not double counts. Partial unique indexes (NULL
+-- workspace_id = org-wide); a NULL external_id cannot be deduplicated.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_org
     ON activity_facts (org_id, provider, kind, external_id)
     WHERE workspace_id IS NULL AND external_id IS NOT NULL;
@@ -860,29 +579,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
     ON activity_facts (org_id, workspace_id, provider, kind, external_id)
     WHERE workspace_id IS NOT NULL AND external_id IS NOT NULL;
 
--- The stable identity of `actor` (`github:<login>`, `slack:U123`), for the
--- Second Brain graph. `actor` stays the display value charts group by; this
--- is what lets the graph join a GitHub reviewer to the same person's Slack
--- threads without ever matching on a name. NULL where the source gave none.
+-- Stable identity of `actor` (`github:<login>`, `slack:U123`) for the graph,
+-- which never matches on names. NULL where the source gave none.
 ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
 
--- Every other field the source ALREADY handed us for this fact (GitHub PR
--- labels and target branch; Linear priority, estimate, labels, project), so a
--- chart can group, filter or sum by it without a new column per field. The
--- keys a chart may read are declared in `insights/registry.py::ATTRS`; any
--- other key is stored and ignored. `{}` = nothing extra was captured (every
--- row written before this column existed, until its next sync re-reads it).
+-- Every other simple field the source returned (labels, priority, project...),
+-- so a chart can group, filter or sum by it with no new column. The chartable
+-- set is discovered (`insights/attr_catalog.py`). `{}` = nothing captured yet.
 ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- Tables found INSIDE documents (a Google Sheet, a CSV, a pipe table in a
--- Notion page or Google Doc, a table in a Word file), kept as typed rows so a
--- chart can sum a column with SQL instead of reading numbers back out of
--- chunk text (app/doctables, plan docs/plans/2026-09-30-open-ended-charts.md
--- Phase 3). Hangs off `documents` and cascades with it, so access is the
--- document's own (`visibility_predicate` on the JOIN) and a re-ingest, which
--- replaces the document row, replaces its tables too. `columns` is the
--- profile: `[{key: "c0", name, type: number|date|category|text, unit, ...}]`;
--- `key` is ours and is the only thing ever spliced into SQL.
+-- Tables found inside documents, kept as typed rows so charts sum with SQL
+-- (app/doctables). Cascades with `documents`, so access is the document's
+-- (`visibility_predicate` on the JOIN). `columns` is the profile
+-- `[{key: "c0", name, type, unit, ...}]`; only `key` is ever spliced into SQL.
 CREATE TABLE IF NOT EXISTS doc_tables (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -898,19 +607,16 @@ CREATE TABLE IF NOT EXISTS doc_tables (
 );
 CREATE INDEX IF NOT EXISTS idx_doc_tables_scope ON doc_tables (org_id, workspace_id);
 
--- Which dataset adapter wrote the table (`app/doctables/base.py`): `table` = a
--- table the document already had (exact), `text` = figures an AI read out of
--- sentences, each row kept only when its cells appear in the quoted sentence.
--- Each adapter replaces only its OWN tables, so the background text pass can
--- never wipe the tables ingestion stored, and vice versa.
+-- Which adapter wrote it (`app/doctables/base.py`): `table` (exact) or `text`
+-- (figures read from sentences, kept only when the quote holds every cell).
+-- Each adapter replaces only its own tables.
 ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'table';
 ALTER TABLE doc_tables DROP CONSTRAINT IF EXISTS doc_tables_document_id_position_key;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_tables_origin
     ON doc_tables (document_id, origin, position);
 
--- One row per table row. `cells` holds normalized values by column key (a
--- number as a JSON number, a date as ISO text, an unparseable cell absent);
--- `raw` keeps what the document actually said, for the hover.
+-- One row per table row: `cells` normalized by column key (unparseable cells
+-- absent), `raw` as the document wrote it.
 CREATE TABLE IF NOT EXISTS doc_table_rows (
     table_id UUID NOT NULL REFERENCES doc_tables (id) ON DELETE CASCADE,
     row_no   INT NOT NULL,
@@ -921,19 +627,13 @@ CREATE TABLE IF NOT EXISTS doc_table_rows (
 -- The exact sentence a `text` row was read from, shown on hover so a reader
 -- can check the figure against the document. NULL for a real table's rows.
 ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS quote TEXT;
--- A question names a row by typing one of its cells ("L-1008"): looked up by
--- the question's phrases, exact and lowercased (`store.rows_naming`), never a
--- scan of every row the org holds.
+-- Rows named by a typed cell ("L-1008") are found through this index
+-- (`store.rows_naming`), never a scan.
 CREATE INDEX IF NOT EXISTS doc_table_rows_cells_lower
     ON doc_table_rows USING gin ((lower(raw::text)::jsonb));
 
--- Documents waiting for a BACKGROUND dataset adapter (the text adapter: an AI
--- reads figures out of sentences). Ingestion only flags a document here after
--- a cheap no-AI check, so it never waits on a model; the tick works through a
--- few per run (`doctables/queue.py`). `text` is a bounded copy of what
--- ingestion already had, so the tick never re-fetches from the source, and it
--- is cleared once the document is done or given up on. Cascades with the
--- document: a re-ingest (new `documents.id`) re-flags it from scratch.
+-- Was the background queue for prose figures; prose is now read inline at
+-- ingest, so this is only a read marker (`done`). Cascades with the document.
 CREATE TABLE IF NOT EXISTS doc_text_queue (
     document_id  UUID PRIMARY KEY REFERENCES documents (id) ON DELETE CASCADE,
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -950,24 +650,21 @@ CREATE TABLE IF NOT EXISTS doc_text_queue (
 CREATE INDEX IF NOT EXISTS idx_doc_text_queue_pending
     ON doc_text_queue (updated_at) WHERE status = 'pending';
 
--- When the dataset adapters last looked at a document. NULL = never: every
--- document indexed before charts read tables, because an UNCHANGED document
--- is never re-fetched by a sync. `ingestion.pipeline.backfill_tables` re-reads
--- a bounded batch of those per sync, newest first; a re-ingest makes a new
--- row, stamped by ingestion itself.
+-- When the dataset adapters last read a document. NULL = never (indexed
+-- before charts read tables); `backfill_tables` reads a bounded batch per sync.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS tables_checked_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_documents_tables_unchecked
     ON documents (org_id, source_provider) WHERE tables_checked_at IS NULL;
 
--- One-time data fixes that must run ONCE, not on every deploy (this file is
--- re-applied at each one). Each is guarded by its own row here.
--- Versions this server has already emailed its admins about
--- (app/updates/announce.py). Not tenant data: one row per release.
+-- Releases this server has already emailed its admins about
+-- (app/updates/announce.py). Not tenant data.
 CREATE TABLE IF NOT EXISTS update_notices (
     version     TEXT PRIMARY KEY,
     notified_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- One-time data fixes: this file reruns on every deploy, so each fix is
+-- guarded by its own row here.
 CREATE TABLE IF NOT EXISTS schema_marks (
     name       TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -986,12 +683,9 @@ BEGIN
     END IF;
 END $$;
 
--- Notion tables were rendered without a header separator, and inline
--- databases ("/table" -> table view) not at all, until 2026-10, so Notion
--- pages were stamped "checked, no tables". Unstamp the ones that have none so
--- `backfill_tables` re-reads them (a bounded batch per sync, tables only) with
--- the fixed renderer -- no one has to edit their pages. The mark is named for
--- the LAST fix it covers, so a later fix re-runs it under a new name.
+-- Notion tables (no header separator) and inline databases were not read
+-- before 2026-10; unstamp those pages so `backfill_tables` re-reads them. The
+-- mark is named for the last fix it covers.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'notion_tables_recheck_databases') THEN
@@ -1003,12 +697,9 @@ BEGIN
     END IF;
 END $$;
 
--- Figures in SENTENCES were read only by a background queue that was off by
--- default until 2026-10, so prose pages were stamped "checked" without ever
--- being read. Ingest now reads them inline; unstamp the ones with no figures
--- read and no "read, none found" mark so `backfill_tables` reads them (a
--- bounded batch per sync). The old queue's unfinished rows are dropped:
--- nothing works through them any more.
+-- Prose figures were read only by a queue that was off by default; unstamp
+-- prose pages never read so `backfill_tables` reads them inline. The old
+-- queue's unfinished rows are dropped.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_figures_read_at_ingest') THEN
@@ -1024,9 +715,7 @@ BEGIN
     END IF;
 END $$;
 
--- The same, once more: deploys between the mark above and reading at ingest
--- still queued prose pages on that dead queue and stamped them checked, so
--- they would never be read (staging, 13 Oct: 20 pages, one a Notion report).
+-- Once more, for pages deploys in between still stamped checked.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_figures_inline_recheck') THEN
@@ -1041,10 +730,8 @@ BEGIN
     END IF;
 END $$;
 
--- Figures read from sentences before the reader listed FACTS and code built
--- the tables (one per measure, unit, breakdown and period grain): the model
--- used to design the tables, and mixed measures ("satisfaction by month" was
--- tickets + minutes + %). Read once more by the next sync. Text tables only.
+-- Text tables read before code built one table per measure, unit, breakdown
+-- and period (the model mixed measures): read once more.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_figures_as_facts') THEN
@@ -1055,9 +742,8 @@ BEGIN
     END IF;
 END $$;
 
--- A reply that did not parse was marked "read, no series" (`done`) for good:
--- production, 13 Oct, a report with 50 figures stored none. An unusable reply
--- is now retried; pages marked done with no figures are read once more.
+-- An unparseable reply was marked `done` for good; now retried, so pages
+-- marked done with no figures are read once more.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_done_reread') THEN
@@ -1073,12 +759,9 @@ BEGIN
     END IF;
 END $$;
 
--- A category column kept five sample values until 2026-11, and the chart and
--- table-answer models are shown those as the column's values: a Stage column's
--- "Won" fell off the end, so "conversion ratio" was worked out on "Contacted".
--- New tables keep up to twelve (`extract.CATEGORY_SAMPLES`); a sync skips an
--- unchanged sheet, so stored tables are re-sampled here from their own rows,
--- sorted as Python's sorted() does (codepoint order).
+-- Category columns kept five samples until 2026-11 ("Won" fell off a Stage
+-- column). New tables keep twelve (`extract.CATEGORY_SAMPLES`); stored ones are
+-- re-sampled from their rows here, in Python's sorted() order.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'category_samples_twelve') THEN
@@ -1146,15 +829,8 @@ BEGIN
     END IF;
 END $$;
 
--- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
--- like `schedulers` and unlike every other tenant table -- a pin is one
--- person's shortcut, never published to anyone, which is why this feature has
--- no sharing model and no approval step.
---
--- Stores the SPEC, not the numbers: re-running it is one GROUP BY, and
--- snapshotting counts would freeze a chart that is supposed to stay current
--- (the opposite of `scheduler_reports`, which snapshots precisely because a
--- report is a record of one moment).
+-- A chart a member kept: personal `(org_id, user_id)`, never shared. Stores
+-- the SPEC, so it stays current (unlike `scheduler_reports`, a snapshot).
 CREATE TABLE IF NOT EXISTS insight_pins (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1170,9 +846,7 @@ CREATE TABLE IF NOT EXISTS insight_pins (
 CREATE INDEX IF NOT EXISTS idx_insight_pins_owner
     ON insight_pins (org_id, user_id, created_at DESC);
 
--- Pinning the same chart twice is a no-op, not a duplicate. Partial indexes
--- because NULL workspace_id means "the company" and Postgres treats NULLs as
--- distinct in a plain UNIQUE.
+-- Pinning twice is a no-op. Partial indexes: NULL workspace_id = the company.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_pins_org
     ON insight_pins (org_id, user_id, metric, period, coalesce(group_by, ''))
     WHERE workspace_id IS NULL;
@@ -1181,33 +855,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_pins_space
                      coalesce(group_by, ''))
     WHERE workspace_id IS NOT NULL;
 
--- ---------------------------------------------------------------------------
--- In-chat file attachments (Feature 1 of the Onyx parity analysis).
---
--- A person drops a PDF/DOCX/CSV/TXT into a conversation and asks about THAT
--- file. Only the EXTRACTED TEXT is stored -- never the uploaded bytes, never a
--- URL, and deliberately no vector. Three reasons, in order of how much they
--- matter:
---
---   1. An attachment is a one-off, not corpus. Embedding it would make it
---      retrievable by every later question in the scope, which is the exact
---      opposite of "ask about this file in this chat" -- and `documents` is
---      shared by everyone in the scope, so a personal upload landing there
---      would be a disclosure, not a feature.
---   2. Discarding the bytes means there is no file to leak, no storage to
---      scope and nothing to clean up. A CDN/object-store URL is public by
---      link, so it would widen access rather than narrow it.
---   3. Text is what the model consumes anyway. Keeping it here means a
---      follow-up question re-reads it with no second upload and no re-parse.
---
--- `user_id` is NOT NULL and is checked on every read even though
--- `conversations` is already personal: an attachment is the one thing here a
--- member supplies rather than an admin, so it gets its own owner check rather
--- than inheriting one. Unlike `conversations.user_id` there are no pre-column
--- rows to be lenient about, so this one can be strict.
---
--- Cascades from the conversation, so deleting a chat clears its attachments
--- with it -- no sweeper, no TTL job.
+---------------------------------------------------------------------------
+-- In-chat file attachments: a file a person drops into one conversation.
+-- Never embedded (it is not corpus, and `documents` is shared by the scope).
+-- The bytes and text live in the object store (see below); `user_id` is
+-- checked on every read. Cascades from the conversation.
 CREATE TABLE IF NOT EXISTS conversation_attachments (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
@@ -1217,9 +869,8 @@ CREATE TABLE IF NOT EXISTS conversation_attachments (
     content_type    TEXT NOT NULL,
     content         TEXT NOT NULL,
     char_count      INT  NOT NULL,
-    -- True when the file was longer than the char budget. Surfaced to the
-    -- asker AND stated in the prompt: a partial document that looks complete
-    -- is the failure this codebase is arranged against (CLAUDE.md §2).
+    -- True when the file was longer than the char budget: told to the asker and
+    -- stated in the prompt.
     truncated       BOOLEAN NOT NULL DEFAULT false,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1227,20 +878,14 @@ CREATE TABLE IF NOT EXISTS conversation_attachments (
 CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
     ON conversation_attachments (conversation_id, org_id, user_id, created_at);
 
--- Injection score of the extracted text, set once at upload (app/guard/live.py).
--- NULL = unscored (guard off, file too long, Groq down). A flagged file is
--- still ACCEPTED -- vendor PDFs are legitimate -- but its prompt text leads
--- with a warning and the chip says so.
+-- Injection score at upload (app/guard/live.py); NULL = unscored. A flagged
+-- file is still accepted, but its prompt text leads with a warning.
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS injection_score REAL;
 
--- Tables inside an UPLOADED file, so Chart mode can chart a spreadsheet or a
--- PDF table the asker attached. Same rows and same query code as a document's
--- tables, but owned by the attachment instead: `document_id` is NULL and
--- `attachment_id` is set (exactly one of the two). Access is the attachment's
--- own -- its uploader, in that conversation -- never the document predicate,
--- and `list_tables` keeps its INNER JOIN on documents, so an upload can never
--- surface in anyone else's chart. Cascades with the attachment, so the x, the
--- TTL sweep and a deleted chat all take the tables with them.
+-- Tables inside an UPLOADED file: `attachment_id` set, `document_id` NULL
+-- (exactly one). Access is the attachment's (uploader, that conversation);
+-- `list_tables` joins documents, so uploads never reach anyone else's chart.
+-- Cascades with the attachment.
 ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS attachment_id UUID
     REFERENCES conversation_attachments (id) ON DELETE CASCADE;
 ALTER TABLE doc_tables ALTER COLUMN document_id DROP NOT NULL;
@@ -1249,47 +894,18 @@ ALTER TABLE doc_tables ADD CONSTRAINT doc_tables_one_source
     CHECK ((document_id IS NULL) <> (attachment_id IS NULL));
 CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_tables_attachment_origin
     ON doc_tables (attachment_id, origin, position) WHERE attachment_id IS NOT NULL;
--- When an AI last read figures out of this upload's prose (Chart mode, on
--- demand, only for a file with no real table). NULL = never; set even when
--- nothing was found, so the same file is not read twice.
+-- When figures were last read from this upload's prose (Chart mode). NULL =
+-- never; set even when none were found.
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS figures_read_at TIMESTAMPTZ;
 
--- ---------------------------------------------------------------------------
--- Feedback & documentation-gap tracking (Feature 2 of the Onyx parity
--- analysis).
---
--- Two kinds of row, one table, because they answer the same admin question
--- ("what are people asking that we cannot answer?") and a downvote ON a
--- refusal is one event, not two:
---
---   * refusal = true, rating NULL  -- written automatically whenever an answer
---     came back ungrounded. Nobody has to report a gap for it to be counted,
---     which is the point: the gaps people give up on are the ones that never
---     get reported.
---   * rating = +1/-1               -- a thumb, with an optional `reason`
---     category and free-text comment on a downvote.
---
--- The question/answer text is SNAPSHOTTED rather than joined, for the same
--- reason `scheduler_reports` snapshots its labels: `conversation_turns` rows
--- may be swept with their conversation at the retention horizon, and the
--- GitHub/Insights/Slack paths never write a turn row at all. A foreign key to
--- a turn would therefore be NULL in most rows and dangling in the rest.
---
--- `normalized_question` is what the admin view GROUPs by. It is derived from
--- the RESOLVED (rewritten, standalone) question where there is one -- a
--- follow-up's raw text is "what about dental?", which is unusable in a gap
--- list.
---
--- `user_id` is ON DELETE SET NULL, unlike the cascade every other tenant
--- table uses: the gap is a fact about the company's documentation, not about
--- the person who happened to hit it, so it must outlive their account. It is
--- stored at all because "15 people asked this" is COUNT(DISTINCT user_id) --
--- without it one frustrated person re-asking five times reads as five people.
---
--- `gate_score` separates the two failures an admin fixes differently: NULL
--- means retrieval matched nothing at all (no such document), a value below
--- RAG_SIMILARITY_THRESHOLD means something was close but not close enough
--- (the document may exist and be unreachable).
+---------------------------------------------------------------------------
+-- Feedback and documentation gaps. `refusal = true, rating NULL` is written
+-- automatically for an ungrounded answer; `rating = +1/-1` is a thumb with an
+-- optional reason and comment. Question and answer are snapshotted (turns may
+-- be swept, and some paths write none). `normalized_question` comes from the
+-- resolved question. `user_id` is SET NULL (a gap outlives the person) and
+-- kept so counts are distinct people. `gate_score` NULL = nothing matched;
+-- below RAG_SIMILARITY_THRESHOLD = close but not close enough.
 CREATE TABLE IF NOT EXISTS feedback_and_gaps (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id              UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1299,9 +915,8 @@ CREATE TABLE IF NOT EXISTS feedback_and_gaps (
     question            TEXT NOT NULL,
     normalized_question TEXT NOT NULL,
     answer              TEXT,
-    -- Which agent answered, and where it was asked ('web' | 'slack'). Both are
-    -- diagnostics: a gap that only ever appears on one surface is a routing
-    -- bug, not a missing document.
+    -- Which agent answered and where ('web' | 'slack'): a gap on one surface only
+    -- is a routing bug.
     agent               TEXT,
     surface             TEXT NOT NULL DEFAULT 'web',
     refusal             BOOLEAN NOT NULL DEFAULT false,
@@ -1318,12 +933,9 @@ CREATE INDEX IF NOT EXISTS idx_feedback_org_recent
 CREATE INDEX IF NOT EXISTS idx_feedback_org_question
     ON feedback_and_gaps (org_id, normalized_question);
 
--- Unanswered and marked-wrong questions grouped by MEANING
--- (`app/feedback/topics.py`): "how do I claim expenses" and "reimbursement
--- process" are one missing document. A topic is its first question and that
--- question's embedding; later questions join the nearest topic in the same
--- scope above a similarity cut-off. `handled_at` is the admin's or space
--- owner's "handled": only questions asked after it count again.
+-- Gaps grouped by MEANING (`app/feedback/topics.py`). A topic is its first
+-- question and embedding; later questions join the nearest in the same scope.
+-- After `handled_at`, only newer questions count.
 CREATE TABLE IF NOT EXISTS gap_topics (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1335,10 +947,8 @@ CREATE TABLE IF NOT EXISTS gap_topics (
 );
 CREATE INDEX IF NOT EXISTS idx_gap_topics_scope ON gap_topics (org_id, workspace_id);
 
--- Embeddings were full-precision `vector(1024)` until 2026-11. Convert existing
--- rows in place (a cast: nothing is re-embedded) and rebuild the HNSW index with
--- the halfvec operator class. The ALTER rewrites `chunks` under an exclusive
--- lock: seconds at today's size, minutes at a million rows.
+-- Convert `vector(1024)` embeddings to halfvec in place (a cast, no
+-- re-embedding) and rebuild the HNSW index; the ALTER locks `chunks`.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'embeddings_halfvec') THEN
@@ -1359,9 +969,8 @@ BEGIN
     END IF;
 END $$;
 
--- Approximate-nearest-neighbour index for cosine similarity search, built per
--- partition. Correctness of isolation does NOT depend on this index — the
--- org_id WHERE clause and the row-level policy guarantee it.
+-- HNSW cosine index, per partition. Isolation does not depend on it: the
+-- org_id filter and row-level policy do.
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
     ON chunks USING hnsw (embedding halfvec_cosine_ops);
 
@@ -1369,32 +978,17 @@ ALTER TABLE feedback_and_gaps
     ADD COLUMN IF NOT EXISTS topic_id UUID REFERENCES gap_topics (id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_feedback_topic ON feedback_and_gaps (topic_id);
 
--- Attachment bytes and extracted text moved OUT of Postgres into an object
--- store (Cloudinary), the shape Onyx's `FileStore` uses: the store holds the
--- original upload AND a companion plaintext asset, while this row keeps only
--- what is needed to find them again.
---
--- `content` becomes NULLABLE rather than being dropped. Rows written before
--- this change still carry their text and must keep answering -- dropping the
--- column would silently empty every attachment in an open conversation, and
--- `load_attachment_texts` falls back to it precisely so that cannot happen.
+-- Attachment bytes and text moved to the object store (original plus a
+-- plaintext companion); the row keeps what finds them. `content` stays,
+-- NULLABLE, so older rows keep answering (`load_attachment_texts` falls back).
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS storage_key TEXT;
 ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
 
--- Second Brain 1.2: one row per person as each CONNECTOR knows them -- a Slack
--- member, a Drive editor, a GitHub login -- upserted from `documents.source_meta`
--- and `activity_facts.actor_key`. `user_id` says which Handbook member it is,
--- and is set ONLY on proof (git history: docs/plans/2026-09-23-second-brain.md, D4):
---   provider_email -- the connector's email equals a member's login email IN
---                     THE SAME ORG (magic-link login makes that email verified);
---   oauth          -- the member signed in to that account themselves.
--- NEVER by display name: two people called Priya stay two rows. A link changes
--- attribution in the graph only, never what anyone may read.
---
--- `external_id` is the connector's stable id (Slack U123, a GitHub login
--- lowercased), or `email:<addr>` when the connector gave only an email.
--- `user_id` is SET NULL on delete: the identity is still a fact about who did
--- the work after the member's account is gone.
+-- One row per person as each CONNECTOR knows them (Slack member, Drive editor,
+-- GitHub login). `user_id` is set ONLY on proof: provider_email (same email in
+-- the same org) or oauth (they signed in). Never by display name. A link
+-- changes graph attribution, never access. `external_id` is the stable id or
+-- `email:<addr>`; `user_id` SET NULL on member delete.
 CREATE TABLE IF NOT EXISTS person_identities (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1413,22 +1007,14 @@ CREATE INDEX IF NOT EXISTS idx_person_identities_user
 CREATE INDEX IF NOT EXISTS idx_person_identities_email
     ON person_identities (org_id, email) WHERE email IS NOT NULL;
 
--- Second Brain 1.3: the knowledge graph (git history: docs/plans/2026-09-23-second-brain.md).
--- One graph per SCOPE (org-wide = workspace_id NULL, or one space), filtered
--- per viewer at read time. It stores IDs and relationships only -- document
--- text stays in `chunks` and sharing stays on `documents`, so nothing here can
--- outlive a revocation: an edge is visible only through its evidence, and
--- document evidence is checked against `documents` with the ONE visibility
--- predicate (`security/visibility.py`) on every walk.
+-- The knowledge graph: one per scope, filtered per viewer at read. IDs and
+-- relationships only, so nothing outlives a revocation; document evidence is
+-- checked with the ONE visibility predicate on every walk.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- `key` is stable across re-syncs, which is why a document entity is keyed by
--- `<provider>:<external id>` and NOT by `documents.id`: an updated document is
--- deleted and re-inserted with a new id. `document_id` is refreshed by the
--- builder and SET NULL when the row goes, so the entity survives a re-ingest.
--- People are keyed per CONNECTOR identity (`identity:<provider>:<id>`); a
--- member linked to several identities gets a `user:<id>` entity joined to each
--- by a `same_person` edge, so linking or unlinking rewrites only those edges.
+-- `key` is stable across re-syncs (`<provider>:<external id>`, not
+-- `documents.id`, which changes). People are per connector identity; a linked
+-- member gets a `user:<id>` entity joined by `same_person` edges.
 CREATE TABLE IF NOT EXISTS kg_entities (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1448,10 +1034,8 @@ CREATE INDEX IF NOT EXISTS idx_kg_entities_name_trgm
 CREATE INDEX IF NOT EXISTS idx_kg_entities_aliases ON kg_entities USING gin (aliases);
 CREATE INDEX IF NOT EXISTS idx_kg_entities_document ON kg_entities (document_id);
 
--- `valid_to` NULL = current. An assignment that changes is CLOSED, not deleted,
--- so "who owned this before?" stays answerable; walks read current edges only.
--- One current edge per (src, dst, relation): re-running the builder upserts
--- instead of stacking duplicates.
+-- `valid_to` NULL = current; changes are CLOSED, not deleted. One current edge
+-- per (src, dst, relation).
 CREATE TABLE IF NOT EXISTS kg_edges (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1468,12 +1052,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_edges_current
 CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON kg_edges (org_id, src_id);
 CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON kg_edges (org_id, dst_id);
 
--- WHY an edge exists, and therefore WHO may see it. Exactly one kind per row:
---   document_id -- the edge came from that document; visible iff the viewer
---                  may open it (checked live, so a revocation hides it at once);
---   fact_id     -- from an `activity_facts` row (GitHub), scope-level like charts;
---   neither     -- `is_public`/`viewers` carry the rule (a `same_person` link).
--- A NULL `is_public` on non-document evidence is NOT public: fail closed.
+-- WHY an edge exists, and so who may see it; exactly one kind per row:
+-- document_id (visible iff the viewer may open it), fact_id (scope-level),
+-- or neither (`is_public`/`viewers`). NULL `is_public` there is NOT public.
 CREATE TABLE IF NOT EXISTS kg_evidence (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     edge_id     UUID NOT NULL REFERENCES kg_edges (id) ON DELETE CASCADE,
@@ -1486,10 +1067,7 @@ CREATE INDEX IF NOT EXISTS idx_kg_evidence_edge ON kg_evidence (edge_id);
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_document ON kg_evidence (document_id);
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
 
--- Live-tools gateway audit (git history: docs/plans/2026-09-29-live-connector-access.md, D14):
--- one row per live read, so "who looked at what, and what happened" is
--- answerable. NEVER the token and NEVER the result text -- storing results
--- would be a second copy of tenant data. Deep research only (D0).
+-- Live-read audit: one row per live read. Never the token, never the result text.
 CREATE TABLE IF NOT EXISTS live_tool_calls (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1507,12 +1085,9 @@ CREATE TABLE IF NOT EXISTS live_tool_calls (
 CREATE INDEX IF NOT EXISTS idx_live_tool_calls_org_time
     ON live_tool_calls (org_id, created_at DESC);
 
--- Personal memory (Second Brain layer C): a few facts per person, carried
--- across chats. Written ONLY from the person's own questions -- never from an
--- answer, which can quote a document only they may read -- and used only to
--- interpret the question and set tone, never as evidence. Private to
--- (org_id, user_id). A fact dies with the chat it came from (the cascade)
--- unless pinned, which detaches it (source_conversation_id -> NULL).
+-- Personal memory: a few facts per person, written only from their own
+-- questions, used to read the question, never as evidence. Private to
+-- (org_id, user_id). Dies with its chat unless pinned.
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE TABLE IF NOT EXISTS user_memory (
@@ -1530,13 +1105,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_text
     ON user_memory (org_id, user_id, lower(text));
 CREATE INDEX IF NOT EXISTS idx_user_memory_owner ON user_memory (org_id, user_id, created_at DESC);
 
--- Act mode (docs/plans/2026-10-13-write-actions.md). Three tables, kept apart
--- from every read path: nothing in Ask, Chart, sync or the Slack bot reads them.
+-- Agent mode (Act): tables no read path touches.
 --
--- A person's OWN token for acting in a tool, granted by them on the tool's
--- consent page. Never used for reads or sync (those stay on oauth_connections),
--- so a write runs with that person's rights and shows them as the author. Dies
--- with the person (cascade), which is what revokes their writes on removal.
+-- A person's OWN token for acting in a tool; never used for reads or sync.
+-- Cascades with the person.
 CREATE TABLE IF NOT EXISTS user_connections (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id                  UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1568,11 +1140,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_action_policies_orgwide
 CREATE UNIQUE INDEX IF NOT EXISTS idx_action_policies_workspace
     ON action_policies (org_id, workspace_id, action) WHERE workspace_id IS NOT NULL;
 
--- One proposed write, from proposal to outcome: the approval queue AND the
--- audit log, so the two can never disagree. The payload stored here is what
--- runs -- never a copy the client sends back. A public exposure is never
--- stored (CHECK), so private content cannot reach a public place even if a
--- caller forgets to refuse it first.
+-- One proposed write, proposal to outcome: the approval queue and the audit
+-- log in one. The stored payload is what runs. A public exposure is refused by
+-- a CHECK.
 CREATE TABLE IF NOT EXISTS actions (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1601,7 +1171,7 @@ CREATE INDEX IF NOT EXISTS idx_actions_org_time ON actions (org_id, created_at D
 CREATE INDEX IF NOT EXISTS idx_actions_user_status ON actions (org_id, user_id, status);
 CREATE INDEX IF NOT EXISTS idx_actions_proposed_expiry
     ON actions (expires_at) WHERE status = 'proposed';
--- Act from Slack (Phase 3): where a proposal was made decides what it may read
+-- Act from Slack: where a proposal was made decides what it may read
 -- and where it may post, and an admin switches each Slack surface on apart.
 ALTER TABLE actions DROP CONSTRAINT IF EXISTS actions_surface_check;
 ALTER TABLE actions ADD CONSTRAINT actions_surface_check
@@ -1610,12 +1180,9 @@ ALTER TABLE actions ADD CONSTRAINT actions_surface_check
 -- edit so the log shows both what the model wrote and what was approved.
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS original_payload JSONB;
 
--- Chains: a request whose next step needs an approved card's result ("open a
--- GitHub issue, then comment its link on the Linear issue"). The model's
--- conversation is kept until the person decides the cards it waits on; their
--- results are then given to it and it drafts the next cards. The person's own:
--- every read is pinned to org and user. ``messages`` holds what lookups
--- returned (private to them), so a run lives no longer than its cards.
+-- Chains: a request whose next step needs an approved card's result. The
+-- model's conversation waits for the cards; pinned to org and user, and
+-- lives no longer than its cards.
 CREATE TABLE IF NOT EXISTS act_runs (
     id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id             UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1642,13 +1209,9 @@ ALTER TABLE act_runs ADD CONSTRAINT act_runs_status_check
     CHECK (status IN ('waiting', 'standby', 'resuming', 'done'));
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS run_id UUID REFERENCES act_runs (id) ON DELETE SET NULL;
 
--- Other tools through MCP servers (docs/plans/2026-10-21-mcp-actions.md). Only
--- an admin adds a server. Every tool starts OFF; ``tool_modes`` holds the
--- admin's choice per tool ("lookup": a read run without a card, "write":
--- drafted and approved like every action) with the schema hash it was chosen
--- for, so a tool the server later changes is off again until re-approved.
--- ``oauth`` is discovery + client registration (secret encrypted); each person
--- signs in themselves (user_connections.provider = 'mcp:<id>').
+-- MCP servers, added by admins only. Tools start OFF; ``tool_modes`` holds
+-- each tool's mode ("lookup" or "write") with its schema hash, so a changed
+-- tool is off again. Each person signs in (user_connections 'mcp:<id>').
 CREATE TABLE IF NOT EXISTS mcp_servers (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id      UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1667,11 +1230,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_org_url ON mcp_servers (org_id
 -- An MCP sign-in uses PKCE; its verifier (encrypted) waits on the state row.
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;
 
--- Agent mode writes only through MCP servers since 2026-10-22: the built-in
--- Linear/GitHub/Notion/Google/Slack actions are gone. Their per-person write
--- tokens and their on/off rows are dead weight (a stored token nobody uses is
--- still a token), so they are removed once. Sign-ins to MCP servers
--- (``mcp:<id>``) and the Agent-mode/surface switches stay.
+-- Writes go only through MCP since 2026-10-22: remove the old built-in
+-- actions' tokens and switches once. MCP sign-ins and Agent switches stay.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'act_mcp_only') THEN
@@ -1682,10 +1242,9 @@ BEGIN
     END IF;
 END $$;
 
--- One chunks partition per organization, in its own schema: the app's role has
--- no access there, so a partition can only be read through `chunks`, where the
--- row-level policy below applies. SECURITY DEFINER because only the owner of
--- `chunks` may add or drop a partition, and the app does not own it.
+-- One chunks partition per org in its own schema, readable only through
+-- `chunks` and its row-level policy. SECURITY DEFINER: only the owner of
+-- `chunks` may add or drop a partition.
 CREATE SCHEMA IF NOT EXISTS chunk_partitions;
 
 CREATE OR REPLACE FUNCTION create_chunk_partition(org UUID) RETURNS void
@@ -1742,12 +1301,9 @@ BEGIN
     END IF;
 END $$;
 
--- A company's own Google or Slack app (`app/auth/org_apps.py`). Our shared app
--- puts Google sign-in behind a test-user list and Slack history behind the
--- rate limits for non-Marketplace apps; the company's own app has neither.
--- `app_key` is created before the keys exist (it goes into the Slack app
--- template the admin pastes), so client_id NULL means "not set up yet".
--- It only picks which signing secret checks a Slack request.
+-- A company's own Google or Slack app (`app/auth/org_apps.py`). `app_key`
+-- exists before the keys (it goes into the Slack template), so client_id NULL
+-- means not set up; it only picks a Slack signing secret.
 CREATE TABLE IF NOT EXISTS org_connector_apps (
     org_id                   UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     provider                 TEXT NOT NULL CHECK (provider IN ('google', 'slack')),
@@ -1759,13 +1315,10 @@ CREATE TABLE IF NOT EXISTS org_connector_apps (
     PRIMARY KEY (org_id, provider)
 );
 
--- Row-level security on chunks. The app's pooled connections act as
--- `handbook_app` (app/db/connection.py), which does not bypass row security,
--- and see only the rows of the organization set for the transaction
--- (`get_connection(org_id=...)`). Nothing set means no rows: a query that
--- forgets its org_id filter returns nothing instead of every tenant's text.
--- `app.all_orgs` is for the few background jobs that work across tenants.
--- Migrations run as the owner, which the policy does not apply to.
+-- Row-level security on chunks. Pooled connections act as `handbook_app` and
+-- see only the transaction's org (`get_connection(org_id=...)`), none if
+-- unset. `app.all_orgs` is for cross-tenant background jobs. Migrations run
+-- as the owner, which the policy skips.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'handbook_app') THEN

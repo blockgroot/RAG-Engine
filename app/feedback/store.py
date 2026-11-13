@@ -1,15 +1,8 @@
 """Read/write answer feedback and the documentation gaps it reveals.
 
-Two writers, one table (see the `feedback_and_gaps` block in
-`app/db/schema.sql`): the answer path records a gap automatically whenever an
-answer came back ungrounded, and a member's thumb records a rating. A downvote
-on a refusal updates that same row rather than adding a second, because it is
-one event -- the system failed to answer, and somebody said so.
-
-Nothing here raises at the caller. A gap log that can fail a question would
-trade the product's whole purpose for a diagnostic, so `record_gap` swallows
-its own errors. What an admin or space owner reads is grouped by meaning in
-``topics.py``.
+One table: an ungrounded answer records a gap, a thumb a rating; a downvote
+on a refusal updates that same row (one event). ``record_gap`` never raises:
+a diagnostic must not fail a question.
 """
 
 from __future__ import annotations
@@ -21,11 +14,8 @@ from ..db.connection import get_connection
 
 logger = logging.getLogger(__name__)
 
-#: The fixed downvote categories. A closed set rather than free text because
-#: the whole value of a category is that it GROUPS -- "out of date" sends an
-#: admin to re-sync a source, "incorrect" sends them to rewrite a document, and
-#: two different fixes must not land in one bucket. The comment box is where
-#: anything else goes.
+#: Fixed downvote categories: a closed set groups by fix ("out of date" means
+#: re-sync, "incorrect" means rewrite). Anything else goes in the comment.
 RATING_REASONS = ("incorrect", "out_of_date", "unhelpful")
 
 _PUNCT = re.compile(r"[^\w\s]+")
@@ -33,10 +23,8 @@ _SPACE = re.compile(r"\s+")
 
 
 def normalize_question(text: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace.
-
-    What a thumb matches its question's row by. Grouping questions for the
-    admin is by meaning instead (``topics.py``).
+    """Lowercase, strip punctuation, collapse whitespace: how a thumb finds
+    its question's row.
     """
     return _SPACE.sub(" ", _PUNCT.sub(" ", text.lower())).strip()
 
@@ -56,13 +44,9 @@ def record_gap(
 ) -> None:
     """Log one unanswered question. Never raises.
 
-    Called from the API edge rather than from the gate inside `RagPipeline`,
-    and that placement is the point: a gate miss is only ONE of the ways a
-    question goes unanswered. The strict prompt refusing on a gate-passing
-    retrieval, the groundedness audit downgrading an answer, and GitHubAgent /
-    InsightsAgent refusing with no gate involved at all are the others. The
-    edge sees the union of those as `grounded=False`, and it is also the only
-    place `user_id` exists.
+    Called from the API edge, not the gate: the edge sees every way a
+    question goes unanswered (gate, strict prompt, audit, agents) and knows
+    the `user_id`.
     """
     question = (question or "").strip()
     if not question:
@@ -108,11 +92,8 @@ def record_rating(
 ) -> str:
     """Rate one answer. Returns the row id.
 
-    Updates the most recent row for the same (conversation, normalized
-    question) when there is one -- which is what makes a thumbs-down on a
-    refusal a single event rather than a gap row plus a rating row -- and
-    inserts otherwise. Re-clicking a thumb therefore corrects the rating
-    instead of stuffing the ballot.
+    Updates the latest row for the same (conversation, normalized question),
+    else inserts, so a re-click corrects rather than adds.
     """
     if rating not in (-1, 1):
         raise ValueError("rating must be -1 or +1")
@@ -164,7 +145,5 @@ def record_rating(
     return row[0]
 
 
-#: The agent key of Chart mode (`agent.orchestration.INSIGHTS_KEY`). A chart
-#: it could not draw is not a document nobody wrote: it is recorded for us
-#: and never grouped into a topic an admin sees.
+#: Chart mode's agent key: its refusals are ours, never an admin's topic.
 CHART_AGENT = "insights"

@@ -7,20 +7,10 @@ import { streamContinue } from "@/lib/sse";
 import { DraftText } from "./AnswerText";
 
 /**
- * The approval card for one proposed write.
- *
- * It shows exactly what will be sent and where, because the server sends the
- * stored copy and nothing else: Approve returns only this card's fingerprint.
- * When the draft used private documents that some people at the destination
- * cannot see, it says so with numbers, and Approve stays off until the person
- * ticks that they understand. Edit sends the person's own words to the
- * server, which stores them and returns a new fingerprint; Approve stays off
- * while an edit is unsaved, so only what was saved and shown can be sent.
- * "Ask for changes" sends an instruction instead ("make it shorter", "add
- * the steps to reproduce"): the model rewrites the words, the server saves
- * them like an edit, and only links and @-mentions already on the card or in
- * the instruction survive. Where it goes is never editable: cancel and ask
- * again for that.
+ * Approval card for one proposed write. Shows exactly what is sent and where:
+ * the server sends the stored copy, and Approve returns only its fingerprint.
+ * Private sources need the tick. Edit and "Ask for changes" save new words (new
+ * fingerprint; Approve off while unsaved). The target is never editable.
  */
 
 const STATUS_LINE: Record<ActCard["status"], string> = {

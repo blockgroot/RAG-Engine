@@ -41,18 +41,13 @@ def _to_db_vector(embedding: list[float] | np.ndarray) -> HalfVector:
     return HalfVector(arr.tolist())
 
 
-# The access predicate and its two helpers live in `security/visibility.py`,
-# the one place they are spelled; these names are kept so existing callers and
-# tests read unchanged.
+# The access predicate lives in `security/visibility.py`; these names keep
+# existing callers working.
 _normalize_viewers = normalize_viewers
 _viewer_clause = viewer_clause
 
 #: The keyword leg matches chunks with ANY of the question's words, ranked by
-#: how many and how well they match (then BM25 below). It used to be
-#: ``websearch_to_tsquery``, which requires EVERY word in one chunk: a natural
-#: question almost never has that, so the leg was empty for 186 of 200
-#: Benchmark 2 questions and hybrid search was vector-only
-#: (docs/benchmarks/rca-broad-questions.md).
+#: match (then BM25). Requiring EVERY word left it empty for most real questions.
 _ANY_WORD = "to_tsquery('english', replace(plainto_tsquery('english', %s)::text, '&', '|'))"
 
 
@@ -248,9 +243,8 @@ class PgVectorStore(VectorStore):
         vector = _to_db_vector(query_embedding)
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
-        # The access filter goes INSIDE the candidate CTE, i.e. before BM25
-        # re-ranks in Python: a document the asker cannot open must never
-        # reach the ranking stage, let alone the prompt.
+        # The access filter is INSIDE the candidate CTE, before BM25 re-ranks: an
+        # unreadable document never reaches ranking.
         viewer_sql, viewer_params = _viewer_clause(viewer, alias="fd")
         params: list = [
             source_provider, source_provider, after, after, before, before, tags, tags,
@@ -385,20 +379,9 @@ class PgVectorStore(VectorStore):
     ) -> list[RetrievedChunk]:
         """Newest chunks first, by the document's own source timestamp.
 
-        Carries the same ``viewer`` filter as ``query``: "catch me up on the
-        last few days" reads content the same way a question does, so a recap
-        that skipped the access filter would hand over exactly the documents
-        every other path withholds.
-
-        Orders on ``source_last_modified`` (when the thread last had a reply)
-        rather than ``documents.created_at`` (when we happened to ingest it) —
-        a backfill ingests months of history in one run, so ingest order says
-        nothing about what is recent to the reader. ``created_at`` breaks ties
-        for rows a source gave no timestamp for.
-
-        ``chunk_index`` ascending within a document keeps a multi-chunk thread
-        in reading order, so the summarizer sees a conversation rather than
-        shuffled fragments.
+        Same ``viewer`` filter as ``query``. Orders on ``source_last_modified``,
+        not ingest time (a backfill ingests months at once); ``created_at`` breaks
+        ties. ``chunk_index`` keeps a thread in reading order.
         """
         viewer_sql, viewer_params = _viewer_clause(viewer)
         with get_connection(self._settings, org_id=org_id) as conn:
@@ -449,11 +432,9 @@ class PgVectorStore(VectorStore):
     ) -> RestrictedMatch | None:
         """Best-scoring chunk in scope that ``viewer`` may NOT read, if any.
 
-        The predicate is the exact NEGATION of `visibility_predicate`, so "withheld"
-        can only ever mean "what the retrieval filter removed" -- the two
-        cannot disagree about a document. Returns the provider and the score
-        and nothing else; the content, title and id of a restricted document
-        never leave this method.
+        The exact NEGATION of `visibility_predicate`, so "withheld" means only what
+        retrieval removed. Returns provider and score only, never content, title
+        or id.
         """
         if viewer is None or viewer.is_unrestricted:
             return None
@@ -850,11 +831,8 @@ class PgVectorStore(VectorStore):
         entries: list[tuple[str, dict | None, str | None]],
         workspace_id: str | None = None,
     ) -> int:
-        """Write ``source_meta``/``source_editor_key`` only — chunks untouched.
-
-        A document with nothing to capture is stored as ``{}`` rather than
-        left NULL, so the refresh does not pick the same row up every tick.
-        """
+        """Write ``source_meta``/``source_editor_key`` only, chunks untouched.
+        Nothing to capture is stored as ``{}`` so the refresh moves on."""
         rows = [
             (json.dumps(meta or {}), key, org_id, provider, workspace_id, external_id)
             for external_id, meta, key in entries

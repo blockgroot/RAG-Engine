@@ -1,58 +1,16 @@
 """Structure-aware text chunking with configurable size and overlap (token-based).
 
-Why these defaults (chunk_size=256 tokens, chunk_overlap=40 tokens)
--------------------------------------------------------------------
-- **Retrieval precision.** ~256 tokens is roughly one policy idea — small enough
-  that a similarity hit is specific, large enough to retain answering context.
-- **Aligned with BGE-M3.** Sizes are counted with the same tokenizer the embedding
-  model uses, so chunk density no longer drifts with character-heavy tables vs
-  sparse prose.
-- **Overlap of ~15%.** Boundary-straddling facts still land whole in at least one
-  chunk without excessive duplication.
+Defaults: 256 tokens (about one idea, specific on a hit) with 40 overlap, so
+boundary facts land whole somewhere. Counted with the heuristic counter, not
+the BGE tokenizer. Split on paragraphs, then sentences, then words, packed
+greedily with overlap.
 
-Tunable via ``CHUNK_SIZE`` / ``CHUNK_OVERLAP`` (token counts).
+``CHUNK_MAX_CHARS`` is the last-resort character cap: a whitespace-free run
+(base64, a long signed URL) has no linguistic break and bills one token per
+character, and a 48KB one failed a whole Drive ingest at the embedder.
 
-Strategy
---------
-Split on natural boundaries first (paragraphs). Only blocks larger than
-``chunk_size`` tokens are hard-split (sentence, then word boundaries). Pieces
-are greedily packed up to ``chunk_size`` tokens, with token overlap from the
-tail of the previous chunk.
-
-The character backstop (``CHUNK_MAX_CHARS``)
---------------------------------------------
-Every boundary above is a *linguistic* one, so text with no such boundary used
-to defeat all of them: a single whitespace-free run — a base64 data URI or a
-long signed googleusercontent link in an exported Google Doc, a minified blob,
-an unsegmented CJK paragraph — has no paragraph, no sentence and no word break
-to split on, so ``_hard_split`` emitted it whole and a 48KB blob became ONE
-chunk. That reached the embedding endpoint as a single input and was rejected
-outright (``INPUT_TOKEN_LIMIT_EXCEEDED``: "input text exceeds the model's
-maximum of 8194 tokens"), failing the whole document's ingest — observed in
-production on a Drive sync.
-
-Note that the token count was no defence here even in principle: measured
-against the real BGE-M3 tokenizer, base64 bills **1 token per character**, so
-the heuristic backend under-counted that blob 16x (and a CJK run 8x). Chasing
-that with a better estimator is a losing game against arbitrary input, so the
-final split is on characters instead — the one measure that cannot be fooled.
-Because 1 token/char is the worst case anything can reach, capping characters
-caps tokens outright. Applied as a last resort only, after every linguistic
-boundary has been tried, and it does not fire on real prose (see
-``DEFAULT_MAX_CHUNK_CHARS``).
-
-Markdown tables (production-RAG comparison gap #1: layout-aware chunking)
----------------------------------------------------------------------------
-A Markdown table has no sentence punctuation, so an oversized table used to
-fall straight into sentence/word hard-splitting — exploding it word-by-word
-across chunks with the header, column alignment, and row boundaries all
-lost. ``_hard_split_block`` detects a table (a header line followed by a
-``|---|---|``-shaped separator row) before falling back to that path, and
-packs it whole row at a time instead, repeating the header + separator on
-every resulting piece so a chunk holding only a middle slice of rows still
-carries its column meaning. A small table that fits within budget as-is is
-completely unaffected — this only changes behaviour for an oversized block
-that actually contains a table.
+An oversized Markdown table is split by row with its header repeated, so
+every piece keeps its column meaning.
 """
 
 from __future__ import annotations
@@ -112,10 +70,8 @@ def chunk_text(text: str, settings: ChunkingSettings | None = None) -> list[str]
     if current:
         chunks.append(current)
 
-    # The overlap tail is prepended *after* the size check above, so a packed
-    # chunk can still land slightly over either budget. Enforce the character
-    # ceiling one final time: it is the only bound the embedding call depends
-    # on, so it must hold for every chunk that leaves this function.
+    # Overlap can push a chunk over; the character cap must hold for every
+    # chunk the embedder sees.
     return [
         slice_ for chunk in chunks for slice_ in _split_oversized(chunk, max_chars)
     ]
@@ -124,11 +80,7 @@ def chunk_text(text: str, settings: ChunkingSettings | None = None) -> list[str]
 def _split_oversized(text: str, max_chars: int) -> list[str]:
     """Slice ``text`` into <= ``max_chars`` pieces, preferring whitespace breaks.
 
-    The last-resort splitter, reached only when no paragraph, sentence or word
-    boundary was available (or when overlap pushed a packed chunk over). Each
-    window still ends at the last whitespace inside it when there is one, so a
-    long-but-spaced run degrades gracefully rather than being cut mid-word; a
-    genuinely unbroken run is cut at exactly ``max_chars``, which is the point.
+    Last resort; an unbroken run is cut at exactly ``max_chars``.
     """
     if len(text) <= max_chars:
         return [text] if text else []
@@ -138,9 +90,7 @@ def _split_oversized(text: str, max_chars: int) -> list[str]:
     while len(rest) > max_chars:
         window = rest[:max_chars]
         cut = window.rstrip().rfind(" ")
-        # Only honour a whitespace break in the last third of the window;
-        # nearer the start it would emit an absurdly short piece and loop for
-        # a long time on the remainder.
+        # Only a break in the last third, or pieces get absurdly short.
         if cut < max_chars // 3:
             cut = max_chars
         out.append(rest[:cut].strip())
@@ -152,11 +102,8 @@ def _split_oversized(text: str, max_chars: int) -> list[str]:
 
 
 def _is_table_separator_row(line: str) -> bool:
-    """True for a GitHub-flavored-Markdown table separator row, e.g. ``|---|---|``.
-
-    Requires at least one ``|`` (excludes an unrelated ``---`` horizontal
-    rule or setext-heading underline) and every ``|``-delimited cell to be a
-    dash run with optional leading/trailing ``:`` (alignment markers).
+    """True for a GFM table separator row, e.g. ``|---|---|``. Needs a ``|``,
+    so a ``---`` rule or heading underline is not one.
     """
     line = line.strip()
     if not line or "|" not in line or "-" not in line:
@@ -174,16 +121,8 @@ def _find_markdown_table_start(lines: list[str]) -> int | None:
 
 
 def _hard_split_block(text: str, size: int, max_chars: int) -> list[str]:
-    """Split an oversized block, splitting BY ROW when it contains a Markdown table.
-
-    Sentence/word splitting (``_hard_split``) has no notion of a table row, so
-    an oversized table used to be exploded word-by-word across chunks —
-    columns and header lost, rows straddling a chunk boundary. A table is
-    packed by whole row instead, with its header + separator row repeated at
-    the top of every resulting piece so a chunk holding only rows 20-25 still
-    carries its column meaning. Text with no table (the common case) is
-    completely unaffected — this only changes behaviour for an oversized
-    block that actually contains one.
+    """Split an oversized block, by whole row (header repeated) when it holds
+    a Markdown table; otherwise ``_hard_split``.
     """
     lines = text.split("\n")
     start = _find_markdown_table_start(lines)
@@ -212,9 +151,7 @@ def _hard_split_block(text: str, size: int, max_chars: int) -> list[str]:
         if fits([row]):
             current = [row]
         else:
-            # A single row doesn't fit alongside the header — a pathologically
-            # wide row. Cut it on characters, the same last-resort the rest of
-            # this module already relies on for unsplittable text.
+            # A row too wide for the header beside it: cut on characters.
             room = max(max_chars - len(header_block) - 1, 80)
             for sub in _split_oversized(row, room):
                 pieces.append(f"{header_block}\n{sub}")
@@ -227,11 +164,8 @@ def _hard_split_block(text: str, size: int, max_chars: int) -> list[str]:
 
 
 def _hard_split(text: str, size: int, max_chars: int) -> list[str]:
-    """Split an oversized block on sentence, then word, then character boundaries.
-
-    ``max_chars`` is the escape hatch for text with no word boundary at all: a
-    single 48KB base64 run used to survive every branch below and be emitted
-    whole, which the embedding endpoint then rejected (see module docstring).
+    """Split an oversized block on sentence, then word, then character
+    boundaries (``max_chars`` for text with no word break).
     """
     out: list[str] = []
     current = ""

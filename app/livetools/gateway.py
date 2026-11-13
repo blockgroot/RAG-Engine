@@ -1,14 +1,11 @@
 """The live-tools gateway: the ONLY code that decrypts a token for a live read.
 
-Mode A (plan D5): the server -- never the model -- picks what to refresh, from
-the hits retrieval already returned for this asker, and resolves each one to
-``(provider, external_id)`` from its own ``documents`` row, pinned to the same
-org and space. So a live read can never reach an object the index did not
-already clear (plan D3), and no target is ever named by a model.
+The server, never the model, picks what to refresh from this asker's retrieval
+hits, resolved via its own ``documents`` row pinned to the org and space, so a
+live read never reaches an object the index did not already clear.
 
-Every failure degrades to the indexed answer except one: the provider saying
-the object is gone or no longer readable, which withholds the stale copy too
-(plan D16, §5). Nothing here raises into the answer path.
+Every failure falls back to the indexed answer, except the provider saying the
+object is gone or unreadable, which withholds the stale copy. Never raises.
 """
 
 from __future__ import annotations
@@ -29,8 +26,7 @@ from .context import LiveRequest
 
 logger = logging.getLogger("livetools")
 
-#: provider -> reader(token, external_id). A provider absent here is never read
-#: live, whatever LIVE_TOOLS_PROVIDERS says.
+#: provider -> reader(token, external_id). Absent here = never read live.
 READERS: dict[str, Callable[[str, str], ProviderRead]] = {
     "linear": linear.read_issue,
     "google": drive.read_file,
@@ -51,22 +47,17 @@ def refresh(
     guard_settings: GuardSettings | None = None,
     mode: str = "refresh",
 ) -> LiveRefresh:
-    """Re-read the best refreshable hits live. Never raises.
-
-    ``mode`` is the audit's: ``refresh`` (mode A, the server picked) or
-    ``model`` (mode B, the model named one of this request's handles).
-    """
+    """Re-read the best refreshable hits live. Never raises. ``mode`` (audit):
+    ``refresh`` (server picked) or ``model`` (the model named a request handle)."""
     if request is None or not hits:
         return LiveRefresh()
     try:
         settings = settings or LiveToolsSettings.from_env()
         if not settings.allows(request.org_id) or not request.user_id:
-            # No identity => no live read at all (plan §5): a live read is a
-            # read on someone's behalf, and the audit must say whose.
+            # No identity, no live read: the audit must say on whose behalf.
             return LiveRefresh()
         if mode == "refresh" and not trigger.wants_live(request.needs_live):
-            # Nothing about this question moves day to day: the synced copy is
-            # the answer, and a live read would only cost time.
+            # Nothing here moves day to day: the synced copy answers.
             logger.info("livetools.skip reason=not_current_state verdict=%s", request.needs_live)
             return LiveRefresh()
         targets = _targets(hits, request, settings)
@@ -81,11 +72,8 @@ def refresh(
 
 
 def _targets(hits: list, request: LiveRequest, settings: LiveToolsSettings) -> list[tuple]:
-    """Refreshable hits, at most MAX_REFRESHES.
-
-    Each row is ``(document_id, provider, external_id, title, source_uri)``.
-    The address is the indexed document's, so a live answer can cite it.
-    """
+    """Refreshable hits, at most MAX_REFRESHES, as ``(document_id, provider,
+    external_id, title, source_uri)``; the address is the indexed one, so it is citable."""
     return candidates(hits, request, settings, limit=base.MAX_REFRESHES)
 
 
@@ -95,10 +83,8 @@ def candidates(
 ) -> list[tuple]:
     """``[(document_id, provider, external_id, title, source_uri)]`` for the best refreshable hits.
 
-    Looked up from ``documents`` by id, pinned to the request's org AND space:
-    the hit says WHICH document, the row says where it lives. Reused hits
-    (``_try_reuse``) carry no provider, so the row is also the only place that
-    can say whether a hit is refreshable at all.
+    From ``documents`` by id, pinned to the org AND space; reused hits carry no
+    provider, so the row decides refreshability.
     """
     order: list[str] = []
     for hit in hits:
@@ -136,11 +122,8 @@ def candidates(
 def _drop_freshly_synced(targets, request: LiveRequest) -> list:
     """Drop items whose tool last synced SUCCESSFULLY within ``FRESH_SECONDS``.
 
-    A success time, not ``oauth_connections.last_sync_at``: that is stamped on
-    ATTEMPT, so a failing sync would read as fresh and suppress exactly the
-    live read that would have covered for it. Per provider, same org AND
-    space. A lookup failure keeps the targets -- reading live is the safe
-    direction when freshness is unknown.
+    Not ``last_sync_at`` (stamped on attempt, so a failing sync would look fresh).
+    Per provider, org AND space. A lookup failure keeps the targets.
     """
     providers = sorted({t[1] for t in targets})
     try:
@@ -265,11 +248,10 @@ def _to_live_read(doc: str, provider: str, external_id: str, result: ProviderRea
 
 def _screen(reads: list[LiveRead], request: LiveRequest,
             guard_settings: GuardSettings | None) -> list[LiveRead]:
-    """Injection guard over the live blocks, one batched call (plan D9).
+    """Injection guard over the live blocks, one batched call.
 
-    Enforce drops a flagged block -- the indexed copy still answers, since a
-    planted comment is not evidence the issue is gone. Shadow only logs. A
-    guard failure keeps the block: fence, scrub and link provenance still apply.
+    Enforce drops a flagged block (the indexed copy still answers); shadow only
+    logs. A guard failure keeps the block: fence, scrub and link provenance still apply.
     """
     live = [r for r in reads if r.outcome == base.OK]
     if not live:

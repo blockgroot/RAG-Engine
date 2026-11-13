@@ -2,10 +2,7 @@
 
 /**
  * Asks once what a person wants to be called.
- *
- * The name used to be guessed from the email ("sana.asiwal" -> "Sana"), which
- * is wrong for addresses like "s.asiwal" or "hr", so it is asked instead,
- * starting from that guess so most people only press Save.
+ * Prefilled with a guess from the email, which is often wrong ("hr").
  */
 
 import { useState } from "react";

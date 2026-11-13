@@ -1,12 +1,9 @@
 /**
- * Chart props + theme -> an ECharts option. Pure: no React, no DOM.
+ * Chart props + theme -> an ECharts option. Pure (no React, no DOM) so
+ * `__checks__/toOption.check.ts` runs the real code under node.
  *
- * Every number drawn was computed by SQL on the server. This module only
- * pivots, orders and ranks -- it never aggregates beyond summing a bucket's
- * duplicate cells -- so there is no second place a total can be wrong.
- *
- * Pure so `components/__checks__/toOption.check.ts` can run the REAL
- * implementation under `node --experimental-strip-types`.
+ * Numbers come from SQL; this only pivots, orders and ranks (summing a
+ * bucket's duplicate cells at most), so no second place a total can be wrong.
  */
 import type { EChartsOption } from "echarts";
 import { SERIES_COLORS, cappedCategories, categoryColors, pick } from "../chartColors";
@@ -408,8 +405,8 @@ function when(value?: string | null): string {
 
 const MAX_TIP_ROWS = 4;
 
-/** Same anatomy as the old hover card: title, value(s), share, then the rows
- *  behind this section. The grouped-by field is the title, so rows omit it. */
+/** Tooltip: title, value(s), share, then the rows behind this section (the
+ *  grouped-by field is the title, so rows omit it). */
 function tipHtml(title: string, lines: string[], rows: DetailRow[], hide?: string | null, share?: number) {
   const shown = rows.slice(0, MAX_TIP_ROWS);
   const more = rows.length - shown.length;
@@ -642,9 +639,7 @@ export function toOption(p: ChartProps, theme: ChartTheme = DEFAULT_THEME): ECha
   };
   const single = m.series.length === 1;
   const zoom = m.buckets.length > ZOOM_AFTER;
-  // One series of a few bars: a colour per bar, so January and March read
-  // apart at a glance. Past the palette's size a rainbow is noise, and a
-  // line or several series already use colour to tell series apart.
+  // One series of a few bars: a colour per bar. Past the palette it is noise.
   const barColors = single && m.buckets.length > 1 && m.buckets.length <= SERIES_COLORS.length
     ? categoryColors(m.labels) : null;
   const series = m.series.map((name, si) => {
@@ -687,9 +682,8 @@ export function toOption(p: ChartProps, theme: ChartTheme = DEFAULT_THEME): ECha
     grid: { left: 8, right: 16, top: m.combo ? 36 : 24, bottom: (m.series.length > 1 ? 28 : 0) + (zoom ? 40 : 8), containLabel: true },
     xAxis: {
       type: "category", data: m.labels, boundaryGap: m.shape === "bar" || m.combo, ...axisStyle,
-      // A few long category names ("Associate Systems Analyst / Business
-      // Development ...") were hidden as overlapping, leaving bars unnamed.
-      // Every one is shown, cut to its share of the width; the tooltip has it whole.
+      // Show every label, cut to its share of the width (tooltip has it whole),
+      // or long names hide as overlapping and bars go unnamed.
       ...(!m.timeAxis && m.labels.length <= 12
         ? { axisLabel: { ...axisStyle.axisLabel, hideOverlap: false, interval: 0,
                          width: Math.max(56, Math.floor(720 / m.labels.length) - 12), overflow: "truncate" as const } }

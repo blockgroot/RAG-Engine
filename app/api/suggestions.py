@@ -8,15 +8,10 @@ from typing import Any
 
 _MAX = 4
 
-# The combined empty state shows more than a single provider's chips did: with
-# four sources connected, four chips cannot represent them all, and the point of
-# the combined view is that a member SEES what is connected. Six fits the
-# two-column bento layout without scrolling.
+# Six chips: enough to show every connected source; fits the two-column layout.
 _MAX_COMBINED = 6
 
-# Fixed order so chips do not reshuffle between renders. Documents first
-# because they answer the questions people actually arrive with; GitHub last
-# because its answers are live reads and the least likely starting point.
+# Fixed order so chips do not reshuffle. Documents first; GitHub (live reads) last.
 _COMBINED_ORDER = ("notion", "google", "policy", "slack", "linear", "github", "forms")
 
 _GITHUB_TEMPLATES = (
@@ -273,18 +268,9 @@ def build_policy_suggestions(
     return questions
 
 
-#: Survey-sentiment chips. Fixed questions, not templated from content: the
-#: whole point of the Forms path is that no response text is stored, so there
-#: are no titles to build a chip from -- and the question text is what the
-#: chart resolver classifies, so these have to read like the charts we can
-#: actually draw.
-#:
-#: They exist because a feature nobody can find is not shipped. The picker
-#: grants access to a survey; this is the only place a person learns that
-#: having done so, they can ask for the chart. Shown ONLY to the people
-#: allowed to see the metric (`insights.scopes.may_see_metric`) -- a chip
-#: offering a chart that then refuses would confirm sentiment is being
-#: collected to exactly the people it is collected on.
+#: Survey-sentiment chips: fixed questions, since no response text is stored.
+#: Shown only to people allowed to see the metric; a chip that then refuses
+#: would reveal sentiment is collected.
 _FORMS_SUGGESTIONS = (
     "Chart how people feel by topic from our survey responses.",
     "Show survey sentiment for the last quarter.",
@@ -300,24 +286,10 @@ def build_forms_suggestions() -> list[str]:
 def build_combined_suggestions(
     per_provider: dict[str, list[str]], *, workspace: bool = False
 ) -> list[str]:
-    """Starter chips spanning EVERY connected source, one turn each.
+    """Starter chips spanning every connected source.
 
-    Ask is a single box now (``app/agent/routing.py`` picks the agent), so a
-    chip set drawn from one provider would teach the wrong thing: it reads as
-    "this box is for Notion" when the point is that it is for everything. It
-    would also hide a source entirely from someone who has never asked about
-    it — the empty state is the only place most people learn what is
-    connected.
-
-    Interleaved round-robin rather than concatenated, because concatenation
-    means the last provider never appears once ``_MAX_COMBINED`` bites: a
-    tenant with Notion and Slack would show four Notion chips and no Slack.
-    Providers are taken in a fixed order so the chips do not reshuffle between
-    renders for no reason.
-
-    ``per_provider`` maps a provider key to that provider's already-built
-    suggestions — this function does no fetching, matching how every other
-    builder here takes plain data.
+    Round-robin so every provider appears before ``_MAX_COMBINED`` cuts in, in a
+    fixed order. ``per_provider`` is already-built chips; nothing is fetched.
     """
     order = [p for p in _COMBINED_ORDER if per_provider.get(p)]
     if not order:

@@ -1,23 +1,9 @@
 """What needs the viewer's attention, in one list.
 
-A connection whose token expires stops syncing SILENTLY. Nothing in the
-product said so unless someone happened to open Sources, so a space kept
-answering from a corpus that had quietly stopped updating -- and the person
-asking could not tell a stale answer from a current one. `needs_reauth` was
-already stored and already rendered on the card; the gap was that nobody
-goes looking at a card that has never given them a reason to.
-
-Scoped to what the viewer can actually FIX, not to what is wrong. An org-wide
-connection is an admin's to reconnect and a space's is its OWNER's, so a
-member sees neither: a notification naming a problem you cannot act on is an
-alarm with no off switch. That also means this endpoint leaks nothing -- every
-item names a scope the caller already administers.
-
-Deliberately NOT a stored table. Each item is derived from the connection row
-that is already the source of truth, so an item disappears the moment the
-thing is fixed and there is no read/unread state to keep in agreement with
-reality. Notifications that outlive their cause are the reason people stop
-reading them.
+An expired token stops syncing silently, so it is surfaced here. Scoped to
+what the viewer can FIX (org-wide: admins; a space: its owner), so it leaks
+nothing. Derived from the connection rows, not stored, so an item disappears
+once fixed.
 """
 
 from __future__ import annotations
@@ -39,13 +25,8 @@ from .deps import get_session
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-#: Connectors that index NOTHING until someone picks their scope, and the
-#: `source_config` key that says they have. Drive without a folder and Slack
-#: without channels both report "Linked" while holding zero documents, which
-#: reads as a working connection (CLAUDE.md §5 Sources).
-#:
-#: Imported rather than restated: `autosync` needs the same mapping to decide
-#: whether a reconnect can ingest immediately, and two copies of one fact drift.
+#: Connectors that index nothing until a scope is picked, and the
+#: `source_config` key that says so (shared with `autosync`).
 _SCOPE_KEYS = SCOPE_KEYS
 
 _PROVIDER_NAMES: dict[str, str] = {
@@ -75,9 +56,7 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
                     "provider": conn.provider,
                     "scope": scope,
                     "title": f"{name} needs reconnecting",
-                    # The reason is the provider's own, so it is shown rather
-                    # than summarised -- "expired" and "access revoked" send
-                    # someone to two different places.
+                    # The provider's own reason: "expired" and "revoked" need different fixes.
                     "detail": (
                         sanitize_reauth_reason(conn.provider, conn.reauth_reason)
                         if conn.reauth_reason

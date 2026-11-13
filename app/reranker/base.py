@@ -1,14 +1,8 @@
-"""The reranker contract (Phase 6).
+"""The reranker contract.
 
-A reranker re-scores an already-retrieved candidate set with a cross-encoder that
-reads the (query, chunk) pair *together* — far more precise than the bi-encoder
-cosine used for first-stage retrieval — and returns the best ``top_k`` in the new
-order. Behind an interface + factory like every capability, so the model can be
-swapped via config.
-
-Reranking only reorders/selects; it preserves each ``RetrievedChunk`` (including
-its original cosine ``score``), so the confidence gate downstream still sees the
-same cosine similarity it always did.
+A cross-encoder re-scores retrieved candidates reading (query, chunk)
+together and returns the best ``top_k``. It only reorders: each chunk keeps
+its cosine ``score``, so the gate is unchanged.
 """
 
 from __future__ import annotations
@@ -26,7 +20,5 @@ class Reranker(ABC):
         self, query: str, candidates: list[RetrievedChunk], top_k: int
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` candidates most relevant to ``query``, reordered.
-
-        Must raise ``core.exceptions.ProviderError`` (or a subclass) on failure.
-        """
+        Raises ``core.exceptions.ProviderError`` (or a subclass) on failure."""
         raise NotImplementedError

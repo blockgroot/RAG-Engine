@@ -1,13 +1,7 @@
-"""Single construction point for a ``GitHubReader``.
+"""Single construction point for a ``GitHubReader`` (``build_github_reader``).
 
-Callers do ``build_github_reader(org_id)`` and get something satisfying the
-``GitHubReader`` interface, with the tenant's token and authorized scope already
-resolved. Same shape as ``app/sources/factory.py`` and ``app/llm/factory.py``.
-
-The important property: ``org_id`` is **required**, and both the token and the
-scope are derived from it here. There is no way to construct a reader without
-naming a tenant, so a caller cannot accidentally build one that reads across
-tenants — the same reason every vector-store read requires an ``org_id``.
+``org_id`` is required and both token and scope derive from it, so no reader
+can be built that reads across tenants.
 """
 
 from __future__ import annotations
@@ -25,20 +19,15 @@ def build_github_reader(
     *,
     settings: GitHubLiveSettings | None = None,
 ) -> GitHubReader:
-    """Build a reader for this org's GitHub connection.
-
-    Raises ``ConfigurationError`` when GitHub isn't connected, or when live reads
-    are disabled by configuration — both are "no GitHub answers available", which
-    the agent turns into its fixed fallback rather than an error to the user.
-    """
+    """Build a reader for this org's GitHub connection. Raises
+    ``ConfigurationError`` when not connected or live reads are off."""
     settings = settings or GitHubLiveSettings.from_env()
     if not settings.enabled:
         raise ConfigurationError(
             "Live GitHub reads are disabled (GITHUB_LIVE_ENABLED=false)."
         )
 
-    # Lazy import: keeps the DB/credentials dependency out of module import time,
-    # matching how credentials.py lazily imports its provider factory.
+    # Lazy import keeps the DB/credentials dependency out of import time.
     from ..auth.credentials import get_live_connection_token
 
     scope = load_scope(org_id, workspace_id)

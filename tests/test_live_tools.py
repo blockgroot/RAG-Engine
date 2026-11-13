@@ -1,4 +1,4 @@
-"""Live-tools gateway, Phase 1 (docs/plans/2026-09-29-live-connector-access.md).
+"""Live-tools gateway, Phase 1 (git history: docs/plans/2026-09-29-live-connector-access.md).
 
 Pinned here:
 - live reads need a LiveRequest (set by the web chat) AND LIVE_TOOLS_ENABLED;

@@ -1,13 +1,6 @@
-"""Remote reranker via a Jina-compatible ``/v1/rerank`` HTTP endpoint.
-
-Used when the deploy host cannot load a multi-GB local cross-encoder
-(``bge-reranker-v2-m3``). Same ``Reranker`` contract as the local backend:
-reorders candidates and **preserves each chunk's cosine ``.score``** so the
-Phase 3 confidence gate stays calibrated.
-
-Default target is Jina (``https://api.jina.ai/v1``) — OpenAI-compatible
-embeddings already sit on the same host when ``EMBEDDING_BACKEND=remote``.
-"""
+"""Remote reranker via a Jina-compatible ``/v1/rerank`` endpoint, for hosts
+that cannot load the local cross-encoder. Same contract: each chunk keeps
+its cosine ``.score`` for the gate."""
 
 from __future__ import annotations
 
@@ -112,8 +105,7 @@ class RemoteReranker(Reranker):
             if len(ordered) >= top_k:
                 break
 
-        # If the API returned fewer/invalid rows, pad with remaining candidates
-        # in original order so callers still get up to top_k chunks.
+        # Fewer/invalid rows back: pad with the rest in original order, up to top_k.
         if len(ordered) < top_k:
             for i, chunk in enumerate(candidates):
                 if i in seen:

@@ -127,10 +127,7 @@ class PgConversationStore(ConversationStore):
         self, conversation_id: str, summary: str, folded_through: int
     ) -> None:
         """One UPDATE: the summary and how far it reaches are one fact.
-
-        `folded_through` only ever moves FORWARD (`GREATEST`). Two folds can
-        overlap if one is retried, and a marker that could move backwards would
-        re-fold turns already in the summary -- duplicating them in it.
+        `folded_through` only moves forward, or a retried fold duplicates turns.
         """
         with get_connection(self._settings) as conn:
             conn.execute(

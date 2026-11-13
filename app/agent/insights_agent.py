@@ -1,13 +1,8 @@
 """The Insights agent: counted charts, never RAG.
 
-Same ``Agent`` contract as GitHub: question in, structured response out, no
-``RagPipeline``. Grounding is structural — numbers come from SQL over
-``activity_facts``. The model only selected the registry key (and optionally a
-shape we can draw); it never produced a total.
-
-A chart-shaped question that cannot be counted returns the refusal as the
-answer and ``grounded=False``. Falling through to retrieval would invent a
-number from chunk text.
+Numbers come from SQL over stored rows; the model only picks a registry
+key and shape, never a total. A chart question that cannot be counted
+returns the refusal with ``grounded=False``, never a retrieval answer.
 """
 
 from __future__ import annotations
@@ -49,10 +44,8 @@ class InsightsAgent(Agent):
         user_id: str | None = None,
         role: str | None = None,
     ) -> AgentResponse:
-        # Every count, hover row, subject list and "measured since" date below
-        # is narrowed to documents this viewer may open (`store._viewer_filter`)
-        # -- a chart is a summary of documents and must not summarise ones the
-        # asker cannot read.
+        # Every count, hover row and date below is narrowed to documents this
+        # viewer may open (`store._viewer_filter`).
         del question  # Spec is already resolved; question is untrusted.
         if refusal:
             return AgentResponse(
@@ -151,7 +144,7 @@ class InsightsAgent(Agent):
 
 def _upload_scope(conversation_id: str | None, user_id: str | None):
     """This person's files in this chat, the only key to an upload's tables.
-    Both or nothing: an upload is never charted outside its own chat."""
+    Both or nothing."""
     if not conversation_id or not user_id:
         return None
     from ..doctables.store import UploadScope
@@ -183,11 +176,8 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
                    uploads=None) -> tuple[dict, str]:
     """Run a document-table chart. Raises ``CannotChart`` / ``ProviderError``.
 
-    The table is looked up AGAIN with the viewer, here, at run time: the
-    resolver offered it through the access predicate a moment ago, but a spec
-    can also arrive as a stored dict, and a table must never be more visible
-    than its document. No viewer means no table chart at all -- the
-    unrestricted reading is for ingest and eval, never for a person.
+    The table is looked up AGAIN with the viewer at run time (a spec may be a
+    stored dict). No viewer means no table chart.
     """
     from ..doctables import store as table_store
 
@@ -198,13 +188,12 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         uploads=uploads,
     )
     if table is None:
-        # Deleted, re-indexed or not shared with this person: indistinguishable
-        # on purpose, and no title is repeated back.
+        # Deleted, re-indexed or not shared: indistinguishable on purpose, no title
+        # repeated.
         raise CannotChart("That table is no longer available to chart.")
 
-    # The resolver checked these against the table it offered; a spec can
-    # also arrive as a stored dict, so the column TYPES are checked again --
-    # a sum over a text column is a SQL cast error, not a chart.
+    # Column TYPES re-checked: a spec may be a stored dict, and a sum over text
+    # is a SQL error.
     def _need(key, types, role):
         col = table.column(key) if key else None
         if key and (col is None or col.get("type") not in types):
@@ -226,8 +215,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
     if spec.versus is not None:
         return _run_versus(spec, table, filters, org_id=org_id, workspace_id=workspace_id,
                            viewer=viewer, uploads=uploads)
-    # A column of bare years ("2024", "FY2025") is a yearly axis: drawn by
-    # month it read "Jan 2024". Format, not intent.
+    # A column of bare years is a yearly axis (format, not intent).
     period = spec.period
     group_col = table.column(spec.group_by) if spec.group_by else None
     samples = [str(x).strip() for x in (group_col or {}).get("samples", []) if str(x).strip()]
@@ -257,8 +245,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         title += f" — {name(key)}: {_shown(value)}"
     title += f" — {table.name}"
     if table.origin == "text":
-        # In the title, not only the caveat: figures an AI read from prose
-        # must never look like figures from a real table at a glance.
+        # In the title: figures read from prose must not look like a real table's.
         title += " (taken from text)"
 
     group_col = table.column(spec.group_by) if spec.group_by else None
@@ -296,8 +283,8 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         "title": title,
         "focus": None,
         "chart": spec.chart,
-        # On a DATE breakdown the dates are the time axis and the split (if
-        # any) is the category; otherwise the breakdown is the category axis.
+        # A DATE breakdown is the time axis and the split the category; otherwise
+        # the breakdown is the category axis.
         "group_by": (spec.split_by if by_date else spec.group_by),
         "split_by": (None if by_date else spec.split_by),
         "filters": [[k, _shown(v)] for k, v in filters],
@@ -342,11 +329,9 @@ def _run_versus(spec: ChartSpec, first, first_filters, *, org_id, workspace_id, 
                 uploads=None) -> tuple[dict, str]:
     """Two tables' figures per the same names, as one grouped bar chart.
 
-    The second table is looked up again with the viewer, like the first: a
-    chart is never more visible than either document. Names are matched case-
-    and space-insensitively; a name the column holds with no matching row is 0
-    (it counts), one only the other table has is drawn at 0 on this side only
-    when its own column holds it, and is otherwise left out and said."""
+    The second table is re-fetched with the viewer too. Names match ignoring
+    case and spaces; a name its column holds with no row is 0, one only the
+    other table has is left out and said."""
     from ..doctables import store as table_store
 
     versus = spec.versus
@@ -482,14 +467,12 @@ def _table_details(table, filters, *, date_key) -> list[dict]:
             if keys[i] and int(keys[i][1:]) < len(raw) and raw[int(keys[i][1:])]
         )
         if quote:
-            # A figure read from prose shows the sentence it came from, so a
-            # reader can check it against the document in one glance.
+            # A figure read from prose shows its sentence, so a reader can check it.
             shown = f"“{quote}”"
         row = {
             "subject": shown[:300],
             "url": table.source_uri,
-            # Cell values by column key, so the hover matches a bar on the
-            # column it is grouped by (charts/toOption.ts `fieldOf`).
+            # By column key, so a hover matches its bar (toOption.ts `fieldOf`).
             "attrs": {k: str(v) for k, v in cells.items()},
         }
         if date_key and cells.get(date_key):
@@ -520,12 +503,8 @@ def _backfill_and_retry(
     role: str,
     viewer: Viewer | None = None,
 ) -> tuple[dict, str]:
-    """Fill facts from the index for this scope, then re-run the metric.
-
-    Ask must not wait for the next ingest (or a healthy tick) to notice
-    that ``documents`` already has rows. GitHub has no documents, so this
-    is a no-op for those metrics.
-    """
+    """Fill facts from the index for this scope, then re-run the metric, so
+    Ask need not wait for the next ingest. No-op for GitHub (no documents)."""
     try:
         metric = registry.get(spec.metric)
     except KeyError:
@@ -554,8 +533,7 @@ def _backfill_and_retry(
 def _details(
     spec, *, org_id, workspace_id, days, focus, viewer=None, filters=(), attrs=None,
 ) -> list[dict]:
-    """Never fatal: a chart without its rows is still a chart, and losing the
-    answer to keep the annotation would be the wrong trade."""
+    """Never fatal: a chart without its rows is still a chart."""
     try:
         facts = store.list_facts(
             spec.metric, org_id=org_id, workspace_id=workspace_id,
@@ -585,8 +563,7 @@ def _buckets(points) -> list[str]:
     return seen
 
 
-#: A filled time axis longer than this is left as it was: a daily chart over
-#: half a year is 180 mostly-empty slots, which is noise, not context.
+#: A filled time axis longer than this is left as is (mostly-empty noise).
 MAX_FILLED_BUCKETS = 60
 
 
@@ -621,18 +598,14 @@ def _next_bucket(start, period: str):
 def _fill_gaps(points, period: str, since, until):
     """Every period from ``since`` to ``until``, a quiet one at zero.
 
-    Only the buckets with rows came back from SQL, so one active week drew
-    as a lone column with nothing around it. Charting tools draw the whole
-    range; so does this -- but only from ``since`` (when this tool's data
-    begins, "measured since"), because a week before anything was recorded
-    is unknown, not zero. Per series, for a time chart only.
+    Only from ``since`` ("measured since"): a period before data begins is
+    unknown, not zero. Per series, time charts only.
     """
     from datetime import datetime
 
     if not points or since is None:
         return points
-    # Truncate in the zone the database bucketed in, or a filled week would
-    # sit a few hours off a real one and read as two.
+    # Truncate in the database's zone, or a filled week sits hours off a real one.
     zone = datetime.fromisoformat(points[0].bucket).tzinfo
     if zone is not None:
         since, until = since.astimezone(zone), until.astimezone(zone)
@@ -663,8 +636,8 @@ MIN_TREND_BUCKETS = 3
 
 
 def _sparse_note(points, period: str, unit: str, group_by) -> str | None:
-    """Say plainly when a trend has activity in only one period, so a lone
-    rise reads as "little has happened yet", not as a chart that failed."""
+    """Say plainly when a trend has activity in one period only, so it does
+    not read as a failed chart."""
     if group_by is not None:
         return None
     active = [p for p in points if p.value]
@@ -676,12 +649,8 @@ def _sparse_note(points, period: str, unit: str, group_by) -> str | None:
 
 
 def _span_days(points) -> int:
-    """How far apart the rows we already found are.
-
-    A finer period comes with a shorter default window, and narrowing the
-    window while narrowing the bucket can drop the very rows we are trying to
-    show -- July's commits are outside a 45-day daily window in September.
-    """
+    """How far apart the found rows are. A finer period has a shorter default
+    window, which can drop the very rows being shown."""
     buckets = _buckets(points)
     if not buckets:
         return 0
@@ -695,13 +664,8 @@ def _span_days(points) -> int:
 
 
 def _resolve_focus(spec, metric, *, org_id, workspace_id, days, viewer=None) -> str | None:
-    """Match what the member named against subjects that actually have rows.
-
-    Refuses BY NAME when nothing matches, and lists what does exist. That is
-    the difference between "I don't have a DAO repository with commits — I
-    have 18-sana/Chain-Guard" and an empty chart, which reads as "nobody
-    worked" rather than "you asked for something that isn't there".
-    """
+    """Match a named subject against subjects with rows. Refuses BY NAME
+    listing what exists: an empty chart would read as "nobody worked"."""
     return _resolve_value(
         "subject", spec.focus, spec, metric, org_id=org_id,
         workspace_id=workspace_id, days=days, viewer=viewer,
@@ -709,14 +673,9 @@ def _resolve_focus(spec, metric, *, org_id, workspace_id, days, viewer=None) -> 
 
 
 def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None, attrs=None):
-    """Each grammar filter's raw value, matched to a value with rows.
-
-    Same contract as ``focus``: "only Sana's" becomes the stored actor
-    ``18-sana`` or a refusal naming who IS there -- never a filter on text
-    nobody stored, which would draw an empty chart reading "no activity".
-    A filter that cannot be verified (the listing failed) is DROPPED and the
-    chart is still drawn, exactly as an unverifiable focus is.
-    """
+    """Each filter's raw value, matched to a value with rows, or a refusal
+    naming who IS there. An unverifiable filter (listing failed) is dropped
+    and the chart still drawn."""
     out = []
     for dim, raw in spec.filters:
         value = _resolve_value(
@@ -731,16 +690,14 @@ def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None, a
 #: How a dimension is named back to the member in a refusal.
 _DIM_NOUN = {"actor": "person", "state": "state"}
 
-#: The two tokens the classifier sends for "not finished" / "finished",
-#: whatever words the asker used (the prompt does the language).
+#: The classifier's two tokens for "not finished" / "finished".
 _OPEN, _CLOSED = "open", "closed"
 
 def _state_group(spec, wanted: str, raw: str, *, org_id, workspace_id, days,
                  viewer=None) -> query.AnyOf | None:
-    """"open" -> every stored state the source calls unfinished; "closed" ->
-    those it calls finished. Decided ONLY by the source's own state type
-    (``store.state_types``): a state the source gave no type is in neither,
-    and with no types at all the filter is refused naming the real states."""
+    """"open"/"closed" -> stored states the source's own state type calls
+    unfinished/finished (``store.state_types``). Untyped states are in neither;
+    with no types the filter is refused naming the real states."""
     if wanted not in (_OPEN, _CLOSED):
         return None
     try:
@@ -772,7 +729,7 @@ def _resolve_value(
                 days=days, viewer=viewer, attrs=attrs,
             )
     except ProviderError:
-        # Cannot verify, so do not filter. A whole chart beats a wrong one.
+        # Cannot verify, so do not filter: a whole chart beats a wrong one.
         logger.warning("insights: could not list %s of %s", dim, spec.metric)
         return None
 
@@ -783,29 +740,25 @@ def _resolve_value(
     if exact:
         return exact[0]
     if dim == "state":
-        # "Open Linear issues": no tool stores "Open"; it means not finished.
-        # Only after an exact match, so a team whose state IS "Open" gets it.
+        # "Open" means not finished, but only after an exact state match.
         group = _state_group(spec, wanted, raw, org_id=org_id, workspace_id=workspace_id,
                              days=days, viewer=viewer)
         if group is not None:
             return group
 
-    # Compared with punctuation and spacing removed: a member types "chain
-    # guard" or "chain-guard" for a repo stored as "18-sana/Chain-Guard", and
-    # a match that fails on a hyphen is indistinguishable from no such repo.
+    # Compared without punctuation or spacing: "chain guard" matches
+    # "18-sana/Chain-Guard".
     key = _squash(wanted)
     if not key:
         return None
-    # Both directions: "DAO" is inside "18-sana/DAO", and someone may paste
-    # the full "18-sana/Chain-Guard" for a subject stored bare.
+    # Both directions: a bare name or the full owner/name.
     partial = [
         v for v in values
         if key in _squash(v) or (_squash(v) and _squash(v) in key)
     ]
     if len(partial) == 1:
         return partial[0]
-    # The name is repeated back on purpose (see the docstring), but it is
-    # model-extracted text, so it never carries a link back to the reader.
+    # The name is model-extracted, so it never carries a link.
     named = enforce_link_provenance(raw, [], ())
     if len(partial) > 1:
         raise CannotChart(
@@ -832,13 +785,8 @@ def _listed(values: list[str], limit: int = 6) -> str:
 
 
 def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=None) -> str:
-    """Say WHICH kind of empty this is. There are three, and they need
-    different actions from the member.
-
-    "Nothing recorded yet" for all three sent people to wait for a sync that
-    would never change anything -- the commonest real case is activity that
-    exists just outside the window, where the fix is one word in the question.
-    """
+    """Say WHICH kind of empty this is: each needs a different action (often
+    the activity is just outside the window)."""
     if metric is None:
         return f"{title}. Nothing recorded for that yet."
 
@@ -884,16 +832,13 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
     )
 
 
-#: Repositories probed when a pull-request chart is empty. A bound: the
-#: answer is the same for three repos as for thirty.
+#: Repositories probed when a pull-request chart is empty (a bound).
 _PROBE_REPOS = 10
 
 
 def _checked_repos(repos, total: int) -> str:
     """" Repositories checked: acme/api and 2 private repositories." Public
-    repos are named so the asker can see WHICH repos the answer is about --
-    "none merged" said of a few repos read as a claim about all of them.
-    Private ones are only counted, never named."""
+    repos are named so the answer's scope is clear; private ones only counted."""
     public = [r.full_name for r in repos if getattr(r, "private", None) is False]
     private = len(repos) - len(public)
     parts = public + ([f"{private} private repositor{'y' if private == 1 else 'ies'}"]
@@ -906,11 +851,8 @@ def _checked_repos(repos, total: int) -> str:
 
 
 def _diagnosis_repos(repos, focus: str | None) -> tuple[list, int, bool]:
-    """Which repos an empty pull-request chart should ask GitHub about.
-
-    The one named in the question, when this space reads it. Otherwise the
-    first ``_PROBE_REPOS``. The bool is whether a named repo was found here.
-    """
+    """Repos an empty pull-request chart asks GitHub about: the named one if
+    this space reads it, else the first ``_PROBE_REPOS``. The bool: named found."""
     if not focus:
         return repos[:_PROBE_REPOS], len(repos), True
     key = _squash(focus)
@@ -931,14 +873,9 @@ def _github_pull_diagnosis(
 ) -> str | None:
     """Why a GitHub PULL REQUEST chart is empty, asked of GitHub itself.
 
-    Commits and pull requests are separate GitHub permissions, so a space can
-    have commits counted and no pull request at all, and "this simply has not
-    happened" was then a guess. GitHub is asked for the newest pull request
-    of the kind charted (merged, or raised) and the answer names the cause
-    with its DATE: none yet, older than the window we read, or newer and not
-    counted yet. When the question named a repository, that one is asked;
-    private repositories are counted, never named.
-    None when it cannot tell, or when this is not a pull-request chart.
+    Commits and pull requests are separate permissions. Asks for the newest
+    pull request of the charted kind and names the cause with its date.
+    Private repos are counted, never named. None when it cannot tell.
     Never raises.
     """
     if metric is None or metric.provider != "github" or not metric.kind.startswith("pr_"):
@@ -1010,8 +947,8 @@ def _github_pull_diagnosis(
 
 
 def _read_github_now(metric, *, org_id: str, workspace_id: str | None) -> str | None:
-    """Read GitHub for a GitHub chart before counting; a note when the read
-    did not finish or failed, None when the chart is current. Never raises."""
+    """Read GitHub before counting a GitHub chart; a note when the read did not
+    finish or failed, None when current. Never raises."""
     if metric is None or metric.provider != "github" or not org_id:
         return None
     try:
@@ -1032,13 +969,8 @@ def _read_github_now(metric, *, org_id: str, workspace_id: str | None) -> str | 
 def _has_older_rows(
     metric, *, org_id: str, workspace_id: str | None, viewer: Viewer | None = None
 ) -> bool:
-    """Whether this exact metric has rows beyond the widest chart window.
-
-    Answers the question the member actually has -- "is it missing, or am I
-    looking at the wrong period?" -- and it is the case that bit a real
-    tenant: 23 pull requests existed, every one of them older than the
-    recording window, and the chart said "nothing recorded yet".
-    """
+    """Whether this metric has rows beyond the widest chart window ("missing,
+    or wrong period?")."""
     try:
         points = store.run_metric(
             metric.key, org_id=org_id, workspace_id=workspace_id,
@@ -1064,8 +996,7 @@ def _caption(
     if spec.group_by == "actor" and all(not p.get("group") for p in points):
         blank = registry.BLANK_ACTOR.get(getattr(metric, "provider", ""))
         if blank:
-            # The tool HAS a person field and it is empty on every item: say
-            # so in its own terms, not as a gap in what we stored.
+            # The tool's person field is empty on every item: say so in its terms.
             return (f"{title}. None of these has an "
                     f"{registry.actor_label(metric.provider)} in "
                     f"{metric.provider.title()}, so all of them are {blank}.")
@@ -1078,9 +1009,8 @@ def _caption(
 
 
 def _grammar_caveat(metric, group_by, split_by, attrs=None) -> str:
-    """The metric's caveat, plus the one a TAG breakdown adds: an item with
-    two labels is in two bars, so the bars sum to more than the items. A
-    chart whose bars over-add without saying so reads as a miscount."""
+    """The metric's caveat, plus a TAG breakdown's: an item with two labels is
+    in two bars, so the bars over-add."""
     notes = [metric.caveat] if metric.caveat else []
     for dim in (group_by, split_by):
         if query.is_tag(metric, dim, attrs):
@@ -1106,13 +1036,11 @@ def _ask_title(
     measure: str | None = None, filters: tuple[tuple[str, str], ...] = (),
     attrs=None,
 ) -> str:
-    """Says every slice applied. A split, a distinct count or a person filter
-    that the title omits reads as the plain chart -- the same failure as a
-    focus the title omits."""
+    """Says every slice applied (split, distinct count, person filter) so the
+    chart never reads as the plain one."""
     chosen = query.measures_for(metric, attrs).get(measure) if measure else None
     title = metric.label
-    # A measure other than the metric's own says what it is: "Files created
-    # or edited: number of different people", never a bare "People".
+    # A non-default measure says what it is, never a bare "People".
     what = describe.activity_measure(metric, chosen)
     if what:
         title = f"{metric.label}: {what}"
@@ -1144,29 +1072,23 @@ def _run_spec(
     ):
         raise CannotChart("I can't chart that here.")
 
-    # GitHub is read when the chart is ASKED (not only on the hourly timer),
-    # so a merge from this morning is in this answer.
+    # GitHub is read when the chart is ASKED, so this morning's merge counts.
     read_note = _read_github_now(metric, org_id=org_id, workspace_id=workspace_id)
-    # The asker's own range ("over the last year") when they gave one, else
-    # the period's default window.
+    # The asker's own range, else the period's default window.
     days = spec.days or scopes.WINDOW_DAYS.get(spec.period, scopes.WINDOW_DAYS["month"])
     group_by = spec.group_by
     chart = spec.chart
 
-    # "commits in the DAO repo" narrows; it does not group. Resolved against
-    # the subjects that ACTUALLY have rows, so an unmatched name is refused BY
-    # NAME instead of quietly filtering to nothing -- an empty chart reads as
-    # "no activity" when the truth is "no such repository".
+    # A focus narrows, not groups. Resolved against subjects with rows, so an
+    # unknown name is refused BY NAME rather than drawn empty.
     focus = None
     if spec.focus:
         focus = _resolve_focus(spec, metric, org_id=org_id,
                                workspace_id=workspace_id, days=days, viewer=viewer)
     split_by = spec.split_by if group_by else None
     measure = spec.measure
-    # The recorded fields this scope actually has (attr_catalog), read ONCE
-    # and handed to every step below -- validation, the query, refinement,
-    # the hover rows, the title -- so they all agree on what exists. Only read
-    # when the spec names something beyond the built-in columns.
+    # The scope's recorded fields, read ONCE so every step agrees on what
+    # exists; only when the spec names something beyond built-in columns.
     attrs = None
     if store._needs_attrs(group_by=group_by, split_by=split_by,
                           measure=measure, filters=spec.filters):
@@ -1179,8 +1101,7 @@ def _run_spec(
         query.validate(metric, group_by=group_by, split_by=split_by,
                        measure=measure, filters=filters, attrs=attrs)
     except ValueError as exc:
-        # The resolver validated this already; a spec arriving another way
-        # (a stored dict, a future caller) is refused the same way.
+        # Validated by the resolver already; another route is refused the same way.
         raise CannotChart(f"I can't chart it that way. {exc}") from exc
     period = spec.period
     points = store.run_metric(
@@ -1198,12 +1119,8 @@ def _run_spec(
         attrs=attrs,
     )
 
-    # A period that puts EVERYTHING in one bucket draws as a single point --
-    # a flat line, or a pie with one slice -- and reads as "no data" when the
-    # data is fine and the bucket was too wide. Four commits on two days are
-    # one bar at week AND at month. Step finer until the shape shows what
-    # happened, at most twice: this is the same rows re-bucketed, never a
-    # different question, and the caption says which period was used.
+    # Everything in one bucket reads as "no data": step finer, at most twice
+    # (same rows re-bucketed), and the caption names the period.
     refined = period
     while (
         len(_buckets(points)) <= 1
@@ -1227,17 +1144,14 @@ def _run_spec(
             if len(_buckets(points)) > 1:
                 break
 
-    # `days` stays the window that ACTUALLY produced these points, never the
-    # refined period's default. Resetting it to the default silently emptied
-    # the detail rows: July's commits are outside a 45-day daily window in
-    # September, so the chart had four bars and nothing behind them.
+    # `days` stays the window that produced these points: the refined period's
+    # default would empty the detail rows.
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id, viewer=viewer
     )
     stepped = None
     if group_by is None:
-        # A trend shows its whole range, quiet periods at zero -- from when
-        # this tool's data begins (or the window, if later), never before.
+        # A trend shows its whole range from when data begins, quiet periods at zero.
         from datetime import datetime, timedelta, timezone
 
         now = datetime.now(timezone.utc)
@@ -1245,13 +1159,8 @@ def _run_spec(
         since = max(begun, window_start) if begun else None
         points = _fill_gaps(points, period, since, now)
         asked_period = period
-        # A trend needs a few periods to BE a trend. "Per month" over data
-        # that began last week is one bar, which reads as a broken chart;
-        # the same rows per day are a line. Step finer (judged on the axis
-        # the chart will actually draw, quiet periods included) and say so.
-        # Only when there IS activity: stepping an empty chart finer shrank
-        # its window to the finer period's and the reply said "no PRs in the
-        # last 45 days" to a question about the last year.
+        # Too few periods on the drawn axis to be a trend: step finer and say so.
+        # Only with activity: stepping an empty chart shrank its window.
         while (any(p.value for p in points) and len(_buckets(points)) < MIN_TREND_BUCKETS
                and registry.FINER_PERIOD.get(period)):
             finer = registry.FINER_PERIOD[period]
@@ -1279,12 +1188,10 @@ def _run_spec(
         attrs=attrs,
     )
     if focus:
-        # In the title, because a filtered chart that looks unfiltered is the
-        # same failure as charting the wrong thing.
+        # In the title: a filtered chart that looks unfiltered charts the wrong thing.
         title = f"{title} — {focus}"
     if spec.days:
-        # The range they asked for, said, so a chart of a year never reads as
-        # the default few months.
+        # The range asked for is said in the title.
         title = f"{title} — last {spec.days} days"
 
     chosen = query.measures_for(metric, attrs)[measure or query.default_measure(metric)]
@@ -1299,8 +1206,7 @@ def _run_spec(
         "focus": focus,
         "chart": chart,
         "group_by": group_by,
-        # The second grouping: the chart draws "group · split" categories and
-        # matches hover rows on BOTH fields.
+        # Second grouping: categories are "group · split"; hover matches both.
         "split_by": split_by,
         "filters": [list(f) for f in filters],
         "unit": chosen.unit,
@@ -1318,17 +1224,13 @@ def _run_spec(
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}
             for p in points
         ],
-        # The rows the bars are made of. "4 commits" answers how many and
-        # nothing else; which ones, by whom and where to read them are the
-        # questions that follow immediately, and every column is already on
-        # the counted row.
+        # The rows behind the bars: which ones, by whom, and where to read them.
         "details": _details(
             spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus,
             viewer=viewer, filters=filters, attrs=attrs,
         ),
         "measured_since": begun.isoformat() if begun else None,
-        # What an EMPTY value means in this tool, by field, instead of a
-        # generic "Unknown": a Linear issue with no assignee is Unassigned.
+        # What an EMPTY value means in this tool ("Unassigned"), not "Unknown".
         "blank_labels": _blank_labels(metric),
     }
     if spec.left_out:

@@ -1,15 +1,8 @@
 """Charts a member kept.
 
-Personal, scoped ``(org_id, user_id)`` like ``schedulers`` and unlike every
-other tenant table -- a pin is one person's shortcut. That is why this feature
-has no sharing model, no approval step and no "publish" anywhere: the curated
-dashboards exist because a connector exists, and everything else is private to
-whoever made it.
-
-Stores the SPEC, never the numbers. Re-running one is a single ``GROUP BY``,
-and snapshotting counts would freeze a chart that is meant to stay current --
-the opposite choice from ``scheduler_reports``, which snapshots precisely
-because a report is a record of one moment.
+Personal, scoped ``(org_id, user_id)``: no sharing or publishing. Stores the
+SPEC, never the numbers, so a pin stays current (unlike ``scheduler_reports``,
+which records one moment).
 """
 
 from __future__ import annotations
@@ -66,12 +59,8 @@ def create_pin(
     period: str,
     title: str,
 ) -> str | None:
-    """Pin a chart. Returns the id, or None when it was already pinned.
-
-    Pinning twice is a no-op rather than an error: the member's intent
-    ("I want this on my page") is already satisfied, and an error would read as
-    a failure.
-    """
+    """Pin a chart. Returns the id, or None when already pinned (a no-op, not
+    an error: the intent is already satisfied)."""
     if workspace_id is None:
         conflict = """
             ON CONFLICT (org_id, user_id, metric, period, coalesce(group_by, ''))

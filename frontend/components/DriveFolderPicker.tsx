@@ -27,10 +27,7 @@ export function DriveFolderPicker({
     meta?: {
       folder_changed?: boolean;
       documents_purged?: number;
-      // Files in this folder Handbook cannot index because Google will not say
-      // who they are shared with. Passed UP rather than rendered here: the
-      // picker closes on save, and this is the thing the person needs to keep
-      // reading after it does.
+      // Files Google will not report sharing for. Passed UP: the picker closes on save.
       sharing?: SharingWarning | null;
     }
   ) => void;

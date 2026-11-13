@@ -1,23 +1,13 @@
 """An org's own model: the admin brings a key, the whole org can select it.
 
-**Bring your own KEY, not your own endpoint.** Every preset below carries a
-base URL that is a constant in this file, so an admin supplies only a provider,
-a model id and an API key. That is not a UX simplification — it removes the
-attack surface entirely. A free-text ``base_url`` would make the server issue
-outbound requests to an admin-chosen address (``169.254.169.254`` is cloud
-instance-metadata credentials; anything in RFC1918 is inside our own network),
-and the mitigation is not implementable at this layer: the ``openai`` SDK sets
-``follow_redirects=True`` (``_base_client.py:793``) with no seam to disable it
-short of passing a custom ``http_client``, and httpx re-resolves the hostname at
-connect time — so a validate-then-connect check is a DNS-rebinding race, not a
-guard. Supporting a self-hosted endpoint means a validating socket-level connect
-hook, and that is a deliberate future decision, not something to bolt on.
+Bring your own KEY, not your own endpoint: every base URL is a constant
+here. A free-text ``base_url`` is SSRF (cloud metadata, internal network),
+and the SDK follows redirects and re-resolves DNS at connect time, so a
+validate-then-connect check would be a race, not a guard.
 
-Storage is one ``oauth_connections`` row with ``provider='llm'`` — no migration.
-``idx_oauth_connections_org_provider_orgwide`` is already
-``UNIQUE (org_id, provider) WHERE workspace_id IS NULL``, so "one model per org"
-is enforced by an index that already exists, and the API key inherits the
-MultiFernet encryption and org-delete cascade every OAuth token already gets.
+Stored as one ``oauth_connections`` row with ``provider='llm'``: the
+org-wide unique index gives one model per org, and the key gets the same
+encryption and org-delete cascade as OAuth tokens.
 
 ``# ponytail: presets only. Custom endpoints need the socket-level check above
 — add that before adding the field, not after.``
@@ -34,9 +24,8 @@ from ..security.crypto import decrypt
 
 logger = logging.getLogger(__name__)
 
-#: ``provider`` value for the row. Not a data source — see ``list_connections``,
-#: which filters it out precisely because every consumer of that list assumes
-#: "row implies something ingestable".
+#: ``provider`` value for the row. Not a data source: ``list_connections``
+#: filters it out.
 PROVIDER = "llm"
 
 
@@ -47,28 +36,15 @@ class Preset:
     id: str
     label: str
     base_url: str
-    #: Where the admin gets a key, shown on the form — by this project's own
-    #: history (CLAUDE.md §5: 5/5 and 2/3 guessed model ids were dead) the
-    #: predicted failure is a wrong model id, so link the list.
+    #: Where the admin gets a key and the model list (a wrong model id is the
+    #: likeliest failure).
     models_url: str
 
 
-# Every vendor here serves an OpenAI-COMPATIBLE ``/chat/completions``, which is
-# the only reason a single client class can talk to all of them. Two famous
-# providers are deliberately absent, and neither is an oversight:
-#
-#   * **Azure OpenAI** — its URL embeds the customer's resource name and
-#     deployment (``https://<resource>.openai.azure.com/openai/deployments/
-#     <deployment>``), so it cannot be a constant here. Supporting it means
-#     accepting a customer-supplied host, i.e. exactly the SSRF surface this
-#     module's docstring refuses.
-#   * **A self-hosted / Ollama endpoint** — same reason, plus it is usually a
-#     private address, which is the specific thing a validating connect hook
-#     would have to block.
-#
-# AWS Bedrock and Google Vertex are absent too: both use SigV4/GCP
-# service-account signing rather than a bearer key, so "paste an API key" is
-# not the shape of their credential at all.
+# Every vendor here serves an OpenAI-compatible ``/chat/completions``. Absent
+# on purpose: Azure OpenAI and self-hosted/Ollama (customer-supplied host,
+# the SSRF surface refused above), Bedrock and Vertex (signed requests, not
+# a bearer key).
 PRESETS: tuple[Preset, ...] = (
     Preset(
         id="openai",
@@ -100,9 +76,8 @@ PRESETS: tuple[Preset, ...] = (
         base_url="https://api.groq.com/openai/v1",
         models_url="https://console.groq.com/docs/models",
     ),
-    # Gemini's OpenAI-compatibility layer. The path really does end in
-    # `/openai/` — the native endpoint at `/v1beta` is a different protocol,
-    # and pointing an OpenAI client at it 404s every request.
+    # Gemini's OpenAI-compatibility layer really ends in `/openai/`; the native
+    # `/v1beta` 404s an OpenAI client.
     Preset(
         id="google",
         label="Google Gemini",
@@ -178,21 +153,16 @@ class OrgModel:
     base_url: str
     preset: str
     label: str
-    #: Bumped whenever the admin saves. Part of the client cache key so a
-    #: rotated key cannot keep being served from a client built before it.
+    #: Bumped on every save; part of the client cache key so a rotated key is
+    #: never served from an old client.
     version: str
 
-    # No `is_openrouter` bool: request shape is per-preset DATA, looked up in
-    # `routed._PRESET_EXTRA_BODY`, because there are now two presets needing
-    # different non-standard fields and a boolean does not extend to a third.
+    # Request shape is per-preset DATA (`routed._PRESET_EXTRA_BODY`), not a bool.
 
 
 def get_org_model(org_id: str) -> OrgModel | None:
-    """This org's configured model, or ``None``. Decrypts the key.
-
-    Returns ``None`` rather than raising for "not configured": having no custom
-    model is the overwhelmingly common case, not an error.
-    """
+    """This org's configured model with the key decrypted, or ``None`` (the
+    common case, not an error)."""
     with get_connection() as conn:
         row = conn.execute(
             "SELECT external_workspace_id, external_workspace_name, "
@@ -211,8 +181,7 @@ def get_org_model(org_id: str) -> OrgModel | None:
     try:
         preset = get_preset(preset_id)
     except ConfigurationError:
-        # A preset we no longer ship. Refusing to answer is right: the stored
-        # base URL would be one we cannot vouch for.
+        # A preset we no longer ship: its stored base URL cannot be vouched for.
         logger.warning("Org %s has a model on unknown preset %r", org_id, preset_id)
         return None
 
@@ -222,20 +191,14 @@ def get_org_model(org_id: str) -> OrgModel | None:
         base_url=preset.base_url,
         preset=preset_id,
         label=label or model,
-        # `updated_at` would be better, but the table has no such column and
-        # adding one is a migration this feature does not otherwise need. The
-        # save path rewrites created_at on upsert, which makes this move.
+        # No `updated_at` column; the save path rewrites created_at on upsert.
         version=str(created),
     )
 
 
 def get_org_model_summary(org_id: str) -> dict | None:
-    """What the admin page shows. **Never decrypts, never returns the key.**
-
-    A separate function from ``get_org_model`` on purpose: the display path has
-    no reason to hold a plaintext credential, so it is structurally unable to
-    leak one.
-    """
+    """What the admin page shows. **Never decrypts, never returns the key**, so
+    the display path cannot leak one."""
     with get_connection() as conn:
         row = conn.execute(
             "SELECT external_workspace_id, external_workspace_name, "
@@ -256,12 +219,10 @@ def get_org_model_summary(org_id: str) -> dict | None:
         "preset": config.get("preset"),
         "preset_label": preset.label if preset else config.get("preset"),
         "key_tail": config.get("key_tail"),
-        # Dated and past-tense on purpose. This is a snapshot from when the
-        # model was saved, not a live health check — rendering it as a green
-        # "Connected" badge would claim something nobody verified since.
+        # Dated and past-tense: a snapshot from save time, not a live health check.
         "checked_at": config.get("checked_at"),
-        # Agent mode's tool-calling test, from the same save (``_agent_probe``):
-        # "native", "text", "none", or "unknown"; None for a model saved before it.
+        # Agent mode's tool-calling test from the same save: "native", "text",
+        # "none", "unknown"; None for a model saved before it.
         "agent": config.get("agent"),
         "saved_at": created.isoformat() if created else None,
     }

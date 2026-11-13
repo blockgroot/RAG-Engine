@@ -2,10 +2,8 @@
 
 /**
  * Where Connect lands when the tool's keys are not set on this server.
- *
- * The connect route used to answer a JSON 400, which a browser shows as a
- * blank page. Google and Slack use the company's own app (set up in Sources);
- * Notion, Linear and GitHub use keys whoever runs Handbook sets once.
+ * Google and Slack use the company's own app (Sources); Notion, Linear and
+ * GitHub use keys the host sets once.
  */
 
 import { Suspense, type ReactNode } from "react";

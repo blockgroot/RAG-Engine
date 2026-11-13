@@ -123,12 +123,8 @@ const MODES: Array<{
   },
 ];
 
-/**
- * Section 3: the four modes as a list a reader can scan (what each is for),
- * beside the result that mode returns. Steps through on its own so a reader
- * who never clicks still sees all four; stops for good once they choose one,
- * pauses while the pointer is over it, and never moves for reduced motion.
- */
+/** Section 3: the four modes beside their results. Auto-steps until a click,
+ *  pauses on hover, still for reduced motion. */
 export function ModesFigure() {
   const [active, setActive] = useState(0);
   const [auto, setAuto] = useState(true);

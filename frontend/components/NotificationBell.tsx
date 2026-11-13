@@ -31,21 +31,10 @@ function KindIcon({ kind }: { kind: Notification["kind"] }) {
 }
 
 /**
- * What needs this person's attention, on every page of the app.
- *
- * An expired token stops a sync silently: the card on Sources already said so,
- * but nobody opens a page that has never given them a reason to, so a space
- * went on answering from a corpus that had quietly stopped updating. The bell
- * is the reason to look.
- *
- * Derived, never stored (`GET /notifications`): an item disappears the moment
- * the connection is fixed, so there is no read/unread state that can disagree
- * with reality. Silent on failure -- a broken bell must never be the thing
- * that breaks every page it sits on.
- *
- * Dismissing hides an item in this browser only, keyed by its whole text: the
- * same problem stays hidden, a changed or new one shows again. Sources still
- * shows the problem itself.
+ * What needs this person's attention (e.g. an expired token that silently
+ * stopped a sync), on every page. Derived, never stored (`GET /notifications`),
+ * and silent on failure. Dismissing hides an item in this browser only, keyed
+ * by its text, so a changed problem shows again.
  */
 const DISMISSED_KEY = "bell.dismissed";
 const keyOf = (n: Notification) => [n.kind, n.provider, n.scope, n.title, n.detail].join("\u241f");
@@ -81,10 +70,8 @@ export function NotificationBell() {
   const btn = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Measured screen position for the panel. Portaled directly to document.body
-  // so it reliably escapes `.app-rail`'s `transform` and `overflow-y: auto`,
-  // floating cleanly above the whole page rather than being clipped or trapped
-  // behind other layers.
+  // Panel position. Portaled to document.body to escape `.app-rail`'s
+  // transform and overflow clipping.
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
@@ -97,9 +84,7 @@ export function NotificationBell() {
     const width = Math.min(352, window.innerWidth - 24);
     setAt({
       top: Math.min(r.bottom + 8, window.innerHeight - 24),
-      // Opens to the button's right, then flips back inside the viewport --
-      // the rail is on the left on desktop but the panel must not run off a
-      // narrow screen.
+      // Opens to the right, flipped back inside a narrow viewport.
       left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)),
     });
   }, []);

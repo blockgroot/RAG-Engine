@@ -43,11 +43,8 @@ function accountLabel(identity: LinkedIdentity) {
 
 /**
  * Linked accounts: which accounts in your company's tools are you.
- *
- * Handbook links most of them by itself, when a tool reports the same email
- * you sign in with. GitHub gives out usernames, not emails, so that one you
- * link yourself. A link only changes who Handbook credits for work — it never
- * changes what you or anyone else can read.
+ * Matched by email; GitHub (usernames only) is linked by hand. A link changes
+ * credit for work, never what anyone can read.
  */
 function AccountContent() {
   const { me, loading } = useMe();

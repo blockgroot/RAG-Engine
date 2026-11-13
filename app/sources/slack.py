@@ -23,8 +23,7 @@ _TIMEOUT = 15.0
 _TRUNCATION_MARKER = "\n[... earlier replies truncated: thread exceeds ingest size limit ...]"
 _MAX_HTTP_ATTEMPTS = 5
 _RETRYABLE_SLACK_ERRORS = frozenset({"ratelimited", "internal_error", "fatal_error"})
-#: Longest ``Retry-After`` we wait out. Restricted-tier history calls are
-#: 1/min, so anything shorter retries into the same window.
+#: Longest ``Retry-After`` we wait out (restricted-tier history is 1/min).
 _MAX_RETRY_AFTER_SECONDS = 60
 # ponytail: process-local only; a separate worker process still lists itself.
 # Upgrade: persist refs on the ingestion job row.
@@ -39,17 +38,9 @@ _CHANNEL_MENTION = re.compile(r"<#([CG][A-Z0-9]+)(?:\|[^>]*)?>")
 
 
 def _plain_text(text: str) -> str:
-    """Slack mrkdwn -> readable text.
+    """Slack mrkdwn -> readable text: unescape ``&amp;`` etc. and unwrap ``<url|label>``.
 
-    Slack escapes ``&``/``<``/``>`` in message text and wraps links as
-    ``<https://x|label>``, so raw ``text`` renders as "Vector &amp;
-    Relational" and dumps full URLs mid-sentence. Both were visible in a real
-    report before this: the escaping is not cosmetic, it is the difference
-    between a paragraph and noise.
-
-    Deliberately minimal — this unescapes and unwraps links; it does not try
-    to strip ``*bold*``/``_italic_`` markers, which read fine as-is and whose
-    removal risks eating literal asterisks from a code snippet.
+    Leaves ``*bold*``/``_italic_``: stripping them could eat literal asterisks in code.
     """
     import html as _html
     import re as _re
@@ -73,10 +64,7 @@ def _ts_to_dt(ts: str | None) -> datetime | None:
 def _channel_entry(channel_id: str) -> str:
     """The ACL entry naming a CHANNEL rather than a person.
 
-    The write half of the contract `vectorstore.base.Viewer.acl` reads. Kept
-    beside the adapter that writes it, in one function, for the reason the
-    email/domain/group entries are: two spellings of one grant fail closed and
-    silently.
+    The write half of `Viewer.acl`; one function, because two spellings fail closed silently.
     """
     return f"channel:{channel_id}"
 
@@ -128,20 +116,15 @@ class SlackAdapter(SourceAdapter):
         #: Filled by `_display_name` from the `users.info` reply it already
         #: fetches; never looked up on its own.
         self._user_emails: dict[str, str] = {}
-        #: Per-channel access, resolved at most ONCE per adapter. A sync lists
-        #: many threads per channel and their audience is a property of the
-        #: channel, so resolving per document would multiply the cost by the
-        #: corpus size for an answer that cannot differ.
+        #: Per-channel access, resolved at most once per adapter (it is per channel, not per thread).
         self._channel_access: dict[str, DocAccess | None] = {}
         self._channels_meta: dict[str, dict] | None = None
         self._bot_user: object = _UNRESOLVED
 
     def _bot_user_id(self) -> str | None:
-        """Our own bot's user id (``auth.test``), resolved at most once, lazily.
+        """Our own bot's user id (``auth.test``), lazily, only when a message @mentions someone.
 
-        Only asked for when a message actually @mentions someone, so a channel
-        nobody asks the bot in costs no extra call. A failure reads as "no bot
-        known": the thread is indexed as before rather than failing the sync.
+        A failure means "no bot known": the thread is indexed rather than failing the sync.
         """
         if self._bot_user is _UNRESOLVED:
             try:
@@ -153,9 +136,7 @@ class SlackAdapter(SourceAdapter):
     def _is_bot_traffic(self, message: dict, bot_users: set[str] | None = None) -> bool:
         """A message the BOT posted, or a question addressed TO it.
 
-        Neither is discussion. Indexing them made the channel's own Q&A the
-        corpus: the bot's summaries were re-ingested, then summarised again,
-        so "what was discussed yesterday?" answered with its own old answers.
+        Not discussion: indexing them made the bot re-summarise its own old answers.
         """
         if message.get("bot_id"):
             return True
@@ -168,12 +149,7 @@ class SlackAdapter(SourceAdapter):
         return any(f"<@{u}>" in text for u in bot_users)
 
     def _channel_meta(self) -> dict[str, dict]:
-        """`conversations.list` ONCE per adapter, not once per channel.
-
-        It answers for every channel at once, so calling it per channel turns
-        one bounded request into one per connected channel on a path that is
-        also change detection.
-        """
+        """`conversations.list` once per adapter: it answers for every channel at once."""
         if self._channels_meta is None:
             self._channels_meta = {c["id"]: c for c in list_slack_channels(self._token)}
         return self._channels_meta
@@ -181,27 +157,12 @@ class SlackAdapter(SourceAdapter):
     def _access_for(self, channel_id: str) -> DocAccess | None:
         """Who may read the threads in this channel. ``None`` = could not tell.
 
-        A PUBLIC channel is scope-public, and costs nothing to decide: everyone
-        the connected scope already admits can read the room, so there is no
-        narrower audience to record. Onyx reaches the same conclusion for the
-        same reason (`ee/.../slack/channel_access.py`), and it is what keeps
-        this feature's blast radius to private channels only.
+        Public channel: scope-public. Private channel: its members, plus `channel:<id>`
+        so the bot can answer inside it (`Viewer.channels`). Resolved on the LISTING
+        (per channel, cheap) because revocation rides it: a membership change moves no
+        message `ts` (`_restamp_unchanged_access`).
 
-        A PRIVATE channel's audience IS its membership, so that is the viewer
-        list -- plus a `channel:<id>` entry, which is what lets the bot answer
-        INSIDE that channel without being a person (see `Viewer.channels`).
-
-        Resolved on the LISTING despite `list_documents` also being the change
-        detection path, and that is deliberate rather than an oversight of the
-        `users.info` lesson (CLAUDE.md §5): the cost here is per CHANNEL, not
-        per document or per author, and the channel list is small and picked by
-        hand. It has to be here, because revocation rides the listing --
-        `_restamp_unchanged_access` reads `SourceRef.access`, and a membership
-        change moves no message `ts`, so a thread is "unchanged" forever.
-
-        ponytail: one `users.info` per member (`list_channel_members`). Onyx
-        builds one bulk `users.list` map instead and looks members up in it;
-        worth copying if a connected channel is ever large enough to notice.
+        ponytail: one `users.info` per member; a bulk `users.list` map if channels grow large.
         """
         if channel_id in self._channel_access:
             return self._channel_access[channel_id]
@@ -210,9 +171,7 @@ class SlackAdapter(SourceAdapter):
         try:
             channel = self._channel_meta().get(channel_id)
             if channel is None:
-                # Slack does not list a private channel the bot cannot see at
-                # all, so "missing" means we have no basis to describe its
-                # audience -- not that it is public.
+                # Missing means unknown audience, not public.
                 logger.warning(
                     "slack: channel %s is not visible to this token; its sharing "
                     "cannot be read", channel_id,
@@ -225,10 +184,7 @@ class SlackAdapter(SourceAdapter):
                 if emails:
                     access = DocAccess.restricted(emails + [_channel_entry(channel_id)])
                 else:
-                    # Every member unresolvable (no `users.read.email`, or a
-                    # channel of bots). Recording an empty audience would hide
-                    # the channel from everyone including its members, so we
-                    # say "unknown" and let the pipeline decide.
+                    # No member resolvable: an empty audience would hide it from its members; say unknown.
                     logger.warning(
                         "slack: no member emails resolved for private channel %s",
                         channel_id,
@@ -296,9 +252,7 @@ class SlackAdapter(SourceAdapter):
                 last_error = "ratelimited"
                 if attempt >= _MAX_HTTP_ATTEMPTS:
                     raise SourceError(f"Slack API call to {method} failed: ratelimited")
-                # Honour Slack's own wait (a restricted-tier app is told ~60 s).
-                # Capping it at 8 s meant every retry landed inside the same
-                # window and the listing gave up half-read.
+                # Honour Slack's own wait; a short cap retried into the same window.
                 time.sleep(min(_retry_after_seconds(response, attempt), _MAX_RETRY_AFTER_SECONDS))
                 continue
 
@@ -339,9 +293,7 @@ class SlackAdapter(SourceAdapter):
                 or profile.get("name")
                 or user_id
             )
-            # Same response, no extra call: `users:read.email` is already
-            # required for private-channel ACLs, and the email is what links a
-            # Slack author to a Handbook account (Second Brain 1.1).
+            # Same response; the email links a Slack author to a Handbook account.
             email = (profile.get("profile", {}).get("email") or "").strip().lower()
             if email:
                 self._user_emails[user_id] = email
@@ -350,17 +302,14 @@ class SlackAdapter(SourceAdapter):
         self._user_names[user_id] = name
         return name
 
-    #: ``False`` after a listing that stopped early (a cap, or a channel that
-    #: failed mid-way). The pipeline deletes nothing from such a listing:
-    #: an unlisted thread there is unread, not deleted.
+    #: ``False`` after a listing that stopped early: the pipeline deletes nothing from it.
     listing_complete: bool = True
 
     def may_remove(self, external_id: str) -> bool:
-        """Would the listing have included this thread? Only then is its
-        absence a deletion. A thread started before the backfill window is
-        never listed (``conversations.history`` filters on the PARENT ts), so
-        without this every thread aged out of the 90 days was deleted.
-        A channel no longer picked is removable: dropping it is the intent.
+        """Would the listing have included this thread? Only then is its absence a deletion.
+
+        History filters on the PARENT ts, so a thread older than the backfill window is
+        never listed. A channel no longer picked is removable.
         """
         channel_id, _, ts = external_id.partition(":")
         if channel_id not in self._channel_ids:
@@ -377,8 +326,7 @@ class SlackAdapter(SourceAdapter):
         except SourceError:
             cached = self._cached_listing()
             if cached:
-                # A cached listing is an old snapshot: fine to diff what it
-                # holds, never proof that anything newer is gone.
+                # A cached listing is an old snapshot: never proof that anything newer is gone.
                 self.listing_complete = False
                 return cached
             raise
@@ -394,8 +342,7 @@ class SlackAdapter(SourceAdapter):
             channel_access = self._access_for(channel_id)
             cursor = None
             listed_before = len(refs)
-            # Why a channel listed nothing: "listed=0 stored=22" alone could not
-            # tell an empty channel from one whose every message was skipped.
+            # Log why a channel listed nothing: empty vs every message skipped.
             seen = system = bot = short = 0
             failed = False
             while True:
@@ -410,8 +357,7 @@ class SlackAdapter(SourceAdapter):
                 except SourceError:
                     if not refs and cursor is None and channel_id == self._channel_ids[0]:
                         raise  # nothing read at all: let the cache fallback decide
-                    # One channel failing mid-way must not cost the others, and
-                    # must not read as "its threads were deleted".
+                    # One channel failing must not cost the others or read as deletions.
                     logger.warning("slack: listing of %s stopped early", channel_id, exc_info=True)
                     self.listing_complete = False
                     failed = True
@@ -438,14 +384,7 @@ class SlackAdapter(SourceAdapter):
                             last_modified=_ts_to_dt(last_ts),
                             source_uri=_thread_uri(channel_id, ts),
                             access=channel_access,
-                            # No `last_editor` here on purpose. Resolving a
-                            # name costs a `users.info` call, and this listing
-                            # is also the CHANGE DETECTION path -- which made
-                            # no user lookups at all before charts existed, and
-                            # must stay that way. `fetch_document` already
-                            # resolves every name for the thread body, and the
-                            # pipeline prefers `doc.last_editor`, so the
-                            # attribution lands without paying for it twice.
+                            # No `last_editor`: this is change detection and makes no user lookups; fetch_document resolves it.
                         )
                     )
                     if len(refs) >= self._settings.max_documents_per_sync:
@@ -463,42 +402,17 @@ class SlackAdapter(SourceAdapter):
         return refs
 
     def channel_labels(self) -> list[str]:
-        """The channels this adapter reads, by name where known.
-
-        Exposed so an activity report can state its own coverage. A Slack
-        connection only ever sees the channels an admin picked and the bot was
-        invited to, so a report that stayed silent about that would imply
-        whole-workspace coverage it never had.
-        """
+        """The channels this adapter reads, so a report states its coverage (never the whole workspace)."""
         return [self._channel_label(cid) for cid in self._channel_ids]
 
     def fetch_recent_messages(
         self, since: float, *, max_messages: int = 300
     ) -> tuple[list[dict], list[str]]:
-        """Messages posted since ``since`` (unix seconds), as an activity feed.
+        """Messages posted since ``since`` (unix seconds), as an activity feed (not ingestion).
 
-        Returns ``(messages, truncated_channels)`` — the caller needs the
-        second element to disclose partial coverage, since a report that read
-        half of #general while claiming to have checked it is the failure that
-        matters here.
-
-        Deliberately NOT ``list_documents``: that returns thread *refs* for the
-        ingestion pipeline to chunk and embed. The Prompt-Driven Activity
-        Scheduler wants the actual recent messages to hand an LLM, and stores
-        nothing — so it needs the raw feed, not documents.
-
-        Reuses the same ``conversations.history`` + ``oldest`` call the listing
-        already makes; the only real difference is that ``since`` comes from the
-        caller (a scheduler's last run) instead of a fixed rolling window, and
-        no ``min_thread_chars``/thread filtering applies — a one-line message is
-        still activity worth reporting on.
-
-        ``max_messages`` is split **per channel** rather than spent greedily in
-        channel order: one busy channel would otherwise consume the whole
-        budget and every later channel would silently contribute nothing while
-        ``channel_labels()`` still claimed it was checked. Slack returns
-        history newest-first, so what a per-channel cap drops is always the
-        oldest end of the window.
+        Returns ``(messages, truncated_channels)`` so the caller discloses partial coverage.
+        ``max_messages`` is split per channel so one busy channel cannot starve the rest;
+        history is newest-first, so a cap drops the oldest end.
         """
         channel_ids = list(self._channel_ids)
         if not channel_ids:
@@ -518,8 +432,7 @@ class SlackAdapter(SourceAdapter):
                 for message in data.get("messages", []):
                     ts = message.get("ts")
                     text = _plain_text((message.get("text") or "").strip())
-                    # Skip join/leave/etc. system events and empty posts: they
-                    # are noise in a report, not activity.
+                    # Skip system events and empty posts.
                     if not ts or message.get("subtype") or not text:
                         continue
                     if self._is_bot_traffic(message):
@@ -535,9 +448,7 @@ class SlackAdapter(SourceAdapter):
                             "text": text,
                             "at": _ts_to_dt(ts),
                             "reply_count": message.get("reply_count", 0),
-                            # Built from channel_id + ts rather than fetched:
-                            # chat.getPermalink would cost one API call PER
-                            # message, and this is the same URL Slack returns.
+                            # Built from channel_id + ts: chat.getPermalink would be one call per message.
                             "permalink": _thread_uri(channel_id, ts),
                         }
                     )
@@ -580,8 +491,7 @@ class SlackAdapter(SourceAdapter):
 
         root_text = (messages[0].get("text") or "").strip()
         channel = self._channel_label(channel_id)
-        # The bot's replies name its own user id, so the thread identifies it
-        # without an extra call; one already resolved by the listing is added.
+        # The bot's replies name its user id; no extra call needed.
         bot_users = {m["user"] for m in messages if m.get("bot_id") and m.get("user")}
         if isinstance(self._bot_user, str):
             bot_users.add(self._bot_user)
@@ -597,8 +507,7 @@ class SlackAdapter(SourceAdapter):
             text = (message.get("text") or "").strip()
             lines.append(f"[{stamp}] {name}: {text}")
 
-        # Nothing but bot traffic: an EMPTY document, so ingestion acknowledges
-        # it (no chunks) instead of indexing a bare channel header.
+        # Only bot traffic: an EMPTY document, so ingestion acknowledges it without chunks.
         content = "\n".join(lines) if human else ""
         last_modified = _ts_to_dt(messages[-1].get("ts"))
         title = self._thread_title(channel_id, root_text)
@@ -609,30 +518,18 @@ class SlackAdapter(SourceAdapter):
             content=content,
             source_uri=_thread_uri(channel_id, thread_ts),
             last_modified=last_modified,
-            # Whoever STARTED the thread, not everyone who replied -- the index
-            # stores a thread as one document, so there is no honest way to
-            # attribute a reply. Free here: `_display_name` already resolved
-            # (and cached) this name while building the body above.
+            # The thread's starter: a thread is one document, so a reply cannot be attributed.
             last_editor=self._display_name(messages[0].get("user")) or None,
-            # Tagged by channel ID, not name: ids survive a rename, names do
-            # not. This is what lets an in-channel question be answered from
-            # that channel ONLY -- everyone in the room can already scroll up
-            # and read it, so a channel-scoped answer widens nothing.
+            # Channel id (survives renames): lets an in-channel question read that channel only.
             tags=[channel_tag(channel_id)],
             meta=self._thread_meta(channel_id, messages),
         )
 
     def _thread_meta(self, channel_id: str, messages: list[dict]) -> dict | None:
-        """Authors, participants and mentions of one thread — no new calls.
+        """Authors, participants and mentions of one thread, with no new calls.
 
-        Authors were already resolved by `_display_name` while the body was
-        built, so their names and emails come from its cache. A MENTIONED user
-        is recorded by id only (plus the label Slack sometimes inlines):
-        resolving each one would be a `users.info` per mention, the per-author
-        cost §5 already warns against. The id alone is a stable key.
-
-        Read from the RAW message text: `<@U…>`/`<#C…>` are the only place the
-        ids exist, and `_plain_text` rewrites them to bare names.
+        Authors come from `_display_name`'s cache; a mention is recorded by id only (a
+        lookup per mention is too costly). Read from the RAW text, where the ids exist.
         """
         people = []
         for index, message in enumerate(messages):

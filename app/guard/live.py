@@ -1,14 +1,10 @@
 """Live text the asker hands us: their question, and the files they attach.
 
-The QUESTION is scored and LOGGED, never refused. Measured on Groq's Prompt
-Guard 2: "Ignore that last answer, what about dental coverage?" and "Forget
-the previous question. Who approves travel expenses?" both score 0.999 -- as
-high as a real "ignore all previous instructions" -- so refusing would turn
-away ordinary follow-ups every day. And a person attacking their OWN question
-can only reach what the access filter already lets them read. The log is
-there to see how often real attacks arrive; it runs fire-and-forget, so it
-costs no latency. Only the question the person TYPED is scored, never the
-memory-rewritten one, which carries earlier answers' text.
+The QUESTION is scored and LOGGED, never refused: ordinary follow-ups
+("ignore that last answer...") score as high as real attacks, and an
+attacker on their own question reaches only what the access filter allows.
+Fire-and-forget, so no latency. Only the TYPED question is scored, never
+the memory-rewritten one.
 """
 
 from __future__ import annotations
@@ -43,18 +39,15 @@ def watch_question(question: str, settings: GuardSettings | None = None) -> None
     _POOL.submit(run)
 
 
-# ~15.6K chars. A 60K-char file is ~20K tokens, over the free tier's 15K
-# tokens/min on its own, and would come back unscored anyway.
+# ~15.6K chars: a longer file would exceed the guard's per-minute token
+# quota on its own.
 ATTACHMENT_MAX_CHARS = 12 * 1300
 
 
 def score_attachment(text: str, settings: GuardSettings | None = None) -> float | None:
     """Score an uploaded file's text once, at upload. ``None`` = unscored.
-
-    A file longer than ``ATTACHMENT_MAX_CHARS`` is left unscored rather than
-    scored on its head: a partial score that looks complete is the failure
-    this codebase is arranged against.
-    """
+    A file over ``ATTACHMENT_MAX_CHARS`` stays unscored rather than scored on
+    its head (a partial score looks complete)."""
     settings = settings or GuardSettings.from_env()
     guard = build_injection_guard(settings)
     if guard is None or len(text) > ATTACHMENT_MAX_CHARS:

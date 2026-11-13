@@ -1,10 +1,8 @@
-"""Google Docs, Sheets and Drive through their regular REST APIs, with the
-person's own token (scopes ``drive.file``, ``documents``, ``spreadsheets``:
-none is restricted, so no yearly security assessment).
+"""Google Docs, Sheets and Drive over their REST APIs with the person's own
+token (``drive.file``, ``documents``, ``spreadsheets``: none restricted).
 
-``drive.file`` reaches only files Handbook created or the person opened with
-it, so a search finds those and a name resolves among them. Cells are written
-RAW, never parsed: "=IMPORTDATA(…)" stays text and cannot fetch outside data.
+``drive.file`` reaches only files Handbook made or the person opened with it.
+Cells are written RAW, never parsed, so a formula cannot fetch outside data.
 """
 
 from __future__ import annotations
@@ -222,10 +220,8 @@ def comment_on_file(token: str, args: dict) -> ToolResult:
     return ToolResult(f"Commented on {f['name']}.", f["id"], f.get("webViewLink"), f["name"])
 
 
-#: Who a file may be shared as, in people's words, and Drive's name for each.
-#: The asker's own word chooses it ("as an editor"); Drive's "writer" was never
-#: said, so the role was left out and the file shared to view. Owner transfer
-#: is never offered.
+#: Share roles in people's words -> Drive's names ("editor" -> "writer").
+#: Owner transfer is never offered.
 _ROLES = {"viewer": "reader", "commenter": "commenter", "editor": "writer"}
 
 

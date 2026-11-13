@@ -34,18 +34,14 @@ def _json_list(text: str | None) -> list:
 MAX_PARTS = 8
 
 
-#: Each check's reply budget: a reasoning model spent 200 thinking and replied
-#: with nothing, so the check never ran.
+#: Each check's reply budget: at 200 a reasoning model replied with nothing.
 CHECK_TOKENS = 2000
 
 
 def _completeness(llm, question: str):
-    """``check(label, args)``: the request's parts a card lacks, so a weak
-    model's half-done card ("DM Raj the #hb-testing pointers and the link"
-    became a DM with neither) is sent back once and what still lacks is said,
-    whatever the model. The parts are quotes of the request, kept only when
-    they are in it; the judgement is the model's, every check of it is code's.
-    A failed call checks nothing: it never blocks a card."""
+    """``check(label, args)``: the request's parts a card lacks. The card is sent back
+    once; what still lacks is said. Parts are quotes kept only when in the request;
+    the model judges, code checks. A failed call never blocks a card."""
     parts: list[str] | None = None
     #: Per part, as the model labelled it and code kept it: the request's words
     #: naming where it is written, and the items it spells out to copy.
@@ -92,8 +88,7 @@ def _completeness(llm, question: str):
         return parts
 
     def start() -> None:
-        """Read the parts now, beside the loop's first turn, so the first
-        card's check does not wait for them. The request's model choice is a
+        """Read the parts beside the loop's first turn. The model choice is a
         ContextVar, so the thread runs in this request's context."""
         threading.Thread(target=contextvars.copy_context().run, args=(content,), daemon=True).start()
 
@@ -118,39 +113,26 @@ def _completeness(llm, question: str):
             content()
             if not parts:
                 return []               # the request asks for no content of its own
-            # Content is judged in the card's body, never its title: Gemma took
-            # "Summary of #hb-testing discussion" for the summary, and the card
-            # had no description at all.
+            # Content is judged in the card's body, never its title.
             from .mcp import _TITLE
 
             form = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS and not _TITLE.search(k)},
                               ensure_ascii=False)
-            # What code can check, it does: a part for another card ("post that
-            # the tracker is ready" is not the sheet's) is not judged here, and
-            # a part whose items are all on the card is there. GPT-OSS judged a
-            # sheet with every column and row as lacking them, and asked the
-            # Slack post for them, which then repeated the sheet.
-            # Only what is written counts: request_words quotes the request
-            # ("…with the title, assignee and status of…"), so every item was
-            # "on the card" and an empty sheet passed.
+            # Code decides what it can: a part for another card is not judged here, and a
+            # part whose written items are all on the card is there (request_words do not count).
             sent = form.casefold()
-            # Only content the request writes out ("rows A, B") is there when
-            # its items are: content to read or look up is not. "The title,
-            # assignee and status of the open issues in BEN" listed its column
-            # names as items, and a sheet of just that header passed.
+            # Only content the request writes out is present when its items are; content
+            # to read or look up is not (its column names are not its rows).
             judged = [p for p in parts if belongs(p, label, args)
                       and not (values.get(p) and origin.get(p) not in ("read", "lookup")
                                and all(v.casefold() in sent for v in values[p]))]
-            # Content to read or look up, whose card lists hold only the
-            # request's own words (a header), is missing: checked in code.
+            # Content to fetch whose lists hold only the request's own words is missing.
             cells = _list_cells(args)
             hollow = [p for p in judged if origin.get(p) in ("read", "lookup") and cells
                       and all(c in question.casefold() for c in cells)]
             judged = [p for p in judged if p not in hollow]
-            # The mirror: lists holding more than the request's words hold what
-            # was fetched (``_untraced`` refuses them otherwise). GPT-OSS judged
-            # a sheet of every BEN issue as lacking "the title, assignee and
-            # status of the open issues". With one such part, they are it.
+            # The mirror: lists holding more than the request's words hold what was fetched
+            # (``_untraced`` refuses them otherwise).
             fetched = [p for p in judged if origin.get(p) in ("read", "lookup")]
             if len(fetched) == 1 and cells:
                 judged.remove(fetched[0])
@@ -179,9 +161,8 @@ _CHANNEL = re.compile(r"(?<![\w#])#([a-z0-9][a-z0-9._-]{0,79})", re.IGNORECASE)
 
 
 def _channels_read(messages: list[dict]) -> set[str]:
-    """The channels a read in an EARLIER turn covered (casefolded): a draft
-    written in the same turn as its read never saw what the read returned,
-    and a refused read read nothing."""
+    """Channels read in an EARLIER turn (casefolded): a same-turn draft never saw the
+    read, and a refused read read nothing."""
     name = SEARCH["function"]["name"]
     answers = {m.get("tool_call_id"): str(m.get("content") or "") for m in messages if m.get("role") == "tool"}
     seen: set[str] = set()
@@ -201,9 +182,8 @@ def _channels_read(messages: list[dict]) -> set[str]:
 
 
 def _fetched(messages: list[dict], fetchers: set[str]) -> list[str]:
-    """What reads and lookups in EARLIER turns returned: a draft written in
-    the same turn as its fetch never saw the answer, and a refused read
-    (answered in plain words, not fenced) fetched nothing."""
+    """What reads and lookups in EARLIER turns returned (same-turn drafts never saw
+    it; a refused read fetched nothing)."""
     answers = {m.get("tool_call_id"): str(m.get("content") or "") for m in messages if m.get("role") == "tool"}
     now = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=len(messages))
     return [answers[c["id"]] for m in messages[:now] for c in m.get("tool_calls") or []
@@ -235,13 +215,9 @@ def _list_cells(args: dict) -> list[str]:
 
 
 def _untraced(args: dict, texts: list[str], question: str = "") -> bool:
-    """Whether most of the text items in a card's lists (a Sheet's rows, a
-    list of names) are in nothing the request said or the loop fetched. A
-    sheet "of the open issues in BEN" built with no lookup is made up,
-    whatever its words; a date written in another format is one cell of
-    many, so half is the line, not every cell."""
-    # A header is the request's own words, not data: with it counted, a sheet
-    # of one made-up issue under "Title, Assignee, Status" was half traced.
+    """Whether most text items in a card's lists are in nothing the request said or
+    the loop fetched (made up). Half is the line: a reformatted date is one cell."""
+    # A header is the request's own words, not data.
     said = " ".join(question.split()).casefold()
     cells = [c for c in _list_cells(args) if c not in said]
     if len(cells) < MIN_TRACED:
@@ -251,20 +227,15 @@ def _untraced(args: dict, texts: list[str], question: str = "") -> bool:
 
 
 def _cut_short(args: dict, texts: list[str]) -> list[str]:
-    """List items the model ended with an ellipsis that nothing fetched or
-    said has: its shorthand for "and the rest". Prod: a sheet of BEN's open
-    issues stopped after three rows at "E3...". By format, not wording."""
+    """List items ending in an ellipsis nothing fetched has ("and the rest"). By format."""
     seen = " ".join(" ".join(t.split()) for t in texts).casefold()
     return [c for c in _list_cells(args) if re.search(r"(\.\.\.|…)$", c) and c not in seen]
 
 
 def _found_nothing(text: str) -> bool:
-    """A lookup's answer that is an empty list, or an object whose lists are
-    all empty (``{"issues": []}``, ``{"total_count": 0, "items": []}``). By
-    shape only: a tool that answers in words is never judged."""
-    # The answer after its label ("[Linear: List issues]\n{…}"), never a piece
-    # inside it: a long answer is cut at its bound, and the first part that
-    # parsed was an issue's ``"labels": []``, so 50 issues read as none.
+    """A lookup's answer that is an empty list or an object of empty lists. By shape
+    only; an answer in words is never judged."""
+    # Parse the whole answer after its label, never a piece (a nested `[]` read as empty).
     label = re.match(r"\s*\[[^\]\n]*\]\s*(?=[{\[])", text)
     try:
         body, _ = json.JSONDecoder().raw_decode(text[label.end() if label else 0:].strip())
@@ -283,20 +254,15 @@ _LINK = re.compile(r"https?://[^\s\"'<>)\]]+")
 _PLACEHOLDER = re.compile(r"\{\{[^{}]{1,80}\}\}")
 
 
-#: A slot for the person to fill in ("Best, [Your Name]"): format, not wording.
-#: A markdown link's "[text](" is not one.
+#: A placeholder to fill ("[Your Name]"), by format; a markdown link's "[text](" is not one.
 _BLANK = re.compile(r"\[[A-Z][A-Za-z ]{1,80}\](?!\()")
 
 
 def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, email: str,
               found: list[str], sources: tuple = (), prepared: dict | None = None) -> str | None:
-    """Handbook's own checks on the form (``prepare``), before it is a card,
-    so a value the model must look up or a target that does not exist is said
-    back to it. Nothing is stored; ``_draft`` checks again, authoritatively.
-
-    A link the draft would lose (no one gave it: not the asker, a source, or
-    an approved card) is said too, rather than becoming "[link removed]" on
-    the card: models wrote ".../issues/???" for an issue not yet made."""
+    """Handbook's checks on the form (``prepare``) before it is a card, so a value
+    to look up or a missing target is said back to the model. ``_draft`` checks
+    again, authoritatively. A link no one gave is said too, not silently removed."""
     try:
         token = action.token_for(org_id, user_id)
         ctx = ActionContext(org_id, None, user_id, email, question, token, tuple(sources), None, None,
@@ -309,12 +275,11 @@ def _precheck(action, args: dict, question: str, *, org_id: str, user_id: str, e
     sent = json.dumps({k: v for k, v in args.items() if k not in OWN_FIELDS}, ensure_ascii=False)
     blank = _PLACEHOLDER.search(sent)
     if blank:
-        # A value the model meant to fill later, written into the text: the
-        # card would say "{{result_of_card_1}}" where the link should be.
+        # A placeholder for a later value ("{{result_of_card_1}}") written into the text.
         return f"the text has a placeholder ({blank.group(0)[:60]}) where an earlier card's value should be. {_LATER}"
     slot = _BLANK.search(sent)
     if slot:
-        # GPT-OSS signed a DM "Best, [Your Name]"; it is sent as the person.
+        # A sign-off placeholder would be sent as the person.
         return (f"the text has a blank for someone to fill in ({slot.group(0)}). Write it without "
                 "blanks or a sign-off: it is sent as the user, under their name")
     if prepared is not None:

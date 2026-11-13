@@ -1,24 +1,13 @@
 """Tables inside a file someone uploaded to a chat, for Chart mode.
 
-An upload is not a document: nobody indexed it, it has no sharing to copy, and
-it belongs to one person in one conversation. So its tables are stored beside
-documents' tables (same rows, same query code, same checks) but hang off the
-ATTACHMENT, and only that person in that chat can read them
-(``store.UploadScope``).
+An upload is no document: it belongs to one person in one chat. Its tables
+use the same rows and checks but hang off the ATTACHMENT, readable only via
+``store.UploadScope``.
 
-Two passes, like a document's:
-
-- ``read_upload_tables`` runs at upload, no AI. It reads the tables the file
-  already has -- CSV/TSV rows, each Excel sheet, Word tables, tables PDF pages
-  draw, pipe tables in text/markdown -- and hands them to the same
-  ``TableAdapter`` ingestion uses, so a column is typed one way everywhere.
-  It never fails the upload: a file whose tables cannot be read still answers
-  questions as text.
-- ``read_upload_figures`` runs in Chart mode, on demand, for a file with NO
-  table: the text adapter reads figures out of its sentences and code keeps a
-  row only when every cell is in its quote. Once per file
-  (``figures_read_at``), because the asker is waiting and the answer does not
-  change.
+- ``read_upload_tables``: at upload, no AI, through the ingest ``TableAdapter``.
+  Never fails the upload.
+- ``read_upload_figures``: in Chart mode, for a table-less file, the text
+  adapter reads its sentences; once per file (``figures_read_at``).
 """
 
 from __future__ import annotations
@@ -107,10 +96,7 @@ def read_upload_tables(
     text: str, max_pdf_pages: int,
 ) -> int:
     """Store the tables an uploaded file already has. Returns how many.
-
-    Never raises: the upload has already succeeded as text, and a file whose
-    tables could not be read is still a file the asker can ask about.
-    """
+    Never raises: the upload already succeeded as text."""
     try:
         raw = raw_tables(filename, data, text, max_pdf_pages=max_pdf_pages)
         tables = TableAdapter().extract(DocumentText(
@@ -155,9 +141,8 @@ def _mark_read(attachment_id: str) -> None:
 def read_upload_figures(*, org_id: str, uploads: UploadScope | None, adapter) -> int:
     """Read figures out of the prose of this chat's table-less uploads.
 
-    ``adapter`` is the text adapter (``factory.build_upload_text_adapter``).
-    A file is marked read even when nothing was found, so it costs one call
-    ever; a failed call leaves it unread for the next question. Never raises.
+    ``adapter`` is ``factory.build_upload_text_adapter``. A file is marked read
+    even when nothing was found; a failed call leaves it unread. Never raises.
     """
     if uploads is None or adapter is None:
         return 0

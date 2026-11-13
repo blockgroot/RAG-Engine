@@ -1,27 +1,9 @@
-"""In-process Okapi BM25 for org-scoped keyword ranking (Phase 18).
+"""In-process Okapi BM25 for org-scoped keyword ranking.
 
-Why not Postgres ``ts_rank``?
------------------------------
-``ts_rank`` / ``ts_rank_cd`` use a cover-density style score without BM25's
-term-frequency saturation or length normalization. Hybrid retrieval only needs
-a *rank order* for RRF fusion, but skewed scores still change which chunks enter
-the candidate pool when combined with ``LIMIT``.
-
-Why not a Postgres BM25 extension?
-------------------------------------
-Extensions such as ParadeDB ``pg_search`` or standalone ``pg_bm25`` require a
-different Postgres distribution or extra image wiring — a poor fit for the
-self-hosted Docker goal (§1) where we already run ``pgvector/pgvector``.
-
-Why in-process BM25 here?
----------------------------
-Per-tenant policy corpora are small (hundreds of chunks, not millions). Loading
-an org's chunk texts once per ``keyword_search`` call and scoring with
-``rank_bm25.BM25Okapi`` is predictable, $0, and needs no new service. RRF still
-fuses BM25 ranks with vector ranks; cosine on each row remains the gate signal.
-
-At much larger scale, cache an inverted index per org or move to a dedicated
-search backend — out of scope for this phase.
+``ts_rank`` lacks BM25's saturation and length normalization, and BM25
+extensions need a different Postgres image (the self-hosted goal runs
+stock pgvector). Per-org corpora are small, so ``rank_bm25`` per call is
+cheap. RRF fuses the ranks; each row's cosine remains the gate signal.
 """
 
 from __future__ import annotations

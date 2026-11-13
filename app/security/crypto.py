@@ -1,16 +1,8 @@
-"""Symmetric encryption for credentials stored at rest (Phase 10).
+"""Symmetric encryption for credentials stored at rest (OAuth tokens, keys).
 
-Used to protect ``oauth_connections.access_token_encrypted`` /
-``refresh_token_encrypted`` — OAuth tokens must never be stored in plaintext.
-
-Why ``MultiFernet`` over a single static key: a single key has no rotation
-story (rotating it would make every existing row undecryptable in one shot).
-``MultiFernet`` encrypts with the *first* key in ``AuthSettings.encryption_keys``
-but can decrypt with *any* key in the list, so rotating is just prepending a
-new key and re-encrypting rows at leisure, not a flag-day cutover. This stays
-dependency-light and self-hostable (no external KMS) per CLAUDE.md §1 — a
-cloud-KMS envelope-encryption backend is a valid future swap behind these same
-two functions, not a requirement today.
+``MultiFernet`` encrypts with the first key in
+``AuthSettings.encryption_keys`` and decrypts with any, so rotation is
+prepending a key, not a flag day. No external KMS, to stay self-hostable.
 """
 
 from __future__ import annotations
@@ -36,21 +28,15 @@ def _build_multi_fernet(settings: AuthSettings) -> MultiFernet:
 
 
 def encrypt(plaintext: str, *, settings: AuthSettings | None = None) -> str:
-    """Encrypt ``plaintext`` with the active (first) configured key.
-
-    Returns a token safe to store as TEXT.
-    """
+    """Encrypt ``plaintext`` with the active (first) key; safe to store as TEXT."""
     settings = settings or AuthSettings.from_env()
     fernet = _build_multi_fernet(settings)
     return fernet.encrypt(plaintext.encode()).decode()
 
 
 def decrypt(ciphertext: str, *, settings: AuthSettings | None = None) -> str:
-    """Decrypt ``ciphertext``, trying every configured key (newest first).
-
-    Raises ``EncryptionError`` if no configured key can decrypt it (wrong key,
-    corrupted value, or rotated out with no matching key left).
-    """
+    """Decrypt ``ciphertext`` with any configured key. Raises
+    ``EncryptionError`` when none can."""
     settings = settings or AuthSettings.from_env()
     fernet = _build_multi_fernet(settings)
     try:

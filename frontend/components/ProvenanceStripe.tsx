@@ -11,9 +11,7 @@ export const LABELS: Record<string, string> = {
   google: "Google Drive",
   forms: "Google Forms",
   insights: "Activity",
-  // The asker's own upload, not a connected source. Named differently on
-  // purpose: every other label answers "which of our tools was this in?",
-  // and this one answers "this came from the file you just gave me".
+  // The asker's own upload, not a connected source.
   attachment: "Attached file",
   none: "No answer found",
 };
@@ -35,14 +33,9 @@ const COLORS: Record<string, string> = {
   none: "var(--provenance-none)",
 };
 
-/** Which agent answered, named. `agent` is the routed agent key; `source` is
- * what the answer was grounded on. They differ in exactly one case that
- * matters: the web fallback, where a source agent was asked but answered from
- * an external search — so `source` wins there, or the pill would claim Notion
- * grounded something Notion never saw.
- *
- * Colour is keyed on whichever identity is displayed, so the pill stays
- * consistent with its own text. */
+/** Which agent answered. `source` (what grounded it) wins over `agent` for the
+ * web fallback, or the pill would credit a tool that never saw it. Colour
+ * follows the displayed identity. */
 const AGENT_NAMES: Record<string, string> = {
   policy: "Docs agent",
   workspace: "Workspace agent",
@@ -53,9 +46,7 @@ const AGENT_NAMES: Record<string, string> = {
   google: "Drive agent",
   forms: "Forms",
   insights: "Charts",
-  // Deliberately absent: `attachment` needs no second word. The label
-  // already says the whole truth, and "Attached file · Attachment agent"
-  // reads as two facts where there is one.
+  // `attachment` deliberately absent: the label says it all.
 };
 
 export function ProvenanceStripe({
@@ -78,16 +69,9 @@ export function ProvenanceStripe({
   live?: { provider: string; fetched_at: string }[];
 }) {
   const liveChip = live && live.length > 0 ? <LiveChip live={live} /> : null;
-  // A file the asker attached OUTRANKS the routed agent as the pill's
-  // identity, and that is a correctness fix rather than a preference. With
-  // blending, a PDF question routes to whichever source scores best and the
-  // pill was printing that source's name -- "Notion" above an answer built
-  // from an uploaded PDF, which is the one thing this pill exists not to do.
-  //
-  // What we can honestly distinguish is whether the CORPUS also contributed:
-  // citations come from retrieved chunks, so an empty list means the answer
-  // had only the file to work with. We do not claim to know which sentence
-  // came from where — only what was in front of the model.
+  // An attached file OUTRANKS the routed agent, or the pill names a source the
+  // answer never used. Empty citations mean the file alone was in front of the
+  // model; per-sentence origin is not claimed.
   if (attachments && attachments.length > 0 && source !== "none") {
     const kind = fileKindLabel(attachments);
     const alsoCorpus = (citations ?? 0) > 0;
@@ -111,17 +95,10 @@ export function ProvenanceStripe({
     );
   }
 
-  // A refusal ("none") names no source, and neither should the pill: the
-  // routed agent is a diagnostic, not a provenance claim, when nothing was
-  // grounded.
-  // Insights is the exception the other way: `agent` is "insights" and
-  // `source` is the connector the SQL ran against. Naming the agent as the
-  // identity made the pill say "No answer found" on a real Drive pie.
+  // A refusal ("none") names no source. Insights is the exception: `source` is
+  // the connector the SQL ran against.
   const grounded = source !== "none";
-  // A Chart-mode reply that is not a chart (a question back, or "that field
-  // does not exist, here is what does") is the chart feature talking, not a
-  // failed search: "No answer found" over a helpful clarification reads as
-  // the product breaking.
+  // A Chart-mode reply that is not a chart is badged "Charts", never "No answer found".
   if (!grounded && agent === "insights") {
     const color = COLORS.insights;
     return (

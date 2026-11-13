@@ -1,11 +1,8 @@
-"""Server-side OAuth ``state`` storage (Phase 13) — CSRF/replay protection.
+"""Server-side OAuth ``state``: single-use, consumed atomically (CSRF/replay).
 
-A signed-JWT-only ``state`` can still be replayed (anyone who intercepts the
-redirect URL can reuse it while it's valid). Storing it server-side and
-consuming it atomically on lookup — the same single-use pattern as
-``magic_link.py`` — closes that: a captured callback URL is useless a second
-time. Scoped to the admin's ``org_id`` at issue time, so the callback resolves
-the correct tenant without trusting anything the client supplies.
+A signed-only state could be replayed from a captured redirect URL. The row
+carries the issuing admin's ``org_id``, so the callback trusts nothing the
+client sends.
 """
 
 from __future__ import annotations
@@ -29,14 +26,9 @@ def create_state(
 ) -> str:
     """Create a state value for a connect flow.
 
-    ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default) is
-    today's org-wide admin connect flow, unchanged. Non-``None`` records
-    which sub-workspace this personal connection is for, so the callback
-    knows to save it scoped to that workspace instead of the org.
-
-    ``user_id`` binds the flow to the PERSON who started it, for flows that
-    attach something to a person rather than a scope (``LINK_GITHUB``). Read
-    back only by ``consume_link_state``.
+    ``workspace_id`` ``None`` is org-wide; otherwise the connection is saved to
+    that space. ``user_id`` binds person-scoped flows (``LINK_GITHUB``), read
+    only by ``consume_link_state``.
     """
     state = secrets.token_urlsafe(_STATE_BYTES)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=_STATE_TTL_MINUTES)
@@ -50,13 +42,10 @@ def create_state(
 
 
 def consume_state(state: str, *, provider: str) -> tuple[str, str | None]:
-    """Validate + consume a state value, scoped to ``provider``.
+    """Validate and consume a state for ``provider``; return ``(org_id, workspace_id)``.
 
-    Returns ``(org_id, workspace_id)`` — ``workspace_id`` is ``None`` for the
-    org-wide connect flow. Raises ``OAuthError`` if the state is unknown,
-    expired, already used, or was issued for a different provider (defends
-    against a state value generated for one connect flow being replayed
-    against another).
+    Raises ``OAuthError`` if unknown, expired, used, or issued for another
+    provider (no replay across flows).
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -71,22 +60,11 @@ def consume_state(state: str, *, provider: str) -> tuple[str, str | None]:
 
 
 def peek_state_workspace(state: str, *, provider: str) -> str | None:
-    """Workspace id recorded on ``state``, WITHOUT consuming or validating it.
+    """Workspace id on ``state``, without consuming or validating it.
 
-    Navigation only — it exists so a failed/incomplete connect can land the user
-    back on the page they started from instead of a generic one. Deliberately
-    NOT an authorization primitive:
-
-    * it never consumes the state, so it cannot be used in place of
-      ``consume_state`` to complete a flow;
-    * it reads expired and already-consumed rows on purpose, because by
-      definition it runs after something went wrong;
-    * it returns only a ``workspace_id`` — never an ``org_id`` — so no caller can
-      accidentally use its result to scope a write. Anything that binds a
-      credential must go through ``consume_state``.
-
-    Returns ``None`` for an unknown state or an org-wide flow (which are the same
-    thing as far as picking a redirect goes).
+    Navigation only (send a failed connect back where it started): reads expired
+    and used rows on purpose and returns no ``org_id``, so it can never scope a
+    write. Anything that binds a credential goes through ``consume_state``.
     """
     if not state:
         return None
@@ -102,19 +80,16 @@ def peek_state_workspace(state: str, *, provider: str) -> str | None:
     return row[0] if row else None
 
 
-#: The state ``provider`` of "Link your GitHub account" (Second Brain 1.2). A
-#: separate value from ``"github"`` so a link state can never complete a
-#: connect flow, nor a connect state a link -- ``consume_state`` is scoped by it.
+#: State ``provider`` for "Link your GitHub account". Distinct from ``"github"``
+#: so a link state can never complete a connect flow, or the reverse.
 LINK_GITHUB = "github_link"
 
 
 def peek_state_provider(state: str) -> str | None:
-    """The provider recorded on ``state``, WITHOUT consuming or validating it.
+    """The provider on ``state``, without consuming or validating it.
 
-    Routing only: GitHub has ONE registered callback URL, so the callback must
-    tell a link flow from a connect flow before choosing how to finish it.
-    Like ``peek_state_workspace`` it authorizes nothing -- whichever branch is
-    chosen still has to ``consume_*`` the state, scoped to that provider.
+    GitHub has one callback URL, so it must tell link from connect first. It
+    authorizes nothing: the chosen branch still consumes the state.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -124,10 +99,9 @@ def peek_state_provider(state: str) -> str | None:
 
 
 def consume_link_state(state: str, *, provider: str) -> tuple[str, str]:
-    """Consume a person-bound state; returns ``(org_id, user_id)``.
+    """Consume a person-bound state; return ``(org_id, user_id)``.
 
-    Raises like ``consume_state``, and also when the row carries no user --
-    a link that cannot name the person who asked for it binds to nobody.
+    Also raises when the row has no user: a link must name the person who asked.
     """
     with get_connection() as conn:
         row = conn.execute(

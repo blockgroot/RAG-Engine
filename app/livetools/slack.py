@@ -1,10 +1,7 @@
-"""Slack: re-read one thread that retrieval already returned (gated on D10).
+"""Slack: re-read one thread retrieval already returned.
 
 Not in the default ``LIVE_TOOLS_PROVIDERS``: non-Marketplace apps get
-``conversations.replies`` at ~1 request/min and 15 messages per call, and a
-live read that takes a minute is not live. Enable it only once the Phase 0
-tier check says the app is on the non-restricted tier. Asks for at most
-``MAX_MESSAGES`` either way, and says so when there are more.
+``conversations.replies`` at ~1/min. At most ``MAX_MESSAGES``, said when cut.
 """
 
 from __future__ import annotations

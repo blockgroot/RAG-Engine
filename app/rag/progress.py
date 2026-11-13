@@ -1,15 +1,8 @@
-"""Live progress lines for the chat stream: what the answer is doing right now.
+"""Live progress lines for the chat stream: what the answer is doing now.
 
-A fixed "Finding a grounded answer…" tells the asker nothing for the five to
-fifteen seconds an answer takes. These lines come from the steps that really
-ran -- which app was searched, the titles retrieval returned, a deep read, a
-second search -- so they are never a script. Titles come from hits that
-already passed the org, workspace and viewer filter; nothing the model wrote
-is ever shown here.
-
-A ContextVar for the reason `use_model` is one (app/llm/routed.py): the API
-edge sets a sink, the pipeline reports into it, and with no sink (Slack, eval,
-tests) a report costs nothing.
+Lines come from steps that really ran; titles only from hits that passed
+the org, workspace and viewer filters, never model text. A ContextVar
+sink set at the API edge; with no sink (Slack, eval) a report is free.
 """
 
 from __future__ import annotations

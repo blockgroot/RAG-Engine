@@ -122,29 +122,17 @@ def _is_own_model(org_id: str, model: str | None) -> bool:
 def list_models(session: SessionClaims = Depends(get_session)):
     """The models a member may pick, plus the default's identity.
 
-    Session-gated like every other chat route — the catalog is not secret, but
-    an unauthenticated endpoint that names the deployment's models is free
-    reconnaissance for no benefit.
-
-    ``models`` is empty when no selectable backend is configured
-    (``OPENROUTER_API_KEY`` / ``GROQ_API_KEY``), which is how the picker hides
-    itself: the frontend renders nothing rather than offering choices that
-    would all silently fall back to the default.
+    Session-gated: no free reconnaissance of the deployment's models. ``models``
+    is empty when no selectable backend is configured, which hides the picker.
     """
-    # Asks the router which backends actually have credentials, rather than
-    # checking one setting: a deployment may have a Groq key and no OpenRouter
-    # key, or both. Offering a model whose backend is unconfigured would answer
-    # on the default model under a label naming a model that never ran.
+    # Only models whose backend has credentials: otherwise the default would
+    # answer under another model's label.
     from ..llm import build_llm_provider
 
     provider = build_llm_provider()
     backends = provider.configured_backends()
-    # The default option is labelled with the deployment's actual model rather
-    # than the word "Auto": "Auto" reads as a router that picks for you, when it
-    # in fact means one specific model. Sent from here, not hardcoded in the
-    # frontend, so it follows LLM_MODEL instead of drifting from it. The VALUE
-    # stays ``catalog.AUTO`` — the sentinel is what keeps an untouched dropdown
-    # byte-identical to pre-feature behaviour, so only the label moves.
+    # The default is labelled with the real model (from LLM_MODEL), not "Auto";
+    # its VALUE stays ``catalog.AUTO``.
     from ..config.settings import LLMSettings
 
     default_model = LLMSettings.from_env().model
@@ -152,17 +140,13 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # catalog label would offer one model twice.
     models = [m for m in catalog.as_dicts(backends) if m["id"] != default_model]
 
-    # The org's own model, if an admin configured one. Appended rather than
-    # replacing the built-ins: their key WILL break eventually (quota, rotation,
-    # a retired model id), and leaving ours selectable is the member's way out
-    # without waiting for an admin.
+    # The org's own model, added beside the built-ins so members have a way out
+    # when its key breaks.
     own = org_model.get_org_model_summary(session.org_id)
     if own:
         models.append(
             {
-                # Leads with the company, because `note` only renders as a hover
-                # title in the composer and hover does not exist on touch — the
-                # label has to carry the whole message on its own.
+                # Company first: `note` is only a hover title, and touch has no hover.
                 "id": own["model"],
                 "label": f"Your company's model — {own['model']}",
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
@@ -224,15 +208,8 @@ def _conversation_belongs_to_scope(
 ) -> bool:
     """A client-supplied conversation id must match org, workspace AND owner.
 
-    The owner check is what makes a conversation personal, the same scoping
-    ``schedulers``/``insight_pins`` already use. Without it any member holding
-    another member's ``conversation_id`` could resume their chat and read the
-    history -- the org+workspace pair says they may ask in this scope, never
-    that this particular exchange was theirs.
-
-    A NULL ``user_id`` is a row created before the column existed: still
-    resumable by anyone in scope, because we cannot invent an owner for it and
-    refusing would strand every conversation open at deploy time.
+    The owner check makes a conversation personal. A NULL ``user_id`` (rows from
+    before the column) stays resumable in scope: no owner can be invented.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -263,13 +240,10 @@ def _user_facing_llm_error(exc: BaseException) -> str:
 def _may_chart_sentiment(
     org_id: str, workspace_id: str | None, session: SessionClaims
 ) -> bool:
-    """Whether to offer survey-sentiment chips at all.
+    """Whether to offer survey-sentiment chips.
 
-    Three conditions, all necessary: the deployment has Forms reading on, an
-    admin has actually selected surveys in this scope (an allow-list, so an
-    empty one means nothing is read), and this person may see the metric --
-    the same `may_see_metric` the chart route uses, so a chip can never lead
-    to a refusal that reveals sentiment is being collected.
+    Needs Forms reading on, surveys selected in this scope (an allow-list), and
+    `may_see_metric`, so a chip never leads to a revealing refusal.
     """
     try:
         from ..auth import get_connection_config
@@ -297,15 +271,9 @@ def _may_chart_sentiment(
 def _combined_suggestions(
     org_id: str, workspace_id: str | None, session: SessionClaims
 ) -> dict:
-    """Chips from every source connected in this scope.
+    """Chips from every source connected in this scope, via each provider's builder.
 
-    Each provider's own builder is reused unchanged, so the chips a member sees
-    in the combined view are exactly the ones the pinned view would have shown
-    — one place decides what a good Slack question looks like.
-
-    Every lookup is wrapped: a single unreachable source must cost its own
-    chips, never the whole empty state. Suggestions are a convenience, and a
-    500 here would make Ask look broken when it works fine.
+    Each lookup is wrapped: one unreachable source costs only its own chips.
     """
     acl = viewer_for(session).acl()
     per_provider: dict[str, list[str]] = {}
@@ -350,20 +318,11 @@ def _combined_suggestions(
     )
 
     if not per_provider.keys() & {"notion", "google"}:
-        # Provider-agnostic document titles, and ONLY when no document provider
-        # resolved. A tenant whose rows predate source_provider partitioning (or
-        # were ingested without one) has documents that match no provider
-        # filter, so without this their chips are all GitHub and every document
-        # is invisible in the empty state — which is exactly what the combined
-        # view exists to prevent. Conditional rather than always-on because
-        # these titles are a SUPERSET of the per-provider ones: adding both
-        # would show two near-identical chips for the same document.
+        # Provider-agnostic titles only when no document provider resolved (rows with
+        # no source_provider); otherwise they would duplicate the per-provider chips.
         _try("policy", lambda: _document_titles_for_scope(org_id, workspace_id, acl), _docs)
 
-    # Survey sentiment, only for someone allowed to SEE it. A chip that leads
-    # to "you can't chart that here" would tell a member sentiment is being
-    # collected on them, which is the one thing the gate exists to avoid.
-    # Not a Deep starter: it is a chart.
+    # Survey sentiment only for someone allowed to see it. Not a Deep starter: it is a chart.
     if _may_chart_sentiment(org_id, workspace_id, session):
         _try("forms", lambda: None, lambda _, deep: [] if deep else build_forms_suggestions())
 
@@ -424,11 +383,11 @@ _SHOWCASE = ("bar", "line", "pie", "stacked_bar", "area", "horizontal_bar",
 
 
 def _metric_forms(metric, attrs) -> list[tuple[str, str]]:
-    """Every ``(shape, question)`` this metric can be drawn as, natural shape
-    first. Built from the metric's own label, dimensions and discovered
-    fields, never written per metric; each shape is one ``registry.shapes_for``
-    allows for that form. A median is never added up, so it gets no pie and
-    no stack."""
+    """Every ``(shape, question)`` this metric can be drawn as, natural shape first.
+
+    Built from its label, dimensions and discovered fields; shapes come from
+    ``registry.shapes_for``. A median is never summed: no pie or stack.
+    """
     from ..rag.prompts import _TOOL_NAMES
 
     tool = _TOOL_NAMES.get(metric.provider, metric.provider.title())
@@ -471,10 +430,10 @@ def _metric_forms(metric, attrs) -> list[tuple[str, str]]:
 
 
 def _table_forms(table) -> list[tuple[str, str]]:
-    """A document table asked for by its own column names and its page's
-    title, which is what picks that page. Empty for a table with nothing to
-    plot (one row, or no number column). A pie only for a few rows of a
-    measure that adds up (not a percentage)."""
+    """A document table asked for by its column names and page title.
+
+    Empty with nothing to plot; a pie only for a few rows of a summable measure.
+    """
     if table.row_count < 2 or not table.columns:
         return []
     axis = table.columns[0]
@@ -509,13 +468,9 @@ def _table_forms(table) -> list[tuple[str, str]]:
 def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> list[str]:
     """Starter questions built from what THIS scope can chart.
 
-    No product copy: each one is a metric this scope has data for (``recorded``
-    pairs of provider and kind; ``None`` = not known, keep all), phrased from
-    its own label and the fields the data holds, or a document table phrased
-    from its own columns and title -- so every starter can be drawn. Sources
-    take turns, so every connected one is shown before any repeats, and each
-    starter takes a chart type no earlier one used, so the list shows what
-    Chart mode can draw.
+    Metrics with recorded facts (``None`` = keep all) and document tables,
+    phrased from their own labels and columns, never copy. Sources take turns,
+    and each starter uses a chart type no earlier one did.
     """
     by_provider: dict[str, list] = {}
     for table in tables:
@@ -545,9 +500,8 @@ def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> li
                 used.add(shape)
                 out.append(text)
                 taken.append(forms)
-    # At least MIN_CHART_STARTERS when the scope can chart anything: a source
-    # with one metric or table is asked for again in a chart type not yet
-    # shown, so a small space still shows three things Chart mode draws.
+    # At least MIN_CHART_STARTERS when anything is chartable: a small scope is
+    # asked again in a chart type not yet shown.
     for forms in taken * MIN_CHART_STARTERS:
         if len(out) >= MIN_CHART_STARTERS:
             break
@@ -650,19 +604,11 @@ def list_suggestions(
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """Starter questions derived from *this tenant's* connected sources.
+    """Starter questions from this scope's connected sources, for any member.
 
-    Never hardcoded product copy: document chips come from ingested titles,
-    Code chips from the GitHub installation's stored repo list. Exposed to every
-    signed-in member (not admin-only) so the Ask empty state works for ordinary
-    employees — only names/titles are needed for chips, not OAuth secrets.
-
-    **No ``agent`` means EVERY connected source**, interleaved. Ask is one box
-    now, so chips from a single provider would read as "this box is for Notion"
-    and would hide every other source from someone who has never asked about
-    it — the empty state is where most people learn what is connected. The
-    per-agent branches are kept because ``agent`` is still an accepted query
-    param, and pinning one is how a caller asks "what could I ask Slack?".
+    Document chips come from ingested titles, Code chips from the stored repo
+    list. No ``agent`` means every connected source, interleaved; ``agent``
+    pins one source.
     """
     if workspace_id is not None:
         try:
@@ -715,11 +661,8 @@ def list_suggestions(
 def _github_repos_for_scope(org_id: str, workspace_id: str | None = None) -> list[dict]:
     """Repo list from this scope's GitHub connection's ``source_config``.
 
-    ``IS NOT DISTINCT FROM`` pairs ``workspace_id`` with ``org_id`` rather than
-    matching it alone — the same discipline every scoped query here follows. With
-    ``workspace_id=None`` it selects the org-wide row exactly as before; with a
-    workspace id it selects only that workspace's row, and returns ``[]`` (not the
-    org's repos) when the workspace has no GitHub connection.
+    Scoped with ``IS NOT DISTINCT FROM``: a space with no GitHub connection gets
+    ``[]``, never the org's repos.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -745,13 +688,7 @@ def _github_repos_for_scope(org_id: str, workspace_id: str | None = None) -> lis
 def _slack_channel_names_for_scope(
     org_id: str, workspace_id: str | None = None
 ) -> list[str]:
-    """Connected Slack channel names from this scope's ``source_config``.
-
-    Same shape and same ``IS NOT DISTINCT FROM`` scoping as
-    ``_github_repos_for_scope``. Returns display names (not ids); an
-    unconfigured connection (connected but no channels picked yet) yields
-    ``[]``, which the chip builder turns into no chips.
-    """
+    """Connected Slack channel names from this scope's ``source_config``; ``[]`` if none picked."""
     with get_connection() as conn:
         row = conn.execute(
             "SELECT source_config FROM oauth_connections "
@@ -780,15 +717,8 @@ def _slack_channel_names_for_scope(
     return [str(cid) for cid in channel_ids]
 
 
-# A starter chip is built from a document TITLE, so these reads carry the same
-# access filter retrieval does. "What does Q3 Redundancies say?" offered to
-# someone who cannot open that file discloses the one thing the filter exists
-# to withhold — and the chip would then answer with a refusal, which reads as
-# a broken product on top of it.
-#
-# `acl` is REQUIRED and an empty list means "scope-public only", never
-# "everything": both call sites are member-facing, so there is no correct
-# unrestricted default to offer them.
+# Chips are built from document titles, so they carry retrieval's access
+# filter. `acl` is required; an empty list means scope-public only, never everything.
 _TITLE_ACCESS_SQL = "AND " + visibility_predicate(alias=None) + " "
 
 
@@ -841,11 +771,9 @@ def list_conversations_route(
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """This person's chats in this scope. Every surviving one, not a page.
+    """This person's chats in this scope, all of them.
 
-    Retention is the only limit (`DEFAULT_CONVERSATION_TTL_DAYS`) -- a display
-    cap would leave a live chat off the end of the list, unreachable and
-    undeletable, which is the state this endpoint exists to end.
+    Retention is the only limit: a display cap would strand a chat unreachable.
     """
     if workspace_id is not None:
         try:
@@ -880,11 +808,9 @@ def get_conversation_route(
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """The FULL transcript -- possible only because the fold stopped deleting.
+    """The full transcript.
 
-    404 on an empty result rather than an empty list: an id that resolves to
-    nothing is either not this person's or gone, and the two must not be
-    distinguishable from the outside.
+    404 on nothing: not theirs and gone must look the same.
     """
     turns = conversation_store.get_conversation_turns(
         conversation_id=conversation_id,
@@ -917,12 +843,7 @@ def delete_conversation_route(
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """Delete a chat now, rather than waiting for the retention sweep.
-
-    A sweep is not a substitute for this: someone who pastes something they
-    regret should not have to wait 30 days. Attachments and turns cascade, so
-    the uploaded file goes with it -- which is what pressing this means.
-    """
+    """Delete a chat now; turns and attachments cascade."""
     if not conversation_store.delete_conversation(
         conversation_id=conversation_id,
         org_id=session.org_id,
@@ -994,11 +915,9 @@ def create_conversation(
 def _deep_would_help(result, attached: list[tuple[str, str, bool]] | None = None) -> bool:
     """A normal-Ask answer that Deep analysis could make more complete.
 
-    Only when there is more to read: an upload longer than normal Ask reads
-    whole, or relevant documents (the search passed the gate) behind a refusal,
-    a partial answer, or a wide read (the scores showed the answer is spread
-    over several documents -- a broad question). A gate miss or a withheld
-    document gets no hint; reading deeper cannot help.
+    Only when there is more to read: a long upload, or gate-passing documents
+    behind a refusal, a partial answer or a wide read. Not after a gate miss
+    or a withheld document.
     """
     if result.access_restricted:
         return False
@@ -1015,9 +934,8 @@ def _deep_would_help(result, attached: list[tuple[str, str, bool]] | None = None
                for line in (getattr(result, "answer", "") or "").splitlines())
 
 
-#: Shown instead of the plain "I don't know" when the material to answer is
-#: there but normal Ask read too little of it. Still a refusal: nothing is
-#: claimed, and the gap is recorded as usual.
+#: Shown instead of "I don't know" when the material is there but Ask read
+#: too little. Still a refusal, and still a recorded gap.
 DEEP_SUGGESTION = (
     "I found related material, but the parts I read don't answer this. "
     "Deep analysis reads it more fully: choose Try Deep analysis below."
@@ -1032,11 +950,9 @@ _PROGRESS_END = object()
 
 
 def _with_progress(body) -> Iterator[str]:
-    """Run ``body`` in a worker and stream its progress lines while it works.
+    """Run ``body`` in a worker and stream its progress lines meanwhile.
 
-    The answer is built in one blocking call, so without this the stream is
-    silent until it is done. The worker runs in a COPY of this context, so the
-    model, deep-read, live-read and memory selections set above reach it.
+    The worker runs in a COPY of this context, so the selections set above reach it.
     """
     out: queue.Queue = queue.Queue()
 
@@ -1075,24 +991,12 @@ _PERSON_BUSY = (
 async def _in_a_slot(
     stream: Iterator[str], settings: RateLimitSettings, user_id: str
 ) -> AsyncIterator[str]:
-    """At most ``chat_max_concurrent_per_person`` answers per person and
-    ``chat_max_concurrent`` for everyone are written at once; the rest wait.
+    """Cap answers written at once: per person and for everyone (``take_place``).
 
-    Without the shared cap a burst started every answer together and the
-    outside APIs (embedding, rerank, model) refused most of them with 429s, so
-    a person got a failure instead of a short wait. The places live in Redis
-    (``security.rate_limit.take_place``), so the cap holds across servers.
-
-    Taken INSIDE the stream: a place taken before the generator starts would
-    never be given back if the client left first. A person over their own cap
-    is told at once (more is a script or a pile of tabs); a waiter for a shared
-    place is told so, and one that waits past the limit is told the service is
-    busy rather than silently timing out.
-
-    The wait is on the event loop, not a worker thread: a blocking wait held
-    one of the ~40 threads per waiter, so at 100 askers the waiters starved
-    every sync endpoint (measured: 29 s before a stream's headers). The answer
-    itself still runs in the threadpool, exactly as Starlette runs a sync stream.
+    Without the shared cap a burst got 429s from outside APIs. Taken inside the
+    stream so a client that leaves gives it back. Over your own cap is refused
+    at once; a shared waiter is told, and told "busy" past the limit. Waits on
+    the event loop: blocking threads starved every sync endpoint.
     """
     mine_key = f"answers:user:{user_id}"
     mine = await asyncio.to_thread(
@@ -1134,12 +1038,7 @@ async def _in_a_slot(
 
 
 def _shown_live(result) -> list[dict]:
-    """The live reads the ANSWER uses: those whose document it cites.
-
-    A live read that the answer did not draw on still happened, but a
-    "Notion · live" chip beside an answer whose sources are all Slack claims a
-    contribution nothing on the page backs up. Shown per provider, once.
-    """
+    """The live reads the answer cites, once per provider (an uncited one earns no chip)."""
     cited = {c.get("document_id") for c in (getattr(result, "cited", None) or [])}
     shown: list[dict] = []
     seen: set[str] = set()
@@ -1154,13 +1053,10 @@ def _shown_live(result) -> list[dict]:
 
 
 def _done_event(conversation_id: str | None, question: str, payload: dict) -> str:
-    """The ``done`` event, with who answered kept on the turn it closes.
+    """The ``done`` event, and who answered saved on the turn it closes.
 
-    The pill under an answer (which agent, which tools, which files, what was
-    read live, which model) used to exist only in this event, so a reopened
-    chat showed answers with no provenance at all. The turn is already saved
-    by now (the pipeline or ``_keep_standalone_turn``); this labels it. Never
-    raises: losing the label must not lose the answer.
+    So a reopened chat keeps its provenance. Never raises: losing the label
+    must not lose the answer.
     """
     if conversation_id:
         try:
@@ -1173,13 +1069,10 @@ def _done_event(conversation_id: str | None, question: str, payload: dict) -> st
 
 
 def _answering_model() -> str | None:
-    """The model that produced this request's answer, as best we can know it.
+    """The model that produced this answer.
 
-    Prefers what the endpoint reported (``response.model``), which is the only
-    reliable answer once routing or a provider fallback is involved; falls back
-    to what was selected. ``None`` on the default path, which the UI reads as
-    "nothing to disclose" rather than printing the deployment's model to every
-    member.
+    The endpoint's ``response.model`` when given (true under fallback), else the
+    selection. ``None`` on the default path: nothing to disclose.
     """
     return answering_model() or selected_model()
 
@@ -1199,9 +1092,7 @@ def _conversation_attachments(
 ) -> list[tuple[str, str, bool]]:
     """``(filename, text, truncated)`` for this chat's files, oldest first.
 
-    Empty for an anonymous or conversation-less call, and never raises: a
-    failure to read attachments must degrade to answering from the corpus,
-    which is the behaviour that existed before this feature.
+    Never raises: a failed read degrades to answering from the corpus.
     """
     if conversation_id is None or session is None:
         return []
@@ -1234,24 +1125,12 @@ def _stream_attachment_answer(
     session: SessionClaims | None = None,
     deep_mode: bool = False,
 ) -> Iterator[str]:
-    """Answer with the attached files AND the routed source's corpus.
+    """Answer from the attached files AND the routed source's corpus.
 
-    **Attachments no longer replace retrieval, and that was a real defect.**
-    A member who uploads an expense receipt and asks "is this claimable?" is
-    asking about the receipt AND about the policy in the corpus; answering
-    from either alone answers a different question. Worse, attachments live on
-    the CONVERSATION, so the old short-circuit meant every later question in
-    that chat -- "how much leave do I have left?" -- was answered from the
-    receipt until the file was removed.
-
-    The routed agent's pipeline runs completely unchanged: same gate, same
-    strict prompt, same audit. The files are simply also in the prompt, each
-    behind its own "Attached file:" line, beside chunks that each carry their
-    own provenance line -- which is what lets one answer draw on both and
-    still say where each sentence came from.
-
-    An agent with no corpus (GitHub, Insights) has nothing to blend, so those
-    fall back to the files alone rather than losing the upload entirely.
+    The routed pipeline runs unchanged (gate, strict prompt, audit); each file
+    is in the prompt behind its own "Attached file:" line. Files live on the
+    conversation, so they must not replace retrieval for later questions. An
+    agent with no corpus (GitHub, Insights) answers from the files alone.
     """
     names = ", ".join(name for name, _, _ in attached)
     agent = _agent_getters().get(decision.agent_key, lambda: None)()
@@ -1321,10 +1200,7 @@ def _stream_attachment_answer(
             # Names the routed source AND the files, because with both in one
             # prompt "where did this come from?" has two answers.
             "routing_reason": reason,
-            # The files that were actually in this prompt. Without it the pill
-            # can only name the ROUTED agent -- so a PDF question answered from
-            # the PDF displayed "Notion", a provenance claim about a source
-            # that may not have contributed a word.
+            # The files in this prompt, so the pill does not credit only the routed agent.
             "attachments": [name for name, _, _ in attached],
             "model": _answering_model(),
             "chart": None,
@@ -1344,10 +1220,7 @@ def _previous_question(
     workspace_id: str | None,
     session: SessionClaims | None,
 ) -> str | None:
-    """The last question asked in this conversation, for routing a follow-up.
-
-    Never raises: without it a follow-up is routed on its own words, as before.
-    """
+    """The last question in this conversation, for routing a follow-up; never raises."""
     if not conversation_id or session is None:
         return None
     try:
@@ -1366,8 +1239,7 @@ def _previous_question(
 def _start_graph_plan(org_id, workspace_id, question, session):
     """Start this question's graph walk on the routing pool, or return None.
 
-    Needs a real viewer: a routing or retrieval choice informed by content the
-    asker cannot read is a leak, so no session means no graph at all.
+    Needs a real viewer: no session, no graph.
     """
     if session is None:
         return None
@@ -1408,10 +1280,8 @@ def _graph_plan_result(future):
 def _named_connected_tools(question: str, org_id: str, workspace_id: str | None) -> set[str]:
     """Every indexed tool the question NAMES that is connected in this scope.
 
-    Deliberately not limited to tools the graph already reached: the asker
-    naming Slack is reason enough to search Slack. Limited to CONNECTED
-    tools, or the pill would claim a tool that contributed nothing. The
-    connection lookup runs only when a tool is actually named.
+    Not limited to what the graph reached; only connected tools, so the pill
+    never claims one that contributed nothing.
     """
     named = named_providers(question, EMBEDDED_PROVIDERS)
     if not named:
@@ -1435,10 +1305,10 @@ _COUNTED_LINES = 12
 
 
 def _counted_answer(result) -> str:
-    """A count asked in Ask, answered by SQL as a chart, with its numbers
-    written out too: "how many leads in August?" asked for a number, and a
-    caption over bars makes the reader find it. Every value is the chart's
-    own (``describe.format_value``); nothing here is computed."""
+    """A count asked in Ask, answered by SQL as a chart with its numbers written out.
+
+    Every value is the chart's own (``describe.format_value``).
+    """
     from ..chartrender.matplotlib_renderer import format_bucket
     from ..insights.describe import format_value
 
@@ -1498,12 +1368,9 @@ def _keep_standalone_turn(
     cited: list | None = None,
     chart: dict | None = None,
 ) -> None:
-    """Write a turn for an agent that never enters ``RagPipeline``.
+    """Save a turn for an agent outside ``RagPipeline`` (GitHub, charts).
 
-    The pipeline is the only other place a turn is saved. GitHub and charts
-    do not use it, and a conversation with no turn is left out of the history
-    list, so the chat vanishes on reload. A failure here must not drop the
-    answer the person is already reading.
+    Otherwise the chat vanishes from history on reload. Never drops the answer.
     """
     if agent_key not in ("github", "insights") or not conversation_id or not (answer or "").strip():
         return
@@ -1547,9 +1414,8 @@ def _stream_answer(
     deep_mode: bool = False,
     extra_effort: bool = False,
 ) -> Iterator[str]:
-    # Who is asking, for the Second Brain's live reads (app/livetools). Whether
-    # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
-    # not here. Set inside the generator, for the reason `use_model` is.
+    # Who is asking, for live reads (app/livetools). Set inside the generator,
+    # like `use_model`.
     live_token = use_live_request(
         LiveRequest(
             org_id=org_id,
@@ -1558,9 +1424,8 @@ def _stream_answer(
             conversation_id=conversation_id,
         )
     )
-    # Personal memory (Second Brain layer C): this person's facts shape how
-    # the question is READ, and the question itself -- never the answer -- is
-    # read for new ones, alongside the answer rather than in front of it.
+    # Personal memory shapes how the question is read; only the question is read
+    # for new facts.
     facts, memory_turn = _start_personal_memory(question, org_id, conversation_id, session)
     facts_token = personal_memory.use_asker_facts(tuple((f.kind, f.text) for f in facts))
     deep_token = use_deep_read(deep_mode, extra=extra_effort)
@@ -1648,12 +1513,8 @@ def _stream_answer_body(
     chart_mode: bool = False,
     deep_mode: bool = False,
 ) -> Iterator[str]:
-    # Set inside the generator, NOT in the route that returns the
-    # StreamingResponse: Starlette runs a sync generator via
-    # iterate_in_threadpool, so a ContextVar set before the response is
-    # returned is not reliably the context this body executes in. Setting it
-    # here also resets it per stream, so a pooled thread cannot leak one
-    # request's model choice into the next.
+    # Set inside the generator: Starlette runs it in a threadpool, so a ContextVar
+    # set in the route may not reach it, and a pooled thread must not leak it.
     use_model(model, org_id=org_id)
     # Who pays for this answer's model calls, for the same reason.
     charge_to(session.user_id if session else None, org_id)
@@ -1661,31 +1522,13 @@ def _stream_answer_body(
     watch_question(question)
 
 
-    # Loaded BEFORE routing but no longer instead of it. An attached file used
-    # to short-circuit `choose_agent` entirely, on the reasoning that someone
-    # dropping a contract in and asking "what's the notice period?" means THAT
-    # contract rather than whichever source scores on the word "notice".
-    #
-    # That was right about the file and wrong about the corpus. "Is this bill
-    # claimable?" is a question about the upload AND about the expense policy,
-    # and attachments live on the CONVERSATION -- so the short-circuit also
-    # meant every later question in the chat was answered from the bill. The
-    # files now ride along with whatever the routed source retrieves
-    # (`_stream_attachment_answer`), each context block still naming itself.
+    # Attachments ride along with the routed source (`_stream_attachment_answer`);
+    # they no longer replace routing.
     attached = _conversation_attachments(org_id, conversation_id, session)
 
-    # Decide WHICH agent answers before invoking the graph. `choose_agent`
-    # honours an explicit `requested_agent` unchanged, so a caller that still
-    # pins a source is unaffected; with none, it measures which connected
-    # source's content resembles the question (app/agent/routing.py). Passing
-    # the decision back in as `requested_agent` needs no graph change: a direct
-    # key is honoured, and "workspace"/"policy" fall through to the same
-    # default `_route` already computed.
-    # The knowledge graph is walked ONCE, alongside routing rather than after
-    # it (app/graph/plan.py): routing reads its exact identifiers, retrieval
-    # reuses its documents instead of walking again, and the answer states its
-    # facts. None when GRAPH_RETRIEVAL_ENABLED is off -- then nothing below
-    # changes at all.
+    # Decide which agent answers before the graph runs (`choose_agent` honours an
+    # explicit `requested_agent`). The knowledge graph is walked ONCE beside
+    # routing (app/graph/plan.py); None when GRAPH_RETRIEVAL_ENABLED is off.
     progress.report("Choosing where to look")
     plan_future = _start_graph_plan(org_id, workspace_id, question, session)
     decision = choose_agent(
@@ -1701,9 +1544,7 @@ def _stream_answer_body(
         user_id=session.user_id,
     )
     plan = _graph_plan_result(plan_future)
-    # The classifier's live-data verdict rides the request note to the gateway
-    # (reset with it when the stream ends: the outer token restores the value
-    # from before this stream).
+    # The live-data verdict rides the request note, reset when the stream ends.
     current = current_live_request()
     if current is not None:
         use_live_request(dataclasses.replace(current, needs_live=getattr(decision, "needs_live", None)))
@@ -1749,13 +1590,9 @@ def _stream_answer_body(
     }
     try:
         result = _invoke_with_plan(graph_input, plan, decision.table_answers)
-        # ESCALATION: the routed tool refused, and the graph already proved
-        # the question connects to documents the asker can open in OTHER
-        # tools. One retry, as a connected answer -- never a loop, and never
-        # on a withheld document (that refusal is about access, not about
-        # which tool was asked). The refusal turn is removed first so the chat
-        # keeps one turn per question and the retry's own follow-up rewrite
-        # does not read the question it is answering as history.
+        # Escalation: the routed tool refused and the graph shows readable documents
+        # in OTHER tools. One retry, never on a withheld document. The refusal turn
+        # is removed first so the chat keeps one turn per question.
         retry_tools = (
             graph_plan.escalation_tools(plan, decision.agent_key)
             if plan is not None and _graph_connected_enabled()
@@ -1794,26 +1631,10 @@ def _stream_answer_body(
                 getattr(result, "chart", None), getattr(result, "chart_period", None)),
         )
 
-    # A question that came back ungrounded is a documentation gap, and it is
-    # recorded here without anyone having to report it -- the gaps people
-    # quietly give up on are exactly the ones that never get reported.
-    #
-    # This is the API EDGE and not the gate inside `RagPipeline`, deliberately:
-    # a gate miss is only one of the four ways an answer ends up ungrounded
-    # (the strict prompt refusing on a gate-passing retrieval, the groundedness
-    # audit downgrading an answer, and GitHubAgent/InsightsAgent refusing with
-    # no gate at all are the others). `grounded=False` is the union of them,
-    # and this is also the only place `user_id` exists.
-    # A withheld document is NOT a documentation gap: the company wrote it,
-    # this person simply has not been given access. Logging it would put
-    # "how much leave do I have left?" on the admin's list of things nobody
-    # has documented, which is the one thing that list must not contain.
-    # A live read that withheld the item is not a gap either -- deliberately,
-    # though a real deletion might be one: "not found or not accessible"
-    # cannot tell deletion from revoked access, and a false gap sends an admin
-    # to rewrite a document that exists (live-tools plan D8a).
-    # A Chart-mode reply that is not a missing chart ("Chart mode only builds
-    # charts") is not a gap of either kind.
+    # An ungrounded answer is a documentation gap, recorded here: the one place
+    # that sees every way to be ungrounded and the `user_id`. Not gaps: a withheld
+    # document (access, not missing docs), a live read withheld as not found or
+    # inaccessible, and a Chart-mode reply that is not a missing chart.
     if (not result.grounded and not result.access_restricted
             and not getattr(result, "live_withheld", False)
             and decision.reason not in NOT_CHART_GAPS):
@@ -1849,21 +1670,12 @@ def _stream_answer_body(
             ],
             "resolved_question": result.resolved_question,
             "latency_ms": result.latency_ms,
-            # WHICH agent answered, and why it was picked. The member no longer
-            # chooses a source, so "where did this come from?" has to be
-            # answerable from the response or the answer is unattributable.
-            # `reason` is exposed too: a misroute is otherwise indistinguishable
-            # from a source genuinely not having the answer.
+            # Which agent answered, and why, so the answer is attributable and a misroute visible.
             "agent": decision.agent_key,
             "routing_reason": "graph-connected" if connected else decision.reason,
-            # The tools a connected answer read, so the pill can name all of
-            # them: an answer drawn from Notion AND Slack labelled "Notion" is
-            # unattributable in exactly the way `agent` exists to prevent.
+            # Every tool a connected answer read, for the pill.
             "connected_providers": sorted(connected) if connected else None,
-            # What actually answered, resolved — never the word "auto".
-            # Under a router or a provider fallback the served model differs
-            # from the requested one, and "which model wrote this?" has to be
-            # answerable or the picker is unfalsifiable.
+            # The model that actually answered, never "auto".
             "model": _answering_model(),
             "chart": getattr(result, "chart", None),
             "chart_period": getattr(result, "chart_period", None),
@@ -1873,9 +1685,8 @@ def _stream_answer_body(
             "cited": list(getattr(result, "cited", None) or []),
             # A text question asked in Chart mode: offer to turn it off.
             "ask_hint": decision.reason == "chart-mode-text-question",
-            # Asked to SEE a chart with Chart mode off (the hint is the
-            # answer), or a count answered in words: offer Chart mode. Both
-            # read by the question check, not by matching words.
+            # A chart ask with Chart mode off, or a count answered in words: offer Chart
+            # mode (decided by the question check, not word lists).
             "chart_hint": (
                 not chart_mode and (
                     decision.reason == "chart-mode-off"
@@ -1911,16 +1722,11 @@ def chat_stream(
         )
 
     requested_agent = body.get("agent")
-    # Validated HERE, before the StreamingResponse exists: once a stream's
-    # headers are sent, a raise inside the generator can no longer produce a
-    # status code, so the caller would see a truncated 200 instead of a 400.
-    # A client-supplied model string is untrusted input like any other field —
-    # it must never reach an outbound call or a cache key unchecked.
+    # Validated before the stream starts: afterwards a raise is a truncated 200,
+    # not a 400. The model string is untrusted input.
     model = body.get("model")
     if not catalog.is_selectable(model) and not _is_own_model(session.org_id, model):
-        # Fails CLOSED. Accepting an unknown id would fall through to the
-        # OpenRouter branch in RoutedLLMProvider and spend the deployment's own
-        # key — an account-wide 50/day quota shared by every tenant.
+        # Fails closed: an unknown id must never reach an outbound call.
         raise HTTPException(status_code=400, detail="Unknown model")
 
     workspace_id = body.get("workspace_id")

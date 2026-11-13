@@ -1,11 +1,8 @@
-"""Compound-question detection and decomposition (Phase 18).
+"""Compound-question detection and decomposition.
 
-A single embedding of "Can I get X reimbursed, and what else is covered?" under-
-represents the second informational need. When a question genuinely bundles
-multiple asks, we split before retrieval and merge candidate pools afterward.
-
-Ordinary questions (including "full-time and part-time leave") must not pay an
-LLM decomposition call — a cheap heuristic gate comes first.
+One embedding under-represents a question's second ask, so a compound
+question is split before retrieval and the pools merged. A cheap heuristic
+gate comes first, so ordinary questions pay no LLM call.
 """
 
 from __future__ import annotations

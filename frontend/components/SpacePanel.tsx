@@ -6,22 +6,8 @@ import { SpaceMark, spaceStyle } from "@/components/SpaceMark";
 import { api, WorkspaceMemberRecord } from "@/lib/api";
 
 /**
- * Space details, opened from the Ask header — the Slack pattern.
- *
- * Everyone (owner included) now lands on Ask when they open a space, because
- * asking is what a space is FOR. This panel is where the people and the
- * settings live, one click away, exactly as a Slack channel's details sit
- * behind its name rather than in front of the conversation.
- *
- * One list, no tabs. It started with a People tab and an About tab, but About
- * only ever held two sentences of explanation and a link — a tab the reader had
- * to visit to find out it held nothing for them. Tabs earn their cost when both
- * sides have substance; here the honest shape is the people, with the owner's
- * way through to settings at the foot of it.
- *
- * Deliberately does NOT re-implement the management page. Connections, sync and
- * delete already work at `/workspaces/[id]`; this links there for owners
- * instead of growing a second copy that can drift.
+ * Space details, opened from the Ask header: the people, and for owners a
+ * link to `/workspaces/[id]` (not a second copy of the management page).
  */
 export function SpacePanel({
   workspaceId,
@@ -184,9 +170,7 @@ export function SpacePanel({
                 const isSelf = Boolean(
                   currentUserEmail && m.email === currentUserEmail
                 );
-                // The sole owner cannot be removed — the API refuses it, and
-                // offering a button that always errors is worse than not
-                // offering one.
+                // The sole owner cannot be removed (the API refuses it).
                 const removable = isOwner && !(m.role === "owner" && owners <= 1);
                 return (
                   <li key={m.user_id} className="space-panel-person">

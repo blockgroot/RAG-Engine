@@ -1,41 +1,16 @@
 """Pick the agent for a question, so the member does not have to.
 
-Before this, ``orchestration.route_agent_key`` only honoured an explicit
-``requested_agent`` — the per-source TABS in the UI were the router. Asking
-someone to know whether an answer lives in Notion or Slack before they ask is
-asking them to already have the answer.
+The corpus is chosen by measurement, not an LLM or keywords: which
+provider's content resembles the question (one embedding, one grouped
+query). The chart check selects a registry metric, never a source by name.
 
-Why not an LLM for the source
------------------------------
-CLAUDE.md §3 commits to a deterministic router for *which corpus answers*,
-and that commitment is kept here rather than amended, because a better
-signal is already sitting in the database: **which provider's content
-actually resembles the question**. One embedding of the question, one
-grouped vector query, and the answer is a measurement rather than a guess.
+GitHub embeds nothing, so it can never win a cosine race. It is reached by
+a named authorized repo (strong) or code intent when nothing clears the
+gate (weak, last).
 
-Chart vs document is the one classifier: it selects a registry metric (or
-qa), never a source by name. The metric's ``provider`` IS the connector.
-
-Keyword routing was rejected for the same reason. "What did we decide about
-pricing?" carries no keyword at all, and the whole point is that it routes to
-whichever source actually holds pricing content.
-
-GitHub is the structural exception
-----------------------------------
-GitHub embeds nothing (``app/githublive/``), so it has no chunks and can never
-win a cosine race — it would be permanently unreachable under a purely
-vector-based router. It gets two narrow, explainable signals instead: the
-question naming one of its authorized repositories (strong — nothing else in
-the org is called that), or code-shaped intent when no embedded provider can
-clear the confidence gate (weak, and deliberately last).
-
-What this does NOT do
----------------------
-It never decides whether an answer exists — only which agent is asked. Every
-grounding guarantee stays exactly where it was: the routed agent still runs
-the confidence gate and the strict prompt, and still returns the fixed
-fallback when its own content cannot answer. A misroute therefore costs a
-refusal, never a wrong answer from the wrong source.
+Routing never decides whether an answer exists: the routed agent still runs
+the gate and the strict prompt, so a misroute costs a refusal, never a
+wrong answer.
 """
 
 from __future__ import annotations
@@ -55,15 +30,9 @@ _ROUTING_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="routing-pr
 
 logger = logging.getLogger(__name__)
 
-# The probe is a HINT, not the answer, and it now sits on the critical path of
-# every question — so it gets a hard, short ceiling instead of the embedding
-# provider's general one (EMBEDDING_TIMEOUT, default 60s). Without this a
-# hanging remote embedder costs up to 60s BEFORE the pipeline starts, and the
-# pipeline then has its own 60s: a two-minute wait to be handed a refusal,
-# because a timed-out probe degrades to the default agent.
-#
-# 5s is generous for a single-string embed and still an order of magnitude
-# below the point where a person assumes the product is broken.
+# The probe is a hint on every question's critical path, so it gets a short
+# ceiling: a hanging embedder must not add EMBEDDING_TIMEOUT before the
+# pipeline even starts.
 DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
 
 _probe_provider = None
@@ -73,15 +42,8 @@ _probe_lock = threading.Lock()
 def _probe_embedder():
     """Cached embedder for the routing probe. Same MODEL, shorter timeout.
 
-    Same model matters more than it looks: the probe's vector is compared
-    against stored chunk embeddings, so a different model would make every
-    cosine meaningless rather than merely wrong.
-
-    Cached because ``RemoteEmbeddingProvider`` is deliberately uncached in the
-    factory (it holds no weights) and constructs a fresh HTTP client each call
-    — building one per question would throw away connection reuse on the
-    critical path. The local backend needs none of this: no network, so no hang
-    to bound, and its own singleton already prevents a second 500MB load.
+    Same model, or every cosine against stored chunks is meaningless. Cached
+    because the remote provider builds a fresh HTTP client per construction.
     """
     global _probe_provider
     if _probe_provider is not None:
@@ -111,26 +73,19 @@ def reset_probe_embedder_for_tests() -> None:
         _probe_provider = None
 
 
-#: Providers that have embedded content to score against. GitHub is absent by
-#: construction, not by omission.
+#: Providers with embedded content to score against. GitHub is absent by design.
 EMBEDDED_PROVIDERS = ("notion", "google", "slack", "linear")
 
-#: Words that mean "this is about the codebase" strongly enough to reach for
-#: GitHub when nothing embedded can answer. Deliberately narrow and free of
-#: collisions: "issue" and "ticket" are Linear's language, "doc" and "page" are
-#: Notion's, and "thread" is Slack's — a word that could belong to two sources
-#: is worse than no word at all.
+#: Words that mean "the codebase" strongly enough to reach for GitHub when
+#: nothing embedded answers. Narrow: a word two sources share is worse than none.
 _CODE_INTENT = re.compile(
     r"\b("
     r"repo|repos|repositor(?:y|ies)"
     r"|commit|commits|committed"
     r"|pull request|pull requests|\bPRs?\b"
     r"|branch|branches|merged?"
-    # Review vocabulary. Safe to add despite "review" appearing in documents
-    # ("under review", "performance review") because code-intent is checked
-    # AFTER the cosine probe: a document question that scores above the gate
-    # already won. `reviewer`/`approved` are code-shaped enough to be worth the
-    # remaining risk, and a misroute costs a refusal, not a wrong answer.
+    # Review words are safe because code intent is checked AFTER the probe: a
+    # document question above the gate already won.
     r"|reviewer|reviewers|code review|approved this|who approved"
     r"|codebase|source code|github"
     r"|changelog|release notes"
@@ -144,37 +99,27 @@ class RoutingDecision:
     """Which agent was chosen, and enough to explain why in a log or a test."""
 
     agent_key: str
-    #: Short machine-readable cause: ``"only-source"``, ``"repo-named"``,
-    #: ``"best-match"``, ``"code-intent"``, ``"weak-best-match"``,
-    #: ``"no-sources"``, or ``"requested"`` when the caller pinned one.
+    #: ``only-source``, ``repo-named``, ``best-match``, ``code-intent``,
+    #: ``weak-best-match``, ``no-sources``, or ``requested``.
     reason: str
-    #: provider -> best cosine seen. Empty when no probe ran. A diagnostic:
-    #: routing quality is not observable without it, and CLAUDE.md's standing
-    #: advice on the 0.35 gate is to validate against real logged scores.
+    #: provider -> best cosine. Empty when no probe ran. Logged to tune the gate.
     scores: dict[str, float] = field(default_factory=dict)
     chart_spec: object | None = None
     chart_refusal: str | None = None
-    #: The classifier's view on whether this question needs LIVE data (see
-    #: ``AskIntent.needs_live``). ``None`` when the classifier did not run or
-    #: did not say. Carried here because the classifier already runs inside
-    #: routing; the chat edge hands it to the live-tools gateway.
+    #: The check's ``needs_live`` verdict (None when it did not run or say);
+    #: the chat edge hands it to the live-tools gateway.
     needs_live: bool | None = None
     #: The question check's ``chart_ask`` ("visual" / "count" / None), so the
     #: chat can offer Chart mode beside a written answer to a count.
     chart_ask: str | None = None
-    #: Figures worked out over a sheet's rows for this question
-    #: (``insights.table_answers``), one passage per sheet, handed to the
-    #: answer as passages of their documents. Empty for every other question.
+    #: Figures worked out over a sheet's rows (``insights.table_answers``), one
+    #: passage per sheet. Empty for every other question.
     table_answers: tuple = ()
 
 
-#: What a member is likely to CALL each service when they type its name.
-#: Deliberately tight -- an alias that can appear innocently in a sentence would
-#: hijack the routing ("repo" is not a GitHub alias, "docs" not a Drive one).
-#: Lives here rather than in ``api/schedulers`` (its first caller) because the
-#: scheduler's provider pick and a DM's SCOPE pick must read the same names: a
-#: word strong enough to choose a service is strong enough to choose the space
-#: that service is connected in.
+#: What a member calls each service. Tight: an alias that appears innocently
+#: in a sentence would hijack routing. Shared by the scheduler's provider pick
+#: and a DM's scope pick, which must read the same names.
 PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "github": ("github",),
     "slack": ("slack",),
@@ -185,9 +130,8 @@ PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def named_providers(text: str, available) -> set[str]:
-    """EVERY service this text names. For a connected answer, where naming
-    Notion, Slack and Linear in one question means "read all three" -- unlike
-    routing, where two names are ambiguous and ``named_provider`` picks none."""
+    """EVERY service this text names (a connected answer reads them all; routing
+    uses ``named_provider``, which picks none of two)."""
     lowered = (text or "").lower()
     return {
         provider
@@ -198,13 +142,8 @@ def named_providers(text: str, available) -> set[str]:
 
 
 def named_provider(text: str, available) -> str | None:
-    """The service this text NAMES, when it names exactly one of them.
-
-    Someone who writes "in github" has answered the question being asked, and a
-    word match beats a similarity score at reading that intent. Two named
-    services return None rather than guess: the wrong one is worse than
-    falling through to the measurement.
-    """
+    """The service this text NAMES, when it names exactly one. Two named
+    return None: the wrong one is worse than the measurement."""
     lowered = (text or "").lower()
     hits = {
         provider
@@ -216,13 +155,8 @@ def named_provider(text: str, available) -> str | None:
 
 
 def _connected_providers(org_id: str, workspace_id: str | None) -> set[str]:
-    """Providers connected IN THIS SCOPE. Never falls back to the org's.
-
-    A space sees only its own connections (CLAUDE.md §3), so a space-scoped
-    question must not be routed to a source that space cannot read — it would
-    route to an agent that then correctly refuses, which reads as the product
-    being broken rather than the space being empty.
-    """
+    """Providers connected IN THIS SCOPE, never the org's: a space must not
+    be routed to a source it cannot read."""
     from ..db.connection import get_connection
 
     with get_connection() as conn:
@@ -236,17 +170,11 @@ def _connected_providers(org_id: str, workspace_id: str | None) -> set[str]:
 
 
 def _repo_named_in(question: str, repos) -> str | None:
-    """The authorized repo this question names, if any. The shared matcher.
+    """The authorized repo this question names, if any.
 
-    Both ladder rungs that care about a repo name route through here: agent
-    selection (``_named_repo``) and, for a Slack DM, SCOPE selection
-    (``_named_scope``). They had to agree anyway -- a repo name strong enough
-    to pick GitHub is strong enough to pick the space GitHub is connected in
-    -- and one matcher is what makes that true by construction.
-
-    Matched against AUTHORIZED repos only, so this cannot be steered by a
-    question mentioning some public repository. Both ``owner/name`` and the
-    bare ``name`` count: people say "Chain-Guard", not "18-sana/Chain-Guard".
+    Shared by agent selection and a DM's scope selection, so they agree.
+    AUTHORIZED repos only, so a public repo name cannot steer it. Both
+    ``owner/name`` and bare ``name`` count.
     """
     lowered = question.lower()
     for repo in repos or []:
@@ -274,8 +202,8 @@ def _named_repo(question: str, org_id: str, workspace_id: str | None) -> str | N
     return _repo_named_in(question, config.get("repos"))
 
 
-#: ``probe_best_scope`` found nothing indexed in any of the caller's scopes.
-#: A distinct object because ``None`` means "org-wide", a real answer.
+#: ``probe_best_scope`` found nothing indexed. Distinct because ``None`` is
+#: org-wide.
 _NO_MATCH = object()
 
 
@@ -285,15 +213,10 @@ def _probe_scores(
     workspace_id: str | None,
     candidates: set[str],
 ) -> dict[str, float]:
-    """Best cosine similarity per provider for this question. One query.
+    """Best cosine per provider for this question, in one grouped query.
 
-    Grouped in SQL rather than one query per provider: the providers share an
-    index and a scan, and N round trips to rank N sources is the kind of
-    per-item fan-out this codebase counts rather than times (CLAUDE.md §5).
-
-    ``org_id`` and ``workspace_id`` are both in the WHERE clause, so this
-    probe is under the same isolation as retrieval itself — a routing decision
-    must never be informed by content the asker cannot read.
+    ``org_id`` and ``workspace_id`` are in the WHERE: routing must never be
+    informed by content the asker cannot read.
     """
     providers = sorted(candidates & set(EMBEDDED_PROVIDERS))
     if not providers:
@@ -325,11 +248,8 @@ def _probe_scores(
 
 
 def _words(text: str) -> set[str]:
-    """Lowercased alphanumeric tokens, crudely singularised.
-
-    `Meeting_notes_1` and "Meeting_note_1" must match: people retype a title
-    from memory, and an exact-string check fails on one letter.
-    """
+    """Lowercased alphanumeric tokens, crudely singularised, so a title
+    retyped from memory still matches."""
     return {
         w[:-1] if len(w) > 3 and w.endswith("s") else w
         for w in re.findall(r"[a-z0-9]+", text.lower())
@@ -338,13 +258,8 @@ def _words(text: str) -> set[str]:
 
 
 def _connection_scopes(org_id: str, scope_ids: list[str | None]):
-    """``(workspace_id, provider, repos)`` for every live connection in these scopes.
-
-    One query for both rungs that need it. GitHub is the reason it exists --
-    it has no chunks, so it is invisible to every other signal in scope
-    selection -- but a connector the asker NAMES is the same kind of evidence
-    whichever one it is, so the read is not GitHub-specific.
-    """
+    """``(workspace_id, provider, repos)`` for every live connection in these
+    scopes. One query for both rungs (GitHub has no chunks to be seen by)."""
     from ..db.connection import get_connection
 
     spaces = [sid for sid in scope_ids if sid is not None]
@@ -366,14 +281,8 @@ def _connection_scopes(org_id: str, scope_ids: list[str | None]):
 def _code_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str):
     """The scope holding GitHub, for a code question no corpus can answer.
 
-    The exact counterpart of rung 7 in ``choose_agent``, and ordered the same
-    way for the same reason: BELOW the probe, so a document question that
-    actually scores is never hijacked by a code-shaped word inside it
-    ("who approved the budget?"), and above the weak fall-through, so a scope
-    whose only source embeds nothing is reachable at all.
-
-    Exactly one candidate or nothing: with two GitHub-bearing scopes the
-    question names neither, and the wrong space is worse than the probe.
+    Below the probe (a scoring document question wins) and above the weak
+    fall-through. Exactly one candidate or nothing.
     """
     if not _CODE_INTENT.search(question):
         return _NO_MATCH
@@ -392,16 +301,8 @@ def _code_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str
 def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str):
     """The scope whose SPACE NAME, DOCUMENT TITLE or REPO the question names.
 
-    Ordered ahead of the cosine probe for the reason `_named_repo` already is
-    (CLAUDE.md §3): a document ABOUT meeting notes can out-score the meeting
-    notes themselves, so a name the asker actually typed is stronger evidence
-    than a similarity score. Measured: "What should I know from Meeting_note_1?"
-    probed to org-wide and answered from Linear, while the file sat indexed in
-    the Meeting notes space one scope away.
-
-    Requires EVERY token of the name to appear in the question, so a one-word
-    title cannot hijack an unrelated question; two scopes matching resolves to
-    NEITHER -- the wrong space is worse than letting the probe decide.
+    Ahead of the probe: a document ABOUT meeting notes can out-score the notes.
+    Every token of the name must appear; two matching scopes resolve to neither.
     """
     asked = _words(question)
     if not asked:
@@ -431,32 +332,15 @@ def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: st
         if len(tokens) >= 2 and tokens <= asked:
             candidates.add(scope_id)
 
-    # An authorized REPO NAME is a name for this scope too, and it has to be
-    # checked here or GitHub is unreachable from a DM by construction. Every
-    # other signal in this function comes from `chunks`/`documents`, and
-    # GitHub embeds nothing -- so a space whose GitHub holds `Chain-Guard`
-    # looks empty to `probe_best_scope`, the probe picks whichever scope has
-    # the most prose, and `choose_agent` then runs in a scope with no GitHub
-    # connection at all, where every GitHub rung is guarded on
-    # `"github" in connected` and is skipped. Measured: "What does the
-    # chain-guard repository do?" answered from org-wide Google Drive while
-    # the repo sat authorized in a space one scope away.
+    # A repo name names this scope too: GitHub embeds nothing, so without this
+    # it is unreachable from a DM.
     for scope_id, provider, repos in conn_rows:
         if provider == "github" and _repo_named_in(question, repos):
             candidates.add(scope_id)
 
-    # NAMING THE CONNECTOR is a name too, and its absence was the defect this
-    # rung fixes. "what were my contributions in github?" reached org-wide
-    # Company -- the probe clears 0.35 there for almost any question, since the
-    # company corpus is the largest one a member can see -- and the GitHub-
-    # bearing space one scope away was never considered. `_code_scope` could
-    # not save it: that rung sits BELOW the probe on purpose, so a scope that
-    # scores always pre-empts it. A typed connector name is high-precision
-    # enough to belong up here with a repo name, and it is the ONLY signal a
-    # source with no corpus can offer when no repo is named.
-    #
-    # Exactly one connector named, or nothing: two services named picks
-    # neither, the rule this whole function already follows.
+    # Naming the connector is a name too, and the only signal a source with no
+    # corpus has when no repo is named. It must sit above the probe, which
+    # clears 0.35 on the company corpus for almost anything. One connector or none.
     spoken = named_provider(question, {provider for _, provider, _ in conn_rows})
     if spoken is not None:
         candidates |= {
@@ -472,35 +356,17 @@ def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: st
 def choose_scope(
     org_id: str, scopes: list[tuple[str | None, str]], question: str
 ):
-    """Which of the caller's scopes should answer. The Slack DM entry point.
+    """Which of the caller's scopes should answer (the Slack DM entry point).
 
-    The counterpart to ``choose_agent``, and deliberately the same SHAPE: a
-    deterministic precedence ladder, a name beating a measurement, and a
-    fall-through that never fails the question. Agent selection INSIDE the
-    chosen scope is then `choose_agent` + the LangGraph exactly as the web
-    chat runs it -- there is one router, not a Slack copy of one.
+    A DM has no space context, so it is inferred here; agent selection inside
+    the chosen scope is then the same ``choose_agent`` the web chat runs.
 
-    Only Slack needs this. In the app the member is already standing in a
-    space or in company Ask, so the UI supplies the scope; a DM has no such
-    context and is the one surface that must infer it.
+    1. A NAME the asker typed (space, document title, authorized repo).
+    2. The best-scoring scope, if it clears the 0.35 gate.
+    3. Code intent when nothing cleared (a GitHub-only scope has no chunks).
+    4. The best score anyway, then ``_NO_MATCH``; that scope's gate refuses.
 
-    Precedence, mirroring ``choose_agent`` rung for rung:
-
-    1. **A NAME the asker typed** -- a space name, a document title, or an
-       authorized repo. Stronger evidence than a similarity score, because a
-       document ABOUT a thing routinely out-scores the thing itself.
-    2. **The best-scoring scope, if it clears the confidence gate.** The same
-       0.35 retrieval already uses: below it, nothing in that scope resembles
-       the question.
-    3. **Code intent, when nothing cleared the gate.** A scope whose only
-       source is GitHub has no chunks and can never win step 2 -- it would be
-       permanently unreachable from a DM without this. Below the probe so a
-       code word inside a document question cannot hijack a scope that scores.
-    4. **The best score anyway**, then ``_NO_MATCH``. The chosen scope's own
-       gate still refuses honestly, so a miss costs a refusal, never an answer
-       from the wrong space.
-
-    Returns the winning ``workspace_id`` (``None`` = org-wide) or ``_NO_MATCH``.
+    Returns the ``workspace_id`` (``None`` = org-wide) or ``_NO_MATCH``.
     """
     named = _named_scope(org_id, scopes, question)
     if named is not _NO_MATCH:
@@ -528,26 +394,12 @@ def probe_best_scope(
 def _probe_scope_best(
     question: str, org_id: str, workspace_ids: list[str | None]
 ) -> tuple[str | None, float] | None:
-    """``(workspace_id, best cosine)`` for the closest scope. ONE query.
+    """``(workspace_id, best cosine)`` for the closest scope, in ONE query.
 
-    Used by the Slack DM path, where the asker is a person rather than a space:
-    they legitimately see org-wide content AND every space they belong to, so a
-    DM that could only read one of those is answering a narrower question than
-    the one asked. The scopes passed in are the caller's OWN -- membership is
-    resolved before this is called and is never inferred here.
-
-    This does NOT blend scopes. It picks the single best one and the pipeline
-    then runs inside it exactly as before, so a space's rows never mix with
-    org-wide rows in one answer (CLAUDE.md §3: blending is what would make
-    membership meaningless). Returning the winner rather than merging is also
-    what keeps this one grouped query instead of one retrieval per scope.
-
-    ``None`` when nothing is indexed in any scope. The SCORE is returned with
-    the winner because the caller has to compare it against the confidence
-    gate -- a scope that merely scored highest has not necessarily been
-    resembled at all, and that difference is what lets a GitHub-only scope be
-    reached below the gate instead of always losing to whichever scope holds
-    the most prose.
+    The scopes are the caller's own (membership resolved before). Picks one
+    scope, never blends: a space's rows never mix with org-wide rows. The
+    score is returned so the caller can compare it against the gate.
+    ``None`` when nothing is indexed.
     """
     if not workspace_ids:
         return None
@@ -560,8 +412,7 @@ def _probe_scope_best(
         logger.warning("Slack DM routing: could not embed the question", exc_info=True)
         return None
 
-    # `= ANY(array)` cannot match NULL (org-wide), so the org-wide scope is
-    # asked for with its own IS NULL branch rather than being silently dropped.
+    # `= ANY(array)` cannot match NULL, so org-wide gets its own IS NULL branch.
     spaces = [w for w in workspace_ids if w is not None]
     include_org_wide = None in workspace_ids
 
@@ -586,16 +437,8 @@ def _probe_scope_best(
 
 
 def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
-    """Whether GitHub has anything to read in this scope.
-
-    Deliberately checks AUTHORIZED REPOS, not ``activity_facts``: GitHubAgent
-    reads live, so a freshly connected installation with no recorded facts can
-    still answer perfectly well. Gating a live route on facts would block a
-    real answer for up to a sync interval.
-
-    An installation authorizing zero repos genuinely has nothing to say, and
-    routing there produces a fallback that reads as the product being broken.
-    """
+    """Whether GitHub has AUTHORIZED REPOS here. Not ``activity_facts``: it
+    reads live, so a fresh installation can answer before any sync."""
     from ..auth.credentials import get_connection_config
 
     try:
@@ -610,16 +453,10 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: s
                       tag: str | None = None) -> list:
     """Tables THIS person may chart, for the chart classifier.
 
-    Files they uploaded to this chat come FIRST and unranked: a file dropped
-    into the chat is what the next question is about, and there are only a
-    few. Then document tables, ranked by how close their document is to the
-    question; ``providers`` / ``tag`` keep them to one connector / one Slack
-    channel.
-
-    No viewer means none: a table is only ever offered through the document
-    access predicate, and "no viewer" is the unrestricted reading (ingest,
-    eval), which must never reach a person's question. Never raises -- a
-    table listing that fails costs table charts, not the question.
+    This chat's uploads first, then document tables ranked by document
+    similarity (``providers``/``tag`` narrow to a connector/channel). No
+    viewer means none: tables are offered only through the access predicate.
+    Never raises.
     """
     if viewer is None or getattr(viewer, "is_unrestricted", False):
         return []
@@ -628,9 +465,8 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: s
 
 
 def _upload_tables(org_id: str, uploads) -> list:
-    """Tables in this chat's uploads. A file with no table is read for
-    figures in its sentences first -- once, on demand, since the asker is
-    waiting and chose Chart mode. Never raises."""
+    """Tables in this chat's uploads; a table-less file is read for figures
+    once, on demand. Never raises."""
     if uploads is None:
         return []
     from ..doctables.store import list_upload_tables
@@ -662,9 +498,8 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
                                                  viewer=viewer, providers=providers, tag=tag))
         from ..insights.resolve import title_match
 
-        # The page they named: the LONGEST title run in the question, so a
-        # shared word ("Performance") does not name a second page. Its own
-        # tables are ordered by the question's words among their labels.
+        # The page they named is the LONGEST title run in the question, so a shared
+        # word does not name a second page.
         matched = {id(t): title_match(t.document_title or "", question) for t in listed}
         best = max(matched.values(), default=0)
         named = sorted((t for t in listed if best >= 8 and matched[id(t)] == best),
@@ -684,12 +519,9 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
                 floor=RagSettings.from_env().similarity_threshold, question=question,
                 limit=limit or doc_tables.MAX_OFFERED,
             )
-        # The page they named has to be offered. Six closer tables used to
-        # fill the cap and the named page came back as "I don't see it".
+        # The named page is always offered, or closer tables fill the cap.
         offered = named + ranked
-        # A table holding a value the question TYPES ("Daniel Reed") comes
-        # first and says so: Claude Haiku charted another leads sheet that
-        # had no such name. The data's own cells, read through their index.
+        # A table holding a cell the question TYPES comes first and says so.
         typed = typed_cells(question, listed)
         if typed:
             from dataclasses import replace
@@ -705,10 +537,8 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
 
 
 def _chart_fields(org_id: str, workspace_id: str | None, viewer) -> dict | None:
-    """The recorded fields that actually exist in this scope, per metric
-    (`insights.attr_catalog`), so the classifier is offered what the data
-    holds rather than a hand-kept list. ``None`` (no viewer, or the read
-    failed) falls back to the display hints. Never raises."""
+    """Recorded fields that exist in this scope, per metric (`attr_catalog`).
+    ``None`` (no viewer or failure) falls back to display hints. Never raises."""
     if viewer is None:
         return None
     try:
@@ -723,9 +553,8 @@ def _chart_fields(org_id: str, workspace_id: str | None, viewer) -> dict | None:
 
 
 def _chart_names(org_id: str, workspace_id: str | None, viewer) -> dict | None:
-    """The real teams, repositories, channels and people with activity in
-    this scope, so the classifier picks a focus from what exists ("our team"
-    is nobody's name). ``None`` without a viewer or on failure. Never raises."""
+    """Real teams, repos, channels and people with activity here, so a focus is
+    one that exists. ``None`` without a viewer or on failure. Never raises."""
     if viewer is None:
         return None
     try:
@@ -741,13 +570,8 @@ def _chart_names(org_id: str, workspace_id: str | None, viewer) -> dict | None:
 
 
 def _chart_unsupported_model() -> str | None:
-    """The message for Chart mode on a model that cannot build charts, else None.
-
-    Checked before the classifier runs: on such a model it answers in prose or
-    picks nothing, and the member is told their QUESTION can't be charted when
-    the same question works on another model. The picker already hides these
-    models in Chart mode; this covers a stale selection or a direct API call.
-    """
+    """The message for Chart mode on a model that cannot chart, else None.
+    Covers a stale selection or a direct API call (the picker hides them)."""
     from ..config.settings import LLMSettings
     from ..insights.resolve import unsupported_model_message
     from ..llm import catalog
@@ -786,17 +610,13 @@ def _try_question_route(
 ) -> RoutingDecision | None:
     """Ask's small check: a live code question, and the live-data verdict.
 
-    Charts are no longer guessed here -- they have their own mode (Chart
-    mode, ``_chart_mode_route``) -- so this call carries no metric list,
-    fields or tables. Returns None for ordinary Q&A so the cosine router
-    still runs. Never raises: a dead check is a document question.
-    ``live_out`` receives the ``needs_live`` answer.
+    No metrics or tables (charts have their own mode). None for ordinary Q&A,
+    so the cosine router runs. Never raises. ``live_out`` gets ``needs_live``.
     """
     from ..insights.resolve import CHART_MODE_HINT, classify_route, with_earlier
 
     tables_on = viewer is not None and _table_answers_on()
-    # A follow-up is read with the question it continues, for the table check
-    # only: "and only for the South region?" alone asks for nothing.
+    # A follow-up is read with the question it continues (table check only).
     checked = with_earlier(question, context) if tables_on else question
     # Beside the check, not after it: SQL only, so it adds no wait.
     names_sheet = (_ROUTING_POOL.submit(_names_a_sheet, checked, org_id, workspace_id, viewer)
@@ -812,28 +632,22 @@ def _try_question_route(
         chart_out.append(getattr(intent, "chart_ask", None))
     ask = getattr(intent, "chart_ask", None)
     if chart_from_words and ask in ("visual", "count"):
-        # Slack has no toggle: a question asking to see a chart, or how many
-        # of something, IS Chart mode there -- a counted answer beats prose
-        # about the same rows, and no Turn on Chart button exists to offer.
+        # Slack has no toggle: a chart or count ask IS Chart mode there.
         return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
     if ask == "visual":
-        # They asked to SEE a chart; the web chat says where charts live
-        # instead of answering a chart request in words.
+        # A chart ask in web chat is pointed at Chart mode, not answered in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
     table_ask = getattr(intent, "table_ask", False)
     if tables_on and not table_ask and names_sheet is not None:
-        # Claude Haiku's yes/no flipped between runs on the same question
-        # ("which BDE has the most offers?"). A question typing a sheet's cell
-        # or naming its column is asked of the form too; the form still
-        # answers nothing when no table fits.
+        # The model's yes/no is unstable, so a question typing a sheet's cell or
+        # naming its column is asked of the form too.
         try:
             table_ask = names_sheet.result(timeout=_NAMES_SHEET_WAIT)
         except Exception:  # noqa: BLE001 - a hint may only ever add
             logger.warning("Agent routing: sheet check failed", exc_info=True)
     if tables_on and table_ask:
-        # "What is our conversion ratio?": a figure over a sheet's rows, which
-        # the passages cannot hold. Worked out by a checked query and given to
-        # the answer as a passage of the sheet; nothing fits, Ask goes on as before.
+        # A figure over a sheet's rows, worked out by a checked query and given as
+        # a passage; nothing fits, Ask goes on as before.
         from ..insights.table_answers import ANSWER_OFFERED, answer
 
         worked = answer(checked, _document_tables(org_id, workspace_id, viewer, checked,
@@ -842,23 +656,17 @@ def _try_question_route(
             return RoutingDecision(worked[0].provider, "table-answer",
                                    table_answers=tuple(worked))
     if ask == "count":
-        # "How many leads did Rohan Mehta generate in August?" is a count over
-        # rows a sheet never embeds, so the passages cannot answer it. Counted
-        # by SQL only when the chart is NARROWED to what the question typed (a
-        # filter or focus): an unnarrowed one answers a broader question --
-        # "leads by rohan" drew every lead, "sales in March" June's targets,
-        # a person who does not exist everyone -- and reads as the answer.
-        # Otherwise Ask answers as it always did, beside the Chart button.
+        # A count over rows a sheet never embeds. Counted by SQL only when the chart
+        # is NARROWED by a filter or focus from the question: an unnarrowed one
+        # answers a broader question and reads as the answer.
         counted = _chart_mode_route(question, connected, org_id, workspace_id, viewer)
         spec = getattr(counted, "chart_spec", None)
         if spec is not None and (getattr(spec, "filters", None) or getattr(spec, "focus", None)):
             return replace(counted, reason="count-chart")
     if intent.kind != "github_live":
         return None
-    # GitHub embeds nothing, so it can never win the cosine probe, and
-    # `_CODE_INTENT` cannot be widened to cover the rest: no regex separates
-    # "auth code" from "code of conduct". `_CODE_INTENT` STAYS as the floor
-    # below -- this check fails open, so it must be additive.
+    # GitHub can never win the probe and no regex separates "auth code" from
+    # "code of conduct". This check fails open, so `_CODE_INTENT` stays as the floor.
     if not _has_authorized_repos(org_id, workspace_id):
         logger.info(
             "Agent routing: classified code question but no authorized "
@@ -870,10 +678,7 @@ def _try_question_route(
 
 
 def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id):
-    """A named page this space cannot chart, or None to keep the usual refusal.
-
-    Never raises: a failed title lookup costs the clearer sentence, not the answer.
-    """
+    """A named page this space cannot chart, or None. Never raises."""
     from ..insights.resolve import chart_document_gap
 
     try:
@@ -893,14 +698,10 @@ def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_i
 
 def _live_fetch_named_tables(org_id, workspace_id, viewer, title,
                              providers: list[str] | None = None) -> str | None:
-    """Read one named Notion, Drive, or Linear document live and save its figures.
+    """Read one named, already-indexed Notion, Drive or Linear document live
+    and save its figures (only when Chart mode has no table for it).
 
-    Only a document already indexed in this scope (on ``providers`` when the
-    question named one), and only when Chart mode has no table for it. Its
-    tables are read exactly; a page of sentences is read by the text adapter
-    now, because the person is waiting. Returns ``"saved"``, the page's title
-    when it was read and held no series, or None (not found, not readable).
-    Never raises.
+    Returns ``"saved"``, the title when it held no series, or None. Never raises.
     """
     try:
         from ..auth.credentials import get_live_connection_token
@@ -971,12 +772,10 @@ def _worth_prose(intent, viewer) -> bool:
 
 def _chart_from_prose(question, intent, org_id, workspace_id, viewer, providers,
                       *, read_providers=None, tag=None):
-    """Chart figures from the page the question matches, or say the sentences had none.
+    """Chart figures from the page the question matches, or say it had none.
 
-    ``read_providers`` keeps the read on the connector the question named;
-    ``tag`` on one Slack channel. None leaves the caller's own refusal in
-    place. An activity metric is not substituted when the page does not
-    yield a series.
+    ``read_providers``/``tag`` keep the read on the named connector/channel.
+    None keeps the caller's refusal. No activity metric is substituted.
     """
     if not _worth_prose(intent, viewer):
         return None
@@ -1059,9 +858,8 @@ def _classify_tables(question, providers, tables, org_id, workspace_id, viewer):
 
 
 def _channel_subject(org_id: str, workspace_id: str | None, tag: str) -> str | None:
-    """The channel name its conversations are counted under (``#general``):
-    the ``subject`` facts.py stores for a Slack thread. None when nothing from
-    the channel is indexed. Never raises."""
+    """The channel name its threads are counted under (``#general``), or None.
+    Never raises."""
     try:
         from ..db.connection import get_connection
 
@@ -1097,8 +895,7 @@ CHANNEL_CHART_ONLY = (
 
 
 def _in_channel(spec, subject: str | None):
-    """A spec that reads only this channel, or None. A Slack metric is
-    focused on the channel; a table was already listed from it alone."""
+    """A spec reading only this channel, or None."""
     from ..insights import registry
 
     if spec.table_id:
@@ -1119,17 +916,12 @@ def _chart_mode_route(
     user_id: str | None = None,
     channel_tag: str | None = None,
 ) -> RoutingDecision:
-    """Chart mode: the asker chose a chart, so the answer is a chart or a
-    plain refusal -- never a document answer, never a guess. Never raises.
+    """Chart mode: a chart or a plain refusal, never a document answer or a
+    guess. Never raises.
 
-    In order: the stored tables and activity; when the question named a
-    connector and the pick was another's, that connector's tables alone; the
-    page they named, read live; the pages whose text matches, read for figures
-    in their sentences; then a refusal that says which of these failed.
-
-    ``channel_tag`` is a Slack channel: only that channel's conversations and
-    the figures posted in it are charted (everyone in the room can read
-    those), never another connector or channel.
+    Order: stored tables and activity; the named connector's tables alone;
+    the named page read live; matching pages read for figures; then a refusal
+    naming what failed. ``channel_tag`` charts that Slack channel only.
     """
     from ..insights import panels as panel_defs
     from ..insights.resolve import (
@@ -1175,15 +967,13 @@ def _chart_mode_route(
         )
     named = getattr(intent, "named_document", None)
     if intent.kind == "chart" and intent.spec is not None:
-        # A page they NAMED that has figures beats an activity metric: "tickets
-        # from the Customer Support update" was charted from Linear issues.
+        # A page they NAMED with figures beats an activity metric.
         if intent.spec.table_id or not named or not _named_has_tables(
                 org_id, workspace_id, viewer, named, channel_tag):
             return chart(intent.spec)
     source = getattr(intent, "source", None)
     only = [source] if source else None
-    # They named a connector and what was offered was mostly another's: ask
-    # again with that connector's tables alone.
+    # They named a connector but the pick was another's: retry with its tables alone.
     if source and any(t.provider != source for t in tables):
         own = _document_tables(org_id, workspace_id, viewer, question,
                                providers=only, tag=channel_tag)
@@ -1191,9 +981,8 @@ def _chart_mode_route(
                                 viewer) if own else None
         if spec is not None:
             return chart(spec)
-    # The page they named can sit outside the six tables offered. If no table
-    # is stored for it, read it live once, save what it holds, and ask again
-    # with only its tables.
+    # The named page may sit outside the offered tables: read it live once,
+    # save it, and retry with only its tables.
     if named and not channel_tag and viewer is not None \
             and not getattr(viewer, "is_unrestricted", False):
         try:
@@ -1220,8 +1009,7 @@ def _chart_mode_route(
                 prose = _single_table_chart(extra[0])
                 if prose is not None:
                     return chart(prose)
-            # They named this page: never answer from another one that merely
-            # matches the words. Say what the named page does hold.
+            # They named this page: never answer from another that merely matches words.
             from ..insights.resolve import prose_figures_unclear
 
             return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=prose_figures_unclear(
@@ -1234,10 +1022,8 @@ def _chart_mode_route(
             return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
                                    chart_refusal=prose_figures_missing([read]))
         else:
-            # The page they named is not here (another space, or not shared
-            # with them). Say where it is; never read OTHER pages that merely
-            # share words with the question -- that charted "Hiring plan 2026"
-            # from Atlas and a Linear issue.
+            # The named page is not here (another space, or not shared): say where it
+            # is, and never read other pages that merely share words.
             gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
             if gap:
                 return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)
@@ -1299,15 +1085,9 @@ _FOLLOW_UP_MARGIN = 0.1
 def refusal_retry(decision: RoutingDecision) -> tuple[str, set[str]] | None:
     """Where a REFUSED answer is asked once more: ``(agent, also_searched)``.
 
-    The probe picks the tool holding the single closest chunk, and a short
-    focused Notion page can edge a Drive file that holds the answer inside a
-    longer chunk ("is Vikram on a PIP?": Slack 0.536, Notion 0.520, Drive
-    0.449, answer in Drive). The tool that refused was read and did not
-    answer, so it is left out: re-reading it only crowds the others out of the
-    passages. The best of the rest that cleared the gate answers, with the
-    remaining ones searched beside it. Only for a probe's own pick or a sheet
-    row the question named: a tool the question named, the graph placed, or
-    the asker requested stays the only one.
+    The refusing tool is left out; the best other tool that cleared the gate
+    answers, the rest searched beside it. Only for a probe's pick or a named
+    sheet row: a named, graph-placed or requested tool stays the only one.
     """
     if decision.reason not in ("best-match", "follow-up", "rows-named") or not decision.scores:
         return None
@@ -1329,8 +1109,8 @@ _NAMES_SHEET_WAIT = 2.0
 
 
 def _names_a_sheet(question: str, org_id: str, workspace_id: str | None, viewer) -> bool:
-    """Does the question type a cell of a sheet this viewer can read, or name
-    one of its column headers by every word? The data's own words, no list."""
+    """Does the question type a sheet cell this viewer can read, or name a
+    column header by every word? The data's own words, no list."""
     from ..doctables.store import list_tables, typed_cells
     from ..insights.tables import _words
 
@@ -1345,12 +1125,8 @@ def _names_a_sheet(question: str, org_id: str, workspace_id: str | None, viewer)
 
 def _rows_named_provider(question: str, org_id: str, workspace_id: str | None,
                          viewer, embedded: set[str]) -> str | None:
-    """The one tool whose sheet rows the question names by a cell, or None.
-
-    The same exact-text lookup Ask's rows leg uses (``doctables.store.
-    rows_naming``), as this viewer. Rows in two tools name neither, the
-    ``_graph_named_provider`` rule. Never raises.
-    """
+    """The one tool whose sheet rows the question names by a cell, or None
+    (``doctables.store.rows_naming``, as this viewer). Never raises."""
     try:
         from ..doctables.store import rows_naming
 
@@ -1366,12 +1142,8 @@ def _rows_named_provider(question: str, org_id: str, workspace_id: str | None,
 def _graph_named_provider(graph_plan, embedded: set[str]) -> str | None:
     """The tool holding what the question names EXACTLY, per the graph.
 
-    Only exact identifiers count (``SYV-6``, ``api#14``) -- a fuzzy title match
-    is what the cosine probe already measures, and letting it override the
-    probe would trade a measurement for a guess. Two identifiers in two tools
-    resolve to NEITHER, the ``_named_scope`` rule: the wrong tool is worse
-    than the probe. Never waits more than ``_GRAPH_WAIT_SECONDS`` for a plan
-    still being built: routing must not get slower because the graph did.
+    Exact identifiers only (``SYV-6``); fuzzy titles are the probe's job. Two
+    tools resolve to neither. Waits at most ``_GRAPH_WAIT_SECONDS``.
     """
     if graph_plan is None:
         return None
@@ -1414,17 +1186,10 @@ def choose_agent(
 ) -> RoutingDecision:
     """Which agent answers, plus the question check's live-data verdict.
 
-    ``channel_tag`` (Slack, a channel's chart ask) charts that channel only.
-
-    ``chart_from_words`` is Slack, which has no Chart toggle: a question the
-    check reads as asking to SEE a chart is answered in Chart mode.
-
-    ``chart_mode`` is chat's Chart toggle (or, in Slack, a question naming a
-    chart): the answer is a chart or a refusal and nothing else. ``viewer``
-    lets the chart classifier offer document tables the asker may open;
-    without one, none are offered. ``uploads`` (``doctables.store.
-    UploadScope``) offers the tables in files this person uploaded to this
-    chat, in Chart mode only."""
+    ``channel_tag`` charts one Slack channel. ``chart_from_words``: Slack's
+    chart asks go to Chart mode. ``chart_mode``: a chart or a refusal only.
+    ``viewer`` gates which document tables are offered; ``uploads`` offers
+    this chat's uploaded tables in Chart mode."""
     live: list = []
     chart: list = []
     decision = _choose_agent(
@@ -1456,50 +1221,20 @@ def _choose_agent(
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
-    ``context`` is the conversation's previous question. A follow-up such as
-    "elaborate and describe in detail" names no source, so it scores about
-    the SAME everywhere (measured: top two within 0.03, all above the gate)
-    and landed on whichever corpus edged it -- a Drive answer followed up from
-    Notion. When no source clearly wins on the question alone, it is
-    re-probed together with the turn it follows. A new topic in the same chat
-    has a clear winner (0.73 vs 0.45) and is routed on its own words, because
-    always blending the previous turn sent "what is our leave policy?" after
-    a Linear question to Linear.
+    ``context`` is the previous question: when no source clearly wins on the
+    question alone, it is re-probed with the turn it follows (a new topic has
+    a clear winner and routes on its own words).
 
-    Precedence, and the reason for each step:
-
-    1. **An explicit request wins.** The API still accepts ``agent``, so an
-       existing caller (and every test that pins a source) keeps working.
-    2. **Chart mode** (``chart_mode``): the asker chose a chart, so the
-       answer is a chart or a refusal. Charts are not guessed outside it.
-    3. **A classified live-code question**, when the question check says the
-       answer is in the code itself rather than in a document. The one place
-       a model picks a destination, and only ever GitHub — which has no
-       corpus, so the cosine probe cannot reach it.
-    4. **A named repository wins.** Nothing else in the org is called that, so
-       it is the least ambiguous signal available — and it must beat the vector
-       probe, because a Notion page *about* a repo would otherwise outscore the
-       repo itself.
-    4b. **An exact identifier the knowledge graph places in one tool**
-       (``graph_plan``: a ``GraphPlan`` or a future of one, built by the
-       caller in parallel). "Who owns SYV-6?" is a Linear question even when a
-       Notion page mentions SYV-6 more often -- the same reasoning as the named
-       repo above. Absent (no plan, flag off, no viewer) this step is skipped
-       and routing is exactly what it was.
-    5. **One embedded source ⇒ no probe.** Saves an embedding and a query in
-       the common single-source tenant.
-    6. **Otherwise, the best-scoring provider**, if it clears the confidence
-       gate. Same threshold retrieval already uses, for the same reason: below
-       it, nothing here resembles the question.
-    7. **Code intent (the keyword floor), when nothing embedded cleared the
-       gate.** Kept below the probe so a code word inside a document question
-       cannot hijack it, and kept at all because step 3 fails OPEN — a dead
-       classifier must not make GitHub unreachable.
-    8. **The best score anyway**, even below the gate — the routed agent's own
-       gate will refuse honestly, which is a better outcome than routing to a
-       default agent that never had the content.
-    9. **The pre-existing default** (workspace agent inside a space, else the
-       legacy policy agent) when there is nothing to route to at all.
+    1. An explicit ``agent`` request.
+    2. Chart mode: a chart or a refusal.
+    3. A classified live-code question (GitHub; the probe cannot reach it).
+    4. A named repository (beats a page ABOUT the repo).
+    4b. An exact identifier the graph places in one tool.
+    5. One embedded source: no probe.
+    6. The best-scoring provider, if it clears the gate.
+    7. Code intent (keyword floor) when nothing cleared; kept because 3 fails open.
+    8. The best score anyway; that agent's gate refuses honestly.
+    9. The default agent when there is nothing to route to.
     """
     if requested_agent in DIRECT_AGENT_KEYS or requested_agent == INSIGHTS_KEY:
         return RoutingDecision(requested_agent, "requested")
@@ -1523,10 +1258,8 @@ def _choose_agent(
         return RoutingDecision(default_key, "no-sources")
 
     embedded = connected & set(EMBEDDED_PROVIDERS)
-    # The cosine probe (an embedding + one query) runs WHILE the chart
-    # classifier's model call is in flight rather than after it -- the two are
-    # independent, and serially they were the whole of routing's latency. A
-    # chart or named-repo answer simply discards it.
+    # The probe runs while the chart classifier's call is in flight; a chart or
+    # named-repo answer discards it.
     probe = None
     if embedded and not (len(embedded) == 1 and "github" not in connected):
         probe = _ROUTING_POOL.submit(
@@ -1558,13 +1291,8 @@ def _choose_agent(
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
 
-    # The asker NAMED where to look ("the latest in Linear and Drive"): the
-    # answer comes from those tools, never from one they did not mention.
-    # Two names used to read as ambiguous and fall through to the similarity
-    # probe, which routed "updates in Linear and Drive" to a Slack channel
-    # called #rag-updates and cited only Slack. One named tool is routed
-    # there; several are probed AMONG THEMSELVES, and the connected answer
-    # (graph/plan.py) reads the rest of them.
+    # The asker NAMED where to look: one named tool is routed there; several
+    # are probed among themselves and the connected answer reads exactly those.
     named_tools = named_providers(question, embedded)
     if named_tools:
         if len(named_tools) == 1:
@@ -1588,10 +1316,8 @@ def _choose_agent(
     threshold = RagSettings.from_env().similarity_threshold
     best = max(scores, key=scores.get) if scores else None
 
-    # The question names a cell of one tool's sheet ("Kavya Nair", "L-1008"):
-    # that tool holds the rows, which a sheet never embeds, so the probe saw
-    # only its column description and Slack won by 0.03. A refusal there is
-    # still asked again elsewhere (`refusal_retry`).
+    # The question names a cell of one tool's sheet: that tool holds the rows a
+    # sheet never embeds. A refusal there is retried (`refusal_retry`).
     rows_tool = rows.result() if rows is not None else None
     if rows_tool is not None and rows_tool != best and scores.get(rows_tool, 0.0) >= threshold:
         logger.info("Agent routing: %r names rows of a %s sheet", question[:60], rows_tool)
@@ -1610,9 +1336,8 @@ def _choose_agent(
         return RoutingDecision("github", "code-intent", scores)
 
     if best is not None:
-        # Deliberately routes to a source that probably cannot answer: its gate
-        # then produces the honest fallback, with citations from the closest
-        # source rather than from an agent that was never asked.
+        # Routes to the closest source even below the gate: its own gate refuses
+        # honestly.
         return RoutingDecision(best, "weak-best-match", scores)
 
     if len(embedded) == 1:

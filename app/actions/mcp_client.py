@@ -1,15 +1,9 @@
 """A small MCP client: JSON-RPC 2.0 over Streamable HTTP, and MCP's sign-in.
 
-Only what Handbook uses: open a session, list the tools (bounded), call one.
-No SDK: the protocol is a few POSTs, and the SDK would add a server stack we
-do not run. Every address is an admin's input or came from a server's
-metadata, so each is checked to be public HTTPS before it is fetched
-(``public_https``): a server must never be a way into our own network.
-
-Sign-in follows the MCP authorization spec: the server names its
-authorization server (protected-resource metadata), Handbook registers itself
-there once per server (dynamic client registration), and each person signs in
-with PKCE. The ``resource`` parameter binds every token to that one server.
+No SDK (it adds a server stack we do not run). Every address is checked to be
+public HTTPS (``public_https``): a server must never be a way into our network.
+Sign-in per the MCP authorization spec: dynamic client registration once per
+server, PKCE per person, and ``resource`` binds each token to that server.
 """
 
 from __future__ import annotations
@@ -51,8 +45,7 @@ class McpUnauthorized(OAuthReauthRequiredError):
 
 def public_https(url: str) -> str:
     """``url`` if it is https to a public address, else ``ActionRejected``.
-    Handbook's own servers (``mcp_host_url``, set by the operator, never by an
-    admin) are trusted as configured, so they also work on a local address."""
+    Handbook's own servers (``mcp_host_url``, operator-set) may be local."""
     from ..config.settings import ActionsSettings
 
     own = ActionsSettings.from_env().mcp_host_url
@@ -228,12 +221,9 @@ def _well_known(base: str, name: str) -> list[str]:
 
 def discover(url: str, redirect_uri: str, *, timeout: float = 20.0, preset=None,
              org_id: str | None = None) -> dict | None:
-    """How people sign in to this server, registered for Handbook; ``None``
-    when it needs no sign-in. Raises ``ActionRejected`` with the reason.
-
-    A ``preset`` (``mcp_presets``) supplies what a server does not: Handbook's
-    own app there when it cannot register Handbook (GitHub, Slack), or the
-    whole sign-in when it advertises none (Google)."""
+    """How people sign in to this server, registered for Handbook; ``None`` when
+    none is needed. Raises ``ActionRejected``. A ``preset`` supplies Handbook's own
+    app where the server cannot register it, or the whole sign-in (Google)."""
     if preset is not None and preset.oauth:
         client_id, _secret = preset.client(org_id) if preset.client else (None, None)
         if not client_id:
@@ -315,9 +305,8 @@ def _no_app(preset) -> str:
 
 
 def _preset_client(oauth: dict, org_id: str | None) -> tuple[str, str | None]:
-    """The client to sign in with: a preset's is read now, never the copy stored
-    when the server was added, so a company that sets up its own app later
-    signs in through it."""
+    """The client to sign in with: a preset's is read now, never the stored copy,
+    so a company's later own app is used."""
     from .mcp_presets import PRESETS
 
     client_id, secret = PRESETS[oauth["preset"]].client(org_id)

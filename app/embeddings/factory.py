@@ -1,12 +1,8 @@
 """Single construction point for the embedding provider.
 
-Picks the local or remote backend from configuration and returns something
-satisfying the ``EmbeddingProvider`` interface.
-
-Local models are process-wide singletons keyed by ``(model, device)``. Loading
-BGE-M3 twice (policy agent + workspace agent, or API + in-process ingest
-worker) roughly doubles RSS and is enough to thrash a 16GB laptop into swap.
-Remote providers stay uncached — they hold no heavy weights.
+Local models are process-wide singletons keyed by ``(model, device)``: a
+second BGE-M3 load doubles memory. Remote providers hold no weights and
+stay uncached.
 """
 
 from __future__ import annotations

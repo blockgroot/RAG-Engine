@@ -1,41 +1,16 @@
 """The Slack Agent: answers only from this tenant's ingested Slack threads.
 
-Slack is ingested like Notion/Drive (fetch → chunk → embed → store), so unlike
-``GitHubAgent`` this is a genuine retrieval agent and reuses ``RagPipelineAgent``
-exactly as ``PolicyAgent``/``WorkspaceAgent`` do. What makes it a separate agent
-rather than another caller of ``PolicyAgent`` is two things the policy pipeline
-cannot express at once:
+A retrieval agent over ``RagPipelineAgent``, separate for two reasons:
 
-1. **Corpus.** Its pipeline is pinned to ``source_provider="slack"``, so
-   retrieval reaches only chunks whose document came from Slack. A tab labelled
-   "Slack" that answered from a Notion page would be lying about where the
-   answer came from — and the user cannot tell the difference from the answer
-   text alone. This is a *relevance* boundary, not an access one: everything it
-   can reach was already inside the caller's ``org_id``/``workspace_id``, which
-   remain the only isolation guarantees (see ``app/vectorstore/base.py``).
+1. **Corpus.** Pinned to ``source_provider="slack"``. A relevance boundary,
+   not an access one: ``org_id``/``workspace_id`` remain the isolation.
+2. **Framing.** A passing "let's just do X" is not a handbook sentence, so
+   it has its own ``SLACK_PROMPT_PROFILE`` and ``source`` label.
 
-2. **Framing.** Chat threads are not documents. People in a Slack thread think
-   out loud, disagree, and change their minds, so a passing "let's just do X"
-   is not the same kind of claim as a sentence in a handbook — and answering
-   with the policy persona would launder one into the other. Hence its own
-   ``SLACK_PROMPT_PROFILE`` (see ``app/rag/prompts.py``) and its own
-   ``source`` label, so a caller can always tell a Slack-derived answer apart.
-
-Everything else — the confidence gate, the strict grounded prompt, reranking,
-recovery, memory — is the unchanged shared machinery.
-
-It does add ONE thing ``PolicyAgent`` deliberately does not: a recency-based
-second attempt (``_recap``). That is not a policy exception sneaking in, it is
-a property of the corpus. Every retrieval path here ranks chunks by similarity
-to the question, which works because a handbook page about leave *resembles* a
-question about leave. A recap request — "catch me up on the last few days" —
-resembles nothing in particular, so similarity returns arbitrary threads and
-the grounded prompt correctly refuses (measured on live data: top score 0.516,
-well clear of the 0.35 gate, refused by the prompt). Documents do not generate
-that question shape; a chat log does, constantly. So when the ordinary path
-refuses, this agent retries once with evidence selected by *recency* instead,
-under a prompt that must still refuse if those threads do not address the
-question. Bounded at one extra attempt, same as Phase 3's recovery.
+It adds one recency-based retry (``_recap``): "catch me up" resembles no
+thread, so similarity retrieval refuses. When the ordinary path refuses,
+it retries once with the newest threads, under a prompt that must still
+refuse if they do not address the question.
 """
 
 from __future__ import annotations
@@ -57,9 +32,7 @@ from .rag_pipeline_agent import RagPipelineAgent
 
 logger = logging.getLogger(__name__)
 
-# Enough threads to brief someone who has been away for a few days without
-# building a prompt the aux model has to wade through. Chunks, not threads —
-# a long thread is several — so this is roughly 10-20 conversations.
+# Chunks for a few days' briefing (roughly 10-20 conversations).
 _RECAP_CHUNK_LIMIT = 40
 
 
@@ -81,12 +54,8 @@ def _channel_id_of(external_id: str | None) -> str | None:
 
 
 def _channel_names_for(org_id: str, workspace_id: str | None) -> dict[str, str]:
-    """Best-effort map of Slack channel id → name from the connection picker.
-
-    Used when already-ingested titles lack the ``#channel:`` prefix (fetch used
-    to store the raw message text). A lookup failure must not break recap —
-    tests and stores without a connection row simply get an empty map.
-    """
+    """Best-effort Slack channel id → name map, for titles stored without the
+    ``#channel:`` prefix. A failure yields an empty map."""
     try:
         from ..auth.credentials import get_connection_config
 
@@ -143,9 +112,7 @@ class SlackAgent(RagPipelineAgent):
         recap = self._recap(question, org_id, workspace_id=workspace_id, viewer=viewer)
         if recap is None:
             return chunks, response
-        # The similarity answer is discarded, so its chunk iterator must be
-        # too — streaming a refusal and then replacing it is worse than not
-        # streaming it at all.
+        # The similarity answer is discarded, so its chunk iterator is too.
         return chunk_answer(recap.answer), recap
 
     def _recap(
@@ -158,11 +125,8 @@ class SlackAgent(RagPipelineAgent):
     ) -> AgentResponse | None:
         """One recency-selected retry. ``None`` means "keep the original answer".
 
-        Every failure path returns ``None`` rather than raising or inventing:
-        a store without recency support, an empty corpus, an LLM error, or a
-        model that (correctly) declines. The caller then serves the ordinary
-        refusal, so this can only ever turn a refusal into a grounded answer,
-        never the reverse.
+        Every failure returns ``None``, so this can only turn a refusal into a
+        grounded answer, never the reverse.
         """
         pipeline = self.pipeline
         try:

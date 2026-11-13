@@ -1,43 +1,21 @@
-"""Walk the knowledge graph as one viewer (Second Brain step 1.5).
+"""Walk the knowledge graph as one viewer.
 
-The rule that shapes everything here: **filter at every hop** (plan invariant
-4). The access check runs INSIDE each hop's query, not on the result, because
-a path that passes through something the viewer cannot see discloses a
-relationship even if the hidden node itself is dropped afterwards.
+**Filter at every hop**: the access check runs INSIDE each hop's query, since a
+path through something hidden discloses a relationship. An edge is crossed only
+when one of its evidence rows passes the SAME predicate retrieval uses
+(``security/visibility.py``); a DOCUMENT entity is entered only if the viewer
+may open it.
 
-An edge may be crossed only when at least one of its evidence rows is visible
-to the viewer, using the SAME predicate retrieval uses
-(``security/visibility.py``) -- a document's sharing is read live from
-``documents``, so an unshared file hides its edges on the very next walk. A
-DOCUMENT entity may be entered only when the viewer may open that document:
-a reference from a document you can read to one you cannot must not reveal the
-second one's title, or lead anywhere past it.
+**Ranked, fair, bounded**, because real graphs have hubs. Each hop:
 
-**Ranked, fair, bounded -- because a real company's graph has hubs.** The first
-version was one recursive CTE stopped by a LIMIT: breadth-first in whatever
-order Postgres produced rows. That is fine on a toy corpus and wrong on a real
-one, where one person authors hundreds of documents across four tools: the
-first 50 rows were whichever tool's edges came out first, so "has she
-discussed it in Slack?" could exhaust the budget on Notion before a single
-Slack edge was read. Each hop is now its own query that
+* expands ``same_person`` first (free: one member across tools);
+* reads at most ``_POOL_PER_NODE`` newest candidate edges per frontier node;
+* scores them against the QUESTION with full-text search (name, and a
+  document's ``chunks.content_tsv``), recency breaking ties; no model call;
+* picks round-robin ACROSS TOOLS (named tools first), ``PER_NODE`` per node,
+  within the hop's share of ``MAX_EDGES``.
 
-* expands ``same_person`` first (one member's identities across tools cost no
-  hop, so "the PR Ada reviewed" is as near to her Slack identity as to her
-  GitHub one);
-* reads at most ``_POOL_PER_NODE`` newest candidate edges per frontier node
-  (bounds the work on a hub before any scoring runs);
-* scores each candidate against the QUESTION with Postgres full-text search --
-  the neighbour's name, and for a document its indexed chunk text
-  (``chunks.content_tsv``, already there for keyword retrieval) -- with
-  recency as the tie-break. No model call and no embedding: the walk runs in
-  parallel with routing and must not need one;
-* then picks round-robin ACROSS TOOLS (tools the question named first), at
-  most ``PER_NODE`` edges per frontier node, until the hop's share of
-  ``MAX_EDGES`` is spent -- so no single tool and no single hub can crowd the
-  others out.
-
-``truncated`` says when a bound, not the graph, is what stopped the walk. Four
-round trips whatever the graph's size: two hops, evidence, names.
+``truncated`` says a bound, not the graph, stopped the walk. Four round trips.
 """
 
 from __future__ import annotations
@@ -50,11 +28,9 @@ from ..security.visibility import evidence_predicate, visibility_predicate
 
 MAX_HOPS = 2
 MAX_EDGES = 50
-#: Edges one frontier node may contribute to a hop. A hub (someone who wrote
-#: 400 documents) still gets its best ``PER_NODE`` in, never all of them.
+#: Edges one frontier node may contribute to a hop (a hub gets its best, not all).
 PER_NODE = 20
-#: Candidate edges read per frontier node before scoring, newest first. Bounds
-#: the scoring work on a hub; the fair pick then chooses among these.
+#: Candidate edges read per frontier node before scoring, newest first.
 _POOL_PER_NODE = 300
 #: Identity hops (``same_person``) within one hop's expansion: identity ->
 #: member -> the member's other identities.
@@ -73,12 +49,8 @@ class WalkedEntity:
 
 @dataclass(frozen=True)
 class WalkedLink:
-    """One edge the walk crossed, by name -- the raw material of a readable fact.
-
-    Both ends are entities the viewer was allowed to enter and the edge has
-    evidence they may see, so naming them discloses nothing the walk itself
-    did not already establish.
-    """
+    """One edge the walk crossed, by name. Both ends and the evidence passed the
+    viewer's checks, so naming them discloses nothing new."""
 
     src_name: str
     src_key: str
@@ -93,8 +65,7 @@ class WalkedLink:
 @dataclass
 class WalkResult:
     entities: list[WalkedEntity] = field(default_factory=list)
-    #: Documents behind the visible evidence of every edge crossed, plus every
-    #: document entity reached -- all of them openable by the viewer.
+    #: Documents behind visible evidence plus document entities reached; all openable.
     document_ids: list[str] = field(default_factory=list)
     edges: int = 0
     truncated: bool = False
@@ -141,10 +112,7 @@ def openable_entity_sql(entity_alias: str, acl: list[str] | None) -> tuple[str, 
 def question_tsquery(question: str | None) -> str | None:
     """An OR full-text query over the question's words, or ``None``.
 
-    OR, not AND: a relevant thread rarely repeats every word of the question.
-    Words are alphanumeric only, so nothing the asker types can inject
-    ``tsquery`` syntax; Postgres' own ``english`` configuration drops stop
-    words and stems the rest -- no word list lives here.
+    Alphanumeric words only (no ``tsquery`` injection); ``english`` handles stop words.
     """
     words = list(dict.fromkeys(w.lower() for w in _WORD.findall(question or "")))
     return " | ".join(words[:32]) or None
@@ -206,8 +174,7 @@ def walk(
                         c["nx_id"], c["kind"], c["name"], depth, c["key"] or ""
                     )
                     nxt.append(c["nx_id"])
-            # The next hop starts from what this one reached; its own identity
-            # closure (inside ``_hop``) adds each person's other tools for free.
+            # The next hop starts from what this one reached.
             frontier = nxt
 
         edge_ids = list(kept_edges)[:max_edges]
@@ -229,10 +196,8 @@ def walk(
 def _hop(conn, org_id, workspace_id, frontier, visited, acl, tsq, *, first):
     """One hop: identity closure of the frontier, then its scored candidates.
 
-    Returns ``(identities, candidates, pool_full)``. ``identities`` are
-    ``same_person`` joins (free); on the first hop the seeds themselves come
-    back too, with no edge, once they pass the openable check -- a document
-    seed the viewer cannot open never starts a walk.
+    Returns ``(identities, candidates, pool_full)``. On the first hop the seeds come
+    back too, once they pass the openable check.
     """
     sp_edge_ok, sp_edge_params = visible_edge_sql("e", acl)
     sp_node_ok, sp_node_params = openable_entity_sql("nx", acl)
@@ -324,12 +289,8 @@ def _hop(conn, org_id, workspace_id, frontier, visited, acl, tsq, *, first):
 def _fair_pick(candidates, budget, per_node, focus):
     """Best-first, round-robin across tools, capped per frontier node.
 
-    Returns ``(picked, left_over)``. Within a tool, candidates go best score
-    first, newest breaking ties. Each round every tool gets one pick and a
-    tool the question NAMED gets two, so naming Slack is honoured without
-    Slack being the only thing walked. A ``per_node`` cap stops one hub from
-    spending the whole budget. ``left_over`` is True when a pickable edge was
-    left behind -- the walk was cut by a bound, which ``truncated`` reports.
+    Returns ``(picked, left_over)``. A NAMED tool gets two picks per round.
+    ``left_over`` = a pickable edge was cut by a bound (``truncated``).
     """
     if budget <= 0:
         return [], bool(candidates)
@@ -365,9 +326,7 @@ def _fair_pick(candidates, budget, per_node, focus):
                 break
         if not progressed:
             break
-    # Anything not picked was cut by a bound (the budget or the per-node cap),
-    # never by the graph running out -- so it counts as truncation. A capped
-    # hub that silently dropped 60 pages would read as a complete walk.
+    # Anything not picked was cut by a bound, so it counts as truncation.
     picked_ids = {c["edge_id"] for c in picked}
     left_over = any(e not in picked_ids for e in best)
     return picked, left_over

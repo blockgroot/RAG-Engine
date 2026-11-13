@@ -1,20 +1,10 @@
 """GitHub charts: facts, not vectors.
 
-GitHub is the one connector with no ``SourceAdapter`` and no ``documents`` rows
--- it embeds nothing -- so ``facts.record_document_facts`` can never see it. It
-gets its own recorder, reading live and writing the SAME ``activity_facts``
-shape everything else uses, which is what lets one SQL path serve every chart.
-
-**This does not break "GitHub embeds nothing."** That rule is about vectors: no
-documents, no chunks, no embeddings, no adapter. A counter is not a chunk, and
-``tests/test_insights_github.py`` asserts the distinction in both directions.
-
-Why facts rather than reading live at view time (which is what the first draft
-of this feature did): a page load would pay GitHub's rate limit per viewer, add
-a cold start plus N API calls of latency, and could show no history beyond what
-one cheap call returns. The cost is that GitHub charts are as fresh as the last
-sync rather than live -- invisible for "pull requests merged per week", and
-disclosed by the freshness panel regardless.
+GitHub has no ``documents`` rows, so it gets its own recorder that reads live
+and writes the same ``activity_facts`` shape, so one SQL path serves every
+chart. A counter is not a chunk: "GitHub embeds nothing" still holds
+(``tests/test_insights_github.py``). Facts, not a live read per view: no rate
+limit per viewer, and history beyond one call; freshness is disclosed.
 """
 
 from __future__ import annotations
@@ -32,10 +22,8 @@ logger = logging.getLogger(__name__)
 
 PROVIDER = "github"
 
-#: How far back a sync looks. Long enough that a quarterly chart has history
-#: after one sync, short enough that the pull-request cap is rarely the binding
-#: constraint. Re-read on every sync, so a fact's date only ever gets more
-#: accurate.
+#: How far back a sync looks: a quarter of history after one sync, short
+#: enough that the pull-request cap rarely binds.
 WINDOW_DAYS = 180
 
 #: The three people a pull request involves, kept as three kinds rather than
@@ -67,10 +55,8 @@ def record_github_facts(
 ) -> GitHubFactsResult:
     """Read this connection's pull requests and record them as facts.
 
-    Never raises. This runs on the shared worker tick beside the ingestion
-    queue and the activity scheduler, and one revoked installation must not
-    take those down -- the same reason ``enqueue_due_syncs`` is broad. A
-    failure costs a stale chart, which the freshness panel already discloses.
+    Never raises: it runs on the shared worker tick, and one revoked
+    installation must not take it down. A failure costs a stale chart.
     """
     settings = settings or GitHubLiveSettings.from_env()
     since = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
@@ -106,13 +92,8 @@ def record_github_facts(
     seen_repos = 0
 
     for repo in repos:
-        # Pull requests and commits are read INDEPENDENTLY. They are separate
-        # GitHub permissions, and an installation routinely has one without
-        # the other -- so a `continue` here silently discarded every commit in
-        # a repo whose pull requests 403'd, which is how a tenant with four
-        # readable commits ended up with an empty `activity_facts` and a
-        # "nothing recorded yet" chart. One unreadable capability must never
-        # cost a readable one.
+        # Pull requests and commits are separate permissions, read
+        # independently: one unreadable capability must never cost the other.
         page = None
         read_something = False
         try:
@@ -120,9 +101,7 @@ def record_github_facts(
                 repo.full_name, since=since, limit=settings.max_pull_requests
             )
         except Exception:  # noqa: BLE001
-            # One inaccessible repo must not cost the others. GitHub 404s what
-            # a token cannot see and 403s what the installation may not read;
-            # neither is retryable.
+            # One inaccessible repo (404/403, not retryable) must not cost the others.
             logger.warning(
                 "insights: could not read pull requests of %s", repo.full_name,
                 exc_info=True,
@@ -132,10 +111,8 @@ def record_github_facts(
             read_something = True
             truncated = truncated or page.truncated
 
-            # The list omits `merged_by`, and it can omit `merged_at` too.
-            # Either gap is filled from the single pull request, on a bounded
-            # slice -- without that, a merge the list did not label is never
-            # stored, and "who merges them" is empty on every tenant.
+            # The list omits `merged_by` and sometimes `merged_at`; filled from
+            # the single pull request on a bounded slice.
             mergers = _fill_mergers(
                 reader, page.items, limit=settings.max_reviewed_pull_requests,
             )
@@ -188,22 +165,15 @@ def record_github_facts(
 
 
 def actor_key(login: str | None) -> str | None:
-    """``github:<login>`` — the identity the Second Brain graph joins on.
-
-    Lowercased because GitHub logins are case-insensitive, so ``Ada`` in a
-    review and ``ada`` on a pull request are one account. Only ever built from
-    a LOGIN; a caller holding a display name passes None.
-    """
+    """``github:<login>``, the identity the graph joins on. Lowercased (logins
+    are case-insensitive); built only from a LOGIN, never a display name."""
     login = (login or "").strip()
     return f"github:{login.lower()}" if login else None
 
 
 def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
-    """One row for raising it, and one for merging it if it merged.
-
-    ``external_id`` is per kind, so the two rows cannot collide on the unique
-    index -- and re-reading the same window updates them instead of doubling.
-    """
+    """One row for raising it, and one for merging it if it merged. Per-kind
+    ``external_id``, so re-reading a window updates instead of doubling."""
     attrs = _pull_attrs(pull)
     rows = [(
         org_id, workspace_id, PROVIDER, KIND_OPENED,
@@ -227,24 +197,17 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
 
 
 def _pull_attrs(pull) -> Jsonb:
-    """Every simple field of the pull request (`insights.fields`), as parsed
-    from the payload already in hand -- no extra call. For a merged PR that
-    is the DETAIL payload `_fill_mergers` fetched, which also carries
-    additions, deletions and changed files. An absent value is omitted,
-    never stored as "none" -- that would chart as a real value."""
+    """Every simple field of the pull request (`insights.fields`) from the
+    payload in hand (the detail payload for a merged PR). An absent value is
+    omitted, never stored as "none", which would chart as a real value."""
     return Jsonb({
         k: list(v) if isinstance(v, tuple) else v
         for k, v in (getattr(pull, "fields", ()) or ())
     })
 
 def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
-    """One row per reviewer per pull request, not per review event.
-
-    Deduplication keeps each person's VERDICT rather than their first event --
-    see ``githublive.base.dedupe_reviews``. Storing the first would record
-    "commented, then approved" as COMMENTED, and the state is what a chart of
-    approvals reads.
-    """
+    """One row per reviewer per pull request, keeping each person's VERDICT
+    (``githublive.base.dedupe_reviews``), not their first event."""
     rows = []
     for review in dedupe_reviews(reviews):
         rows.append((
@@ -273,12 +236,8 @@ def _commit_rows(org_id, workspace_id, commit) -> list[tuple]:
 
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:
-    """Upsert every row in one statement.
-
-    The conflict target must match one of the two PARTIAL unique indexes, and
-    which applies depends on the scope -- Postgres treats NULLs as distinct in
-    a plain UNIQUE, which is why they are partial.
-    """
+    """Upsert every row in one statement. The conflict target must match the
+    scope's PARTIAL unique index (NULLs are distinct in a plain UNIQUE)."""
     if not rows:
         return 0
 
@@ -308,10 +267,8 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
                       url         = EXCLUDED.url
     """
 
-    # Row by row, each in its own savepoint: one row the database refuses (a
-    # commit with no date, a value it cannot store) used to roll back the
-    # WHOLE batch, so a single odd commit silently cost every pull request of
-    # every repo in that sync.
+    # Row by row, each in its own savepoint: one refused row must not roll back
+    # the whole sync.
     written = failed = 0
     try:
         with get_connection() as conn:
@@ -336,12 +293,8 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
 
 
 def _needs_pull_detail(pull) -> bool:
-    """A list row that cannot yet say whether it merged, or who merged it.
-
-    The list leaves out ``merged_by``. It can also leave out ``merged_at``,
-    and a closed pull request then looks abandoned. The single pull request
-    is the only payload that settles both. An open one has neither gap.
-    """
+    """A list row that cannot yet say whether it merged, or who merged it:
+    only the single pull request settles both."""
     if pull.merged_at and pull.merged_by:
         return False
     if pull.merged_at:
@@ -352,10 +305,8 @@ def _needs_pull_detail(pull) -> bool:
 def _fill_mergers(reader, pulls, *, limit: int) -> dict[int, object]:
     """``{number: detailed pull}`` for the rows the list did not finish.
 
-    At most ``limit`` calls: the same bound reviews already pay. A failure is
-    skipped rather than raised. A merge whose detail call fails still counts
-    when the list already had ``merged_at``; it only leaves the per-person
-    breakdown.
+    At most ``limit`` calls. A failure is skipped; a merge with ``merged_at``
+    still counts, only without the per-person breakdown.
     """
     detail = getattr(reader, "get_pull_request", None)
     if detail is None:
@@ -425,10 +376,8 @@ def refresh_for_chart(org_id: str, workspace_id: str | None,
     - ``"failed"``   GitHub could not be read; the chart uses what it has;
     - ``"none"``     no GitHub connection in this scope.
 
-    GitHub has no "count merged PRs per week" call, so the counting stays SQL
-    over stored rows (one checked, access-filtered path for every chart); what
-    changes is WHEN they are read: when someone asks, not on a timer. One read
-    per scope at a time. Never raises.
+    Counting stays SQL over stored rows; only WHEN they are read changes. One
+    read per scope at a time. Never raises.
     """
     from datetime import datetime, timedelta, timezone
 

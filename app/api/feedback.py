@@ -1,9 +1,7 @@
 """Rate an answer, and read what people could not get answered.
 
-Two ends of one pipe, deliberately in one module: a member marks an answer
-wrong, and whoever can fix it reads the topics. Company-wide topics are an
-admin's; a space's are its OWNER's (a company admin may not be a member of
-that space, and a non-member never reads its contents).
+Company-wide topics are an admin's; a space's are its OWNER's (a non-member
+never reads a space's contents).
 """
 
 from __future__ import annotations
@@ -30,9 +28,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["feedback"])
 
-#: Longest comment we store. A downvote comment is a sentence about what went
-#: wrong, not a document -- and it is member-supplied text going into a table
-#: an admin reads, so it is bounded at the boundary like every other upload.
+#: Longest comment stored: member text read by an admin, bounded at the boundary.
 MAX_COMMENT_CHARS = 1000
 
 
@@ -43,10 +39,8 @@ def submit_feedback(
 ):
     """A thumb on one answer, with an optional reason and comment.
 
-    The conversation must be this person's, checked with the same function the
-    chat and attachment routes use -- a rating carries the question and answer
-    text, so accepting an id without the owner check would let anyone write
-    another member's exchange into a table their admin reads.
+    The conversation must be this person's: a rating carries the question and
+    answer text into a table an admin reads.
     """
     conversation_id = (body.get("conversation_id") or "").strip()
     question = (body.get("question") or "").strip()

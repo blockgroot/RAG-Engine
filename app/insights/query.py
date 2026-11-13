@@ -1,32 +1,15 @@
 """The chart query grammar: what a question may ask of one registry metric.
 
-A registry ``Metric`` fixes WHAT is counted (one provider, one ``kind``, its
-caveat and its protections). This module fixes HOW that thing may be sliced,
-so the model composes a chart instead of picking one finished chart from a
-menu -- "pull requests merged by person AND repository, only Sana's" used to
-refuse against rows that were all there, because no metric happened to be
-that exact combination. It is Cube's / ThoughtSpot's pattern
-(docs/plans/2026-09-30-open-ended-charts.md): the model emits a constrained
-query, code validates and compiles it, and the model still never writes SQL
-or produces a number.
+The registry ``Metric`` fixes WHAT is counted; this fixes HOW it may be
+sliced. The model emits a constrained query, code validates and compiles it,
+and the model never writes SQL or a number. Three slots, each CLOSED per metric:
 
-Three slots, each a CLOSED set per metric:
+- ``measure``: what each bar is; every fragment is a constant here.
+- ``split_by``: a second grouping, from the metric's own ``dims``.
+- ``filters``: raw typed values, resolved against real rows, then bound.
 
-- ``measure``: what each bar is. Counts may also count distinct people or
-  distinct subjects; duration metrics may be averaged or maxed as well as the
-  median. Every fragment is a constant here, never built from input.
-- ``split_by``: a SECOND grouping, drawn as "group · split" categories. Only
-  from the metric's own ``dims``.
-- ``filters``: narrow to one person or one state. The VALUE is raw text the
-  member typed and is resolved against values that actually have rows before
-  it reaches SQL, where it is bound -- exactly how ``focus`` already works for
-  subjects.
-
-A protected metric (a suppression floor or ``owners_only``, i.e. survey
-sentiment) gets NONE of this: a split multiplies buckets past the floor's
-reasoning, a person filter points a sentiment chart at one colleague, and
-"count distinct people" over survey rows is a headcount of respondents. Its
-chart stays exactly the one the registry defines.
+A protected metric (suppression floor or ``owners_only``) gets none of this:
+a split or person filter would defeat its anonymity.
 """
 
 from __future__ import annotations
@@ -41,10 +24,8 @@ from .fields import KEY_RE
 #: its own place in the title, and two ways to say one thing drift apart.
 FILTER_DIMS = ("actor", "state")
 
-#: A duration metric's fragments. Only valid for metrics whose ``value`` is
-#: SECONDS and whose unit is days -- ``tests/test_insights_query.py`` pins
-#: both, so a future value metric in another unit cannot silently inherit
-#: "/ 86400".
+#: A duration metric's fragments: only for ``value`` in SECONDS and unit days
+#: (pinned by ``tests/test_insights_query.py``, so "/ 86400" is never inherited).
 _DURATION_MEASURES = {
     "average": ("avg(value) / 86400.0", "days (average)"),
     "longest": ("max(value) / 86400.0", "days (longest)"),
@@ -87,11 +68,9 @@ def is_duration(metric: registry.Metric) -> bool:
 def _attrs(metric: registry.Metric, *types: str, attrs=None) -> tuple[registry.Attr, ...]:
     """This metric's attributes of the given types; none for a protected one.
 
-    ``attrs`` is the set DISCOVERED in the asker's scope
-    (``attr_catalog.for_metric``); ``None`` falls back to the display hints in
-    ``registry.ATTRS`` (tests, and callers with no database). A key that is not
-    a bare identifier is dropped here as well as at write time: keys are
-    spliced into SQL as JSON key literals.
+    ``attrs`` is the set DISCOVERED in scope; ``None`` falls back to
+    ``registry.ATTRS`` hints (tests, no database). Keys are spliced as JSON key
+    literals, so a non-identifier key is dropped here as well as at write.
     """
     if is_protected(metric):
         return ()
@@ -180,11 +159,9 @@ def is_tag(metric: registry.Metric, dim: str | None, attrs=None) -> bool:
 def dim_sql(metric: registry.Metric, dim: str, attrs=None) -> tuple[str, str]:
     """``(expression, join)`` for grouping by ``dim``.
 
-    A core dimension is a column. A category attribute is one JSON field. A
-    TAG attribute fans a row out into one row per tag with a LEFT lateral
-    join -- LEFT so an untagged row stays in the chart as an unnamed group
-    rather than vanishing from the total. Every key reaching here passed
-    ``KEY_RE`` and is one of this metric's attributes, never caller text.
+    A column, a JSON field, or for a TAG attribute a LEFT lateral join (an
+    untagged row stays as an unnamed group). Keys passed ``KEY_RE`` and are
+    this metric's attributes, never caller text.
     """
     if dim in registry.DIMENSIONS:
         return registry.DIMENSIONS[dim], ""
@@ -206,13 +183,9 @@ def dim_sql(metric: registry.Metric, dim: str, attrs=None) -> tuple[str, str]:
 
 
 class AnyOf(str):
-    """A filter value that stands for several stored values.
-
-    "Open issues" is not a state Linear stores: it is every state that is not
-    finished. The resolver turns such a word into ``AnyOf("Open", (...))``
-    built from the states that really have rows; it reads as its label in a
-    title and compiles to ``= ANY(...)``. Still only bound values.
-    """
+    """A filter value that stands for several stored values ("open" = every
+    unfinished state with rows). Reads as its label; compiles to ``= ANY(...)``
+    with bound values."""
 
     values: tuple[str, ...]
 
@@ -250,12 +223,8 @@ def validate(
     attrs=None,
 ) -> None:
     """Raise ``ValueError`` naming the options, never correct the request.
-
-    The store calls this as well as the resolver: the resolver's copy produces
-    a refusal the member can act on, the store's copy is the guarantee that no
-    call site (a pin, a test, a future route) can compile something the
-    grammar does not admit.
-    """
+    Called by the resolver (a refusal to act on) and the store (the guarantee
+    no call site compiles what the grammar does not admit)."""
     # Refusals name fields the way people do ("channel", "person"), never
     # our column keys -- "cannot be narrowed by 'subject'" means nothing to
     # the asker.

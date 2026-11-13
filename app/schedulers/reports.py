@@ -1,18 +1,8 @@
-"""Stored reports: what a run produced, kept for the "Your reports" page.
+"""Stored reports: an immutable record of each run, for "Your reports".
 
-Split from ``store.py`` (which owns the *schedules*) because these are two
-different lifetimes: a scheduler is mutable and personal — edit its prompt,
-change its cadence — while a report is an immutable record of one run.
-
-Everything a report displays is **snapshotted at generation time**, not
-joined at read time: the prompt, provider, cadence and space name are copied
-into the row. Re-resolving them would rewrite history the moment someone
-edits their scheduler or renames a space, and a reader comparing last
-month's report against this month's needs to see what was actually asked
-then.
-
-Scoped by ``(org_id, user_id)`` like the schedulers themselves — a report is
-as personal as the schedule that produced it.
+Prompt, provider, cadence and space name are snapshotted, so editing a
+scheduler or renaming a space never rewrites history. Scoped by
+``(org_id, user_id)``.
 """
 
 from __future__ import annotations
@@ -104,12 +94,8 @@ def save_report(
     window_start: datetime,
     window_end: datetime,
 ) -> Report:
-    """Persist one run's output. Called BEFORE the email is attempted.
-
-    Order matters: the report exists first, so a mail failure costs a
-    notification rather than the run's work. ``delivered_to`` is stamped
-    afterwards by ``mark_delivered`` only if the send is accepted, which keeps
-    "was this actually emailed?" answerable instead of assumed.
+    """Persist one run's output, before the email, so a mail failure loses
+    only the notification. ``mark_delivered`` stamps an accepted send.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -159,10 +145,8 @@ def list_reports(
 ) -> list[Report]:
     """This person's reports, newest first: each schedule's latest ``per_schedule``.
 
-    Bounded twice (per schedule, and ``limit`` in all, for someone keeping
-    dozens of schedules). Each report carries ``runs_total`` so the page says
-    when a schedule has older reports than it shows. A report whose schedule
-    is gone (``scheduler_id`` NULL) is its own group.
+    Bounded per schedule and by ``limit``; ``runs_total`` tells the page when
+    older ones are hidden. An orphaned report is its own group.
     """
     with get_connection() as conn:
         rows = conn.execute(
@@ -181,12 +165,7 @@ def list_reports(
 
 
 def get_report(org_id: str, user_id: str, report_id: str) -> Report | None:
-    """One report, or None when it is not this person's.
-
-    Both scoping columns are in the WHERE clause, so a guessed id from
-    another member (or another tenant) is indistinguishable from a deleted
-    one — it simply does not exist.
-    """
+    """One report, or None when it is not this person's (scoped in the WHERE)."""
     with get_connection() as conn:
         row = conn.execute(
             f"SELECT {COLUMNS} FROM scheduler_reports "

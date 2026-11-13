@@ -11,11 +11,7 @@ const STEPS: Array<[string, string]> = [
 
 const STEP_MS = 1800;
 
-/**
- * Section 9: the setup as an open timeline instead of four more cards. A line
- * fills from step to step and each number lights as it is reached, then the
- * run starts over. Reduced motion shows every step done and never moves.
- */
+/** Section 9: the setup as a looping timeline. Reduced motion: all steps done, still. */
 export function SetupSteps() {
   const [at, setAt] = useState(0);
   const [still, setStill] = useState(false);

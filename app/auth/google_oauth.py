@@ -1,29 +1,9 @@
-"""Google implementation of the ``OAuthProvider`` interface.
+"""Google ``OAuthProvider`` over plain ``httpx``.
 
-Uses Google's public OAuth2 endpoints directly via ``httpx`` (zero new
-dependencies — Google Integration Plan decision D9, same dependency-light
-reasoning as the rest of ``app/``). Differs from ``notion_oauth.py`` in three
-structural ways:
-
-1. **Token exchange is form-encoded, not JSON + HTTP Basic auth.** Google's
-   token endpoint expects ``client_id``/``client_secret`` in the POST body
-   (``data=``), not an ``Authorization`` header.
-2. **Workspace identity isn't in the token response.** Notion's exchange
-   returns a ``workspace_id``/``workspace_name`` directly; Google's does not,
-   so a second call to the Drive ``about`` endpoint resolves who the token
-   belongs to. We use the account's ``emailAddress`` for both
-   ``external_workspace_id`` and ``external_workspace_name`` — it's stable,
-   human-readable in the admin UI, and avoids requesting extra
-   ``openid``/``email`` scopes or decoding an id_token just for identity.
-3. **``refresh()`` is actually implemented here** — the first real
-   implementation in this codebase (Notion tokens don't expire, so its
-   ``refresh()`` stays the ABC's default ``NotImplementedError``). Google
-   access tokens live ~1h; the refresh response omits a new
-   ``refresh_token`` (Google's normal behavior) and has no workspace-identity
-   fields, so ``external_workspace_id``/``external_workspace_name`` on a
-   refreshed ``OAuthTokens`` are placeholders — the caller (the credentials
-   layer, per decision D10) already knows the real identity from the existing
-   ``oauth_connections`` row and only needs the refreshed access token.
+The exchange is form-encoded (client id/secret in the body). The token
+response names no account, so the Drive ``about`` email is both the
+workspace id and name. Access tokens last ~1h; a refresh returns no new
+refresh token and no identity, so those fields are placeholders there.
 """
 
 from __future__ import annotations
@@ -108,12 +88,9 @@ class GoogleOAuthProvider(OAuthProvider):
     def refresh(self, refresh_token: str) -> OAuthTokens:
         """Exchange a refresh token for a new access token.
 
-        The response has no ``refresh_token`` (Google's normal behavior — the
-        original one keeps working) and no workspace-identity fields, so
-        ``external_workspace_id``/``external_workspace_name`` are placeholders
-        here: the caller already knows the real identity from the existing
-        ``oauth_connections`` row it's refreshing and only consumes the new
-        access token + expiry.
+        Google returns no new refresh token (the old one keeps working) and no
+        identity, so the workspace fields are placeholders; callers read only the
+        token and expiry.
         """
         try:
             response = httpx.post(
@@ -161,14 +138,9 @@ class GoogleOAuthProvider(OAuthProvider):
         )
 
     def _resolve_identity(self, access_token: str) -> tuple[str, str | None]:
-        """Resolve who the token belongs to via the Drive ``about`` endpoint.
+        """Resolve the token's account via Drive ``about``; its email is id and name.
 
-        Google's token response carries no workspace/account identifier the
-        way Notion's does, and ``OAuthTokens.external_workspace_id`` is NOT
-        NULL, so we ask Drive directly rather than requesting extra
-        ``openid``/``email`` scopes or decoding an id_token. ``emailAddress``
-        is used for both id and name slots since it's the most human-readable
-        identifier an admin will recognize in the connections UI.
+        Avoids extra ``openid``/``email`` scopes just for identity.
         """
         try:
             response = httpx.get(

@@ -1,19 +1,10 @@
-"""Linear implementation of the ``OAuthProvider`` interface.
+"""Linear ``OAuthProvider``.
 
-Structurally closest to ``google_oauth.py``: Linear's token response carries
-no workspace identity the way Notion's does, so a follow-up GraphQL call
-(``query { organization { id name } } ``) resolves who the token belongs to.
-Linear now issues access tokens that expire (about a day) with a refresh token
-that ROTATES on every use, so ``refresh()`` returns the new pair. Without it an
-expired token was marked "Reconnect" the next day.
-
-This is a SEPARATE, non-fallback-linked credential path from the legacy
-``LINEAR_TOKEN_<NAME>`` personal-API-key path (``LinearSettings`` in
-``app/config/settings.py``) — same coexistence Notion has between its OAuth
-flow and ``NOTION_TOKEN_<NAME>``. A token obtained here is passed to
-``LinearAdapter`` as an already-resolved OAuth token (``oauth=True``), which
-matters because Linear sends the ``Authorization`` header differently for
-the two credential types (see ``app/sources/linear.py``).
+The token response names no workspace, so a GraphQL ``organization`` query
+resolves it. Tokens expire (~1 day) and the refresh token rotates on every
+use, so ``refresh()`` returns the new pair. OAuth tokens go to
+``LinearAdapter`` with ``oauth=True``: Linear formats the header differently
+from the ``LINEAR_TOKEN_<NAME>`` API-key path.
 """
 
 from __future__ import annotations
@@ -134,13 +125,7 @@ class LinearOAuthProvider(OAuthProvider):
         )
 
     def _resolve_identity(self, access_token: str) -> tuple[str, str | None]:
-        """Resolve which Linear workspace the token belongs to.
-
-        Linear's token response carries no workspace identifier, so this asks
-        the GraphQL API directly (same reasoning as Google's Drive ``about``
-        call in ``google_oauth.py``) rather than decoding anything extra out
-        of the token itself.
-        """
+        """Resolve the token's Linear workspace via GraphQL (the token response names none)."""
         try:
             response = httpx.post(
                 _GRAPHQL_URL,

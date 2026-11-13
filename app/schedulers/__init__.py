@@ -1,9 +1,6 @@
-"""Prompt-Driven Activity Scheduler: user-authored recurring reports.
+"""Prompt-driven activity scheduler: user-authored recurring reports.
 
-An orchestrator over existing capabilities (oauth_connections, the source
-readers, the LLM, email) rather than a new swappable capability — so, like
-``app/rag/`` and ``app/jobs/``, it has no ``base.py``/factory: there is only
-one way to run a scheduler, and nothing to abstract over.
+An orchestrator, so no ``base.py``/factory.
 """
 
 from __future__ import annotations

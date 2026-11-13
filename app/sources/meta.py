@@ -1,29 +1,17 @@
-"""Who, what-it-points-at and where-it-lives, captured at sync (Second Brain 1.1).
+"""People, links and containers captured at sync, for the knowledge graph.
 
-An adapter already SEES the people, links and containers around a document —
-Drive's `lastModifyingUser`, a Slack thread's authors and `<@U…>` mentions, a
-Notion page's parent and `mention` objects, a Linear issue's assignee and
-attached pull requests — and until now it threw all of it away after rendering
-text. The knowledge graph (git history: docs/plans/2026-09-23-second-brain.md) is rebuilt
-from the DATABASE, never by re-calling a provider, so whatever is not captured
-here does not exist for it.
+The graph is rebuilt from the DATABASE, never by re-calling a provider, so what
+is not captured here does not exist for it. Three lists:
 
-One shape for every adapter, three lists:
+* ``people``: ``{key, provider, external_id, email, name, role}``. ``key`` is
+  ``<provider>:<external_id>``, else ``email:<address>``; NEVER a display name
+  (merging people by name is the one mistake the graph must not make).
+* ``links``: ``{provider, external_id, url}``, only URLs that resolve to a
+  provider id.
+* ``containers``: ``{provider, kind, external_id, name}``.
 
-* ``people`` — ``{key, provider, external_id, email, name, role}``. ``key`` is
-  the identity the graph joins on: ``<provider>:<external_id>`` when the source
-  gives a stable id, else ``email:<address>``. NEVER a display name — two
-  people called Priya are two people, and merging identities by name is the
-  one mistake the graph must be unable to make.
-* ``links`` — ``{provider, external_id, url}``: another document this one
-  points at. Only URL shapes we can resolve to a provider id are kept; an
-  arbitrary web link names nothing the graph could ever hold.
-* ``containers`` — ``{provider, kind, external_id, name}``: the folder,
-  channel, team or parent page.
-
-Every list is CAPPED and a cut sets ``truncated`` — a partial record that
-looks complete is the failure CLAUDE.md §2 names. Nothing here costs an API
-call: each adapter fills it only from payloads it already fetched.
+Every list is CAPPED and a cut sets ``truncated``. Filled only from payloads
+already fetched; never an API call.
 """
 
 from __future__ import annotations
@@ -34,9 +22,7 @@ MAX_PEOPLE = 50
 MAX_LINKS = 50
 MAX_CONTAINERS = 20
 
-#: When a document names several people, which one is "the editor" — the same
-#: person ``source_last_editor`` already shows (Drive's last modifier, a Slack
-#: thread's starter, a Notion page's last editor, a Linear issue's assignee).
+#: Which person is "the editor": the one ``source_last_editor`` already shows.
 _EDITOR_ROLES = ("editor", "author", "assignee")
 
 
@@ -59,11 +45,7 @@ def person(
     email: str | None = None,
     name: str | None = None,
 ) -> dict | None:
-    """One person entry, or ``None`` when there is nothing stable to key on.
-
-    A name alone is dropped on purpose: without an id or an email the graph
-    could only join it by NAME, which is exactly the merge it must never do.
-    """
+    """One person entry, or ``None`` with no id or email (never keyed by name)."""
     key = person_key(provider, external_id, email)
     if key is None:
         return None
@@ -161,9 +143,7 @@ def editor_key(meta: dict | None) -> str | None:
 
 # -- links found in a document's text ----------------------------------------
 #
-# Recognised by URL SHAPE only, and each resolves to the external id that
-# provider's own adapter stores, so a link can become an edge to a document we
-# actually hold. Anything else is left out rather than stored as a bare URL.
+# By URL SHAPE only, resolved to the id that provider's adapter stores.
 
 _URL = re.compile(r"https?://[^\s<>|)\]\"']+")
 _LINEAR = re.compile(r"^https?://linear\.app/[^/]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)")
@@ -185,8 +165,7 @@ def resolve_link(url: str) -> dict | None:
     """Map one URL to ``{provider, external_id, url}``, or ``None`` if unknown."""
     url = url.rstrip(".,;:")
     if m := _LINEAR.match(url):
-        # The IDENTIFIER, not Linear's UUID: it is all a URL carries, and the
-        # builder resolves it against the "ENG-142 - …" title already stored.
+        # The IDENTIFIER (all a URL carries), resolved against the stored title.
         return link("linear", m.group(1).upper(), url)
     if m := _GITHUB.match(url):
         owner, repo, kind, number = m.groups()
@@ -199,8 +178,7 @@ def resolve_link(url: str) -> dict | None:
     if m := _SLACK.match(url):
         channel, secs, micros, query = m.groups()
         thread = _SLACK_THREAD.search(query or "")
-        # A reply's permalink carries its thread's ts; the index stores the
-        # THREAD, keyed `<channel>:<thread_ts>`, so the edge must point there.
+        # A reply's permalink points at its THREAD (`<channel>:<thread_ts>`).
         ts = thread.group(1) if thread else f"{secs}.{micros}"
         return link("slack", f"{channel}:{ts}", url)
     return None

@@ -27,13 +27,10 @@ logger = logging.getLogger(__name__)
 
 
 def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -> None:
-    """Fold what this job wrote into the knowledge graph. Best-effort, always.
+    """Fold what this job wrote into the knowledge graph. Best-effort.
 
-    Built from the rows the job just stored, so it costs no provider call.
-    Removed documents need nothing: their evidence cascades with the row, and
-    the build's garbage collection drops the edges left without any. Its own
-    try/except for the ``_record_insight_facts`` reason -- a stale graph is a
-    stale graph, and failing a finished job would turn it into a retry loop.
+    Built from stored rows (no provider call); removed documents cascade.
+    Never fails a finished job, which would make it a retry loop.
     """
     external_ids = list(getattr(result, "ingested_external_ids", None) or []) + list(
         getattr(result, "meta_refreshed_external_ids", None) or []
@@ -46,9 +43,7 @@ def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -
         elif getattr(result, "documents_removed", 0):
             collect_garbage(org_id, workspace_id)
         if provider == "slack":
-            # Membership moves without any message changing (someone joins or
-            # leaves a private channel; the listing re-stamps its threads), so
-            # it is rebuilt on EVERY Slack sync, not only when threads changed.
+            # Membership moves without messages changing: rebuild every sync.
             from ..graph.builder import build_memberships
 
             build_memberships(org_id, workspace_id)
@@ -61,29 +56,13 @@ def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -
 def _record_insight_facts(
     org_id: str, provider: str, workspace_id: str | None, adapter=None
 ) -> None:
-    """Turn what we just indexed into countable facts. Best-effort, always.
+    """Turn what we just indexed into countable facts. Best-effort.
 
-    Runs unconditionally on a successful job rather than only when documents
-    changed, which is what makes it self-backfilling: the first sync after this
-    feature deployed records a fact for every document already in the index,
-    with no separate backfill script to remember to run.
-
-    Two kinds of fact, and the split is not arbitrary:
-
-    - ``doc_changed`` for every indexed provider, derived from `documents`.
-    - Linear's issue facts, which CANNOT come from the index (state, assignee
-      and team live inside chunk prose, not in a column). Recorded here rather
-      than on the sync tick because Linear also ingests: on the tick, the
-      ingest path's ``_stamp_attempted`` would already have made the connection
-      not-due, so they would silently never run. Here, the adapter also already
-      exists, so it costs no extra authentication.
-
-    GitHub reaches neither branch -- it embeds nothing, so it has no job and no
-    documents; its facts come from ``run_facts_tick``.
-
-    Its own try/except because the failure is not the ingest's. A chart going
-    stale is a chart going stale; failing a job that already succeeded would
-    turn it into a retry loop over work that is done.
+    Runs on every successful job, so it backfills itself. ``doc_changed``
+    comes from `documents`; Linear's issue facts need the adapter (state and
+    assignee are not columns), and on the tick the connection would already
+    be stamped not-due. GitHub's come from ``run_facts_tick``. Never fails a
+    finished job.
     """
     if provider in DOCUMENT_PROVIDERS:
         try:
@@ -95,10 +74,8 @@ def _record_insight_facts(
             )
 
     if provider == "google":
-        # Form responses are NOT ingested -- putting a survey answer in the
-        # searchable corpus would make "what did Ada say about management?"
-        # answerable, which is the opposite of what a survey promises. They are
-        # classified into a sentiment label and the text is discarded.
+        # Form responses are never indexed: classified to a sentiment label,
+        # text discarded.
         try:
             from ..insights.facts import record_form_facts_if_enabled
 
@@ -191,10 +168,7 @@ def run_once() -> queue.IngestionJob | None:
             )
 
         if provider == "slack":
-            # Every sync, not only when an admin presses Check: a rename is
-            # invisible to change detection, so without this the stored label
-            # can stay wrong indefinitely and every thread title, suggestion
-            # chip and report coverage note keeps showing the old name.
+            # Every sync: a rename is invisible to change detection.
             from ..sources.slack_utils import refresh_channel_names
 
             for old, new in refresh_channel_names(job.org_id, job.workspace_id):
@@ -260,13 +234,8 @@ def run_once() -> queue.IngestionJob | None:
 
 def run_maintenance() -> None:
     """Delete expired housekeeping rows without raising."""
-    # Slack channel labels. Every OTHER trigger for this needs someone to do
-    # something — press Check, run a sync, own a scheduler that comes due — so
-    # a renamed channel could stay unfindable indefinitely on a quiet org. This
-    # is the one path that runs on its own.
-    #
-    # Cheap enough for the hourly tick: one paginated conversations.list per
-    # connected Slack workspace, and it only writes when a name actually moved.
+    # Slack channel labels: the one refresh that needs no activity. One
+    # conversations.list per workspace; writes only on a rename.
     try:
         from ..sources.slack_utils import refresh_channel_names
 
@@ -300,9 +269,7 @@ def run_maintenance() -> None:
 def run_sync_tick() -> int:
     """Enqueue any due connection syncs. Never raises. Returns how many.
 
-    Split from ``run_maintenance`` (hourly) because a webhook-flagged sync must
-    not wait up to an hour to be picked up — the whole point of push is that it
-    is faster than the poll floor.
+    Not hourly like maintenance: a webhook-flagged sync must not wait an hour.
     """
     try:
         from .autosync import enqueue_due_syncs
@@ -316,11 +283,7 @@ def run_sync_tick() -> int:
 def run_facts_tick() -> int:
     """Record facts for any due facts-only connection. Never raises.
 
-    Separate from ``run_sync_tick`` because it is a different KIND of sync:
-    GitHub has no ingestion job to enqueue (it embeds nothing), so its
-    freshness comes from writing counters inline. Keeping the two apart is what
-    keeps ``UNSYNCABLE_PROVIDERS`` true -- nothing here can put a GitHub row in
-    ``ingestion_jobs``.
+    Kept apart from ``run_sync_tick`` so GitHub never enters ``ingestion_jobs``.
     """
     try:
         from .autosync import record_due_facts
@@ -332,19 +295,11 @@ def run_facts_tick() -> int:
 
 
 def run_external_tick() -> dict[str, int]:
-    """One externally-driven pass: reap, sync, run due schedulers.
+    """One externally-driven pass: reap, sync, backfill, purge, run schedulers.
 
-    Exists because a free-tier Render web service spins down after ~15 minutes
-    with no INBOUND request — an in-process timer does not keep it alive, so
-    every background loop silently stops and freshness stops with it. A free
-    external cron (cron-job.org and friends) hitting ``POST /internal/tick``
-    both wakes the process and drives this, which is why waking and working are
-    the same request rather than a ping plus a hope.
-
-    Deliberately excludes ``run_maintenance``: pruning expired cache rows is
-    hourly housekeeping, and doing it on every external tick would spend writes
-    on nothing. Returns per-step counts so the caller (and the cron's own log)
-    can see the tick did something.
+    ``POST /internal/tick`` from an outside cron both wakes a host that sleeps
+    without inbound traffic and does the work. ``run_maintenance`` is hourly
+    and not run here. Returns per-step counts.
     """
     from ..config.settings import SchedulerSettings
 
@@ -357,8 +312,7 @@ def run_external_tick() -> dict[str, int]:
     synced = run_sync_tick()
     facts = run_facts_tick()
 
-    # Drive push channels expire within a week and are never renewed for us.
-    # A lapsed one only means that connection is polled until the next tick.
+    # Drive push channels expire within a week; a lapsed one is only polled.
     drive_watches = 0
     try:
         from ..sources.drive_watch import ensure_watches
@@ -367,16 +321,14 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a lapsed push, never a failed tick
         logger.exception("External tick: Drive watch renewal failed")
 
-    # Indexed facts for tenants that have not ingested since charts shipped.
-    # GitHub still needs the facts-only path above (it has no documents).
+    # Document facts for tenants not ingested since charts shipped.
     backfilled = 0
     try:
         backfilled = backfill_all_document_facts()
     except Exception:  # noqa: BLE001 - a missing chart, never a failed tick
         logger.exception("External tick: document-fact backfill failed")
 
-    # Knowledge-graph entities for documents synced before the graph existed.
-    # Bounded per tick (`graph.builder.BACKFILL_BATCH`), so it converges.
+    # Graph backfill, bounded per tick (`graph.builder.BACKFILL_BATCH`).
     try:
         from ..graph.builder import backfill as backfill_graph
 
@@ -384,11 +336,7 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a thinner graph, never a failed tick
         logger.exception("External tick: graph backfill failed")
 
-    # Expire in-chat attachment text. Nothing in this codebase deletes a
-    # conversation, so the ON DELETE CASCADE that attachments hang off never
-    # fires in practice -- without this they are write-once, keep-forever on a
-    # 500MB database. Its own try/except for the reason every other step here
-    # has one: a full disk is bad, a failed tick is worse.
+    # Expire chat attachments: the shorter clock for a file in a live chat.
     attachments_purged = 0
     try:
         from ..attachments import purge_expired_attachments
@@ -397,9 +345,7 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: attachment purge failed")
 
-    # Retention. Attachments, turns and the last-retrieval row cascade, so this
-    # is the one sweep that fully removes a chat -- the attachment purge above
-    # stays as the shorter clock for a file whose conversation is still alive.
+    # Retention: removes whole chats (attachments and turns cascade).
     conversations_purged = 0
     try:
         from ..memory.conversations import purge_expired_conversations
@@ -408,7 +354,7 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: conversation purge failed")
 
-    # Live-tools audit rows past their 90 days (Second Brain live reads).
+    # Live-read audit rows past 90 days.
     try:
         from ..livetools.audit import purge_expired as purge_live_calls
 
@@ -416,8 +362,8 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a longer log, never a failed tick
         logger.exception("External tick: live_tool_calls purge failed")
 
-    # Injection scores for chunks ingest could not score (Groq rate limit) or
-    # that predate the guard. A no-op when GUARD_MODE=off.
+    # Injection scores ingest could not write (rate limit, or older chunks).
+    # A no-op when GUARD_MODE=off.
     injection_scored = 0
     try:
         from ..guard.backfill import backfill_injection_scores
@@ -445,12 +391,8 @@ def run_external_tick() -> dict[str, int]:
 
 
 def run_scheduler_tick(settings=None) -> int:
-    """Run any due activity schedulers. Never raises. Returns how many ran.
-
-    Wrapped here rather than at each call site because both worker paths
-    (this module's ``run_forever`` and the in-API loop in ``app/api/main.py``)
-    need identical swallowing: a scheduler batch that raised would abort the
-    ingestion tick sharing the same loop, coupling two unrelated features.
+    """Run any due activity schedulers. Never raises: a scheduler failure
+    must not abort the ingestion loop it shares. Returns how many ran.
     """
     try:
         from ..schedulers.worker import run_due_schedulers_once
@@ -472,18 +414,11 @@ def run_forever(
     sync_interval: int = 300,
     tick_interval: int = 600,
 ) -> None:
-    """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically.
+    """Poll for queued jobs forever, with interleaved timers for reaping,
+    pushes, maintenance, syncs and schedulers (same as the in-API worker).
 
-    Also ticks the activity scheduler, on the same interleaved-timer pattern
-    as reaping and maintenance, so the standalone worker process and the
-    in-API worker behave identically (see ``app/api/main.py``). Running
-    schedulers in only one of the two would mean reports silently stop
-    whenever ``INGEST_WORKER_IN_API`` is flipped.
-
-    And it runs ``run_external_tick`` itself: Drive watch renewal, backfills
-    and expiry purges live only there, and a self-hosted install has no cron
-    calling ``/internal/tick``. Its other steps repeat the timers above,
-    which is safe — each is guarded against running twice.
+    Also runs ``run_external_tick``: a self-hosted install has no cron
+    calling ``/internal/tick``. Each step is safe to repeat.
     """
     import time
 
@@ -531,8 +466,7 @@ def run_forever(
             last_maintenance = now
         if now - last_sync >= sync_interval:
             run_sync_tick()
-            # Same cadence: both answer "is this connector current?", and
-            # splitting their timers would mean two freshness stories.
+            # Same cadence: one freshness story per connector.
             run_facts_tick()
             last_sync = now
         if (

@@ -14,9 +14,7 @@ from collections.abc import Sequence
 
 from .base import Bucket, Decision, RateLimiter
 
-# A flood from many addresses must not grow the table without end. Past this,
-# buckets idle long enough to be full again are dropped (a full bucket is the
-# same as no bucket).
+# Bound the table: past this, buckets idle long enough to be full are dropped.
 _MAX_KEYS = 100_000
 
 

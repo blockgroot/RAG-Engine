@@ -1,23 +1,16 @@
-"""Other tools, through MCP servers an admin added (docs/plans/2026-10-21-mcp-actions.md).
+"""Tools from MCP servers an admin added, as ``Action``s.
 
-A tool an admin set to "write" becomes an ``Action`` like every other: the
-model fills in its form, code checks it, the person approves a card, and only
-then is the tool called, once, with the person's own sign-in, from the stored
-copy. MCP is only the last step's pipe; every guard before it is Handbook's.
+A "write" tool: the model fills its form, code checks it, the person approves a
+card, then the tool is called once with their own sign-in, from the stored
+copy. What code cannot know about an unknown tool is the worst case:
 
-What code cannot know about an unknown tool is treated as the worst case:
+* Its audience is unknown, so private content always needs the tick.
+* Every non-prose value must be in the asker's words or a lookup's answer in
+  this request; never from a document, never invented.
+* Drafted text keeps links and mentions only where the asker or a source wrote them.
 
-* Where it goes and who will see it are unknown, so private content always
-  needs the tick (``Audience(members=None)``), as for an unknown audience.
-* Every value that is not drafted text (an id, a project, an assignee) must be
-  in the asker's words or in what a lookup returned in this request: the
-  tool's own answer about what exists. Never from a document, never invented.
-* Drafted text (title, body…) is cleaned like every draft: links and mentions
-  only where the asker or a source wrote them.
-
-A tool set to "lookup" is a read the model may run while drafting, with the
-person's sign-in; its answer comes back to the model as a tool result, fenced
-as untrusted data, and an id in it may fill the next form.
+A "lookup" tool is a read run while drafting; its answer comes back fenced as
+untrusted data, and an id in it may fill the next form.
 """
 
 from __future__ import annotations
@@ -32,11 +25,8 @@ from . import mcp_client, mcp_store
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, details
 from .draft import TYPOGRAPHY, asked_in, clean_body, clean_title
 
-#: A field holds drafted words when its NAME says prose (schema field names,
-#: not the asker's words): "title", "textContent", "pages[].content". The
-#: first such top-level field becomes the card's title or body, editable like
-#: every draft. A name ending in an id, an address or a type is never prose,
-#: so "parent_page_id" and "mimeType" stay values to ground.
+#: A field holds drafted words when its schema NAME says prose ("title",
+#: "pages[].content"). A name ending in an id, address or type never is.
 _PROSE = re.compile(r"title|^name$|summary|subject|heading|caption|body|description|text|content|"
                     r"notes?$|comment|message|markdown", re.IGNORECASE)
 _TITLE = re.compile(r"title|^name$|summary|subject|heading", re.IGNORECASE)
@@ -88,10 +78,8 @@ def _shape(schema: Any) -> str:
 
 
 def form_problem(schema: Any, value: Any, where: str = "the form") -> str | None:
-    """What the server's own schema would refuse, said for the model to fix:
-    types, allowed values, required and unknown keys, ``anyOf``/``oneOf``. A
-    subset of JSON Schema, enough to catch a form filled in wrong before the
-    person approves it (a write that fails after approval wastes their tick)."""
+    """What the server's own schema would refuse, said for the model to fix (a
+    JSON Schema subset), so a form is right before the person approves it."""
     if not isinstance(schema, dict) or value is None:
         return None
     for key in ("anyOf", "oneOf"):
@@ -150,10 +138,8 @@ def _code_label(text: str, prop: dict) -> str | None:
 
 
 def asked_filters(tool: dict, args: dict, question: str) -> dict:
-    """A lookup's arguments without a coded choice the asker never made: GPT-OSS
-    searched Linear with ``priority: 0`` ("0=None", only issues with no
-    priority) on every call, and a team's open issues came back empty. As a
-    write's coded value, it is kept only when the asker used its words."""
+    """A lookup's arguments without a coded choice the asker never made (a stray
+    ``priority: 0`` emptied every search). A write keeps one only in the asker's words."""
     props = _schema(tool)["properties"]
     kept = {}
     for k, v in args.items():
@@ -164,11 +150,8 @@ def asked_filters(tool: dict, args: dict, question: str) -> dict:
 
 
 def unseen_filters(tool: dict, args: dict, seen: list[str]) -> list[str]:
-    """A lookup's text filters whose value is in nothing a tool returned and is
-    not one of the schema's own choices: the model's guess at a value. GPT-OSS
-    searched Linear with ``state: "open"``, a state no team has, on every try,
-    and a team's 50 issues came back as none. ``team: "BEN"`` is kept: Linear's
-    team list returned it."""
+    """A lookup's text filters whose value no tool returned and the schema does not
+    list: the model's guess (``state: "open"`` matched nothing)."""
     props = _schema(tool)["properties"]
     text = "\n".join(seen).casefold()
     return [k for k, v in args.items()
@@ -178,12 +161,9 @@ def unseen_filters(tool: dict, args: dict, seen: list[str]) -> list[str]:
 
 
 def _chosen_by_asker(key: str, value: Any, prop: dict, question: str) -> None:
-    """An optional setting the tool offers as a list of choices is the
-    asker's to make: GPT-OSS set Notion's ``creation_mode`` to "draft", which
-    Notion refuses beside a parent, but only AFTER approval (no tool checks
-    a form without acting on it). Left out, the tool's own default applies.
-    Kept when the asker used the choice's words: "close the issue" is
-    ``closed``, "reopen it" is ``open``."""
+    """An optional choice-list setting is the asker's to make; left out, the tool's
+    default applies (a guessed value failed only after approval). Kept when the
+    asker used the choice's words ("close the issue" is ``closed``)."""
     if not isinstance(value, str) or value not in ((prop or {}).get("enum") or ()):
         return
     said = _WORDS.findall(question.translate(TYPOGRAPHY).lower())
@@ -199,11 +179,8 @@ _OWN_URL = re.compile(r'"(?:url|html_url|permalink|link)"\s*:\s*"(https://[^"\s]
 
 
 def _guide(tool: dict) -> str:
-    """The tool's whole manual, for a model whose form was refused: its full
-    description (the card's 300 characters cut Notion's "set the title in
-    properties" and every page form was wrong) and its parameters, scrubbed
-    and bounded. Sent only after a refusal, so a call that gets the form right
-    pays nothing for it."""
+    """The tool's whole manual (full description and parameters, scrubbed and
+    bounded), sent only after a refusal so a right form pays nothing."""
     said = scrub_untrusted_text(tool.get("description") or "")[:2000]
     params = json.dumps(_schema(tool)["properties"], ensure_ascii=False)
     params = params if len(params) <= 3000 else params[:3000] + "…"
@@ -228,7 +205,7 @@ class McpToolAction(Action):
                  for k, v in schema["properties"].items()}
         self.tool = {"type": "function", "function": {
             "name": _function_name(server, tool["name"]),
-            # Said here too: GPT-OSS reads the tool's description, not each field's.
+            # Said in the description too: models read it, not each field's.
             "description": _describe(server, tool) + "".join(
                 f" Leave {k} out unless the user said it: Handbook fills it." for k in self._filled),
             "parameters": {**schema, "properties": {**props, "request_words": {
@@ -271,8 +248,7 @@ class McpToolAction(Action):
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         schema = _schema(self.mcp_tool)
         props = schema["properties"]
-        # An empty value is "not given": GPT-OSS closed an issue with
-        # ``labels: []``, which GitHub reads on an update as "remove them all".
+        # An empty value is "not given": ``labels: []`` on an update removes them all.
         given = {k: v for k, v in args.items() if k in props and v not in _EMPTY}
         missing = [k for k in schema["required"] if k not in given and k not in self._filled]
         if missing:
@@ -281,15 +257,12 @@ class McpToolAction(Action):
         texty = [k for k, v in given.items() if isinstance(v, str) and _prose(k)]
         title_key = next((k for k in texty if _TITLE.search(k)), None)
         body_key = next((k for k in texty if k != title_key and not _TITLE.search(k)), None)
-        # A record's own address a lookup returned, like a document's own: "DM Raj
-        # the link of the Linear issue" found BEN-161 by a lookup and lost its link.
-        # Only the address field, never a link written inside a description.
+        # A record's own address a lookup returned is grounded like a document's;
+        # only the address field, never a link inside a description.
         uris = [s.uri for s in ctx.sources if s.uri] + _OWN_URL.findall(ctx.lookups or "")
-        # The tool's own definition: a default or example it documents is its
-        # own value (a mimeType), never something a passage put there.
+        # A default or example the tool documents is its own value.
         defined = json.dumps(self.mcp_tool, default=str)
-        # An optional value the asker never gave (a state, a label the model
-        # added) is left out and said on the card; only a required one refuses.
+        # An optional ungiven value is left out and said; only a required one refuses.
         cleaned, left_out = {}, []
         for k, v in given.items():
             try:
@@ -300,8 +273,7 @@ class McpToolAction(Action):
                 if k in schema["required"]:
                     raise
                 left_out.append(f"{k} (not in your request)")
-        # An optional field filled in wrong (Notion's ``parent`` in a shape it
-        # does not take) is left out the same way; a required one refuses below.
+        # An optional field filled wrong is left out the same way.
         for k in [k for k in cleaned if k not in schema["required"]]:
             if form_problem(props[k], cleaned[k], k):
                 del cleaned[k]
@@ -338,22 +310,17 @@ class McpToolAction(Action):
             action=self.name,
             target=ActionTarget("mcp_tool", f"{self.server.id}:{self.mcp_tool['name']}", self.server.name),
             payload=payload,
-            # Who sees what lands in an unknown tool cannot be checked: unknown,
-            # so private content needs the tick and nothing is assumed small.
+            # Unknown audience: private content needs the tick.
             audience=Audience(members=None),
         )
 
     def _clean(self, key: str, value: Any, prop: dict, ctx: ActionContext, uris: list[str], defined: str) -> Any:
-        """One value, nested values included (Notion's ``pages`` is a list of
-        objects). Prose is cleaned like every draft; anything else (a target,
-        an id, a setting) must be in the asker's words, in what a lookup
-        returned in this request, or in the tool's own definition."""
+        """One value, nested included. Prose is cleaned like any draft; anything else
+        must be in the asker's words, a lookup's answer, or the tool's definition."""
         prop = prop if isinstance(prop, dict) else {}
         if _grid(value) and not _NOT_PROSE.search(key):
-            # A table (a Sheet's rows) is content, cleaned cell by cell like
-            # drafted text, never matched cell by cell like a target: "Unassigned"
-            # for an issue with no assignee left the whole table out. Whether
-            # its cells are real is ``checks._untraced``'s question.
+            # A table is content, cleaned per cell like prose, never grounded like a target
+            # (``checks._untraced`` judges whether its cells are real).
             return [[clean_body(c, ctx.question, uris) if isinstance(c, str) else c for c in row]
                     for row in value]
         if isinstance(value, dict):
@@ -370,9 +337,7 @@ class McpToolAction(Action):
             return value
         label = _code_label(text, prop)
         if label is not None:
-            # A choice the field defines ("0=No priority") is the asker's to
-            # make: "priority medium" is 3. A lookup never grounds one; any
-            # lookup's text holds a "0" somewhere, and 0 rode onto the card.
+            # A coded choice ("0=No priority") is the asker's to make; a lookup never grounds it.
             if asked_in(label, ctx.question):
                 return value
         elif (ctx.lookups and text in ctx.lookups) or (len(text) >= 3 and text in defined):
@@ -392,28 +357,22 @@ class McpToolAction(Action):
             raise ActionError(f"{self.server.name} refused it: {text[:300] or 'no reason given'}")
         structured = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
         data = structured or mcp_client.result_json(result)
-        # A URL the tool only echoed from what it was sent is content, not the
-        # result's address: a Linear comment holding a GitHub link answered
-        # with its body, and "Open in Linear" opened the GitHub issue.
+        # A URL the tool only echoed from its input is content, not the result's address.
         sent = json.dumps(arguments, ensure_ascii=False)
         echoed = [u for u in _URL.findall(text) if u.rstrip(".,;") not in sent]
         link = next((page for page in map(_page_link, [str(data.get("url") or ""), *echoed]) if page), None)
         if link is None and self.server.preset and self.server.preset.key == "github":
             link = _github_page(arguments)        # a merge answers with no link at all
         link = link or payload.get("target_link")
-        # The tool's own id, as people name it (Linear's BEN-171 before its
-        # uuid). Never Handbook's card id: told "id <card id>", the next
-        # request commented on an issue that does not exist.
+        # The tool's own id as people name it (BEN-171), never Handbook's card id.
         found = data.get("identifier") or data.get("id")
         name = data.get("name") or data.get("title")
         return ActionResult(str(found) if found else None, link, str(name)[:200] if isinstance(name, str) else None)
 
 
 def _target_link(args: dict[str, Any], lookups: str) -> str | None:
-    """The page of the record a write acts on, for an answer with no link of
-    its own: a Linear comment answers with ids only, and its card had nothing
-    to open. Only a link a lookup returned beside that record's id (its
-    ``url``-like field in the same object), or an earlier card's "id …, link …"."""
+    """The page of the record a write acts on, for a result with no link: only a
+    link a lookup returned in the same object as its id, or an earlier card's."""
     ids = {v for k, v in args.items() if isinstance(v, str) and 3 <= len(v) <= 200 and not _prose(k)}
     if not ids or not lookups:
         return None
@@ -449,9 +408,8 @@ _GITHUB_API = re.compile(r"^https://api\.github\.com/repos/([^/]+)/([^/]+)/(?:gi
 
 
 def _page_link(url: str) -> str | None:
-    """A link a person can open: a GitHub API address becomes its page (a
-    branch's tree, an issue or pull request), and no other API address is a
-    link (one opened in a browser is a 404 for a private repo)."""
+    """A link a person can open: a GitHub API address becomes its page; no other API
+    address is a link."""
     url = url.rstrip(".,;")
     if not url.startswith("https://"):
         return None
@@ -477,12 +435,10 @@ _NAME = re.compile(r'"(name|title|displayName|key)"\s*:\s*"([^"\\]{1,80})"')
 
 
 def _named(value: Any, lookups: str) -> str:
-    """How the card shows a value: an id a lookup returned is shown by the
-    name that lookup gave it ("Bench (BEN)", not "db73111d-…"); what is sent
-    stays the id. Only from the same JSON object as the id, else the id."""
+    """How the card shows a value: a looked-up id by the name its lookup gave (same
+    JSON object only); what is sent stays the id."""
     if isinstance(value, str) and len(value) >= 8 and lookups and value in lookups:
-        # An earlier card's result, in Handbook's own words: 'made "Final E2E
-        # notes", id 1Eh7…'. The share card showed the bare id.
+        # An earlier card's result, in Handbook's own words.
         made = re.search(r'"([^"\n]{1,200})", id ' + re.escape(value) + r'(?![\w-])', lookups)
         if made:
             return made.group(1)
@@ -526,15 +482,13 @@ class McpLookup(Action):
         try:
             session = mcp_client.McpSession(self.server.url, token or None, timeout=timeout)
             session.open()
-            # An empty value is "not given": GPT-OSS filled every optional
-            # filter with "" or null, Linear refused them all, and it gave up.
+            # Empty optional filters are dropped: Linear refuses "" and null.
             result = session.call_tool(self.mcp_tool["name"],
                                        {k: v for k, v in args.items() if k in props and v not in _EMPTY},
                                        write=False)
         except Exception as exc:  # noqa: BLE001 - a failed read is reported to the model
             return f"[{self.label} failed: {str(exc)[:200]}]"
-        # Larger than a write's answer: a list must still show the item the
-        # model is looking for (a team's issues ran past 4,000 characters).
+        # Larger than a write's answer: a list must still show the wanted item.
         return f"[{self.label}]\n{mcp_client.result_text(result, limit=12000)}"
 
     def prepare(self, args, ctx):  # pragma: no cover - a lookup is never drafted
@@ -545,9 +499,8 @@ class McpLookup(Action):
 
 
 def mcp_actions(org_id: str, user_id: str, workspace_id: str | None = None) -> list[Action]:
-    """The person's MCP tools now: enabled servers they signed in to (or that
-    need no sign-in), each tool in the mode an admin chose, minus what the
-    space's owner switched off there. Never raises."""
+    """The person's MCP tools now: enabled servers they signed in to (or needing no
+    sign-in), in the admin's mode, minus what the space owner switched off. Never raises."""
     from ..auth.user_connections import list_user_connections
     from . import policy
 

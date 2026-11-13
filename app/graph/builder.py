@@ -1,12 +1,8 @@
-"""Fill the knowledge graph from what sync already stored (Second Brain step 1.4).
+"""Fill the knowledge graph from what sync already stored.
 
-Built ONLY from the database -- ``documents.source_meta`` (step 1.1),
-``activity_facts`` and ``person_identities`` -- never by calling a provider, so
-building costs no API call and no LLM call, and can be re-run at any time.
-
-Per scope (org-wide, or one space). A walk never crosses scopes, so nothing is
-ever linked across them either: a reference from a space document to an
-org-wide one is simply not created.
+Built ONLY from the database (``documents.source_meta``, ``activity_facts``,
+``person_identities``): no API or LLM call, re-runnable any time. Per scope
+(org-wide or one space); nothing is linked across scopes.
 
 What becomes what:
 
@@ -26,15 +22,12 @@ relation                  from → to                             source
 ``same_person``           identity → member                     person_identities
 ========================  ====================================  ===============
 
-Every edge carries EVIDENCE saying why it exists and therefore who may see it
-(see ``kg_evidence`` in schema.sql). Building for a document first deletes that
-document's evidence, re-derives it, then garbage-collects edges left with none
--- which is what makes a re-run idempotent and makes a removed mention or a
-reassignment disappear. An ``assigned_to`` edge that loses its evidence is
-CLOSED (``valid_to``) instead of deleted, so history survives reassignment.
+Every edge carries EVIDENCE saying why it exists and who may see it
+(``kg_evidence``). A rebuild deletes a document's evidence, re-derives it, then
+drops edges left with none (idempotent). An ``assigned_to`` edge is CLOSED
+(``valid_to``) instead, so history survives reassignment.
 
-Every public function is best-effort at its call site: a stale graph is a
-stale graph, never a failed sync (the ``_record_insight_facts`` posture).
+Best-effort at every call site: a stale graph, never a failed sync.
 """
 
 from __future__ import annotations
@@ -47,9 +40,8 @@ from . import identities
 
 logger = logging.getLogger(__name__)
 
-#: A reference target that ingests AFTER the document pointing at it would be
-#: missed until that document changed; building a batch therefore also
-#: re-links documents that reference it -- at most this many per batch.
+#: Max documents re-linked per batch because they REFERENCE a newly built one
+#: (a target ingested after the page pointing at it).
 MAX_INCOMING_REBUILD = 200
 #: Documents per backfill pass on the tick.
 BACKFILL_BATCH = 200
@@ -352,8 +344,7 @@ def _add_document(batch: _Batch, row) -> tuple[str, list[dict]]:
     links = list(meta.get("links") or [])
     for container in meta.get("containers") or []:
         if container.get("kind") == "page":
-            # A parent PAGE is a document: linked like a reference, only if it
-            # exists in this scope, never created as a placeholder.
+            # A parent PAGE is linked only if it exists in this scope; never a placeholder.
             links.append({**container, "relation": "part_of"})
             continue
         ckey = container_key(container)
@@ -367,9 +358,7 @@ def build_documents(
 ) -> int:
     """(Re)build the graph for these documents. Returns documents built.
 
-    Idempotent. Also re-links documents in scope that REFERENCE any of these
-    (capped), so a target ingested after the page pointing at it is joined up
-    now rather than whenever that page next changes.
+    Idempotent. Also re-links (capped) documents that REFERENCE these.
     """
     external_ids = list(dict.fromkeys(e for e in external_ids if e))
     if not external_ids:
@@ -426,25 +415,17 @@ def build_documents(
 
 # -- private-channel membership (member_of) ------------------------------------------
 
-#: `documents.tags` prefix for a Slack channel, the same string a channel
-#: container is keyed by (`container_key`), so one value names both.
+#: `documents.tags` prefix for a Slack channel; also its container key.
 _SLACK_CHANNEL = "slack:channel:"
 
 
 def build_memberships(org_id: str, workspace_id: str | None) -> int:
-    """(Re)build ``member_of`` edges: person → PRIVATE Slack channel.
+    """(Re)build ``member_of`` edges: person -> PRIVATE Slack channel.
 
-    Membership is sensitive in itself ("who is in #layoffs-planning"), so each
-    edge's evidence carries the CHANNEL's own ACL (``is_public = FALSE``,
-    ``viewers`` = the channel's access list), and the walk's
-    ``evidence_predicate`` shows it only to someone who may read that channel.
-
-    Read from the database only, like the rest of the builder: the channel's
-    access list is already on its threads (``doc_viewers``, captured from
-    ``conversations.members`` at sync), and a member email becomes a person
-    through ``person_identities``. Rebuilt whole for the scope every time, so a
-    channel that went public, a member who left, or a disconnect all converge
-    on the next build. Returns edges written.
+    Membership is itself sensitive, so evidence carries the channel's own ACL and
+    the walk shows it only to someone who may read that channel. From the database
+    only (thread ``doc_viewers`` + ``person_identities``); rebuilt whole per scope so
+    leaves, public flips and disconnects converge. Returns edges written.
     """
     with get_connection() as conn:
         channels = conn.execute(
@@ -458,8 +439,7 @@ def build_memberships(org_id: str, workspace_id: str | None) -> int:
             """,
             (org_id, workspace_id, _SLACK_CHANNEL + "%"),
         ).fetchall()
-        # Every channel's old membership goes first: a channel that turned
-        # public (no private threads left) or a member who left must lose it.
+        # Old membership goes first, so leavers and channels made public lose it.
         conn.execute(
             f"""
             DELETE FROM kg_evidence ev USING kg_edges e, kg_entities x
@@ -551,12 +531,8 @@ def _write_memberships(conn, batch: _Batch, channel_ids: dict[str, str],
 
 
 def build_facts(org_id: str, workspace_id: str | None) -> int:
-    """(Re)build pull-request, review and commit edges from ``activity_facts``.
-
-    GitHub has no documents, so its whole graph comes from facts. Rebuilt for
-    the scope each time (facts are already capped per repo). Scope-level
-    evidence, the same visibility charts give these rows.
-    """
+    """(Re)build pull-request, review and commit edges from ``activity_facts``
+    (GitHub has no documents). Scope-level evidence, as charts give these rows."""
     with get_connection() as conn:
         facts = conn.execute(
             f"""
@@ -616,10 +592,7 @@ def _record_identities(org_id: str, people: list[dict]) -> None:
 def rebuild_people(org_id: str) -> int:
     """Re-derive every ``same_person`` edge in the org from ``person_identities``.
 
-    Pure SQL and cheap, which is why identity edges hang off per-connector
-    person entities: linking or unlinking an account rewrites these edges only,
-    and "moving edges back" on unlink is just this edge disappearing.
-    Returns links written.
+    Cheap SQL; unlinking an account just drops its edge. Returns links written.
     """
     with get_connection() as conn:
         conn.execute(
@@ -658,12 +631,9 @@ def rebuild_people(org_id: str) -> int:
 
 
 def purge_provider(org_id: str, workspace_id: str | None, provider: str) -> int:
-    """Remove a disconnected provider's graph rows in one scope.
-
-    Its documents are deleted by the disconnect itself, which cascades their
-    evidence; this removes the entities keyed by the provider (containers,
-    GitHub PRs and repos, which have no document) and anything left dangling.
-    """
+    """Remove a disconnected provider's graph rows in one scope: its keyed entities
+    (containers, GitHub PRs and repos) and anything left dangling. Documents
+    cascade with the disconnect itself."""
     prefixes = [f"{provider}:%"]
     with get_connection() as conn:
         if provider == "github":
@@ -687,12 +657,8 @@ def purge_provider(org_id: str, workspace_id: str | None, provider: str) -> int:
 
 
 def backfill(limit: int = BACKFILL_BATCH) -> int:
-    """Build documents that have captured metadata but no entity yet.
-
-    For tenants whose documents predate the graph. Runs on the tick, bounded
-    to ``limit`` documents per pass, oldest scope first; each pass shrinks the
-    set, so it converges and then costs one indexed query.
-    """
+    """Build documents that have captured metadata but no entity yet (pre-graph
+    tenants). Bounded per tick, oldest scope first; converges."""
     with get_connection() as conn:
         rows = conn.execute(
             """

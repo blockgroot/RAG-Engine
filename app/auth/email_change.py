@@ -1,20 +1,10 @@
-"""Changing a member's sign-in email WITHOUT losing their document access.
+"""Changing a member's sign-in email without losing their document access.
 
-Document-level access matches on EMAIL (`vectorstore.base.Viewer`), because a
-file is routinely shared with someone before they sign up. That same choice
-meant a changed address silently stopped matching every grant the person still
-held -- Drive still lists the old address on files shared before the change.
-
-So a change keeps the old address as a PRIOR email (`user_email_aliases`,
-Onyx's `prior_emails`) and `Viewer.acl()` emits it beside the new one. Two
-rules make that safe:
-
-* **Every alias was proven.** The only writer is a confirmed change: the old
-  address was this person's verified login, and the new one is verified by a
-  single-use link mailed to it. Nobody can type an address in and gain it.
-* **An address belongs to one person at a time.** An alias that another
-  `users` row now signs in with is ignored on read, and confirming a change to
-  an address drops it from whoever held it as an alias.
+Access matches on email, and sources keep listing the old address, so a
+change keeps it as an alias (`user_email_aliases`) that `Viewer.acl()` emits.
+Safe because every alias was proven (a confirmed change from a verified
+login), and an address belongs to one person at a time: an alias another
+`users` row signs in with is ignored, and a change to it drops it as an alias.
 """
 
 from __future__ import annotations
@@ -49,11 +39,10 @@ class PendingChange:
 def request_email_change(
     user_id: str, new_email: str, *, settings: AuthSettings | None = None
 ) -> str:
-    """Store a pending change and return the raw token to mail to ``new_email``.
+    """Store a pending change; return the raw token to mail to ``new_email``.
 
-    Refuses an address another account already signs in with: two logins on one
-    address would make `get_user_by_email` ambiguous, and a magic link for it
-    would sign in whichever row it found.
+    Refuses an address another account signs in with: two logins on one address
+    make `get_user_by_email` ambiguous.
     """
     email = _clean(new_email)
     if "@" not in email:
@@ -91,10 +80,9 @@ def request_email_change(
 
 
 def peek_email_change(token: str) -> PendingChange | None:
-    """The change a link would make, WITHOUT making it -- for the GET page.
+    """The change a link would make, without making it (the GET page).
 
-    A mail scanner that follows the link must not be able to confirm it, so the
-    GET only reads (the signup-approval posture).
+    A mail scanner that follows the link must not confirm it.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -109,11 +97,9 @@ def peek_email_change(token: str) -> PendingChange | None:
 
 
 def confirm_email_change(token: str) -> PendingChange:
-    """Apply the change in ONE transaction: swap the login, keep the old address.
+    """Apply the change in one transaction: swap the login, keep the old address.
 
-    Consuming the token, re-checking the address is still free and rewriting
-    both tables commit together, so a failure half-way leaves the person on
-    their old address with the link still usable -- never a login with no alias.
+    A failure half-way leaves the old address and a usable link, never a login with no alias.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -173,11 +159,9 @@ def remove_prior_email(user_id: str, email: str) -> bool:
 
 
 def aliases_for(org_id: str, email: str) -> tuple[str, ...]:
-    """The prior addresses of the member signing in as ``email`` in ``org_id``.
+    """Prior addresses of the member signing in as ``email`` in ``org_id``.
 
-    Pinned to the org so another tenant's account can never lend its history,
-    and an alias someone ELSE now signs in with is skipped: that address is
-    theirs now, and a grant to it is a grant to them.
+    Pinned to the org; an alias someone else now signs in with is skipped (it is theirs).
     """
     address = _clean(email)
     if not address:

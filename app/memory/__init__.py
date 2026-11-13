@@ -1,4 +1,4 @@
-"""Conversation memory (Phase 5).
+"""Conversation memory.
 
 Public API:
     from app.memory import build_conversation_store

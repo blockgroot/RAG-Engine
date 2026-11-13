@@ -1,39 +1,9 @@
-"""Token counting for chunking.
+"""Token counting for chunking: a heuristic, not the BGE-M3 tokenizer.
 
-Why this is NOT the BGE-M3 neural tokenizer by default
-------------------------------------------------------
-Chunk sizes are measured in tokens so dense policy text and sparse Markdown do
-not drift in effective embedding length. The original implementation loaded
-``BAAI/bge-m3``'s tokenizer via ``transformers.AutoTokenizer`` to get
-byte-exact counts. That was **measured** to be catastrophically disproportionate
-for what the counts are used for:
-
-===============================================  ==========
-process RSS after loading the BGE-M3 tokenizer   result
-===============================================  ==========
-via ``transformers`` (torch present)              ~1005 MB
-via ``transformers`` (torch absent, deploy image)  ~611 MB
-via ``tokenizers`` (Rust) directly                 ~378 MB
-this module's ``heuristic`` backend                   ~0 MB
-===============================================  ==========
-
-Render's free tier has a **512 MB hard limit** and the app's own baseline is
-~84 MB, so *every* ingestion that reached ``chunk_text()`` was OOM-killed the
-instant the tokenizer allocated — 100% reproducible, independent of document
-size, which is exactly the production failure that motivated this module (see
-CLAUDE.md §4).
-
-The counts are only used to decide *where to split text*, and the split point is
-then snapped to a word boundary anyway (``chunking._overlap_tail``). The
-embedding provider re-tokenizes server-side, so byte-exact local agreement with
-BGE-M3 buys nothing we actually rely on. Measured on the golden corpus, the
-heuristic yields chunks whose **real** BGE-M3 length is mean 211 / max 236
-tokens against a 256 budget (exact tokenizer: mean 237 / max 251) — i.e. it
-errs slightly *small*, the safe direction, and never exceeds the budget.
-
-``CHUNK_TOKEN_BACKEND=hf`` restores exact BGE-M3 counting (via ``tokenizers``,
-not ``transformers``) for deployments with memory to spare. It is opt-in
-precisely because it cannot fit in a 512 MB box.
+Loading the real tokenizer costs 378 MB to 1 GB of RSS and OOM-killed every
+ingest on a 512 MB host. The counts only pick split points (snapped to words),
+and the heuristic errs small (real length mean 211 / max 236 against 256).
+``CHUNK_TOKEN_BACKEND=hf`` opts into exact counting where memory allows.
 """
 
 from __future__ import annotations
@@ -47,10 +17,8 @@ from ..config.settings import ChunkingSettings
 # standalone punctuation mark (which subword tokenizers also bill separately).
 _WORD_PIECE = re.compile(r"\w+|[^\w\s]")
 
-# Calibrated against the real BGE-M3 tokenizer on the golden policy corpus.
-# Blending a word-count signal with a character-count signal keeps the estimate
-# stable across both prose (word-dominated) and tables/IDs (character-dominated),
-# where either signal alone drifts.
+# Calibrated against BGE-M3. Words plus characters stays stable across prose
+# and tables/IDs, where either alone drifts.
 _WORDS_TO_TOKENS = 1.30
 _CHARS_PER_TOKEN = 4.0
 _WORD_WEIGHT = 0.75
@@ -70,13 +38,9 @@ def _estimate_tokens(text: str) -> int:
 def _hf_tokenizer():
     """Exact BGE-M3 tokenizer, loaded lazily and only for ``backend="hf"``.
 
-    Uses the ``tokenizers`` Rust library directly rather than
-    ``transformers.AutoTokenizer``: the latter costs ~230 MB more, and merely
-    *accessing* its ``AutoTokenizer`` attribute pulls in ``torch`` when present
-    (another ~350 MB). Imported inside the function so a ``heuristic``
-    deployment never pays either import — a module-level import here previously
-    blocked uvicorn's port bind long enough to trip Render's 5 s health check
-    on every cold start.
+    ``tokenizers`` directly, not ``transformers`` (hundreds of MB more, and it
+    pulls in torch). Lazy: a module-level import delayed the port bind past
+    the health check.
     """
     from tokenizers import Tokenizer
 
@@ -97,11 +61,8 @@ def count_tokens(text: str) -> int:
 
 
 def truncate_to_tokens(text: str, max_tokens: int) -> str:
-    """Keep at most ``max_tokens`` tokens, counted from the END of ``text``.
-
-    Used only to build the overlap tail of the previous chunk, which the caller
-    immediately snaps to a word boundary — so the heuristic path works on whole
-    words directly rather than decoding subword ids back to a string.
+    """Keep at most ``max_tokens`` tokens from the end of ``text`` (the
+    overlap tail; the heuristic path works on whole words).
     """
     if max_tokens <= 0 or not text:
         return ""

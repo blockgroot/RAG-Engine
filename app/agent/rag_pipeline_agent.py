@@ -1,10 +1,7 @@
 """Shared base for agents that answer by delegating to a ``RagPipeline``.
 
-``PolicyAgent`` and ``WorkspaceAgent`` are both thin adapters over a
-``RagPipeline`` — they differ only in *which* pipeline they're built with
-(prompt persona, fallback copy, which capabilities are on), never in how a
-``RagResult`` becomes an ``AgentResponse``. That one mapping lives here so it
-is never duplicated between them (see ``policy_agent.py`` / ``workspace_agent.py``).
+They differ only in which pipeline they are built with; the one
+``RagResult`` -> ``AgentResponse`` mapping lives here.
 """
 
 from __future__ import annotations
@@ -19,11 +16,7 @@ from .base import Agent, AgentResponse, Citation
 
 class RagPipelineAgent(Agent):
     """An ``Agent`` that answers by delegating to an injected ``RagPipeline``.
-
-    The pipeline is injected (not constructed here) so this stays a pure
-    adapter and reuses the session-scoped provider fixtures in tests. Behavior
-    is 100% the pipeline's — this class only reshapes the result.
-    """
+    Behaviour is the pipeline's; this only reshapes the result."""
 
     def __init__(self, pipeline: RagPipeline) -> None:
         self._pipeline = pipeline
@@ -60,15 +53,9 @@ class RagPipelineAgent(Agent):
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
     ) -> tuple[Iterator[str], AgentResponse]:
-        """Like ``answer``, but the text arrives as a chunk iterator.
-
-        Not part of the abstract ``Agent`` contract — it's a convenience for
-        callers that want progressive display (the CLI, ``app/api/chat.py``'s
-        streaming chat endpoint), not a capability every future agent must
-        implement. See ``RagPipeline.answer_stream`` for why this chunks an
-        already-fully-decided answer rather than streaming raw LLM tokens
-        through the gate/recovery/tone-retry logic.
-        """
+        """Like ``answer``, but the text arrives as a chunk iterator: chunks of an
+        already-decided answer (see ``RagPipeline.answer_stream``). Not part of the
+        ``Agent`` contract."""
         chunks, result = self._pipeline.answer_stream(
             question,
             org_id,
@@ -107,12 +94,8 @@ class RagPipelineAgent(Agent):
 
     @staticmethod
     def _display_chunk_content(content: str) -> str:
-        """Drop the ingest-time contextual prefix for citation UI.
-
-        Stored chunks are often ``"<LLM context>\n\n<original>"``. The prefix
-        helps retrieval but reads like meta-commentary ("This chunk falls
-        within…") in the sources panel — show the original excerpt instead.
-        """
+        """Drop the ingest-time contextual prefix (``"<LLM context>\n\n<original>"``)
+        for citations: it helps retrieval but reads as meta-commentary."""
         text = (content or "").strip()
         if "\n\n" not in text:
             return text
@@ -132,8 +115,7 @@ class RagPipelineAgent(Agent):
         part = int(chunk.chunk_index) + 1  # 1-based for readers
         if title:
             return f"{title} · excerpt {part}"
-        # Last resort if the JOIN missed (tests / odd stores): keep locator
-        # stable but mark it as an excerpt, not a database id.
+        # The JOIN missed (tests, odd stores): an excerpt label, never a database id.
         return f"Document excerpt {part}"
 
     @staticmethod

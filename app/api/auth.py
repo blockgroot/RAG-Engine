@@ -53,14 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 def _dev_link(link: str) -> str | None:
-    """Echo the magic link back in the response when in ``console`` email mode.
-
-    Only ever set when no real email is actually going out (local dev / a
-    self-hosted deployment that hasn't configured SMTP yet) — in that mode
-    there is no inbox to check, so hiding the link would just mean digging it
-    out of server logs. The moment ``EMAIL_SENDER=smtp`` is configured, this
-    is always ``None`` and the link only ever exists in the sent email.
-    """
+    """The magic link, returned only in ``console`` email mode (no inbox to check); otherwise ``None``."""
     return link if EmailSettings.from_env().sender == "console" else None
 
 
@@ -80,13 +73,10 @@ _NO_ACCOUNT_INVITE_ONLY = (
 
 @router.post("/signup")
 def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request):
-    """Queue a request to create a brand-new org — does NOT create it.
+    """Queue a request to create a new org; nothing is created here.
 
-    No org or account is created here. The request lands in
-    ``org_signup_requests`` as ``pending`` until the platform owner reviews
-    it via the one-click email links; only on approval does the org + its
-    admin user get created and a sign-in link get emailed. An email that's
-    already a user anywhere, or already has a pending request, is rejected.
+    The platform owner approves it from the email; only then are the org and
+    admin created. An existing user or pending request is refused.
     """
     if not AuthSettings.from_env().signup_enabled:
         raise HTTPException(status_code=403, detail=_SIGNUP_OFF)
@@ -230,13 +220,8 @@ def authorize(
 ):
     """Start a connect flow.
 
-    Without ``workspace_id``: the existing org-wide admin connect flow —
-    admin role required, unchanged. With ``workspace_id`` (Workspace-within-
-    a-Workspace): an employee connecting their OWN personal source into a
-    sub-workspace they belong to. Restricted to the workspace's ``owner``
-    (its creator) — see CLAUDE.md's Workspace-within-a-Workspace plan §Task 12
-    decision 3 — so an ordinary member can't silently repoint the workspace's
-    data source.
+    Without ``workspace_id``: org-wide, admin only. With it: the space owner
+    connects a source into their space (an ordinary member cannot repoint it).
     """
     if workspace_id is None:
         if session.role != "admin":
@@ -295,11 +280,8 @@ GITHUB_FINISH_CONNECT = "github_finish_connect"
 def _github_finish_path(workspace_id: str | None) -> str:
     """Where to land someone whose GitHub redirect could not be completed.
 
-    Prefers the page they started from. With no workspace known it uses
-    ``/workspaces`` rather than ``/admin/connections``, because the latter is
-    admin-only: a space owner who is an ordinary member would be bounced
-    straight back to a redirect loop by the admin guard, turning a recoverable
-    hiccup into a second dead end.
+    The page they started from, else ``/workspaces`` (``/admin/connections``
+    would loop a non-admin space owner through the admin guard).
     """
     if workspace_id is not None:
         return f"/workspaces/{workspace_id}?connect_error={GITHUB_FINISH_CONNECT}"
@@ -321,9 +303,7 @@ def _persist_github_connection(
 ) -> str | None:
     """Save the GitHub connection or return a connect_error code.
 
-    Enforces **org-wide uniqueness of ``installation_id``**: Company Sources and
-    every space must bind different GitHub App installs. Reconnecting the same
-    surface with the same install is allowed.
+    An ``installation_id`` binds to one surface per org; reconnecting the same surface is allowed.
     """
     from ..auth.github_installations import find_github_installation_conflict
 
@@ -352,11 +332,10 @@ def _persist_github_connection(
 
 @router.get("/github/installations/pending/{token}")
 def github_install_pending_detail(token: str):
-    """List GitHub App installs the user may bind, with availability flags.
+    """GitHub App installs the user may bind, with availability flags.
 
-    Possession of ``token`` is the capability (same model as oauth ``state``).
-    Installs already used by another Folio surface in this org are marked
-    unavailable so Company Sources and a space cannot share one personal id.
+    Holding ``token`` is the capability. Installs used by another surface in
+    this org are marked unavailable.
     """
     from ..auth.github_installations import (
         find_github_installation_conflict,
@@ -504,10 +483,8 @@ def callback(
         return _frontend_redirect(settings, _github_finish_path(None))
 
     if is_github and peek_state_provider(state) == LINK_GITHUB:
-        # "Link your GitHub account" shares this callback: a GitHub App has one
-        # registered callback URL. Routed on the STATE's provider, and finished
-        # by consuming it under that provider, so neither flow can complete the
-        # other.
+        # "Link your GitHub account" shares this callback (one URL per App). Routed
+        # and consumed by the state's provider, so neither flow completes the other.
         from .account import finish_github_link
 
         return finish_github_link(oauth_provider, code, state, settings)
@@ -552,11 +529,9 @@ def callback(
             connection_id = save_connection(
                 org_id, provider, tokens, workspace_id=workspace_id
             )
-            # Connecting IS the request to index, so the ingest happens here
-            # rather than on the next tick. `sync_after_connect` owns the one
-            # exception -- a provider that does not yet know WHAT to read -- and
-            # that is a first connect only: a RECONNECT keeps its saved folder
-            # or channel list, so it must sync immediately like everything else.
+            # Connecting is the request to index, so sync now. `sync_after_connect` skips
+            # only a first connect that still needs its scope picked; a reconnect keeps
+            # its scope and syncs.
             sync_after_connect(
                 org_id, connection_id, provider=provider,
                 workspace_id=workspace_id,
@@ -653,13 +628,10 @@ h1 { font-size: 1.6rem; font-weight: 650; letter-spacing: -0.03em; margin: 0 0 0
 
 
 def _brand_logo_url() -> str:
-    """The real Handbook mark (``frontend/public/brand/handbook-mark.png``),
-    served by the FRONTEND, not this API — this page can't `import` that
-    static asset (see the module-level design note above `_PAGE_STYLE`), so
-    it's referenced by absolute URL instead. Uses the small 192px export
-    since this is an icon-sized placement, not a hero image. Falls back to
-    no image (rather than a broken-image icon) if ``FRONTEND_URL`` is unset,
-    e.g. a bare local API run with no frontend configured."""
+    """The Handbook mark, served by the frontend by absolute URL (this page cannot import assets).
+
+    No image when ``FRONTEND_URL`` is unset, rather than a broken one.
+    """
     base = (ApiSettings.from_env().frontend_url or "").rstrip("/")
     return f"{base}/brand/handbook-mark-192.png" if base else ""
 
@@ -774,14 +746,10 @@ def _github_app_page(heading: str, body: str) -> str:
 
 @router.get("/github/app-created", response_class=HTMLResponse)
 def github_app_created(request: Request, code: str = ""):
-    """Finish creating a self-hosted copy's GitHub App.
+    """Finish creating a self-hosted copy's GitHub App from GitHub's one-time code.
 
-    The template (``deploy/selfhost/apps/templates/github-app.html``) sends
-    the admin to GitHub; GitHub creates the App and returns here with a
-    one-time code. Exchanging it here spares the admin copying the code out
-    of the address bar into a command. The API cannot write ``.env``, so the
-    four values are shown once, to an admin, to paste in. Never logged or
-    cached.
+    The API cannot write ``.env``, so the four values are shown once, to an
+    admin, to paste. Never logged or cached.
     """
     try:
         session = get_session(request)

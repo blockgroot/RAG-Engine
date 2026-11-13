@@ -1,9 +1,7 @@
-"""Google Drive: re-read one file that retrieval already returned (plan Phase 2).
+"""Google Drive: re-read one file retrieval already returned, by id only.
 
-Refresh-by-id only (plan D11): no search, no folder walk. The owner-only and
-sharing rules were already applied by retrieval's visibility predicate, so this
-reads exactly the file the asker was allowed to see. Google reports a rate
-limit as a 403 too, so the ``reason`` decides, never the status alone (§5).
+Retrieval already applied visibility. Google reports a rate limit as 403 too,
+so the ``reason`` decides, never the status alone.
 """
 
 from __future__ import annotations

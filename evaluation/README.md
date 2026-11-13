@@ -6,7 +6,7 @@
 
 A small, deliberate regression suite for the **Policy Agent** — a tripwire that
 fails loudly when a change quietly breaks retrieval, grounding, the fallback, the
-web-search path, or conversation memory. It is **not** a benchmark; ~17 hand-picked
+web-search path, or conversation memory. It is **not** a benchmark; 29 hand-picked
 cases beat a large fuzzy set for a regression gate you trust.
 
 ## What it checks
@@ -15,8 +15,8 @@ The set (`golden_set.py`) has four categories, one per path the agent can take:
 
 | Category       | # | Must do                                              | Scored by |
 |----------------|---|------------------------------------------------------|-----------|
-| `answerable`   | 10| answer from policy docs, with the expected facts     | path check **+ RAGAS** |
-| `fallback`     | 4 | return the fixed internal fallback (nothing in docs) | path check |
+| `answerable`   | 20| answer from policy docs, with the expected facts     | path check **+ RAGAS** |
+| `fallback`     | 6 | return the fixed internal fallback (nothing in docs) | path check |
 | `web`          | 2 | trip the web-search tool for an external entity      | path check (network) |
 | `conversation` | 1 | rewrite a follow-up via memory, retrieve right chunk | path check **+ RAGAS** |
 
@@ -68,8 +68,10 @@ python -m evaluation.run_eval --ragas --skip-web   # what the nightly CI runs
 ```
 
 Prerequisites are the same as the test suite: `DATABASE_URL` (Postgres+pgvector)
-and a configured LLM (`LLM_MODEL` / `LLM_API_KEY` / `LLM_BASE_URL`). In CI those LLM
-values come from repository **secrets** — see `.github/workflows/eval.yml`.
+and a configured LLM (`LLM_ADAPTER` / `LLM_MODEL` / `LLM_API_KEY`, see `.env.example`).
+In CI the LLM values (`LLM_MODEL` / `LLM_API_KEY` / `LLM_BASE_URL`) come from repository
+**secrets**; without them only the no-LLM checks run — see `.github/workflows/eval.yml`.
+The nightly job also runs the prompt-injection probe (`scripts/probe_injection.py --fail-on-leak`).
 
 ## The report
 
@@ -83,3 +85,20 @@ run, and per-case detail. That gate section is the evidence base for the Phase 7
 > the Phase 6 contextual-prefix LLM step, so runs are deterministic and fast. The
 > hybrid + rerank + gate *retrieval* path is exercised in full; only the ingest-time
 > context prefix is skipped.
+
+## Other suites in this folder
+
+Run by hand unless noted. Each module's docstring says how.
+
+- `retrieval_eval.py` — retrieval only, no LLM: the rank of the right chunk after
+  fusion and rerank (`tests/test_retrieval_eval.py`, run in CI).
+- `graph_eval.py` — multi-hop retrieval with the knowledge graph off and on.
+- `agent_scenarios.py` — Agent mode requests against a real model and real Linear and
+  GitHub tool definitions; writes are never sent. `linear_signin.py` signs the bench in.
+- `agentbench/`, `agentbench2/` — Agent mode benchmarks that write into sandbox tools and
+  score the difference before and after, field by field.
+- `erb/` — the frozen retrieval-and-answer benchmark: question set, corpus, loaders.
+- `sales_e2e/`, `recruit_e2e/` — spreadsheet questions (Ask and Chart mode) asked through
+  the real `/chat/stream` and checked against figures worked out from the rows.
+
+Results of past runs are under `evaluation/reports/`.

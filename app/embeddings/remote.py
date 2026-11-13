@@ -1,14 +1,7 @@
 """Remote embedding provider for an OpenAI-compatible HTTP endpoint.
 
-An alternative to the local backend for when you'd rather offload embedding to a
-hosted service (e.g. DeepInfra serving BGE-M3). Same ``embed(...)`` contract.
-
-``embed()`` batches requests at ``EMBED_BATCH_SIZE`` (default 16) for the same
-reason ``LocalEmbeddingProvider`` does: a document with an unusually large
-number of chunks must not turn into one unbounded request/response payload —
-a real incident on a memory-constrained deploy (Render free, 512MB) traced
-back to exactly this gap, since this backend originally sent the entire chunk
-list in a single call with no cap.
+Same ``embed(...)`` contract as the local backend, batched at
+``EMBED_BATCH_SIZE`` so a huge document is never one unbounded payload.
 """
 
 from __future__ import annotations
@@ -23,11 +16,8 @@ DEFAULT_TIMEOUT = 60.0
 
 
 class RemoteEmbeddingProvider(EmbeddingProvider):
-    """Embed text via a remote OpenAI-compatible embeddings endpoint.
-
-    Prefer building this via ``factory.build_embedding_provider`` so config comes
-    from a single place.
-    """
+    """Embed text via a remote OpenAI-compatible endpoint. Build via
+    ``factory.build_embedding_provider``."""
 
     def __init__(
         self,
@@ -61,9 +51,8 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
-        # Identifiers are masked before the text leaves: a vector never needs
-        # the digits, and an exact-number search is the keyword leg's job,
-        # which runs here on the real text.
+        # Identifiers are masked before leaving: a vector never needs the digits,
+        # and exact-number search is the keyword leg's job.
         try:
             batch = redact(batch)
         except PrivacyError as exc:
@@ -86,7 +75,7 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
                 f"Embedding API error: {exc}", cause=exc
             ) from exc
 
-        # The API may return items out of order; sort by index to be safe.
+        # Items may come back out of order: sort by index.
         ordered = sorted(response.data, key=lambda item: item.index)
         return [item.embedding for item in ordered]
 
@@ -94,11 +83,7 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         if not texts:
             return []
 
-        # Batch so a document with an unusually large number of chunks cannot
-        # build one unbounded request/response payload in a single call — the
-        # same reasoning as LocalEmbeddingProvider.embed()'s batching loop,
-        # which this backend was missing (EMBED_BATCH_SIZE's "avoids OOM on
-        # large docs" intent only held for the local backend until now).
+        # Batched so many chunks never become one unbounded payload.
         out: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             out.extend(self._embed_batch(texts[start : start + self.batch_size]))

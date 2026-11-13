@@ -1,14 +1,7 @@
-"""Notion implementation of the ``OAuthProvider`` interface.
+"""Notion ``OAuthProvider`` over plain ``httpx``.
 
-Uses Notion's public OAuth2 endpoints directly via ``httpx`` (already a
-transitive dependency of ``notion-client``, now used directly here — same
-dependency-light reasoning as the rest of ``app/``). Notion's authorization-code
-exchange returns an access token that does **not expire** and has **no refresh
-token** (per Notion's own docs), so ``refresh()`` is intentionally left
-unimplemented (the ABC's default ``NotImplementedError``).
-
-Reuses the already-scaffolded ``NotionSettings.client_id/client_secret/redirect_uri``
-(read since Phase 4, unused until now) — no new env vars needed for Notion.
+Notion tokens never expire and have no refresh token, so ``refresh()`` stays
+the ABC's ``NotImplementedError``.
 """
 
 from __future__ import annotations

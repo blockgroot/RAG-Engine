@@ -1,25 +1,9 @@
 """The object store for attachments: original bytes plus cached plaintext.
 
-Modelled on Onyx's `FileStore` (`backend/onyx/file_store/file_store.py` and
-`file_store/utils.py`), narrowed to the four calls this codebase makes. Two
-things are taken from that design on purpose:
-
-1. **The extracted text is a SECOND object, not a re-parse.** Onyx writes
-   `plaintext_{file_id}` beside the upload and reads it on every turn
-   (`_get_or_extract_plaintext`), falling back to the original bytes only on a
-   miss. Attachments ride on every turn of a chat, so without that cache a
-   300-page PDF is re-parsed per question -- seconds of CPU and ~2x its size
-   resident, on a 512MB box.
-2. **The database keeps metadata, never content.** What is stored here is
-   addressed by `public_id`; `conversation_attachments` holds the key, the
-   filename and the counts.
-
-Every asset is uploaded `type="authenticated"` with `resource_type="raw"`, and
-every URL handed out is signed and short-lived. A default Cloudinary upload is
-served from a permanent public URL, which for a tenant's contract means a link
-that works for anyone it is forwarded to and keeps working after the chat is
-deleted. Authenticated delivery is what makes this storage acceptable for this
-content; it is not a hardening pass to do later.
+The text is a second object, so a large PDF is not re-parsed on every turn.
+The database keeps metadata only. Every asset is `authenticated` and every
+URL handed out is signed and short-lived: a default public URL would outlive
+the chat and work for anyone it is forwarded to.
 """
 
 from __future__ import annotations
@@ -41,19 +25,14 @@ class AttachmentStorageError(ProviderError):
 class StoredObject:
     """What the database needs to find this asset again."""
 
-    #: Cloudinary's `public_id`. The only handle we persist -- a URL is not
-    #: stored, because a signed one expires and an unsigned one should not
-    #: exist.
+    #: Cloudinary's `public_id`; never a URL (a persisted URL is a grant).
     key: str
     bytes_written: int
 
 
 def plaintext_key(key: str) -> str:
-    """The companion object holding this upload's extracted text.
-
-    Onyx's `plaintext_file_name_for_id` naming, kept so the relationship is
-    legible in a bucket listing: an original and its text sit next to each
-    other under one prefix.
+    """The companion object holding this upload's extracted text, beside the
+    original under one prefix.
     """
     return f"{key}__plaintext"
 
@@ -64,11 +43,8 @@ def configured() -> bool:
 
 
 def _client():
-    """The configured Cloudinary SDK, or a raise naming what is missing.
-
-    Imported INSIDE the function: CLAUDE.md §5 -- a module-level import of a
-    third-party SDK costs boot time on every process, including the ones that
-    never touch an attachment.
+    """The configured Cloudinary SDK (imported lazily), or a raise naming
+    what is missing.
     """
     settings = CloudinarySettings.from_env()
     if not settings.configured:
@@ -98,10 +74,8 @@ def _client():
 def save_bytes(key: str, data: bytes, *, content_type: str | None = None) -> StoredObject:
     """Upload one asset under ``key``, overwriting any asset already there.
 
-    ``resource_type="raw"`` because these are documents, not media: Cloudinary
-    would otherwise try to decode a PDF as an image and transform it. The
-    upload is `authenticated`, so nothing here is reachable without a signature
-    even if the public_id is guessed.
+    ``raw`` so a PDF is not treated as an image; `authenticated`, so a
+    guessed public_id is useless without a signature.
     """
     cloudinary, settings = _client()
     try:
@@ -115,9 +89,7 @@ def save_bytes(key: str, data: bytes, *, content_type: str | None = None) -> Sto
             # An attachment is replaced in place when a file is re-uploaded to
             # the same row; without this Cloudinary refuses the second write.
             overwrite=True,
-            # The filename is already on the database row and is member-
-            # supplied text; letting it shape the public_id would put it in a
-            # URL and make the key unpredictable.
+            # The member-supplied filename never shapes the key or a URL.
             use_filename=False,
             unique_filename=False,
             resource_metadata=False,
@@ -136,11 +108,8 @@ def save_text(key: str, text: str) -> StoredObject:
 
 
 def read_bytes(key: str) -> bytes:
-    """Fetch one asset. Raises rather than returning empty.
-
-    An empty return would be indistinguishable from a genuinely empty file and
-    would reach the prompt as "this document says nothing", which is a claim
-    about the document rather than about the fetch.
+    """Fetch one asset. Raises rather than returning empty, which would read
+    as "this document says nothing".
     """
     cloudinary, settings = _client()
     import httpx
@@ -163,18 +132,11 @@ def read_text(key: str) -> str:
 
 
 def _delivery_url(key: str) -> str:
-    """A signed CDN URL, used INSIDE this process and never handed out.
+    """A signed CDN URL, used inside this process and never handed out.
 
-    `cloudinary_url(sign_url=True)` produces a signature that does NOT expire
-    -- measured: passing `expires_at` returns a byte-identical URL, so the
-    parameter is silently dropped for this delivery type. That is acceptable
-    here and only here, because this URL is built, fetched and discarded
-    within one call: nothing that never leaves the process is a grant.
-
-    It is the CDN rather than `private_download_url`'s API endpoint because
-    this is the PER-TURN read path -- every question re-reads every attached
-    file -- and routing that through an API endpoint would put every answer
-    behind an API rate limit instead of a cache.
+    Its signature never expires (``expires_at`` is ignored), which is safe
+    only because it never leaves the process. CDN, not the API endpoint: this
+    is the per-turn read path and must not hit an API rate limit.
     """
     cloudinary, settings = _client()
     url, _ = cloudinary.utils.cloudinary_url(
@@ -187,17 +149,10 @@ def _delivery_url(key: str) -> str:
 
 
 def signed_url(key: str, *, ttl_seconds: int | None = None) -> str:
-    """An EXPIRING URL, for handing to a browser.
+    """An expiring URL, for handing to a browser.
 
-    `private_download_url`, not `cloudinary_url`: the latter's signature never
-    expires (see `_delivery_url`), so a link built with it and given to
-    somebody works forever and survives the deletion of the chat it came from.
-    This one carries the expiry inside the signature and Cloudinary refuses it
-    afterwards with "Stale request - expires_at ... has passed" (verified
-    against the real account by `scripts/verify_cloudinary.py`).
-
-    Never stored: the signature is part of the URL, so a persisted one is a
-    persisted grant. Build it per request.
+    `private_download_url`, whose signature carries the expiry (unlike
+    `_delivery_url`'s). Never stored; build it per request.
     """
     cloudinary, settings = _client()
     import time
@@ -215,10 +170,8 @@ def signed_url(key: str, *, ttl_seconds: int | None = None) -> str:
 def delete_object(key: str) -> bool:
     """Remove one asset. False when it was already gone.
 
-    Never raises: a delete is called from teardown paths (detach, the TTL
-    sweep, a failed upload's rollback) where a storage failure must not undo
-    the database change that is the actual record of removal. A leaked object
-    is visible in a prefix listing; a row that would not delete is not.
+    Never raises: called from teardown, where a storage failure must not undo
+    the row delete. A leaked object shows in a prefix listing.
     """
     try:
         cloudinary, settings = _client()
@@ -235,13 +188,8 @@ def delete_object(key: str) -> bool:
 
 
 def list_keys(prefix: str = "") -> list[str]:
-    """Every key this app has written under ``folder``/``prefix``.
-
-    Onyx's `list_files_by_prefix`. The reason to have it is the failure mode an
-    object store has and a TEXT column does not: a row deleted while the store
-    was unreachable leaves an asset nothing will ever list again. Paginated,
-    because `resources` caps a page at 500 and a silent first page would report
-    a clean bucket as confidently as a real one.
+    """Every key this app has written under ``folder``/``prefix``, to find
+    orphans. Paginated: a silent first page of 500 would look complete.
     """
     cloudinary, settings = _client()
     full_prefix = f"{settings.folder}/{prefix}" if prefix else f"{settings.folder}/"

@@ -1,11 +1,7 @@
-"""Act mode routes (docs/plans/2026-10-13-write-actions.md).
+"""Agent mode (Act) routes: draft, edit, approve and switch.
 
-A separate surface from Ask and Chart: its own page, its own routes, its own
-package. ``org_id`` and the person come from the session here, as everywhere;
-an action id from the URL is only ever looked up together with both.
-
-Which tools exist and each person's sign-in to them are MCP's
-(``api/mcp_actions.py``); these routes draft, edit, approve and switch.
+``org_id`` and the person come from the session; an action id is looked up
+only with both. Tools and per-person sign-ins are MCP's (``api/mcp_actions.py``).
 """
 
 from __future__ import annotations
@@ -76,23 +72,11 @@ def _vstore():
 def ask_search(user_id: str):
     """How Act finds content: Ask's own reading, never a search of its own.
 
-    Routing is Ask's (``choose_agent``: a tool the words name, else the best
-    match by meaning, with the knowledge graph's plan when it is on), run on
-    the words that name the content: "create a Linear issue from the Slack
-    message about X" names Linear as where it GOES and Slack as where it IS.
-
-    Several tools named ("the Slack discussion and the Notion spec") are each
-    read, as the chat's connected answer reads exactly the tools a question
-    names; the passages are interleaved so every tool gets its share. With the
-    graph on, its plan is used exactly as the chat uses it, so linked
-    documents from other tools come in too, walked as this viewer.
-
-    An indexed tool is searched by that agent's pipeline as Ask does
-    (``RagPipeline.retrieve_passages``); GitHub is read live by Ask's GitHub
-    agent (``read_evidence``), limited to the repositories the asker can open.
-    A Slack channel's draft stays in that channel, read by the room, like a
-    channel reply. Charts hold no passages, so they fall back to the
-    company-wide (or space) search.
+    Ask's routing runs on the words naming the content ("a Linear issue from the
+    Slack message" reads Slack). Several named tools are each read, interleaved;
+    the graph plan is used as chat uses it. Indexed tools use the agent's
+    ``retrieve_passages``; GitHub is read live over repos the asker can open. A
+    channel's draft reads only that channel, as the room.
     """
     from ..actions.base import Source
     from ..actions.service import indexed_context
@@ -324,10 +308,10 @@ _MODEL_KEY = ("The model's API key was refused. Nothing was sent. "
 
 
 def _model_down(exc: LLMProviderError) -> str:
-    """Say why, so the right person acts instead of everyone retrying: a
-    request too large for the plan (Groq's 413: a model choice, not a wait),
-    a refused key, or no credit. The provider's status code and words are
-    the only signal; a 429 is the quota by our rules."""
+    """Say why a model call failed, so the right person acts instead of retrying.
+
+    A request too large for the plan (413), a refused key, or no credit; a 429 is the quota.
+    """
     said = str(exc).lower()
     if "error code: 413" in said or "request too large" in said or "maximum number of items" in said:
         return _MODEL_TOO_LARGE
@@ -450,10 +434,10 @@ def continue_stream(action_id: str, session: SessionClaims = Depends(get_session
 
 
 def _continue(session: SessionClaims, action_id: str) -> dict | None:
-    """What a chain drafts next once the cards it waited on are decided, as
-    ``/act`` replies; ``None`` when nothing continues. The approval itself has
-    already run and is reported either way, so a model failure here is said,
-    never an error for the approve click."""
+    """What a chain drafts next once its awaited cards are decided, as ``/act`` replies; ``None`` when it ends.
+
+    The approval already ran, so a model failure here is said, never an error for the click.
+    """
     user, viewer = get_user(session.user_id), viewer_for(session)
     if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
         return None

@@ -1,4 +1,4 @@
-"""Structured LLM token logging (Phase 19)."""
+"""Structured LLM token logging."""
 
 from __future__ import annotations
 

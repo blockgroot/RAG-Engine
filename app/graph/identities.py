@@ -1,18 +1,13 @@
-"""Who is who across connectors (Second Brain step 1.2).
+"""Who is who across connectors.
 
-The same person is "Sana Asiwal" in Drive, "sana" in Slack and "18-sana" on
-GitHub. ``person_identities`` holds one row per person AS EACH CONNECTOR KNOWS
-THEM, and ``user_id`` says which Handbook member that is -- set only on proof
-(plan decision D4):
+``person_identities`` holds one row per person AS EACH CONNECTOR KNOWS THEM;
+``user_id`` links it to a member only on proof:
 
-* ``provider_email`` -- the connector reported an email equal to a member's
-  login email **in the same org**. Login is by magic link, so that email is
-  verified. A different org's member with the same address is never matched.
-* ``oauth`` -- the member signed in to that account themselves ("Link your
-  GitHub account"), because GitHub hands out logins, not emails.
+* ``provider_email``: the connector's email equals a member's (verified) login
+  email in the SAME org.
+* ``oauth``: the member signed in to that account (GitHub gives logins, not emails).
 
-Never by display name. And a link changes attribution only: nothing here is
-read by retrieval's access check, which stays on ``documents``.
+Never by display name. Attribution only: retrieval's access check stays on ``documents``.
 """
 
 from __future__ import annotations
@@ -40,11 +35,8 @@ class Identity:
 
 
 def identity_external_id(person: dict) -> str | None:
-    """The ``external_id`` column for one ``source_meta`` person entry.
-
-    The connector's own id when it gave one, else ``email:<addr>`` -- the same
-    choice ``sources.meta.person_key`` makes for the key, so the two agree.
-    """
+    """The ``external_id`` for one ``source_meta`` person: the connector's id, else
+    ``email:<addr>`` (as ``sources.meta.person_key``)."""
     key = person.get("key") or ""
     provider = person.get("provider") or ""
     if key.startswith(f"{provider}:"):
@@ -57,10 +49,8 @@ def identity_external_id(person: dict) -> str | None:
 def upsert_identities(org_id: str, people: list[dict]) -> int:
     """Record every person a sync saw. Returns rows written.
 
-    Never touches ``user_id``/``verified_by`` -- only linking decides those. A
-    later sync that sees a better email or name for the same id updates them;
-    one that sees NONE keeps what we had (``COALESCE``), because a payload that
-    omits a field is not a claim that the field is empty.
+    Never touches ``user_id``/``verified_by``. A missing field keeps the stored
+    value (``COALESCE``): omission is not emptiness.
     """
     rows = []
     seen: set[tuple[str, str]] = set()
@@ -90,10 +80,8 @@ def upsert_identities(org_id: str, people: list[dict]) -> int:
     return len(rows)
 
 
-#: "``u`` signs in with ``pi.email`` now, or did before" -- a PRIOR email
-#: (`auth/email_change.py`) is proof too: it was their verified login. An alias
-#: someone else now signs in with belongs to them, so it is skipped, which also
-#: keeps the link UPDATE from ever seeing two candidate members.
+#: A member's current or PRIOR login email is proof; an alias someone else now
+#: signs in with is skipped (one candidate per link).
 _OWNS_EMAIL = """
     lower(u.email) = pi.email
     OR EXISTS (
@@ -104,20 +92,9 @@ _OWNS_EMAIL = """
 """
 
 def auto_link_by_email(org_id: str) -> int:
-    """Link identities whose email is a member's login email in THIS org.
-
-    Two statements, both scoped to one org:
-
-    1. link: an unlinked identity whose email equals a member's email (or a
-       prior email of theirs, see ``_OWNS_EMAIL``), where
-       that member belongs to the same org. ``users.email`` is globally unique,
-       so there is at most one candidate -- and the ``u.org_id`` check is what
-       stops a member of another org who happens to share the address.
-    2. unlink: an EMAIL-verified link whose email no longer matches (the
-       connector now reports a different address, or the member left). An
-       OAuth link is never touched here -- it was proved by the member.
-
-    Returns identities newly linked.
+    """Link identities whose email is a member's login email in THIS org, and unlink
+    email-verified ones that no longer match (OAuth links are never touched).
+    ``u.org_id`` stops a same-address member of another org. Returns newly linked.
     """
     with get_connection() as conn:
         linked = conn.execute(
@@ -153,13 +130,9 @@ def auto_link_by_email(org_id: str) -> int:
 
 
 def link_github(org_id: str, user_id: str, login: str, display_name: str | None) -> Identity:
-    """Attach ``github:<login>`` to the member who just proved they own it.
+    """Attach ``github:<login>`` (lowercased) to the member who just proved it.
 
-    The login is lowercased because GitHub logins are case-insensitive and
-    ``activity_facts.actor_key`` stores them that way. If another member had
-    linked the same account, the link MOVES to whoever proved it most recently:
-    signing in to GitHub is the proof, and an account can change hands. It is
-    logged, and it moves attribution only.
+    If another member had it, the link MOVES to the latest prover (logged).
     """
     login = login.strip().lower()
     with get_connection() as conn:
@@ -194,12 +167,8 @@ def link_github(org_id: str, user_id: str, login: str, display_name: str | None)
 
 
 def unlink(org_id: str, user_id: str, identity_id: str) -> bool:
-    """Remove a member's OWN OAuth link. Returns whether anything changed.
-
-    Email-verified links are not unlinkable: the next sync would re-create
-    them from the same proof, so offering the button would be a lie. The
-    member changes that by changing the email the connector reports.
-    """
+    """Remove a member's OWN OAuth link; returns whether anything changed. Email
+    links cannot be unlinked: the next sync would re-create them."""
     with get_connection() as conn:
         changed = conn.execute(
             """

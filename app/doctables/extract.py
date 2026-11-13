@@ -1,19 +1,9 @@
 """Tables found in documents, turned into typed rows.
 
-Step 3 of docs/plans/2026-09-30-open-ended-charts.md. "Chart last year's
-revenue by region" refused against a sales sheet sitting in Drive: charts
-counted only ``activity_facts`` (who edited what, when), never what a document
-SAYS. Numbers read back out of embedded chunk text are unfalsifiable, so the
-fix is not to chart chunks -- it is to keep the table as ROWS, with each
-column's type decided here, deterministically, and let SQL do the arithmetic.
-
-Everything in this module is pure (no DB, no network, no model): parsing,
-profiling and the one-paragraph description that is embedded in place of a
-spreadsheet's cells.
-
-Bounded on purpose (`MAX_*`): a 200k-row export must not become 200k inserts
-inside one ingest job. Anything cut is marked ``truncated`` and says so on the
-chart.
+Numbers read back from chunk text are unfalsifiable, so a table is kept as
+ROWS with each column's type decided here, deterministically, and SQL does
+the arithmetic. Pure: no DB, network or model. Bounded (`MAX_*`); anything
+cut is marked ``truncated`` and said on the chart.
 """
 
 from __future__ import annotations
@@ -150,13 +140,11 @@ TAB_COLUMN = "Tab"
 
 
 def workbook_tables(name: str, data: bytes) -> list[RawTable]:
-    """Every tab of an .xlsx (an upload, a Drive file, a Google Sheet exported
-    as one) as tables, through the ONE workbook reader.
+    """Every tab of an .xlsx (upload, Drive file, exported Google Sheet) as
+    tables, through the ONE workbook reader.
 
-    Tabs with the same header ("Oct", "Nov", "Dec" of one tracker) are ONE
-    table with a ``Tab`` column: "how many leads in total" is then one SQL
-    count over every tab, never three figures a model must add up, and a
-    question about one month filters on its tab. Other tabs stay their own.
+    Tabs with the same header are ONE table with a ``Tab`` column, so a total
+    is one SQL count over every tab, never figures a model adds up.
     """
     from ..attachments.extract import xlsx_sheets
 
@@ -201,11 +189,8 @@ def _split_pipe_row(line: str) -> list[str]:
 def find_markdown_tables(text: str, *, title: str) -> list[RawTable]:
     """GitHub-style pipe tables: a header row, a ``---`` separator, rows.
 
-    This is how Notion pages and Google Docs (exported as markdown) arrive,
-    and how ``render_docx_tables`` writes Word tables, so one parser covers
-    all three. Each table is named after the nearest heading above it, or
-    the document title -- "Sales 2025 (table 2)" is still a name a person can
-    recognise when choosing between tables.
+    How Notion, Google Docs and ``render_docx_tables`` arrive. Each is named
+    after the nearest heading above it, else the document title.
     """
     lines = (text or "").splitlines()
     out: list[RawTable] = []
@@ -239,11 +224,8 @@ def find_markdown_tables(text: str, *, title: str) -> list[RawTable]:
 
 
 def render_docx_tables(document) -> str:
-    """Word tables as pipe tables, so ``find_markdown_tables`` reads them.
-
-    ``python-docx``'s paragraphs skip tables entirely, so every table in a
-    .docx was simply missing from the index -- both for Q&A and here.
-    """
+    """Word tables as pipe tables, so ``find_markdown_tables`` reads them
+    (``python-docx`` paragraphs skip tables)."""
     blocks = []
     for table in list(getattr(document, "tables", []))[:MAX_TABLES_PER_DOCUMENT]:
         rows = []
@@ -280,10 +262,8 @@ _NUMBER = re.compile(
 def parse_number(value: str) -> tuple[float | None, str]:
     """``("₹1,20,000")`` -> ``(120000.0, "₹")``. ``(None, "")`` if not a number.
 
-    Indian digit grouping, currency before or after, ``(1,200)`` accounting
-    negatives, a trailing ``%`` and lakh/crore/k/m scales are all real in
-    spreadsheets people share, and a sum that silently skips "₹1,20,000"
-    because of its commas is a wrong total that looks right.
+    Indian grouping, currency either side, ``(1,200)`` negatives, ``%`` and
+    lakh/crore/k/m scales: a sum that skips one is a wrong total that looks right.
     """
     text = (value or "").strip()
     if not text:
@@ -332,10 +312,8 @@ def _parse_date(value: str, fmt: str) -> date | None:
 def _date_format(values: list[str]) -> str | None:
     """The ONE format that parses (nearly) the whole column, or None.
 
-    Decided per column, not per cell, because "03/04/2025" means March in one
-    sheet and April in another; a column of them is resolved by whichever
-    reading fits every other cell. Day-first wins a tie -- it is the reading
-    in most of the world, including India.
+    Per column, not per cell: "03/04/2025" is March in one sheet and April in
+    another. Day-first wins a tie.
     """
     for fmt in _DATE_FORMATS:
         ok = sum(1 for v in values if _parse_date(v, fmt))
@@ -459,13 +437,8 @@ DESCRIPTION_LEAD = "Spreadsheet table \""
 
 
 def describe(table: Table) -> str:
-    """The text embedded for a spreadsheet, INSTEAD of its cells.
-
-    Enough for search to find the sheet ("the sales sheet", "revenue by
-    region") and for Q&A to say what it holds -- and deliberately no figures:
-    a number read back out of chunk text is the unfalsifiable kind this whole
-    step exists to replace. The chart path reads the rows.
-    """
+    """The text embedded for a spreadsheet, INSTEAD of its cells: enough for
+    search to find it, and no figures (charts and answers read the rows)."""
     parts = [f"{DESCRIPTION_LEAD}{table.name}\" with {len(table.cells)} rows."]
     for c in table.columns:
         if c.type == "category":

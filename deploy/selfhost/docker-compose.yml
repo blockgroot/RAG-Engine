@@ -130,7 +130,7 @@ services:
 
   # Rate-limit counts only, which expire on their own: nothing to back up.
   # Valkey (BSD), not Redis 7.4+ (RSAL/SSPL): this file ships to customers.
-  # See docs/plans/2026-11-05-redis-choice.md.
+  # See git history: docs/plans/2026-11-05-redis-choice.md.
   redis:
     image: valkey/valkey:8-alpine
     restart: unless-stopped

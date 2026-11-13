@@ -1,10 +1,7 @@
 """CRUD over the ``schedulers`` table.
 
-Every read/write pairs ``org_id`` with ``user_id``: a scheduler belongs to
-the person who created it, so one member can never list, edit, or delete
-another's — even inside the same org. That is stricter than the org-wide
-scoping used for policy content, deliberately: a scheduler carries a
-personal free-text prompt and mails to one address.
+Every query pairs ``org_id`` with ``user_id``: a scheduler is personal (its
+own prompt, one mailbox), so no other member may list, edit or delete it.
 """
 
 from __future__ import annotations
@@ -14,40 +11,13 @@ from datetime import datetime
 
 from ..db.connection import get_connection
 
-# Services with a real "activity since timestamp T" primitive, which is what
-# a recurring report needs: GitHub ``list_commits(since=)``, Slack
-# ``conversations.history(oldest=)``, Linear ``issues(filter: {updatedAt:
-# {gt: …}})``.
-#
-# Notion and Drive are now supported too, but NOT by a live API: all four
-# non-GitHub sources read what CHANGED from our own index
-# (``activity.py::fetch_indexed_activity``), keyed on
-# ``documents.source_last_modified``. That is only honest because syncing is
-# automatic (``app/jobs/autosync.py``) — before that the column only advanced
-# when a human pressed Update, so an unattended report would have summarised
-# whatever the last person happened to sync.
-#
-# GitHub stays live and is the exception: it embeds nothing, so there is no
-# index to read, and it has a real ``list_commits(since=)``.
-#
-# Drive's provider string is "google" — what the connect flow writes to
-# oauth_connections. "google_drive" here would list zero connections and let
-# no scheduler be created, silently.
-#
-# Keep this in step with ``app/schedulers/activity.py::_FETCHERS`` — a
-# provider listed here without a fetcher would create schedulers that fail
-# every cycle.
+# Keep in step with ``activity._FETCHERS``: a provider without a fetcher fails
+# every cycle. Drive is "google", as oauth_connections stores it.
 SUPPORTED_PROVIDERS = ("github", "slack", "linear", "notion", "google")
-# "daily" only became viable once syncing was automatic
-# (``app/jobs/autosync.py``). A daily window is 24h and the index is at most
-# AUTO_SYNC_INTERVAL_HOURS (1h) behind, so a daily report reads content that
-# actually moved yesterday. Before that, a daily report would have re-summarised
-# the same stale index every morning until someone pressed Update.
+# Daily works because autosync keeps the index at most an hour behind.
 FREQUENCIES = ("daily", "weekly", "monthly")
 
-# Postgres interval per frequency — used both to seed ``next_run_at`` at
-# creation and to advance it after a successful run, so the two can never
-# drift apart.
+# One table for seeding and advancing ``next_run_at``, so they never drift.
 _FREQUENCY_INTERVAL = {"daily": "1 day", "weekly": "7 days", "monthly": "1 month"}
 
 
@@ -72,11 +42,7 @@ class Scheduler:
     attempts: int
     last_error: str | None
     created_at: datetime
-    #: NULL = the org-wide connection; set = one sub-workspace's own. Always
-    #: paired with org_id, never used alone (Workspace-within-a-Workspace).
-    #: Last with a default so an org-wide Scheduler can still be built
-    #: positionally; ``row_to_scheduler`` maps by keyword, so this says nothing
-    #: about column order.
+    #: NULL = org-wide; set = one space's own. Never used without org_id.
     workspace_id: str | None = None
 
 
@@ -125,20 +91,11 @@ def create_scheduler(
     prompt: str,
     workspace_id: str | None = None,
 ) -> Scheduler:
-    """Create a scheduler, first run one full interval from now.
+    """Create a scheduler; its first run is one interval from now.
 
-    ``workspace_id`` is ``None`` for an org-wide report and a sub-workspace id
-    for a space-scoped one. It is NOT validated here — membership is checked
-    by ``workspaces.store.assert_member`` at the API edge, the one place a
-    ``workspace_id`` is ever validated against a user.
-
-    ``next_run_at = now() + interval`` rather than ``now()``: the first
-    report should cover a real period of activity, not fire immediately with
-    an empty window.
-
-    ``provider``/``frequency`` are validated here, not only at the API edge,
-    because the chat-setup flow fills them from an LLM tool call — untrusted
-    input that must not reach the table unchecked.
+    ``workspace_id`` membership is checked at the API edge (``assert_member``).
+    ``provider``/``frequency`` are checked here too: chat setup fills them
+    from an LLM tool call.
     """
     if provider not in SUPPORTED_PROVIDERS:
         raise SchedulerError(
@@ -200,11 +157,8 @@ def update_scheduler(
     frequency: str | None = None,
     prompt: str | None = None,
 ) -> Scheduler | None:
-    """Edit a scheduler's cadence and/or prompt. Returns None if not theirs.
-
-    Changing the frequency re-bases ``next_run_at`` off the last run (or
-    creation, for one that has never run), so switching weekly→monthly does
-    not leave a run scheduled on the old cadence.
+    """Edit cadence and/or prompt; None if not theirs. A new frequency
+    re-bases ``next_run_at`` off the last run (or creation).
     """
     sets: list[str] = []
     params: list[object] = []

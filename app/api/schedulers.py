@@ -1,14 +1,8 @@
-"""``/schedulers`` — recurring activity reports, self-service for any member.
+"""``/schedulers``: recurring activity reports, self-service for any member.
 
-Every route is gated on ``get_session`` only, never ``require_admin``: a
-scheduler reads a connection the org has *already* set up and mails only its
-own creator, so it grants no access the member did not already have. Creating
-one is meant to be an ordinary, repeatable action.
-
-``org_id`` and ``user_id` always come from the signed session, never the
-request body — the same rule as every other router here. A caller cannot
-create, read, or delete a scheduler for anyone else, including inside their
-own org.
+Session-gated, not admin: a scheduler reads a connection the org already
+set up and mails only its creator. ``org_id`` and ``user_id`` come from
+the session, so nobody touches another person's schedulers.
 """
 
 from __future__ import annotations
@@ -63,27 +57,11 @@ def _payload(scheduler, workspace_names: dict[str, str] | None = None) -> dict:
 
 
 def _connected_providers(org_id: str, user_id: str) -> list[dict]:
-    """Connections a scheduler can target, metadata only, per scope.
+    """Connections a scheduler can target (metadata only, never a token), per scope.
 
-    Two scopes in one list, each row carrying its own:
-
-    - ``scope="org"`` — the org-wide connection (``workspace_id IS NULL``),
-      available to every member.
-    - ``scope="workspace"`` — one sub-workspace's own connection, returned ONLY
-      for workspaces this user is a member of. The membership filter is the
-      join against ``workspace_members``, so a workspace the caller cannot see
-      is not merely hidden from the UI — its connection id never leaves the DB.
-
-    Deliberately its own query rather than reusing ``list_connections``: that
-    one is shaped for the admin Sources page (reauth state, source_config) and
-    is reached only behind ``require_admin``. A member needs strictly less —
-    enough to pick a service — so this returns strictly less, and never a
-    token.
-
-    Filtered to providers with a real "activity since T" fetcher. A Notion or
-    Drive connection is genuinely present but cannot be scheduled yet, and
-    offering it would create a scheduler that fails every cycle — see
-    ``_unschedulable_spaces`` for how that is disclosed rather than hidden.
+    ``scope="org"`` rows are org-wide; ``scope="workspace"`` rows come only for
+    spaces the user is in (the ``workspace_members`` join, so others' ids never
+    leave the DB). Limited to ``SUPPORTED_PROVIDERS``.
     """
     with get_connection() as conn:
         rows = conn.execute(
@@ -115,29 +93,16 @@ def _connected_providers(org_id: str, user_id: str) -> list[dict]:
     ]
 
 
-# What one connection actually covers — the channels an admin picked, the
-# repos an installation authorized. Enough to offer "summarise #product" as a
-# starting point instead of leaving the member to guess what is readable.
+# What one connection covers (picked channels, authorized repos), offered as
+# starting points.
 MAX_TOPICS = 12
 
 
 def _topics(provider: str, config) -> list[str]:
-    """Human names of the resources this connection can read.
+    """Names of what this connection reads, from its stored ``source_config``.
 
-    Derived from ``source_config`` we already selected, rather than a query
-    per connection (``chat.py`` has one-scope-at-a-time helpers; this listing
-    covers every scope at once and would otherwise fan out).
-
-    Names ONLY — never the rest of the config, and never a token. A member can
-    already see these channel/repo names when they ask a question against the
-    same scope, and a workspace connection reaches this list only for members
-    of that workspace (see the join in ``_connected_providers``).
-
-    Linear, Notion and Drive return nothing on purpose: none of them has a
-    stored subset to name — their scope is "whatever this token can see" — and
-    inventing team, page or folder names here would be a guess. Their reports
-    read from the index, so the honest source of suggestions would be document
-    titles, which is a query per connection this listing exists to avoid.
+    Names only, never config or tokens. Linear, Notion and Drive have no stored
+    subset, so they return nothing rather than a guess.
     """
     if isinstance(config, str):
         try:
@@ -169,14 +134,10 @@ def _topics(provider: str, config) -> list[str]:
 
 
 def _spaces(org_id: str, user_id: str) -> list[dict]:
-    """Every space this member could scope a report to, schedulable or not.
+    """Every space this member could scope a report to.
 
-    Every provider this codebase supports is now schedulable, so an empty
-    ``providers`` list means the space has no connections at all rather than
-    "nothing schedulable yet". The space is still listed rather than dropped:
-    "Meeting notes has nothing connected" is a fact the user can act on, while
-    a silently missing space reads as a bug. Same disclosure instinct as the
-    coverage notes in a report.
+    A space with no connections is listed with empty ``providers``, not dropped,
+    so it does not silently vanish.
     """
     from ..workspaces.store import list_my_workspaces
 
@@ -215,9 +176,7 @@ def _spaces(org_id: str, user_id: str) -> list[dict]:
                     for c in connections
                     if c["space_id"] == workspace.id
                 ],
-                # Everything connected to the space, including sources that
-                # cannot be scheduled yet — what the label after the space
-                # name shows.
+                # Everything connected to the space (the label after its name).
                 "connected": sorted(all_by_space.get(workspace.id, set())),
             }
         )
@@ -225,15 +184,9 @@ def _spaces(org_id: str, user_id: str) -> list[dict]:
 
 
 def _named_provider(prompt: str, available: list[str]) -> str | None:
-    """The service the prompt NAMES. Thin wrapper over the router's matcher.
+    """The service the prompt NAMES, via the router's matcher.
 
-    The 400 below tells people to "mention it in the prompt", and until this
-    existed that advice did nothing: the only classifier was a cosine probe
-    over embedded chunks, so writing "in linear" changed the wording but not
-    the measurement, and the same error came back.
-
-    Checked BEFORE the probe for the reason the chat router checks a named
-    repo first: a Notion page ABOUT Linear can outscore Linear itself.
+    Checked before the probe: a Notion page ABOUT Linear can outscore Linear.
     """
     from ..agent.routing import named_provider
 
@@ -243,24 +196,11 @@ def _named_provider(prompt: str, available: list[str]) -> str | None:
 def _classify_provider(
     prompt: str, org_id: str, user_id: str, workspace_id: str | None
 ) -> str:
-    """Which service this report is about, read from the prompt itself.
+    """Which service this report is about, read from the prompt.
 
-    Asking someone to pick the service was asking them to translate their own
-    intent into our data model. "Summarise what the team discussed" already
-    says Slack; making that a dropdown made it the user's job to know where
-    their content lives.
-
-    Reuses ``agent.routing.choose_agent`` rather than growing a second
-    classifier: it is the same question the chat box already answers ("which
-    source resembles this?"), it is a measurement against the tenant's own
-    embedded content rather than keywords, it carries the ``org_id`` +
-    ``workspace_id`` isolation this call needs anyway, and it already holds
-    GitHub's two structural rules (a named repo, then code intent last) for a
-    provider that embeds nothing and could otherwise never be chosen.
-
-    Deliberately NOT an LLM call: this runs on a member's create request, and
-    a classifier that can hallucinate a provider would put a standing wrong
-    report in the table — a recurring error, not a one-off bad answer.
+    Reuses ``agent.routing.choose_agent`` (tenant-scoped similarity, GitHub's
+    named-repo rule), not an LLM: a hallucinated provider would become a
+    standing wrong report.
     """
     available = [
         c["provider"]
@@ -295,10 +235,8 @@ def _classify_provider(
         )
         return decision.agent_key
 
-    # ``choose_agent`` degrades to a default *agent* (not a provider) when it
-    # has nothing to measure — no chunks indexed yet, or the embedder failed.
-    # Guessing here would silently schedule the wrong source every week, so
-    # this asks for one word instead. Naming the options keeps it actionable.
+    # ``choose_agent`` falls back to a default agent when it has nothing to
+    # measure; rather than guess the source every week, ask for one word.
     raise HTTPException(
         status_code=400,
         detail=(
@@ -313,16 +251,11 @@ def _classify_provider(
 def _resolve_connection(
     org_id: str, user_id: str, provider: str, workspace_id: str | None
 ) -> str:
-    """The connection id for ``provider`` **in this scope**, or 400.
+    """The connection id for ``provider`` in this scope, or 400.
 
-    Resolved server-side from the session's org rather than taken from the
-    request, so a client (or an LLM tool call) naming another tenant's
-    connection id simply has no way to express it.
-
-    A workspace-scoped request is membership-checked first, and matched only
-    against that workspace's own connection — never the org-wide one. Falling
-    back would hand a space the company connection it was never given, which
-    is the failure Workspace-within-a-Workspace exists to prevent.
+    Resolved from the session's org, never the request. A space request is
+    membership-checked and matched only to the space's own connection, never
+    the company's.
     """
     if workspace_id:
         from ..core.exceptions import AuthError
@@ -369,9 +302,7 @@ def list_my_schedulers(session: SessionClaims = Depends(get_session)):
 
 
 class CreateSchedulerRequest(BaseModel):
-    #: Optional: omitted means "read it off the prompt" (``_classify_provider``).
-    #: Still accepted so the setup-chat flow, and every test that pins a
-    #: source, keep working unchanged.
+    #: Optional: omitted means read it off the prompt (``_classify_provider``).
     provider: str | None = None
     frequency: str
     prompt: str
@@ -410,12 +341,9 @@ def _create_scheduler_checked(
     prompt: str,
     workspace_id: str | None = None,
 ):
-    """Validate then create. Shared by the REST route and the chat flow.
+    """Validate then create; shared by the REST route and the chat flow.
 
-    Both entry points funnel through here on purpose: the chat flow's fields
-    come from an LLM tool call, which is untrusted input in exactly the way a
-    request body is. Letting it skip these checks is how a hallucinated
-    provider would reach the table.
+    The chat flow's fields come from a model tool call, as untrusted as a body.
     """
     prompt = bounded(prompt.strip(), field="prompt", limit=MAX_PROMPT_CHARS)
     if frequency not in FREQUENCIES:
@@ -441,19 +369,13 @@ def _create_scheduler_checked(
 
 
 def _report_row(report) -> dict:
-    """List shape: enough for a row (title, labels, when), never the body.
-
-    The body is only sent by the detail route, so a long list of long reports
-    cannot turn the index into a megabyte of prose nobody scrolled to.
-    """
+    """List shape: title, labels, when; never the body (only the detail route sends it)."""
     return {
         "id": report.id,
         "scheduler_id": report.scheduler_id,
         "provider": report.provider,
         "frequency": report.frequency,
-        # The title IS the standing request — it is what the reader asked for,
-        # in their words, and it is what distinguishes two reports on the same
-        # service in the same space.
+        # The title is the standing request, in the reader's words.
         "title": report.prompt,
         "space_name": report.space_name,
         "item_count": len(report.items),
@@ -481,9 +403,8 @@ def list_my_reports(session: SessionClaims = Depends(get_session)):
 def get_my_report(report_id: str, session: SessionClaims = Depends(get_session)):
     """One full report.
 
-    404 rather than 403 for someone else's: both scoping columns are in the
-    query, so a guessed id is indistinguishable from a deleted one — there is
-    nothing to learn from probing.
+    404 for someone else's: both scope columns are in the query, so a guessed id
+    looks deleted.
     """
     report = sched_reports.get_report(session.org_id, session.user_id, report_id)
     if report is None:
@@ -560,15 +481,9 @@ def setup_chat(
 ):
     """One turn of the conversational setup flow.
 
-    Stateless: the caller holds the history and resends it, so there is no new
-    conversation table for what is a three-slot exchange the user completes in
-    under a minute. Reusing ``app/memory/``'s machinery here would mean
-    persisting, summarising and pruning a conversation that exists only to
-    fill in three fields.
-
-    Returns either ``{"done": true, "scheduler": ...}`` when the model had
-    everything and the scheduler was created, or ``{"done": false, "reply":
-    ...}`` with a follow-up question to show the user.
+    Stateless: the caller resends the history (three fields need no stored
+    conversation). Returns ``{"done": true, "scheduler": ...}`` or
+    ``{"done": false, "reply": ...}``.
     """
     limit_question(session)
 
@@ -589,9 +504,7 @@ def setup_chat(
             limit=MAX_SETUP_MESSAGE_CHARS,
         )
 
-    # The chat flow has no space slot, so it offers and creates ONLY org-wide
-    # reports. Listing a space's provider here would let the model create an
-    # org-wide scheduler for a service the org itself has not connected.
+    # The chat flow has no space slot, so only org-wide providers are offered.
     connected = [
         c["provider"]
         for c in _connected_providers(session.org_id, session.user_id)
@@ -634,10 +547,8 @@ def setup_chat(
             "and what should the report cover?",
         }
 
-    # Everything below treats the tool arguments as untrusted: the model can
-    # name a provider the org has not connected, or invent a frequency. Same
-    # discipline as `resolve_repo` validating an LLM-supplied repo name before
-    # any authenticated call.
+    # Tool arguments are untrusted: the model may name an unconnected provider
+    # or invent a frequency.
     scheduler = _create_scheduler_checked(
         session.org_id,
         session.user_id,

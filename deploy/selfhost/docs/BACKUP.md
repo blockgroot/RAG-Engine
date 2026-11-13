@@ -12,6 +12,8 @@ Keep `.env` apart from the database backups, somewhere access is limited: it hol
 
 Synced content can always be fetched again from your tools. Chats, settings, and who connected what cannot.
 
+The `redis` service holds only rate-limit counts, which expire on their own. It has nothing to back up.
+
 ## Taking a backup
 
 From the Handbook folder:
@@ -45,6 +47,8 @@ Any tool your company already uses for off-site copies (`rsync`, `rclone`, your 
 ## Restoring
 
 This replaces everything in the database with the backup. Use the name of the file you want from `backups/`.
+
+On a new server, put back the Handbook folder with its `.env` first, run `docker compose up -d`, and wait until `docker compose ps` shows `api` as `healthy`. Starting once sets up the empty database, including the database role Handbook reads your content as. Then restore.
 
 ```sh
 docker compose stop web api worker

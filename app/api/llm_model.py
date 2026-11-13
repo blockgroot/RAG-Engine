@@ -1,11 +1,7 @@
 """Admin routes for the org's own model (the "Model" tab).
 
-Admin-only via ``require_admin``; ``org_id`` comes from the signed session, never
-the body, like every other tenant route (CLAUDE.md §3).
-
-The API key is write-only across this whole module: ``PUT`` accepts one, no
-route returns one, and the display path calls ``get_org_model_summary`` — which
-cannot decrypt — rather than filtering a fuller object down.
+The API key is write-only: ``PUT`` takes one, no route returns one, and the
+display path uses ``get_org_model_summary``, which cannot decrypt.
 """
 
 from __future__ import annotations
@@ -31,42 +27,21 @@ router = APIRouter(prefix="/admin/llm-model", tags=["admin"])
 MAX_MODEL_CHARS = 200
 MAX_KEY_CHARS = 400
 
-#: One short probe call, not the four-check admission suite in
-#: ``scripts/verify_models.py``. This answers the question an admin actually has
-#: — "did I type the key and the model id right?" — which by this project's own
-#: history is the predicted failure (CLAUDE.md §5: 5 of 5 OpenRouter and 2 of 3
-#: Groq model ids guessed from documentation were dead on first probe).
-#:
-#: Sized to one healthy generation at production's answer cap, nothing more.
-#: ONE call with ``max_retries=0``, so the wall clock is hard-bounded here.
-#:
-#: History worth keeping, because both previous values were set for the wrong
-#: reason: 10s came from fear of a ~12-minute worst case (that arithmetic was
-#: for FOUR sequential calls at 60s with the SDK's 2 retries — not this), then
-#: 45s came from misreading a HANG as a cold start. The hang was NVIDIA NIM
-#: reasoning models never returning without ``chat_template_kwargs``; no timeout
-#: value fixes that, and 45s just made the admin wait longer to learn nothing.
-#: RAG_MAX_ANSWER_TOKENS (700) at a realistic 30-60 tok/s is ~15-25s, so 30s
-#: covers a healthy answer with headroom while failing a broken one promptly —
-#: which matters more, since a timeout is feedback an admin is waiting on.
+#: One probe call with ``max_retries=0``: "did I type the key and model id
+#: right?". 30s fits a healthy answer at RAG_MAX_ANSWER_TOKENS and still fails
+#: a broken one promptly. A model that hangs is a missing request field, not a
+#: timeout to raise.
 PROBE_TIMEOUT = 30.0
 PROBE_PROMPT = "Reply with the single word: ready"
 
 
 def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
-    """Call the endpoint once. Raises ``HTTPException`` with a usable message.
+    """Call the endpoint once; raise ``HTTPException`` with the provider's own text.
 
-    The provider's own error text is passed through deliberately. An admin
-    debugging a credential is exactly the person who needs to tell 401 (wrong
-    key) from 404 (wrong model id) from a connection failure — three different
-    next actions that a generic "couldn't connect" collapses into one dead end.
+    401 (key), 404 (model id) and a connection failure need different fixes.
     """
-    # The SAME per-preset request fields chat will send, including whether they
-    # may be dropped on a 400. Without both halves the probe tests a different
-    # request than production: for NVIDIA NIM `chat_template_kwargs` is the
-    # difference between a reply and a hang on its reasoning models, AND the
-    # reason every other NIM model answered "Test and save" with a 400 about a
-    # field the admin never typed.
+    # The same per-preset request fields chat sends, including whether each may
+    # be dropped on a 400, so the probe tests the production request.
     extra_body, extra_optional = preset_extra_body(preset.id, model)
     client = OpenAICompatProvider(
         model=model,
@@ -77,12 +52,8 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
         extra_body=extra_body,
         extra_body_optional=extra_optional,
     )
-    # Production's own answer cap, NOT a token or two. CLAUDE.md §5 records the
-    # exact trap: a reasoning model spends the whole budget on internal
-    # reasoning and returns EMPTY content with finish_reason="length". Probing
-    # with a tiny cap would fail such a model here even though chat gives it
-    # room — and probing with an unbounded cap would pass one that then returns
-    # empty in production. Only the real number tests the real thing.
+    # Production's answer cap: a reasoning model can spend a tiny cap and return
+    # empty, and an unbounded one would pass a model that fails in production.
     max_tokens = RagSettings.from_env().max_answer_tokens
 
     try:
@@ -112,10 +83,8 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-#: Agent mode's own test, after the plain one: one tool offered, one call asked
-#: for. Agent mode is a tool loop; a model that never calls a tool drafts
-#: nothing however good its answers are, and an admin should know that when
-#: they add it, not when a person's request fails.
+#: Agent mode's test: one tool offered, one call asked for. A model that never
+#: calls a tool drafts nothing, and the admin should learn that when adding it.
 AGENT_TOOL = {"type": "function", "function": {
     "name": "save_note", "description": "Save a short note.",
     "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}}
@@ -123,10 +92,10 @@ AGENT_PROMPT = 'Save a note that says "ready" with the save_note tool.'
 
 
 def _agent_probe(preset: org_model.Preset, model: str, api_key: str) -> str:
-    """How the model calls tools: ``"native"`` (a real tool call), ``"text"``
-    (only written as JSON text, which Agent mode reads as a call), ``"none"``,
-    or ``"unknown"`` when the test itself failed. Never blocks saving: the
-    model may still answer questions well."""
+    """How the model calls tools: ``"native"``, ``"text"`` (JSON text Agent mode reads), ``"none"`` or ``"unknown"`` (test failed).
+
+    Never blocks saving: the model may still answer well.
+    """
     from ..actions.loop import _calls_in_text
 
     extra_body, extra_optional = preset_extra_body(preset.id, model)

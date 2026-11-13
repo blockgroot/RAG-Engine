@@ -1,9 +1,7 @@
-"""A member's own settings: "Linked accounts" (Second Brain step 1.2).
+"""A member's own settings: "Linked accounts".
 
-Member-level, scoped to ``(org_id, user_id)`` from the session like
-``schedulers``: a link is about one person and nobody else can make, see or
-remove it. A link changes who the knowledge graph credits, never what anyone
-may read -- retrieval's access check does not look at these rows.
+Scoped to ``(org_id, user_id)`` from the session. A link changes who the
+graph credits, never what anyone may read.
 """
 
 from __future__ import annotations
@@ -99,10 +97,8 @@ def remove_identity(identity_id: str, session=Depends(get_session)):
 def finish_github_link(provider, code: str, state: str, settings: ApiSettings) -> RedirectResponse:
     """Complete "Link your GitHub account" from the shared GitHub callback.
 
-    The org and the PERSON come from the consumed state, never the request, so
-    a forwarded callback URL can only ever link to whoever clicked. Any failure
-    lands back on the settings page with a reason, not a raw 400: the member is
-    standing in a browser tab, not calling an API.
+    The org and person come from the consumed state, so a forwarded callback
+    links only whoever clicked. Failures land on the settings page with a reason.
     """
     base = (settings.frontend_url or "").rstrip("/")
 
@@ -122,10 +118,9 @@ def finish_github_link(provider, code: str, state: str, settings: ApiSettings) -
     return back("linked=github")
 
 
-# -- Personal memory (Second Brain layer C) ----------------------------------
-# Member-level and scoped to (org_id, user_id) from the session: a fact is about
-# one person, and nobody else can see, pin or delete it -- not even an admin.
-# The admin's only control is the company-wide switch (`PUT /account/memory/org`).
+# -- Personal memory ------------------------------------------------------------
+# Scoped to (org_id, user_id): nobody else sees, pins or deletes a fact, not
+# even an admin, whose only control is the company switch.
 
 
 def _fact(f) -> dict:
@@ -222,8 +217,7 @@ def clear_memory(session=Depends(get_session)):
 
 
 # -- sign-in email ------------------------------------------------------------
-# Changing it keeps the old address as a PRIOR email, so documents still shared
-# with it stay readable (`auth/email_change.py`).
+# A change keeps the old address as an alias (`auth/email_change.py`).
 
 
 @router.get("/emails")
@@ -242,10 +236,9 @@ def request_email_change(
     background_tasks: BackgroundTasks,
     session=Depends(get_session),
 ):
-    """Mail a confirmation link to the NEW address. Nothing changes until it is used.
+    """Mail a confirmation link to the NEW address; nothing changes until it is used.
 
-    The link goes to the new inbox, so the change proves both halves: the
-    session proves the account, the link proves the address.
+    The session proves the account, the link proves the address.
     """
     email = bounded(
         (body.get("email") or "").strip().lower(), field="Email", limit=MAX_EMAIL_CHARS

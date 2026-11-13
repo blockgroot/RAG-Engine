@@ -1,37 +1,17 @@
 """Per-request model selection, without rebuilding anything expensive.
 
-**The constraint that shaped this.** Agents are ``lru_cache(maxsize=1)``
-process-wide singletons (``app/api/deps.py``) because each one holds the local
-BGE-M3 embedder and the cross-encoder reranker. Keying that cache by model
-would load a second copy of those weights per model choice — the same mistake
-as the 325MB tokenizer in CLAUDE.md §5. So the selected model can never be a
-constructor argument anywhere: it has to be a value read *per call*.
-
-**Why a wrapper rather than a flag on ``OpenAICompatProvider``.** Auto is the
-deployment's own endpoint (``LLM_BASE_URL`` + ``LLM_API_KEY``, today's Gemini);
-a selection is OpenRouter, with a different base_url and a different key. That
-is a different client, not a different ``model`` string, so something has to
-choose *between clients*. This is that thing, and it satisfies ``LLMProvider``
-so nothing downstream — ``RagPipeline``, every agent, ``schedulers/runner`` —
-learns that model selection exists.
-
-**Why a ContextVar rather than a threaded parameter.** The pipeline calls the
-LLM from roughly six places (grounded generation, bounded recovery, the tone
-retry, the groundedness audit, decomposition, summary fold). Threading a
-``model=`` through all of them would be a wide diff carrying a value that is
-request-scoped by nature. Set it once at the request boundary; every stage of
-that request then agrees on the model without being told.
+Agents are process-wide singletons holding the embedder and reranker, so
+the model can never be a constructor argument: it is read per call from a
+ContextVar set once at the request boundary. The wrapper chooses between
+CLIENTS (the default endpoint vs a selected backend), and satisfies
+``LLMProvider`` so nothing downstream knows selection exists.
 
 ``# ponytail: request-scoped ContextVar. If two DIFFERENT models are ever
 needed within one request beyond the existing main/aux split, thread it
 explicitly instead of widening this.``
 
-**What is deliberately NOT routed.** ``build_aux_llm_provider`` does not wrap.
-That is what makes ingest contextualization (``app/ingestion/pipeline.py``)
-structurally unroutable: contextual chunks must be written by one consistent
-model across a corpus, or chunks authored by different models end up ranked
-against each other in one index. The guarantee is the absence of a wrapper,
-not a rule someone has to remember.
+``build_aux_llm_provider`` does not wrap: ingest contextualization must be
+written by one consistent model across a corpus.
 """
 
 from __future__ import annotations
@@ -55,119 +35,68 @@ from .openai_provider import OpenAICompatProvider
 logger = logging.getLogger(__name__)
 
 _SELECTED: ContextVar[str | None] = ContextVar("llm_selected_model", default=None)
-#: What the endpoint said actually answered, recorded as the call is
-#: dispatched. Kept in the request context rather than read back off a provider
-#: object because the API layer has no handle on the agent's provider — agents
-#: are singletons built elsewhere — and rebuilding one to ask would return a
-#: fresh client that never made the call.
+#: What the endpoint said answered, recorded at dispatch: the API layer has
+#: no handle on the singleton agent's provider.
 _RESOLVED: ContextVar[str | None] = ContextVar("llm_resolved_model", default=None)
-#: Whose credentials answer, when the selection is the org's OWN model.
-#:
-#: A SEPARATE var rather than making ``_SELECTED`` an ``(org_id, model_id)``
-#: tuple, because ``selected_model()`` is read outside this module and both
-#: readers need it to stay a plain string: ``api/chat.py`` puts it in the
-#: ``done`` SSE event (a tuple would ship the org_id to the browser).
+#: Whose credentials answer when the selection is the org's OWN model. Kept
+#: apart from ``_SELECTED`` so that stays a plain string (it reaches the
+#: browser in the ``done`` event; an org_id must not).
 _ORG: ContextVar[str | None] = ContextVar("llm_selected_org", default=None)
 
-# Routing preferences sent on EVERY OpenRouter request.
-#
-# ``data_collection: "deny"`` is the load-bearing one: a RAG prompt carries
-# retrieved chunks of the tenant's private Notion/Slack/Drive content, so it
-# must never reach a provider that may train on or publish it. Per-request and
-# enforced by OpenRouter, rather than an account-level privacy toggle — an
-# account toggle would be a single global switch governing every tenant at
-# once, and silently wrong the moment someone changed it in a dashboard.
-#
-# ``require_parameters: true`` makes capability a server-side guarantee: send
-# ``tools`` and OpenRouter will not route to a provider that cannot do function
-# calling. That matters because ``GitHubAgent`` grounds structurally — no tool
-# call returns the fixed fallback — so a silently tool-less provider would
-# answer every GitHub question with the fallback and look like a broken
-# product rather than a misrouted request.
-#
-# ``reasoning.exclude`` keeps chain-of-thought out of ``content``. The pipeline
-# parses ``MODE: A|B|C`` off the FRONT of a generation (``pipeline.py``), and a
-# leading ``<think>`` block makes that regex miss — which does not fail loudly,
-# it just leaves ``mode=None`` and quietly skips the groundedness audit.
+# Routing preferences sent on EVERY OpenRouter request:
+# - ``data_collection: "deny"``: retrieved private content must never reach
+#   a provider that may train on it. Per request, not an account toggle.
+# - ``require_parameters: true``: only providers that support ``tools``.
+#   A tool-less provider would make GitHub answers all fall back.
+# - ``reasoning.exclude``: a leading ``<think>`` hides the ``MODE:`` tag and
+#   silently skips the audit.
 _ROUTING_PREFS: dict = {
     "provider": {"data_collection": "deny", "require_parameters": True},
     "reasoning": {"exclude": True},
 }
 
 
-#: Non-standard request fields per BYO preset. A table, not branching: each
-#: vendor's OpenAI-compatible endpoint has its own idea of how to turn reasoning
-#: off, and this codebase needs it OFF on every preset — the pipeline parses
-#: ``MODE: A|B|C`` off the FRONT of a generation (``rag/pipeline.py``), and a
-#: leading ``<think>`` block makes that regex miss, which does not fail loudly:
-#: it leaves ``mode=None`` and silently skips the groundedness audit.
+#: Non-standard request fields per BYO preset: each vendor turns reasoning
+#: off differently, and it must be OFF (a leading ``<think>`` hides the
+#: ``MODE:`` tag and skips the audit).
 _PRESET_EXTRA_BODY: dict[str, dict] = {
-    # OpenRouter: keeps the tenant's retrieved private content away from
-    # providers that train on prompts, and asserts tool support server-side.
+    # OpenRouter: no training on prompts, tool support asserted server-side.
     "openrouter": _ROUTING_PREFS,
-    # NVIDIA NIM: its DeepSeek v4 reasoning models HANG indefinitely (not slow —
-    # never return) unless the request carries `chat_template_kwargs`, because
-    # the NIM template layer reads that to gate the reasoning contract. Absent
-    # it the model still reasons, with no budget and no streaming contract.
-    # `thinking: False` both fixes the hang and keeps the MODE tag parseable.
+    # NVIDIA NIM: DeepSeek v4 reasoning models hang without
+    # `chat_template_kwargs`; `thinking: False` fixes that and keeps MODE parseable.
     #
     # ponytail: shape taken from NVIDIA's reasoning-model issue reports, NOT
     # verified against a live key. If a NIM reasoning model still times out,
     # this dict is the first thing to check.
     "nvidia": {"chat_template_kwargs": {"thinking": False}},
-    # Anthropic: Claude Haiku 5.5 thinks on harder prompts by default, and
-    # over the OpenAI-compatible endpoint that hidden reasoning fills the cap
-    # (production, 9 Oct: the chart classifier's 200 tokens all spent thinking,
-    # empty reply). Verified live: disabled, the same prompt answers in 61 tokens.
-    # A model that wants another form gets it from ``_MODEL_EXTRA_BODY``, or
-    # else learns it from its 400 (``OpenAICompatProvider._repair_extras``).
+    # Anthropic: hidden thinking fills the token cap (a 200-token chart reply
+    # came back empty). A model wanting another form gets it from
+    # ``_MODEL_EXTRA_BODY`` or learns it from its 400 (``_repair_extras``).
     "anthropic": {"thinking": {"type": "disabled"}},
-    # Gemini Flash thinks by default, and thinking tokens are billed and
-    # counted as output: the same cap problem as Claude above. "minimal" is the
-    # lowest a Gemini 3 model accepts; measured live, "low" made flash-lite think
-    # MORE (220 tokens against 52 for the same one-line answer).
+    # Gemini thinks by default and bills it as output. "minimal" is the lowest a
+    # Gemini 3 model accepts ("low" thought more).
     "google": {"reasoning_effort": "minimal"},
 }
 
-#: Presets whose ``extra_body`` may be DROPPED when the endpoint rejects it.
-#:
-#: NVIDIA NIM only, and it is why `_extra_body_optional` exists: NIM serves
-#: many model families behind one endpoint, `chat_template_kwargs` is read by
-#: exactly one of them (the DeepSeek-v4 reasoning models that hang without it),
-#: and the rest answer it with a 400. Sending it unconditionally therefore made
-#: every OTHER NVIDIA model impossible to save — the admin saw NVIDIA rejecting
-#: a field they never typed, on a page whose whole job is to tell a wrong key
-#: from a wrong model id. Google too: a Gemini model that does not think
-#: (Gemma) may reject ``reasoning_effort``, and is then sent without it.
-#:
-#: Anthropic too: its thinking-off is a workaround, and a Claude model that
-#: wants another form says so in its 400.
-#:
-#: OpenRouter is deliberately ABSENT: its extras carry
-#: ``data_collection: "deny"``, and a retry without them would put the tenant's
-#: retrieved private chunks in front of a provider that may train on them. That
-#: request must fail.
+#: Presets whose ``extra_body`` may be DROPPED when the endpoint rejects it:
+#: NVIDIA (one model family reads the field, the rest 400 on it), Google
+#: (a non-thinking model may reject ``reasoning_effort``) and Anthropic.
+#: OpenRouter is deliberately ABSENT: its extras carry the no-training
+#: policy, so that request must fail instead.
 _PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google", "anthropic"})
 
 
 #: Models whose thinking-off differs from their vendor's: preset, then id
-#: prefix (dated ids included). Per preset, so OpenRouter's extras are never
-#: changed by a model id. Verified live 12 Nov 2026: Sonnet 5.5 refuses
-#: ``disabled`` and names ``between_tools``; Haiku 5.5 refuses
-#: ``between_tools``. Sent up front so no 400 is paid after every restart; an
-#: unlisted model still learns its form from the 400.
+#: prefix. Sonnet 5.5 needs ``between_tools``; Haiku 5.5 refuses it. Sent up
+#: front so no 400 is paid after a restart; unlisted models learn from the 400.
 _MODEL_EXTRA_BODY: dict[str, dict[str, dict]] = {
     "anthropic": {"claude-sonnet-5-5": {"thinking": {"type": "between_tools"}}},
 }
 
 
 def preset_extra_body(preset_id: str, model: str | None = None) -> tuple[dict | None, bool]:
-    """``(extra_body, may_be_dropped)`` for one BYO preset and model.
-
-    One function so the admin probe and chat cannot disagree about what we send
-    a provider — a probe that tests a different request than production is how
-    "it tested fine and then failed in chat" happens.
-    """
+    """``(extra_body, may_be_dropped)`` for one BYO preset and model. One
+    function, so the admin probe tests exactly what chat sends."""
     extra = _PRESET_EXTRA_BODY.get(preset_id)
     for prefix, override in _MODEL_EXTRA_BODY.get(preset_id, {}).items():
         if model and model.startswith(prefix):
@@ -176,34 +105,26 @@ def preset_extra_body(preset_id: str, model: str | None = None) -> tuple[dict | 
 
 
 def use_model(model_id: str | None, org_id: str | None = None) -> None:
-    """Select the model for the remainder of this request.
+    """Select the model for the rest of this request.
 
-    ``None`` / ``"auto"`` means no override: the configured default answers,
-    byte-identical to the behaviour before this feature existed. Callers must
-    validate against ``catalog.is_selectable`` first — this does not, because
-    it is also the reset path.
-
-    ``org_id`` is what makes an org's OWN model resolvable, and it must come
-    from the signed session, never a request body (CLAUDE.md §3). Without it a
-    non-catalogued id cannot be resolved and the request fails closed.
+    ``None``/``"auto"`` is the default. Callers validate with
+    ``catalog.is_selectable`` first (this is also the reset path).
+    ``org_id`` resolves an org's OWN model and must come from the signed
+    session; without it a non-catalogued id fails closed.
     """
     _SELECTED.set(normalize(model_id))
     _ORG.set(org_id)
-    # Reset in step, so a pooled thread cannot report the previous request's
-    # answering model for a stream that has not generated anything yet.
+    # Reset too, so a pooled thread never reports the previous request's model.
     _RESOLVED.set(None)
 
 
 @contextmanager
 def default_model_only():
-    """Force the configured default inside this block, whatever was selected.
+    """Force the configured default inside this block.
 
-    Used by the pipeline for every stage the reader does not see, so a member's
-    dropdown choice cannot change how the machinery behaves — query rewriting,
-    the web-search decision, and the groundedness audit must not vary per
-    request. Restores the previous selection on exit, including on an
-    exception, so one internal stage can never strand the rest of the request
-    on the default model.
+    For machinery the reader does not see (rewrite, web decision, audit),
+    which must not vary with a member's pick. Restores the selection on exit,
+    including on an exception.
     """
     token = _SELECTED.set(None)
     try:
@@ -223,21 +144,13 @@ def selected_model() -> str | None:
 
 
 def answering_model() -> str | None:
-    """The model that actually answered this request, if one has yet.
-
-    ``None`` before any generation, or when the endpoint did not name a model.
-    Callers should treat it as a label, never as control flow.
-    """
+    """The model that actually answered, if any. A label, never control flow."""
     return _RESOLVED.get()
 
 
 class RoutedLLMProvider(LLMProvider):
-    """Dispatches each call to the default provider or a selected model.
-
-    Holds one lazily built ``OpenAICompatProvider`` per selected model. Those
-    are cheap — an HTTP client and a model string, no weights — so caching them
-    for the process costs nothing and avoids rebuilding a client per request.
-    """
+    """Dispatches each call to the default provider or a selected model,
+    caching one cheap ``OpenAICompatProvider`` per selected model."""
 
     def __init__(
         self,
@@ -259,28 +172,13 @@ class RoutedLLMProvider(LLMProvider):
             BACKEND_GEMINI: gemini or GeminiSettings.from_env(),
             BACKEND_CLAUDE: claude or ClaudeSettings.from_env(),
         }
-        # Keyed by (org_id, model_id, config_version), NOT by model id alone.
-        #
-        # This dict is process-global: one `RoutedLLMProvider` per agent
-        # singleton (`api/deps.py`, `lru_cache(maxsize=1)`), each reached by
-        # every request from every tenant. Keying it by model id was sound only
-        # while every id was catalogued and its credentials came from process
-        # env — the id then FULLY determined the credentials. An org's own model
-        # breaks that: two orgs can both name a model `gpt-5`, and the second
-        # would be served the first org's cached client, sending its retrieved
-        # private chunks to the first org's endpoint on the first org's key.
-        # The version component additionally means a rotated key cannot keep
-        # being served by a client built before the rotation.
+        # Keyed by (org_id, model_id, config_version), NOT model id alone: this
+        # dict is process-global, and two orgs can both name `gpt-5` with their
+        # own endpoints and keys. The version retires a client after key rotation.
         self._clients: dict[tuple[str | None, str, str], OpenAICompatProvider] = {}
-        # Must stay ABOVE the admin probe's timeout (api/llm_model.PROBE_TIMEOUT,
-        # 30s), or a model that passed the test would then fail in chat: chat
-        # sends a ~2.3k-token grounded prompt against the probe's one line, so
-        # its prefill is strictly slower for the same generation. 45s is that
-        # 30s plus headroom, not a round number.
-        #
-        # Kept env-tunable because these routes run in a shared 40-thread pool:
-        # a tarpit endpoint holds a slot every other tenant's chat also needs,
-        # so lowering this is the lever if that ever shows up in production.
+        # Must stay ABOVE the admin probe's timeout (30s): chat's prompt is far
+        # longer, so a model that passed the probe must not time out in chat.
+        # Env-tunable because a slow endpoint holds a slot in the shared thread pool.
         self._custom_timeout = float(os.getenv("LLM_CUSTOM_TIMEOUT") or 45.0)
 
     def configured_backends(self) -> set[str]:
@@ -291,11 +189,8 @@ class RoutedLLMProvider(LLMProvider):
     def _client_for(self, model_id: str) -> LLMProvider:
         """Build (once) the OpenRouter client for one model id.
 
-        Falls back to the default provider when OpenRouter is not configured.
-        Degrading is right here: the alternative is that a stray ``model`` in a
-        request body takes chat down on a deployment that never enabled the
-        feature. The answer is still grounded and still labelled with the model
-        that actually produced it, so nothing silently misreports.
+        Falls back to the default provider when OpenRouter is not configured, so
+        a stray ``model`` cannot take chat down; the label stays truthful.
         """
         org_id = selected_org()
         choice = catalog.get(model_id)
@@ -320,8 +215,7 @@ class RoutedLLMProvider(LLMProvider):
             return self._default
         api_key, base_url, timeout = creds.api_key, creds.base_url, creds.timeout
         if backend == BACKEND_CLAUDE:
-            # Built exactly as a Claude default model is (thinking off, and the
-            # form a model names in its 400), so a pick and the default agree.
+            # Built like a Claude default model, so a pick and the default agree.
             from .adapters import Endpoint, build_provider
 
             client = build_provider(
@@ -332,9 +226,8 @@ class RoutedLLMProvider(LLMProvider):
             return client
         headers: dict[str, str] = {}
         if backend == BACKEND_OPENROUTER:
-            # OpenRouter's own request extensions (data policy, tool support,
-            # reasoning excluded). A single-provider backend has nothing to
-            # route between; it gets only the model's own extras (reasoning).
+            # OpenRouter gets its routing extensions; a single-provider backend gets
+            # only the model's own extras.
             extra_body = _ROUTING_PREFS
             if self._settings.referer:
                 headers["HTTP-Referer"] = self._settings.referer
@@ -355,14 +248,10 @@ class RoutedLLMProvider(LLMProvider):
         return client
 
     def _org_client(self, org_id: str | None, model_id: str) -> LLMProvider:
-        """The org's own model, or a hard failure — never the deployment's key.
+        """The org's own model, or a hard failure, never the deployment's key.
 
-        Fails CLOSED. The catalogued path degrades to the default provider when
-        a backend is unconfigured, which is right there: the id is one we ship,
-        so the worst case is answering on the wrong model. Here the id came from
-        a client and matched nothing we ship, so degrading would send an
-        arbitrary member-supplied model string on OUR OpenRouter key — burning
-        an account-wide 50/day quota shared by every tenant (CLAUDE.md §5).
+        Fails CLOSED: the id came from a client and matched nothing we ship, so
+        degrading would spend our shared key on an arbitrary model string.
         """
         from .org_model import get_org_model
 
@@ -382,10 +271,8 @@ class RoutedLLMProvider(LLMProvider):
             model=org.model,
             api_key=org.api_key,
             base_url=org.base_url,
-            # Deliberately shorter than LLM_TIMEOUT. FastAPI runs these sync
-            # routes in a shared 40-thread pool, so a slow tenant endpoint holds
-            # a slot that every OTHER tenant's chat also needs — one org's bad
-            # provider must not be able to stall the process.
+            # Shorter than LLM_TIMEOUT: one org's slow endpoint must not hold the
+            # shared thread pool every other tenant needs.
             timeout=self._custom_timeout,
             extra_body=extra_body,
             extra_body_optional=extra_optional,
@@ -416,8 +303,7 @@ class RoutedLLMProvider(LLMProvider):
             return active.generate(prompt, max_tokens=max_tokens)
         finally:
             self.last_truncated = bool(getattr(active, "last_truncated", False))
-            # In `finally` so a failed call still records which model failed —
-            # that is exactly when someone needs to know.
+            # In `finally`, so a failed call still records which model failed.
             self._record(active)
 
     def generate_with_tools(
@@ -433,9 +319,8 @@ class RoutedLLMProvider(LLMProvider):
                 messages, tools=tools, tool_choice=tool_choice, timeout=timeout
             )
         except NotImplementedError:
-            # A selected provider without tool support is a configuration
-            # problem, not a bad request — surface it as one rather than
-            # letting a caller read "no tool calls" as "the model declined".
+            # A selected provider without tools is a configuration problem; surface it,
+            # don't let it read as "the model declined".
             raise ConfigurationError(
                 f"Model {getattr(active, 'model', 'unknown')} does not support "
                 "tool calling."
@@ -444,11 +329,8 @@ class RoutedLLMProvider(LLMProvider):
             self._record(active)
 
     # -- proxied diagnostics ---------------------------------------------
-    #
-    # metering.log_llm_call reads ``provider.last_usage`` and
-    # ``provider.model`` by getattr. Proxying both to the ACTIVE provider is
-    # what keeps token logging correct and — more usefully — makes it log the
-    # model that really ran instead of the wrapper's idea of a default.
+    # metering reads ``last_usage`` and ``model`` by getattr; proxying them to
+    # the ACTIVE provider logs the model that really ran.
     @property
     def model(self) -> str | None:
         return getattr(self.active(), "model", None)

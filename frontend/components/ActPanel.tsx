@@ -3,11 +3,8 @@
 /**
  * Agent on the Account page: the person's own sign-in to each tool an admin
  * added (an MCP server), and what they asked Handbook to do.
- *
- * A write runs with the person's OWN sign-in, so it has their rights and shows
- * them as its author; this is where they sign in and out. Requests are made in
- * the chat (Agent mode). Drafts still waiting can be approved, edited or
- * cancelled from the history here.
+ * A write runs with the person's OWN sign-in. Requests are made in chat;
+ * pending drafts can be decided here.
  */
 
 import { useCallback, useEffect, useState } from "react";

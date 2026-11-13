@@ -1,15 +1,9 @@
 """Single construction point for agents.
 
-Callers do ``build_policy_agent()`` and get a fully wired ``PolicyAgent``. A ready
-``RagPipeline`` may be injected to reuse one (tests, an HTTP layer); otherwise a
-pipeline is built from configuration via ``build_rag_pipeline``, and any of its
-keyword arguments (``memory``, ``web_search``, ``retriever``, ``embedder`` …) may
-be forwarded — so a caller can turn a capability off exactly as before.
-
-``build_workspace_agent`` builds the same shape of thing for ``WorkspaceAgent``,
-but defaults to a second, independent pipeline: the workspace ``PromptProfile``
-+ fallback string (``WorkspaceAgentSettings``), and web-search OFF (a personal
-workspace's own content is either present or it isn't — see ``workspace_agent.py``).
+A ready ``RagPipeline`` may be injected; otherwise one is built from config
+via ``build_rag_pipeline`` with any of its keyword arguments forwarded.
+Pinned-corpus agents (workspace, Slack, Linear, Notion, Drive) get their own
+pipeline with web search OFF: their content is either present or not.
 """
 
 from __future__ import annotations
@@ -54,14 +48,9 @@ def build_policy_agent(
 def build_workspace_agent(
     pipeline: RagPipeline | None = None, **pipeline_kwargs
 ) -> WorkspaceAgent:
-    """Build a ``WorkspaceAgent``, defaulting its pipeline from configuration.
-
-    Shares every other RAG knob (``top_k``, ``similarity_threshold``, etc.)
-    with the policy pipeline via the same ``RagSettings.from_env()`` — only
-    the fallback string and prompt framing differ, and web-search defaults to
-    off. Any of these can still be overridden via ``pipeline_kwargs``, exactly
-    like ``build_policy_agent``.
-    """
+    """Build a ``WorkspaceAgent``. Same RAG settings as policy; only the
+    fallback, framing and web-search-off differ (overridable via
+    ``pipeline_kwargs``)."""
     if pipeline is None:
         pipeline_kwargs.setdefault(
             "settings",
@@ -79,16 +68,9 @@ def build_workspace_agent(
 def build_slack_agent(
     pipeline: RagPipeline | None = None, **pipeline_kwargs
 ) -> SlackAgent:
-    """Build a ``SlackAgent``, defaulting its pipeline from configuration.
-
-    Same shape as ``build_workspace_agent``, with one addition that is the
-    whole point of this agent: the pipeline is pinned to
-    ``source_provider="slack"``, so retrieval reaches only chunks ingested from
-    Slack (see ``slack_agent.py``). Web search defaults off for the same reason
-    it does for a workspace — "what did we decide in #eng?" has no public-web
-    answer, and offering one would invite a confidently wrong external result
-    in place of an honest miss.
-    """
+    """Build a ``SlackAgent``: the pipeline is pinned to
+    ``source_provider="slack"``. Web search off: "what did we decide in #eng?"
+    has no public-web answer."""
     if pipeline is None:
         pipeline_kwargs.setdefault(
             "settings",
@@ -107,15 +89,8 @@ def build_slack_agent(
 def build_linear_agent(
     pipeline: RagPipeline | None = None, **pipeline_kwargs
 ) -> LinearAgent:
-    """Build a ``LinearAgent``, defaulting its pipeline from configuration.
-
-    Same shape as ``build_slack_agent``: the pipeline is pinned to
-    ``source_provider="linear"``, so retrieval reaches only chunks ingested
-    from Linear (see ``linear_agent.py``) — a Policies-tab question never
-    silently pulls in an engineering ticket, and vice versa. Web search
-    defaults off for the same reason as Slack — "what's the status of X" has
-    no public-web answer.
-    """
+    """Build a ``LinearAgent``, pinned to ``source_provider="linear"``, web
+    search off."""
     if pipeline is None:
         pipeline_kwargs.setdefault(
             "settings",
@@ -134,15 +109,8 @@ def build_linear_agent(
 def build_notion_agent(
     pipeline: RagPipeline | None = None, **pipeline_kwargs
 ) -> NotionAgent:
-    """Build a ``NotionAgent``, defaulting its pipeline from configuration.
-
-    Same shape as ``build_slack_agent``/``build_linear_agent``: the pipeline is
-    pinned to ``source_provider="notion"``, so a Notion-tab answer can never be
-    silently grounded on a Google Drive chunk (or vice versa) — Notion and
-    Drive may hold unrelated content, unlike Slack/Linear this split is about
-    source identity, not tone (see ``notion_agent.py``). Web search stays off
-    for the same reason as every other pinned-corpus agent.
-    """
+    """Build a ``NotionAgent``, pinned to ``source_provider="notion"`` so a
+    Notion answer is never grounded on a Drive chunk. Web search off."""
     if pipeline is None:
         pipeline_kwargs.setdefault(
             "settings",
@@ -161,11 +129,7 @@ def build_notion_agent(
 def build_drive_agent(
     pipeline: RagPipeline | None = None, **pipeline_kwargs
 ) -> DriveAgent:
-    """Build a ``DriveAgent``, defaulting its pipeline from configuration.
-
-    Same shape as ``build_notion_agent``, pinned to ``source_provider="google"``
-    (matching the value ``GoogleDriveAdapter``-ingested documents carry).
-    """
+    """Build a ``DriveAgent``, pinned to ``source_provider="google"``."""
     if pipeline is None:
         pipeline_kwargs.setdefault(
             "settings",
@@ -186,17 +150,10 @@ def build_github_agent(
     reader_builder=None,
     settings: GitHubAgentSettings | None = None,
 ) -> GitHubAgent:
-    """Build a ``GitHubAgent`` from configuration.
-
-    Unlike ``build_policy_agent``/``build_workspace_agent`` there is no pipeline
-    to construct — this agent has no retrieval (see ``github_agent.py``), so it
-    needs only an LLM and a way to build a tenant-scoped reader.
+    """Build a ``GitHubAgent``: no pipeline, just an LLM and a reader builder.
 
     ``reader_builder`` defaults to ``githublive.build_github_reader``, imported
-    lazily so constructing an agent doesn't drag in the DB/credentials layer at
-    module-import time, and so tests can inject a fake without touching Postgres.
-    It stays a *builder* because a reader is tenant-scoped and must be created
-    per request from the ``org_id`` being served.
+    lazily; a builder because a reader is tenant-scoped, built per request.
     """
     if reader_builder is None:
         from ..githublive import build_github_reader

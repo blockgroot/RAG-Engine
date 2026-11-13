@@ -1,14 +1,6 @@
 /**
- * Chart colour: which category gets which swatch.
- *
- * Its own module, with no JSX, for two reasons. It is pure logic with a defect
- * history -- colours came from the ARRAY INDEX, so "Done" was teal in one
- * chart and orange in the next, and a repository changed colour when another
- * appeared -- and a module without JSX can be executed directly by
- * `node --experimental-strip-types`, so the check in `__checks__` imports the
- * real implementation without this frontend growing a test stack or a build
- * dependency (CLAUDE.md: do not add a React test stack as a side effect of a
- * chart).
+ * Chart colour: which category gets which swatch. No JSX, so the check in
+ * `__checks__` runs the real code under node with no test stack.
  */
 
 /** Distinct enough to tell series apart, muted enough to sit in the page. */
@@ -22,17 +14,8 @@ export const SERIES_COLORS = [
 ];
 
 /**
- * A category's colour, stable and meaningful.
- *
- * Index-based colouring was a real defect, not a style choice: the index came
- * from the order rows arrived, so "Done" was teal in one chart and orange in
- * the next, and the same repository changed colour when a new one appeared.
- * A legend whose colours move between charts cannot be learned.
- *
- * Known categories get a MEANING (done is green, canceled is red, blocked is
- * red) because a lifecycle chart where "Canceled" is reassuring green is
- * actively misleading. Everything else hashes its own name, so it is at least
- * the same colour every time, in every chart, across reloads.
+ * A category's colour, stable across charts (never the row index). Known
+ * states get a meaning (done green, canceled/blocked red); others hash their name.
  */
 export const CATEGORY_COLORS: Record<string, string> = {
   // Linear / issue lifecycle
@@ -67,21 +50,14 @@ function preferredIndex(key: string): number {
 }
 
 /**
- * Colours for one chart's categories: meaningful, stable, and DISTINCT.
- *
- * Hashing alone gave stability but collided -- two of four Notion pages, and
- * two of three repositories, landed on the same swatch, so a chart had
- * neighbouring bars the same colour. So a name asks for its hashed slot and
- * takes the next free one when that slot is gone: deterministic for a given
- * set of names, and never a duplicate until the palette genuinely runs out.
+ * Colours for one chart: meaningful, stable and DISTINCT. A name takes its
+ * hashed slot, or the next free one, so no duplicate until the palette runs out.
  */
 export function categoryColors(names: (string | null | undefined)[]): Map<string, string> {
   const out = new Map<string, string>();
   const used = new Set<string>();
 
-  // Semantic categories are assigned FIRST and are never displaced: "done is
-  // green" outranks "this bar wanted green", and a lifecycle chart where
-  // Canceled is a reassuring green is actively misleading.
+  // Semantic categories first, never displaced: "done is green" outranks a hash.
   for (const raw of names) {
     const key = (raw || "").trim().toLowerCase();
     const known = CATEGORY_COLORS[key];
@@ -118,13 +94,8 @@ export function pick(
 
 
 /**
- * Keep the largest categories and fold the rest into "Other".
- *
- * A categorical palette has six entries, so an eleven-category chart HAD to
- * reuse colours -- and a legend with two identical swatches cannot be read.
- * Every production chart library caps categories for the same reason; the
- * folded remainder is stated rather than dropped, because a chart that
- * silently omits categories is worse than one that admits it grouped them.
+ * Keep the largest categories and fold the rest into a stated "Other": the
+ * palette has six swatches, and silently omitting categories misleads.
  */
 export function cappedCategories<T extends { name: string; value: number }>(
   rows: T[],

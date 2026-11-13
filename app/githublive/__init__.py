@@ -1,13 +1,5 @@
-"""Live GitHub reads — the entire GitHub data path (no ingestion, no embeddings).
-
-Unlike ``app/sources/`` (Notion, Google Drive), GitHub content is never
-ingested, chunked, embedded, or stored. Every answer is composed from a bounded,
-live API read decided by the LLM through real function-calling, in the same
-shape as the Phase 5 web-search fallback. See
-``git history: docs/plans/2026-08-05-github-integration.md`` revision 1 for why the README is
-fetched live rather than indexed: it is small and rarely changes, so an index
-would buy nothing while adding a sync lifecycle and a staleness window that live
-fetching cannot have.
+"""Live GitHub reads: the entire GitHub data path. Nothing is ingested or
+embedded; every answer comes from a bounded live API read.
 
 Public API:
     from app.githublive import InstallationScope, resolve_repo, scope_from_config

@@ -1,11 +1,4 @@
-"""Identity, OAuth "Connect X" flows, and sessions (Phases 10-13).
-
-Public API:
-    from app.auth import build_oauth_provider
-    provider = build_oauth_provider("notion")
-    url = provider.authorize_url(state)
-    tokens = provider.exchange_code(code)
-"""
+"""Identity, OAuth "Connect X" flows and sessions. Entry point: ``build_oauth_provider``."""
 
 from .base import OAuthProvider, OAuthTokens
 from .notion_oauth import NotionOAuthProvider
