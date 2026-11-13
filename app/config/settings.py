@@ -137,8 +137,15 @@ DEFAULT_RATE_LIMIT_REQUEST_BURST = 40
 # Sized for a $100/month Claude credit and 30 people, with $10 kept as margin.
 DEFAULT_AI_COMPANY_DOLLARS_PER_DAY = 3.00
 DEFAULT_AI_PERSON_DOLLARS_PER_DAY = 0.30
-DEFAULT_AI_PERSON_DOLLARS_BURST = 0.15
-DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE = 0.08
+# Tokens per minute, per answering model, each model its own buckets (as
+# Anthropic, LiteLLM's model_tpm_limit and Kong's AI rate limiting do):
+# ``model=person_in:person_out:company_in:company_out``. Sized from the Claude
+# benchmark (median ~6k tokens a question, largest ~33k): a person can ask about
+# ten questions a minute before waiting. A model not listed has no token limit.
+DEFAULT_AI_TOKEN_LIMITS = (
+    "claude-sonnet-5-5=60000:8000:400000:40000,"
+    "claude-haiku-5-5=60000:8000:400000:40000"
+)
 # Dollars per million input / output tokens, by model id (a dated or vendor-
 # prefixed id matches its base). A model not listed (Gemini, Ollama) is not
 # counted: only these are paid from the credit.
@@ -1683,10 +1690,10 @@ class RateLimitSettings:
     # AI spend in dollars (security/ai_spend.py). 0 turns that limit off.
     ai_company_dollars_per_day: float = DEFAULT_AI_COMPANY_DOLLARS_PER_DAY
     ai_person_dollars_per_day: float = DEFAULT_AI_PERSON_DOLLARS_PER_DAY
-    ai_person_dollars_burst: float = DEFAULT_AI_PERSON_DOLLARS_BURST
-    ai_person_dollars_per_minute: float = DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE
     # (model id, $ per million input, $ per million output)
     ai_prices: tuple[tuple[str, float, float], ...] = ()
+    # (model id, person in, person out, company in, company out) tokens a minute.
+    ai_token_limits: tuple[tuple[str, int, int, int, int], ...] = ()
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
@@ -1747,13 +1754,10 @@ class RateLimitSettings:
             ai_person_dollars_per_day=dollars(
                 "AI_PERSON_DOLLARS_PER_DAY", DEFAULT_AI_PERSON_DOLLARS_PER_DAY
             ),
-            ai_person_dollars_burst=dollars(
-                "AI_PERSON_DOLLARS_BURST", DEFAULT_AI_PERSON_DOLLARS_BURST
-            ),
-            ai_person_dollars_per_minute=dollars(
-                "AI_PERSON_DOLLARS_PER_MINUTE", DEFAULT_AI_PERSON_DOLLARS_PER_MINUTE
-            ),
             ai_prices=_parse_ai_prices(os.getenv("AI_PRICES") or DEFAULT_AI_PRICES),
+            ai_token_limits=_parse_ai_token_limits(
+                os.getenv("AI_TOKEN_LIMITS") or DEFAULT_AI_TOKEN_LIMITS
+            ),
         )
 
 
@@ -1772,6 +1776,26 @@ def _parse_ai_prices(raw: str) -> tuple[tuple[str, float, float], ...]:
         except ValueError:
             logging.getLogger(__name__).warning("AI_PRICES: ignoring %r (want model=in:out)", entry)
     return tuple(prices)
+
+
+def _parse_ai_token_limits(raw: str) -> tuple[tuple[str, int, int, int, int], ...]:
+    """``model=person_in:person_out:company_in:company_out,…`` tokens a minute;
+    0 turns that one off. A malformed entry is skipped and logged."""
+    limits = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            model, values = entry.split("=", 1)
+            p_in, p_out, c_in, c_out = (max(0, int(v)) for v in values.split(":"))
+            limits.append((model.strip().lower(), p_in, p_out, c_in, c_out))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "AI_TOKEN_LIMITS: ignoring %r (want model=person_in:person_out:company_in:company_out)",
+                entry,
+            )
+    return tuple(limits)
 
 
 @dataclass(frozen=True)

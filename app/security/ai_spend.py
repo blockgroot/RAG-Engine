@@ -1,4 +1,12 @@
-"""AI spend limits: what answering really costs, in dollars.
+"""AI usage limits: tokens per minute per model, and dollars per day.
+
+Two layers, as Anthropic, LiteLLM and Kong's AI gateway limit:
+
+* Tokens a minute, per answering model, input and output apart, for the
+  person and the company (``token_buckets``). Each model has its own buckets,
+  so a person who used up Sonnet's minute can still ask Haiku.
+* Dollars a day, for the person and the company (``spend_buckets``), one
+  wallet whichever model answers.
 
 Request limits (``rate_limit.py``) count questions, but one question can cost
 ten times another (Claude benchmarks: median ~6k tokens, largest ~33k) and the
@@ -38,20 +46,50 @@ def charge_to(user_id: str | None, org_id: str | None) -> None:
     _SPENDER.set((user_id, org_id))
 
 
-def price_of(model: str | None, settings: RateLimitSettings) -> tuple[float, float] | None:
-    """``($ per million input, $ per million output)``, or None when not paid from the credit.
+def _listed(model: str | None, rows: tuple[tuple, ...]) -> tuple | None:
+    """The row whose model id ``model`` is, or None.
 
     A vendor prefix (``anthropic/``) and a dated suffix (``-20261009``) still
     match their base id; the longest listed id wins, so ``claude-sonnet-5-5`` is
-    never priced as ``claude-sonnet-5``.
+    never read as ``claude-sonnet-5``.
     """
     name = (model or "").strip().lower().rsplit("/", 1)[-1].replace(".", "-")
-    best: tuple[str, float, float] | None = None
-    for key, per_in, per_out in settings.ai_prices:
+    best: tuple | None = None
+    for row in rows:
+        key = row[0]
         if name == key or (name.startswith(key) and name[len(key)] in "-@:"):
             if best is None or len(key) > len(best[0]):
-                best = (key, per_in, per_out)
-    return (best[1], best[2]) if best else None
+                best = row
+    return best
+
+
+def price_of(model: str | None, settings: RateLimitSettings) -> tuple[float, float] | None:
+    """``($ per million input, $ per million output)``, or None when not paid from the credit."""
+    row = _listed(model, settings.ai_prices)
+    return (row[1], row[2]) if row else None
+
+
+def token_buckets(
+    user_id: str | None, org_id: str | None, model: str | None, settings: RateLimitSettings
+) -> tuple[list[Bucket], list[Bucket]]:
+    """``(input buckets, output buckets)`` for this model: the person's and the
+    company's, each holding a minute of tokens and refilling it every minute.
+    Keyed by the model's listed id, so a dated id shares its base's buckets."""
+    row = _listed(model, settings.ai_token_limits)
+    if row is None:
+        return [], []
+    key, person_in, person_out, company_in, company_out = row
+    ins: list[Bucket] = []
+    outs: list[Bucket] = []
+    for who, limit_in, limit_out, scope in (
+        (user_id, person_in, person_out, "user"),
+        (org_id, company_in, company_out, "org"),
+    ):
+        if who and limit_in:
+            ins.append(Bucket(f"ai:{scope}:tin:{key}:{who}", limit_in, limit_in))
+        if who and limit_out:
+            outs.append(Bucket(f"ai:{scope}:tout:{key}:{who}", limit_out, limit_out))
+    return ins, outs
 
 
 def cost_of(
@@ -71,13 +109,10 @@ def cost_of(
 def spend_buckets(
     user_id: str | None, org_id: str | None, settings: RateLimitSettings
 ) -> list[Bucket]:
-    """The person's minute and day buckets and the company's day bucket, in
-    dollars. A day bucket refills evenly over the day, so a limit hit at noon
-    frees a little at a time rather than all at midnight."""
+    """The person's and the company's day buckets, in dollars. A day bucket
+    refills evenly over the day, so a limit hit at noon frees a little at a
+    time rather than all at midnight."""
     buckets = []
-    if user_id and settings.ai_person_dollars_per_minute and settings.ai_person_dollars_burst:
-        buckets.append(Bucket(f"ai:user:min:{user_id}", settings.ai_person_dollars_burst,
-                              settings.ai_person_dollars_per_minute))
     if user_id and settings.ai_person_dollars_per_day:
         buckets.append(Bucket(f"ai:user:day:{user_id}", settings.ai_person_dollars_per_day,
                               settings.ai_person_dollars_per_day / _MINUTES_PER_DAY))
@@ -93,7 +128,8 @@ def charge_call(
     output_tokens: int | None,
     settings: RateLimitSettings | None = None,
 ) -> float:
-    """Charge one finished model call to whoever this request is for.
+    """Charge one finished model call to whoever this request is for: its
+    tokens to that model's minute buckets, its cost to the dollar buckets.
 
     Returns the dollars charged (0 when nobody pays or the model is unpriced).
     A store fault is logged and the call stands: accounting never fails an answer.
@@ -104,13 +140,17 @@ def charge_call(
     settings = settings or RateLimitSettings.from_env()
     if not settings.enabled:
         return 0.0
+    ins, outs = token_buckets(user_id, org_id, model, settings)
     cost = cost_of(model, input_tokens, output_tokens, settings)
-    buckets = spend_buckets(user_id, org_id, settings)
-    if cost <= 0 or not buckets:
-        return 0.0
+    dollars = spend_buckets(user_id, org_id, settings) if cost > 0 else []
+    charges = [(b, n) for b, n in ((ins, input_tokens or 0), (outs, output_tokens or 0), (dollars, cost))
+               if b and n > 0]
     try:
-        build_rate_limiter(settings).take(buckets, need=None, spend=cost)
+        limiter = build_rate_limiter(settings)
+        for buckets, amount in charges:
+            limiter.take(buckets, need=None, spend=amount)
     except RateLimiterError as exc:
-        logger.error("Could not charge AI spend of $%.4f: %s", cost, exc.cause or exc)
+        logger.error("Could not charge AI usage (%s in, %s out tokens, $%.4f): %s",
+                     input_tokens, output_tokens, cost, exc.cause or exc)
         return 0.0
-    return cost
+    return cost if dollars else 0.0

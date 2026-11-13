@@ -1896,7 +1896,7 @@ def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
 ):
-    limit_question(session)
+    limit_question(session, body.get("model") if isinstance(body.get("model"), str) else None)
 
     question = (body.get("question") or "").strip()
     if not question:
