@@ -150,3 +150,61 @@ def test_redis_charges_and_checks_the_same_way(redis_url):
 
     # Kept until it has refilled: an overdrawn bucket must not expire as if full.
     assert redis.Redis.from_url(redis_url).ttl("rl:" + key) > 86_400
+
+
+# --- Tokens a minute, per model (as Anthropic, LiteLLM and Kong limit) -------
+
+SONNET, HAIKU = "claude-sonnet-5-5", "claude-haiku-5-5"
+
+
+def test_each_model_has_its_own_minute_of_tokens(ids):
+    user, org = ids
+    charge_to(user, org)
+    charge_call(SONNET, 61_000, 500)               # past a person's 60k input a minute
+    sonnet = rate_limit.question_decision(user, org, model=SONNET)
+    assert not sonnet.allowed and sonnet.refused_by == f"ai:user:tin:{SONNET}:{user}"
+    # 1k tokens over at 60k a minute: about a second, said in seconds, never hours.
+    assert 0 < sonnet.retry_after <= 2
+    assert rate_limit.refusal_message(sonnet.retry_after, sonnet.refused_by).endswith(("second.", "seconds."))
+    # Haiku is another model: its own buckets are full.
+    assert rate_limit.question_decision(user, org, model=HAIKU).allowed
+    # A colleague is unaffected.
+    assert rate_limit.question_decision(str(uuid.uuid4()), org, model=SONNET).allowed
+
+
+def test_output_tokens_are_limited_apart_from_input(ids):
+    user, org = ids
+    charge_to(user, org)
+    charge_call(HAIKU, 1_000, 8_500)               # past a person's 8k output a minute
+    decision = rate_limit.question_decision(user, org, model=HAIKU)
+    assert not decision.allowed and decision.refused_by == f"ai:user:tout:{HAIKU}:{user}"
+
+
+def test_the_company_minute_stops_everyone_on_that_model(ids):
+    user, org = ids
+    for _ in range(8):                             # 8 x 55k > the company's 400k a minute
+        charge_to(str(uuid.uuid4()), org)
+        charge_call(HAIKU, 55_000, 100)
+    decision = rate_limit.question_decision(user, org, model=HAIKU)
+    assert not decision.allowed and decision.refused_by == f"ai:org:tin:{HAIKU}:{org}"
+    assert rate_limit.question_decision(user, org, model=SONNET).allowed
+
+
+def test_a_dated_id_shares_its_models_buckets_and_an_unlisted_model_has_none(ids):
+    user, org = ids
+    ins, outs = ai_spend.token_buckets(user, org, "claude-sonnet-5-5-20261001", S)
+    assert [b.key for b in ins] == [f"ai:user:tin:{SONNET}:{user}", f"ai:org:tin:{SONNET}:{org}"]
+    assert [b.burst for b in ins + outs] == [60_000, 400_000, 8_000, 40_000]
+    assert ai_spend.token_buckets(user, org, "gemini-3.5-flash-lite", S) == ([], [])
+
+
+def test_token_limits_are_read_from_one_setting(monkeypatch):
+    monkeypatch.setenv("AI_TOKEN_LIMITS", "claude-haiku-5-5=100:10:0:0, broken, x=1:2")
+    limits = RateLimitSettings.from_env().ai_token_limits
+    assert limits == (("claude-haiku-5-5", 100, 10, 0, 0),)   # 0 turns the company's off
+    ins, outs = ai_spend.token_buckets("u", "o", HAIKU, RateLimitSettings.from_env())
+    assert [b.key for b in ins + outs] == [f"ai:user:tin:{HAIKU}:u", f"ai:user:tout:{HAIKU}:u"]
+
+
+def test_a_token_refusal_is_logged_by_its_limits_name():
+    assert rate_limit._describe(f"ai:org:tout:{SONNET}:o1") == f"ai-tokens:company-output-minute org={SONNET}:o1"

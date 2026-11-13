@@ -7,9 +7,9 @@
   (``limit_question``). The company's grows with its members: every company
   shares one AI account, and per-person limits alone let a large company use
   all of it.
-* AI spend, in dollars (``ai_spend.py``): a question is refused once the
-  person's or the company's spend bucket is empty; what each model call really
-  cost is charged afterwards, at the provider.
+* AI usage (``ai_spend.py``): a question is refused once the person's or the
+  company's tokens this minute for the answering model, or dollars today, run
+  out; what each model call really used is charged afterwards, at the provider.
 * Anything that sends an email (login link, email change): its own small
   bucket, per IP or person (``limit_email``).
 
@@ -32,11 +32,11 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
-from ..config.settings import RateLimitSettings
+from ..config.settings import LLMSettings, RateLimitSettings
 from ..core.exceptions import AuthError, RateLimiterError
 from ..db.connection import get_connection
 from ..ratelimit import Bucket, Decision, build_rate_limiter
-from .ai_spend import charge_to, spend_buckets
+from .ai_spend import charge_to, spend_buckets, token_buckets
 from .client_ip import resolve_client_ip
 
 logger = logging.getLogger(__name__)
@@ -75,9 +75,15 @@ def _wait(seconds: float) -> str:
 
 
 def question_decision(
-    user_id: str, org_id: str, *, settings: RateLimitSettings | None = None
+    user_id: str,
+    org_id: str,
+    *,
+    model: str | None = None,
+    settings: RateLimitSettings | None = None,
 ) -> Decision:
-    """The person's and the company's AI spend, then their question buckets.
+    """The person's and the company's AI usage (this model's tokens this
+    minute, and dollars today), then their question buckets. ``model`` is the
+    one the asker picked; None is the default answering model.
 
     Spend is only checked here (not taken): the answer is charged what it
     really cost as it runs. Returns the decision rather than raising, for
@@ -87,7 +93,9 @@ def question_decision(
     # Routes that answer in this context (charts, scheduler setup, Slack) are
     # charged to this person; streams set it again where they answer.
     charge_to(user_id, org_id)
-    spend = _take(spend_buckets(user_id, org_id, settings), settings, need=_SPEND_NEED, spend=0.0)
+    ins, outs = token_buckets(user_id, org_id, model or LLMSettings.from_env().model, settings)
+    usage = ins + outs + spend_buckets(user_id, org_id, settings)
+    spend = _take(usage, settings, need=_SPEND_NEED, spend=0.0)
     if not spend.allowed:
         return spend
     org_rate = max(
@@ -103,8 +111,8 @@ def question_decision(
     )
 
 
-def limit_question(session) -> None:
-    _raise_if_refused(question_decision(session.user_id, session.org_id))
+def limit_question(session, model: str | None = None) -> None:
+    _raise_if_refused(question_decision(session.user_id, session.org_id, model=model))
 
 
 def limit_email(key: str) -> None:
@@ -224,7 +232,10 @@ _LIMIT_NAMES = {
     "req:user": "request:person",
     "req:ip": "request:ip",
     "answers:user": "answers-at-once:person",
-    "ai:user:min": "ai-spend:person-minute",
+    "ai:user:tin": "ai-tokens:person-input-minute",
+    "ai:user:tout": "ai-tokens:person-output-minute",
+    "ai:org:tin": "ai-tokens:company-input-minute",
+    "ai:org:tout": "ai-tokens:company-output-minute",
     "ai:user:day": "ai-spend:person-day",
     "ai:org:day": "ai-spend:company-day",
 }
