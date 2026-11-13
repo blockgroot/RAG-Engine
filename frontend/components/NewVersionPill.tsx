@@ -1,16 +1,21 @@
 "use client";
 
 /**
- * "A new version is ready": the tab was loaded from an older RELEASE than the
- * one now live (the build id is the newest release, next.config.js; an ordinary
- * deploy of main keeps it). Checked every few minutes and when the tab comes
- * back into view; Refresh loads the new version.
+ * "A new version is ready": a release went live while this tab was open. The
+ * server's /build-id (the newest release it carries, next.config.js; an
+ * ordinary deploy of main keeps it) is read when the tab opens and again every
+ * few minutes and when the tab comes back into view; the pill shows when it
+ * changes, and Refresh loads the new version.
+ *
+ * The first answer is the baseline, never the id baked into this page: a
+ * reload that still got an older page (a cached copy, a deploy rolling out)
+ * showed the pill again straight after Refresh, and nothing the person could
+ * do would clear it.
  */
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-const OWN_BUILD = process.env.NEXT_PUBLIC_BUILD_ID;
 const EVERY_MS = 5 * 60 * 1000;
 
 export function NewVersionPill({ admin }: { admin: boolean }) {
@@ -18,14 +23,16 @@ export function NewVersionPill({ admin }: { admin: boolean }) {
   const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
-    if (!OWN_BUILD) return;
     let stop = false;
+    let first: string | null = null;
     const check = () => {
       if (stop || document.visibilityState !== "visible") return;
       fetch("/build-id", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : null))
         .then((d: { id?: string | null } | null) => {
-          if (!stop && d?.id && d.id !== OWN_BUILD) setReady(true);
+          if (stop || !d?.id) return;
+          if (first === null) first = d.id;
+          else if (d.id !== first) setReady(true);
         })
         .catch(() => {});
     };
