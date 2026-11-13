@@ -1,27 +1,14 @@
-"""FastAPI application entrypoint (Phase 13).
+"""FastAPI entrypoint: ``uvicorn app.api.main:app``.
 
-Run with: ``uvicorn app.api.main:app --host 0.0.0.0 --port 8000``
-
-Every route in this package reaches for existing ``app/`` interfaces via their
-``build_*()`` factories — this layer adds HTTP, sessions, and CORS; it never
-duplicates provider/pipeline logic. CORS is scoped to the exact configured
-frontend origin(s) (``API_CORS_ORIGINS``) with credentials allowed (the
-session cookie); an empty configured origin list means no cross-origin
-frontend can call this API with credentials, which is the safe default, not
-a wildcard.
-
-Ingestion jobs use the Postgres ``ingestion_jobs`` queue (``SELECT … FOR
-UPDATE SKIP LOCKED``). By default a daemon thread inside this process drains
-that queue (``INGEST_WORKER_IN_API=true``) so local/dev needs no second
-terminal. Set ``INGEST_WORKER_IN_API=false`` and run
-``python scripts/run_worker.py`` when you want the worker in its own process
-(heavier ingest loads, multi-replica API).
+Adds HTTP, sessions and CORS over the ``build_*()`` factories. CORS allows
+only ``API_CORS_ORIGINS`` with credentials (empty = none). Ingest jobs drain
+in a daemon thread here unless ``INGEST_WORKER_IN_API=false`` (then run
+``scripts/run_worker.py``).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -30,7 +17,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config.settings import ApiSettings, SchedulerSettings, env_bool
+from ..config.settings import ApiSettings, IngestWorkerSettings, SchedulerSettings
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from ..security.rate_limit import limit_request, report_store
@@ -56,24 +43,17 @@ from . import schedulers as schedulers_router
 from . import workspaces as workspaces_router
 from . import updates as updates_router
 
-# Every scripts/*.py entrypoint calls this before reading settings; the ASGI
-# app has no equivalent entrypoint of its own (uvicorn just imports this
-# module), so it must load .env here, at import time, before ApiSettings.from_env()
-# and every other from_env() call below it runs — otherwise every setting
-# silently falls back to its default (e.g. an empty CORS origin list, which
-# makes the browser's preflight fail with no useful error).
+# uvicorn only imports this module, so .env is loaded here before any
+# from_env(); otherwise settings silently fall back to defaults.
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
 def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
-    """Drain ``ingestion_jobs`` in-process so Sync works without run_worker.py.
+    """Drain ``ingestion_jobs`` in-process and tick the schedulers on the same thread.
 
-    Also ticks the activity scheduler on the same thread. Sharing one loop
-    (rather than adding a second thread) keeps the deployment story unchanged
-    — still one process, no new infra — and the two are never contended for:
-    ingestion polls every couple of seconds, schedulers every few minutes.
+    One loop, no new infra; ingest polls every few seconds, schedulers every few minutes.
     """
     from ..jobs import queue
     from ..jobs.autosync import start_cooled_down_pushes
@@ -83,8 +63,9 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
         run_scheduler_tick,
     )
 
-    poll_interval = float(os.getenv("INGEST_WORKER_POLL_SECONDS", "2"))
-    reap_interval = float(os.getenv("INGEST_WORKER_REAP_SECONDS", "60"))
+    worker_settings = IngestWorkerSettings.from_env()
+    poll_interval = worker_settings.poll_seconds
+    reap_interval = worker_settings.reap_seconds
     scheduler_settings = SchedulerSettings.from_env()
 
     def _loop() -> None:
@@ -114,9 +95,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
             logger.exception("Failed to re-queue interrupted scheduler runs")
         last_reap = 0.0
         last_push = 0.0
-        # Start at -poll_seconds so the first scheduler tick happens promptly
-        # after boot rather than one whole interval later — a scheduler that
-        # came due while the process was down should not wait 5 more minutes.
+        # Start at -poll_seconds so a scheduler due during downtime runs right after boot.
         last_scheduler = -float(scheduler_settings.poll_seconds)
         while not stop.is_set():
             try:
@@ -148,33 +127,20 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
 
 
 def _start_model_warmup() -> threading.Thread | None:
-    """Load the embedder (and reranker) in the background at startup.
+    """Load the embedder and reranker on a background thread at startup.
 
-    Both are multi-GB local models loaded lazily on first use, so without this
-    the *first* person to ask a question pays the entire model-load cost inside
-    their request — seconds of apparently-hung chat, once per process restart.
-    Warming moves that cost to boot, where nobody is waiting on it.
-
-    Runs on a daemon thread rather than blocking ``lifespan`` so the API still
-    starts (and serves login, admin, and GitHub chat, none of which need these
-    models) while the weights load. Failures are swallowed deliberately: warmup
-    is an optimization, and a machine that cannot load the models should fail on
-    the first retrieval request with a real error, not refuse to boot at all.
-
-    Opt out with ``MODEL_WARMUP_ON_STARTUP=false`` — worth doing on a low-RAM
-    machine, or when running the API purely for GitHub chat (see CLAUDE.md §4 on
-    the 16GB-Mac hazard).
+    Otherwise the first question pays the model load. Non-blocking so the API
+    serves meanwhile; failures are swallowed (a real request will report them).
+    Off with ``MODEL_WARMUP_ON_STARTUP=false`` on low-RAM machines.
     """
-    if not env_bool("MODEL_WARMUP_ON_STARTUP", default=True):
+    if not ApiSettings.from_env().model_warmup:
         return None
 
     def _warm() -> None:
         try:
             from ..embeddings import build_embedding_provider
 
-            # Encode one trivial string: constructing the provider loads the
-            # weights, but the first real encode still pays lazy CUDA/MPS graph
-            # setup, so do both here rather than leaving half the cost behind.
+            # One encode also pays the lazy CUDA/MPS graph setup.
             build_embedding_provider().embed(["warmup"])
         except Exception:  # noqa: BLE001 - warmup must never block startup
             logger.warning("embedding model warmup failed", exc_info=True)
@@ -202,7 +168,7 @@ async def lifespan(_app: FastAPI):
         report_store()  # one line saying where rate limits are counted
     except Exception:  # noqa: BLE001 - a report must never stop startup
         logger.exception("Rate limit store report failed")
-    if env_bool("INGEST_WORKER_IN_API", default=True):
+    if IngestWorkerSettings.from_env().in_api:
         worker = _start_in_api_worker(stop)
     try:
         yield
@@ -210,7 +176,7 @@ async def lifespan(_app: FastAPI):
         stop.set()
         if worker is not None:
             worker.join(timeout=8)
-        # Phase 15: finish any in-flight summary folds before dropping the pool
+        # Finish any in-flight summary folds before dropping the pool
         # so a mid-shutdown request doesn't silently lose bookkeeping.
         shutdown_summary_folds(wait=True, timeout=30.0)
         close_pool()
@@ -249,9 +215,8 @@ def create_app() -> FastAPI:
         mcp_actions_router,
     ):
         app.include_router(router.router, dependencies=[Depends(limit_request)])
-    # Not a person: the cron tick (token), Handbook's own MCP servers (called
-    # by Agent mode on a person's behalf), and Slack and vendor webhooks
-    # (signed by the sender). Limiting them per IP would drop real events.
+    # Not a person: the cron tick, our MCP servers and signed webhooks.
+    # Per-IP limits would drop real events.
     app.include_router(internal_router.router)
     app.include_router(mcp_host_router.router)
     app.include_router(slack_act_router.router)

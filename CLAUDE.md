@@ -20,7 +20,8 @@ GitHub; employees get answers from *their* data.
 - **An orchestrator skips `base.py`** (`app/rag/`, `app/ingestion/`, `app/schedulers/`,
   `app/graph/`, `app/insights/`). Do not add one speculatively. `app/agent/` has a
   `base.py` because there is one agent per source.
-- **All config** is a frozen dataclass with `from_env()` in `app/config/settings.py`.
+- **All config** is a frozen dataclass with `from_env()` in `app/config/`, imported
+  only through `app/config/settings.py`.
   Nothing else reads the environment. Each factory calls `X.from_env()` itself.
 - **All failures** raise `ProviderError` or a subclass (`app/core/exceptions.py`)
   with `cause=` and `raise ... from`.
