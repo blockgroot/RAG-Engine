@@ -12424,3 +12424,26 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
   /* Deep's Extra effort widens the centred group; no room beside it. */
   .ask-compose-head:has(.ask-effort) .release-chip { display: none; }
 }
+
+/* Whole-page loading (components/PageLoader.tsx). */
+.page-loader {
+  display: grid; place-items: center; align-content: center; gap: 1.1rem;
+  min-height: 100vh; min-height: 100dvh; background: var(--bg, #f5faf8);
+}
+.page-loader-logo { width: 3.5rem; height: 3.5rem; border-radius: 16px; animation: page-loader-breathe 1.8s ease-in-out infinite; }
+.page-loader-bar {
+  position: relative; width: 7.5rem; height: 3px; overflow: hidden; border-radius: 999px;
+  background: color-mix(in srgb, #14b8a6 15%, transparent);
+}
+.page-loader-bar::after {
+  content: ""; position: absolute; inset: 0; width: 40%; border-radius: inherit;
+  background: linear-gradient(90deg, #14b8a6, var(--accent-strong, #0f766e));
+  animation: page-loader-slide 1.1s ease-in-out infinite;
+}
+.page-loader-label { font-size: 0.82rem; font-weight: 600; letter-spacing: 0.04em; color: var(--ink-muted, #667085); }
+@keyframes page-loader-breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.94); opacity: 0.8; } }
+@keyframes page-loader-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) {
+  .page-loader-logo, .page-loader-bar::after { animation: none; }
+  .page-loader-bar::after { width: 100%; opacity: 0.5; }
+}

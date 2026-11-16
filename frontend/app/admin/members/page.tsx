@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -139,9 +140,7 @@ export default function MembersPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

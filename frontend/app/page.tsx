@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -45,9 +46,7 @@ export default function RootPage() {
 
   if (!ready) {
     return (
-      <main className="landing">
-        <p className="landing-loading muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

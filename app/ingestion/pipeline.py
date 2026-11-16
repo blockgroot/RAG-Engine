@@ -125,6 +125,33 @@ def _removable(adapter: SourceAdapter, removed_ids: list[str], *, provider: str)
 
 
 _EMPTY_LISTING_CONFIRM_DELAY_SECONDS = 5
+_LARGE_REMOVAL_CONFIRM_DELAY_SECONDS = 10
+
+
+def _large_removal_is_confirmed(adapter: SourceAdapter, removed_ids: list[str]) -> bool:
+    """Second opinion before removing more than half of what is stored.
+
+    The scale guard alone refused forever: a person who really deleted most of
+    their pages got the same refusal on every sync, and the deleted pages kept
+    answering. A flaky listing (a pagination race, a lagging search index) does
+    not lose the same pages twice, so a second listing that still lacks every
+    one of them is a real deletion. A failed or empty re-list is no confirmation
+    (an empty one has its own check).
+    """
+    # ponytail: one re-list a few seconds later; a source whose listing stays
+    # wrong for longer needs a per-document "is it gone?" check per adapter.
+    if not removed_ids:
+        return False
+    time.sleep(_LARGE_REMOVAL_CONFIRM_DELAY_SECONDS)
+    try:
+        again = adapter.list_documents()
+    except Exception:  # noqa: BLE001 - a failed re-list must never authorize a removal
+        logger.warning("Re-listing to confirm a large removal failed", exc_info=True)
+        return False
+    if not again:
+        return False
+    listed = {r.external_id for r in again}
+    return not any(eid in listed for eid in removed_ids)
 
 
 def _empty_listing_is_confirmed(
@@ -611,20 +638,25 @@ def ingest_source(
         )
 
     removed_ids = _removable(adapter, removed_ids, provider=provider)
+    candidates = removed_ids
     removed_ids, suspicious_removal = _sanitize_removals(removed_ids, len(stored))
+    if suspicious_removal and _large_removal_is_confirmed(adapter, candidates):
+        logger.info(
+            "ingest_source: %s re-listed and %d documents are still gone; removing them "
+            "(org=%s workspace=%s listed=%d stored=%d)",
+            provider, len(candidates), org_id, workspace_id, len(refs), len(stored),
+        )
+        removed_ids, suspicious_removal = candidates, False
     if removed_ids and not _empty_listing_is_confirmed(
         adapter, stored_count=len(stored), live_count=len(refs)
     ):
         removed_ids, suspicious_removal = [], True
     if suspicious_removal:
         logger.warning(
-            "ingest_source: refusing to delete a suspiciously large share of "
-            "previously known documents for org=%s provider=%s workspace=%s in "
-            "one run — this looks like an unreliable/transient source listing "
-            "(pagination race, indexing lag, rate limit) rather than a real "
-            "mass unshare/delete. Skipping removal this run; re-run once the "
-            "source's listing is confirmed stable if pages were genuinely "
-            "removed. (listed=%d stored=%d)",
+            "ingest_source: refusing to delete a large share of previously known "
+            "documents for org=%s provider=%s workspace=%s: a second listing did "
+            "not confirm they are gone (it failed, was empty, or listed some of "
+            "them again). Nothing removed this run. (listed=%d stored=%d)",
             org_id, provider, workspace_id, len(refs), len(stored),
         )
 

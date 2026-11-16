@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { BrandGlyph } from "@/components/BrandGlyph";
@@ -165,7 +166,7 @@ function ChooseGitHubInstallInner() {
 
 export default function ChooseGitHubInstallPage() {
   return (
-    <Suspense fallback={<main className="page"><p className="muted">Loading…</p></main>}>
+    <Suspense fallback={<PageLoader />}>
       <ChooseGitHubInstallInner />
     </Suspense>
   );

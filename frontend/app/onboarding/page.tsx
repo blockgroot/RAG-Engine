@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
@@ -318,9 +319,7 @@ function OnboardingInner() {
 
   if (loading || !effectiveMe) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 
@@ -610,9 +609,7 @@ export default function OnboardingPage() {
   return (
     <Suspense
       fallback={
-        <main className="page">
-          <p className="muted">Loading…</p>
-        </main>
+        <PageLoader />
       }
     >
       <OnboardingInner />

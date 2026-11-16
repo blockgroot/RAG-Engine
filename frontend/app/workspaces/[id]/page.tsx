@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -44,9 +45,7 @@ export default function WorkspaceDetailPage() {
   return (
     <Suspense
       fallback={
-        <main className="page">
-          <p className="muted">Loading…</p>
-        </main>
+        <PageLoader />
       }
     >
       <WorkspaceDetailPageInner />
@@ -469,9 +468,7 @@ function WorkspaceDetailPageInner() {
 
   if (loading || !me || (!workspace && !notFound)) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

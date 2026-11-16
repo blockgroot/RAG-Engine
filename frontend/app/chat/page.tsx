@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -770,9 +771,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

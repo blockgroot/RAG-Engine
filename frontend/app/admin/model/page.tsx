@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 /**
  * Admin-only: connect the organisation's own model.
  * Says which calls use the org's key (chat answers) and which still run on
@@ -131,9 +132,7 @@ export default function AdminModelPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading&hellip;</p>
-      </main>
+      <PageLoader />
     );
   }
 

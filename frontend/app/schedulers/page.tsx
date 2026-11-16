@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
@@ -401,9 +402,7 @@ export default function SchedulersPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

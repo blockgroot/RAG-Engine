@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 /**
  * Admin-only: which Handbook version this copy runs, and what is newer.
  *
@@ -105,9 +106,7 @@ export default function AdminUpdatesPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading&hellip;</p>
-      </main>
+      <PageLoader />
     );
   }
 

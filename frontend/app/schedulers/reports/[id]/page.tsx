@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { AnswerText } from "@/components/AnswerText";
@@ -107,9 +108,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

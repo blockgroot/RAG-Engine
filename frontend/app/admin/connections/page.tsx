@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
@@ -37,9 +38,7 @@ export default function ConnectionsPage() {
   return (
     <Suspense
       fallback={
-        <main className="page">
-          <p className="muted">Loading…</p>
-        </main>
+        <PageLoader />
       }
     >
       <ConnectionsPageInner />
@@ -283,9 +282,7 @@ function ConnectionsPageInner() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

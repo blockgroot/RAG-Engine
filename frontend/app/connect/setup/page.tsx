@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 /**
  * Where Connect lands when the tool's keys are not set on this server.
  * Google and Slack use the company's own app (Sources); Notion, Linear and
@@ -155,7 +156,7 @@ function SetupInner() {
 export default function ConnectSetupPage() {
   return (
     <main className="gh-choose">
-      <Suspense fallback={<p className="muted">Loading…</p>}>
+      <Suspense fallback={<PageLoader />}>
         <SetupInner />
       </Suspense>
     </main>

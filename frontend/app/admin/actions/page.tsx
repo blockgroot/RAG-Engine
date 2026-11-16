@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 /**
  * Admin-only: whether the company uses Agent mode, which tools it may use
  * (each through its MCP server), and where people may ask from.
@@ -51,9 +52,7 @@ export default function AdminActionsPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading&hellip;</p>
-      </main>
+      <PageLoader />
     );
   }
 

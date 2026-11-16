@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
@@ -79,9 +80,7 @@ function AccountContent() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 
@@ -229,9 +228,7 @@ export default function AccountPage() {
   return (
     <Suspense
       fallback={
-        <main className="page">
-          <p className="muted">Loading…</p>
-        </main>
+        <PageLoader />
       }
     >
       <AccountContent />

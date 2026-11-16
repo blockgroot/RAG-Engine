@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { AppShell } from "@/components/AppShell";
 import { GapTopics } from "@/components/GapTopics";
 import { PageHeader } from "@/components/PageHeader";
@@ -17,9 +18,7 @@ export default function FeedbackPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

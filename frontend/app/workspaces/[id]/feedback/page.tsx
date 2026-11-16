@@ -1,5 +1,6 @@
 "use client";
 
+import { PageLoader } from "@/components/PageLoader";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 
@@ -25,9 +26,7 @@ export default function SpaceFeedbackPage() {
 
   if (loading || !me) {
     return (
-      <main className="page">
-        <p className="muted">Loading…</p>
-      </main>
+      <PageLoader />
     );
   }
 

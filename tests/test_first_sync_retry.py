@@ -182,3 +182,35 @@ def test_an_empty_check_does_not_report_stored_threads_as_removed(monkeypatch):
     assert report.removed_count == 0
     assert report.has_changes is False
     assert report.remote_total == 0
+
+
+def test_a_real_mass_deletion_is_removed_after_a_second_listing(monkeypatch):
+    """The live case: 56 Notion pages stored, 17 left after a clean-up. The
+    scale guard refused on every sync, so the deleted pages kept answering."""
+    slept = _no_sleep(monkeypatch)
+
+    class _AfterCleanup:
+        def list_documents(self):
+            return [SourceRef(external_id=f"p:{i}", title=f"t{i}") for i in range(17)]
+
+    gone = [f"p:{i}" for i in range(17, 56)]
+    assert pipeline._large_removal_is_confirmed(_AfterCleanup(), gone)
+    assert slept == [pipeline._LARGE_REMOVAL_CONFIRM_DELAY_SECONDS]
+
+
+def test_a_page_that_comes_back_on_the_second_listing_stops_the_removal(monkeypatch):
+    _no_sleep(monkeypatch)
+    adapter = _LaggyAdapter(ready_on_call=1)  # lists c:0..c:3
+
+    assert not pipeline._large_removal_is_confirmed(adapter, ["c:2", "c:9"])
+
+
+def test_a_failed_or_empty_second_listing_never_authorizes_a_large_removal(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    class _Broken:
+        def list_documents(self):
+            raise RuntimeError("rate limited")
+
+    assert not pipeline._large_removal_is_confirmed(_Broken(), ["c:1"])
+    assert not pipeline._large_removal_is_confirmed(_LaggyAdapter(ready_on_call=99), ["c:1"])
