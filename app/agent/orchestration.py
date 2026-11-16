@@ -16,15 +16,6 @@ from __future__ import annotations
 import warnings
 from typing import Any, Callable, Iterator, TypedDict
 
-# langgraph's import logs a serializer deprecation warning we cannot reach
-# (no checkpointer is used); a pre-set filter is overridden by the import, so
-# its warnings are caught and every other one re-raised.
-with warnings.catch_warnings(record=True) as _caught:
-    warnings.simplefilter("always")
-    from langgraph.graph import END, START, StateGraph
-for _w in _caught:
-    if "`allowed_objects`" not in str(_w.message):
-        warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
 
 from ..vectorstore.base import Viewer
 from .base import AgentResponse
@@ -126,12 +117,31 @@ def _insights_node(getter: Callable[[], Any]) -> Callable[[AgentState], dict]:
     return run
 
 
+def _langgraph():
+    """``(END, START, StateGraph)``, imported on first use: langgraph is the
+    slowest import at API start (a cold start on a small CPU pays it before the
+    server answers), and only a question needs it.
+
+    Its import logs a serializer deprecation warning we cannot reach (no
+    checkpointer is used); a pre-set filter is overridden by the import, so its
+    warnings are caught and every other one re-raised.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        from langgraph.graph import END, START, StateGraph
+    for w in caught:
+        if "`allowed_objects`" not in str(w.message):
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+    return END, START, StateGraph
+
+
 def build_agent_graph(getters: dict[str, Callable[[], Any]]):
     """Compile the routing graph from ``{key: zero-arg agent getter}``.
 
     ``getters`` must cover every key ``_route`` returns; a gap is a wiring bug
     and ``StateGraph`` raises at build time.
     """
+    END, START, StateGraph = _langgraph()
     graph = StateGraph(AgentState)
     for key, getter in getters.items():
         node = _insights_node(getter) if key == INSIGHTS_KEY else _agent_node(getter)

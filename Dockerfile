@@ -12,6 +12,12 @@ WORKDIR /app
 COPY requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
+# Compiled once here, not on every start. The base image ships its standard
+# library without .pyc files, and a container starts with none of ours, so a
+# cold start on a small CPU (Render's free plan) compiled everything it
+# imported before it could answer. pip already compiled the packages.
+RUN python -m compileall -q -j 0 -x 'site-packages' /usr/local/lib/python3.12
+
 # No tokenizer is pre-baked any more. Chunking defaults to
 # CHUNK_TOKEN_BACKEND=heuristic (app/ingestion/chunk_tokens.py), which needs no
 # model, no vocab download, and no `transformers`/`tokenizers` package — because
@@ -21,6 +27,7 @@ RUN pip install --no-cache-dir -r requirements-deploy.txt
 # direction) — see the module docstring for the numbers.
 
 COPY app/ ./app/
+RUN python -m compileall -q -j 0 /app/app
 # run_worker.py: the self-hosted install runs this same image as its worker.
 COPY scripts/boot.py scripts/init_db.py scripts/check_llm_config.py scripts/check_embedding_config.py \
      scripts/run_worker.py scripts/create_company.py ./scripts/

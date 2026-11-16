@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
+import { isUnreachable } from "@/lib/serverWake";
 
-/** What an unreachable or starting API looks like through the /api proxy. */
-const UNREACHABLE = new Set([502, 503, 504]);
 /** Seconds the button rests after "unreachable" or "too many tries". */
 const COOLDOWN_SECONDS = 30;
 /** After this long, the request is probably waiting for the server to start. */
@@ -53,17 +52,17 @@ export function useServerSubmit() {
       await send();
       return null;
     } catch (err) {
-      if (!(err instanceof ApiError) || UNREACHABLE.has(err.status)) {
+      if (isUnreachable(err)) {
         setToast("We couldn't reach the server just now. Please try again in a minute.");
         setCooldown(COOLDOWN_SECONDS);
         return null;
       }
-      if (err.status === 429) {
+      if (err instanceof ApiError && err.status === 429) {
         setToast("Too many requests. Please wait a moment and try again.");
         setCooldown(COOLDOWN_SECONDS);
         return null;
       }
-      return err.message;
+      return err instanceof Error ? err.message : "Something went wrong.";
     } finally {
       clearTimeout(slowTimer);
       setSlow(false);

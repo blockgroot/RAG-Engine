@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { api, Me } from "./api";
+import { isUnreachable, untilReachable } from "./serverWake";
 import { canAccessAdminPortal, homePathFor, isSetupComplete } from "./routing";
 
 type Options = {
@@ -32,7 +33,8 @@ let inflight: Promise<Me> | null = null;
 
 function loadMe(force = false): Promise<Me> {
   if (!force && inflight) return inflight;
-  const request = api.me().then(
+  // Retried while the server starts: a 502 is not "signed out".
+  const request = untilReachable(() => api.me()).then(
     (user) => {
       cachedMe = user;
       if (inflight === request) inflight = null;
@@ -104,11 +106,12 @@ export function useMe(options: Options = {}) {
         if (applyGuards(user)) return;
         setMe((prev) => (sameMe(prev, user) ? prev : user));
       })
-      .catch(() => {
-        if (!cancelled) {
-          clearMeCache();
-          router.replace("/login");
-        }
+      .catch((err) => {
+        if (cancelled) return;
+        clearMeCache();
+        // Still unreachable after the wait: reload rather than sign them out.
+        if (isUnreachable(err)) window.location.reload();
+        else router.replace("/login");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

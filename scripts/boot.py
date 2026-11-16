@@ -26,9 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv  # noqa: E402
 
-import check_embedding_config  # noqa: E402
-import check_llm_config  # noqa: E402
-import init_db  # noqa: E402
 from app.config.settings import DatabaseSettings, EmbeddingSettings, LLMSettings  # noqa: E402
 from app.db.migrate import SCHEMA_PATH  # noqa: E402
 
@@ -77,6 +74,12 @@ def main() -> int:
     if url and _already_booted(url, key):
         print("Boot: schema and settings unchanged since the last boot; skipping schema and checks.")
         return 0
+    # Imported only now: they load the LLM and embedding clients, which a
+    # wake-up with nothing changed never needs.
+    import check_embedding_config
+    import check_llm_config
+    import init_db
+
     for step in (init_db.main, check_llm_config.main, check_embedding_config.main):
         if step() != 0:
             return 1

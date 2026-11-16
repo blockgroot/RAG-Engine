@@ -141,8 +141,16 @@ def _start_model_warmup() -> threading.Thread | None:
     Otherwise the first question pays the model load. Non-blocking so the API
     serves meanwhile; failures are swallowed (a real request will report them).
     Off with ``MODEL_WARMUP_ON_STARTUP=false`` on low-RAM machines.
+
+    Only a LOCAL model has anything to load. With both remote (Render), the
+    warm-up was one paid embedding call per boot that loaded nothing, and on a
+    cold start's small CPU it competed with the request that woke the server.
     """
     if not ApiSettings.from_env().model_warmup:
+        return None
+    from ..config.settings import EmbeddingSettings, RerankerSettings
+
+    if EmbeddingSettings.from_env().backend != "local" and RerankerSettings.from_env().backend != "local":
         return None
 
     def _warm() -> None:

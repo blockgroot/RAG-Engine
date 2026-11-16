@@ -6,7 +6,6 @@ Same ``embed(...)`` contract as the local backend, batched at
 
 from __future__ import annotations
 
-from openai import OpenAI, APIError, APITimeoutError, APIConnectionError
 
 from ..core.exceptions import ConfigurationError, EmbeddingProviderError, PrivacyError
 from ..privacy import redact
@@ -48,9 +47,15 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         self.timeout = timeout
         self.batch_size = max(1, batch_size)
         self.dimensions = dimensions
+        # Imported here, not at module level: the API imports this module at
+        # start, and the SDK is a slow import on a cold start's small CPU.
+        from openai import OpenAI
+
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        from openai import APIConnectionError, APIError, APITimeoutError
+
         # Identifiers are masked before leaving: a vector never needs the digits,
         # and exact-number search is the keyword leg's job.
         try:

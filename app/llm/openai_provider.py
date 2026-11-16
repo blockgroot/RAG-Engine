@@ -8,14 +8,6 @@ from __future__ import annotations
 import logging
 import re
 
-from openai import (
-    OpenAI,
-    APIError,
-    APITimeoutError,
-    APIConnectionError,
-    BadRequestError,
-    RateLimitError,
-)
 
 from ..core.exceptions import (
     ConfigurationError,
@@ -143,6 +135,10 @@ class OpenAICompatProvider(LLMProvider):
         #: The model the endpoint said answered (differs from ``model`` behind a
         #: router): the honest label for a reader.
         self.last_resolved_model: str | None = None
+        # Imported here, not at module level: the API imports this module at
+        # start, and the SDK is a slow import on a cold start's small CPU.
+        from openai import OpenAI
+
         # base_url=None makes the client use OpenAI's default endpoint.
         self._client = OpenAI(
             api_key=api_key,
@@ -171,6 +167,8 @@ class OpenAICompatProvider(LLMProvider):
         The repair is STICKY per process (``_LEARNED_EXTRAS``) and logged at
         warning.
         """
+        from openai import BadRequestError
+
         try:
             return self._client.chat.completions.create(**self._with_extras(kwargs))
         except BadRequestError as exc:
@@ -219,6 +217,8 @@ class OpenAICompatProvider(LLMProvider):
         }
         if max_tokens is not None and max_tokens > 0:
             kwargs["max_tokens"] = max_tokens
+        from openai import APIConnectionError, APIError, APITimeoutError, RateLimitError
+
         try:
             response = self._create(kwargs)
         except APITimeoutError as exc:
@@ -297,6 +297,8 @@ class OpenAICompatProvider(LLMProvider):
             kwargs["tool_choice"] = tool_choice
         if timeout is not None:
             kwargs["timeout"] = timeout
+
+        from openai import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
         try:
             response = self._create(kwargs)
