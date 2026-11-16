@@ -32,7 +32,7 @@ A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company Q&A o
 
 1. **Everything is a swappable interface + factory.** Each capability has `base.py` (abstract contract) + one or more concrete impls + `factory.py` (`build_*()` reads config, returns the impl). The rest of the app depends on the *interface*, never a concrete class.
 2. **Orchestrators have no `base.py`.** A package that only *composes* existing interfaces (e.g. `app/rag/`, `app/ingestion/`) skips the abstract contract — there's nothing to swap. It still keeps `pipeline.py` + `factory.py` for consistency. Exception: `app/agent/` *does* get a `base.py` because it has many backends (one agent per source, GitHub, Insights).
-3. **Config lives in exactly one place.** `app/config/settings.py` — frozen dataclasses with `from_env()`. Nothing else calls `os.getenv` for config.
+3. **Config lives in exactly one place.** `app/config/` — frozen dataclasses with `from_env()`, one module per topic (`models`, `retrieval`, `sources`, `security`, `server`), imported only through `app/config/settings.py`. Nothing else calls `os.getenv` for config.
 4. **All failures raise `ProviderError`** (or a subclass in `app/core/exceptions.py`), carrying the original via `cause=` / `raise ... from`.
 5. **Tenant isolation is enforced by the query, not the index.** Every tenant-scoped read/write requires an `org_id`; retrieval filters `WHERE org_id = …` *before* ranking.
 6. **Grounding is enforced by two independent layers** (a cheap confidence gate + a strict prompt), never one.
@@ -215,7 +215,7 @@ Two tables can be compared ("target vs achieved", `ChartSpec.versus`), and a wor
 
 | Package | Contract (`base.py`) | Concrete impl(s) | Responsibility |
 |---|---|---|---|
-| `config/` | — | `settings.py` | Typed frozen dataclasses w/ `from_env()`. **Only** place reading env for config. |
+| `config/` | — | `settings.py` (re-exports `models`, `retrieval`, `sources`, `security`, `server`) | Typed frozen dataclasses w/ `from_env()`. **Only** place reading env for config. |
 | `core/` | — | `exceptions.py` | `ProviderError` hierarchy (`LLMProviderError`, `EmbeddingError`, `ConfigurationError`, `SourceError`, `WebSearchError`, `DatabaseError`). |
 | `llm/` | `LLMProvider` | `OpenAICompatProvider`, `routed.py`, `masking.py` | `generate(prompt)` and optional `generate_with_tools(messages, tools, tool_choice)`. `adapters.py` is the fixed provider list, `catalog.py` the picker, `org_model.py` a company's own model. Both factories return a `MaskingLLMProvider`. |
 | `privacy/` | `base.py` | `patterns.py`, `vault.py` | Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values replaced with placeholders before text leaves, restored in the reply. |
@@ -311,7 +311,7 @@ The **fixed fallback string** lives in ONE place (`RagSettings.fallback_response
 
 ## 12. Configuration reference (env vars)
 
-All read in `app/config/settings.py`. The annotated list is `.env.example`. Defaults in parentheses are the code defaults; production turns several features on by environment (see PRODUCT_STATUS.md).
+All read in `app/config/` and imported through `app/config/settings.py`. The annotated list is `.env.example`. Defaults in parentheses are the code defaults; production turns several features on by environment (see PRODUCT_STATUS.md).
 
 | Group | Vars |
 |---|---|

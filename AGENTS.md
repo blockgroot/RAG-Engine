@@ -29,7 +29,7 @@ moves through the system is [ARCHITECTURE.md](ARCHITECTURE.md). This file is not
   is a line under the answer; two or more keep a superscript.
 - **New capability = new package** (`base.py` + impl + `factory.py`). An
   orchestrator that only composes existing interfaces skips `base.py`.
-- **All config** is a `from_env()` dataclass in `app/config/settings.py`.
+- **All config** is a `from_env()` dataclass in `app/config/` (topic modules), imported only through `app/config/settings.py`.
   Nothing else reads the environment.
 - **Every prompt that carries outside text includes the shared
   prompt-injection rules.** Fence the text in `<<<UNTRUSTED_…>>>` markers, put

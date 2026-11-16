@@ -546,8 +546,8 @@ it is kept current for its companies.
 
 **Status: Built, on `main`**
 
-Each release has notes in `release-notes/<version>.md`. A tab left open from an older release
-shows a "new version is ready" pill with Refresh (and What's new, for admins). Admins also see a
+Each release has notes in `release-notes/<version>.md`. A tab that is open when a new release goes
+live shows a "new version is ready" pill with Refresh (and What's new, for admins). Admins also see a
 short notice beside the chat modes when a new version is out.
 
 **Code:** `release-notes/`, `frontend/components/NewVersionPill.tsx`, `frontend/components/ReleaseChip.tsx`

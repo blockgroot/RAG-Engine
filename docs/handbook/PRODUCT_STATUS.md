@@ -23,7 +23,7 @@
 | **Merged** | On `main` and covered by automated tests; no live walkthrough recorded here yet. |
 | **In progress** | On an open pull request, not merged. |
 
-**Code defaults vs production.** Several features are off by default in the code (`app/config/settings.py`)
+**Code defaults vs production.** Several features are off by default in the code (`app/config/`, imported through `settings.py`)
 and switched on by environment settings in production: the knowledge graph (`GRAPH_RETRIEVAL_ENABLED`),
 live tool reads (`LIVE_TOOLS_ENABLED`), personal memory (`PERSONAL_MEMORY_ENABLED`), the
 prompt-injection guard (`GUARD_MODE`) and real email (`EMAIL_SENDER=sendgrid`, or `smtp` or
@@ -384,8 +384,9 @@ scored by the safety model; the answer fact-checker is off (§11).
 - **"A new version is ready"** (11 Nov 2026): every build has an id (`NEXT_PUBLIC_BUILD_ID`): the
   RELEASE it carries, never the commit (12 Nov: the image's tag, else the newest
   `release-notes/<version>.md`), so an ordinary Cloud deploy of main shows nothing; `/build-id`
-  serves the live one. An open tab from an older release shows a pill with Refresh (and What's new for admins), checked
-  every 5 minutes and when the tab comes back into view.
+  serves the live one. A tab that is open when a new release goes live shows a pill with Refresh (and What's new for admins), checked
+  every 5 minutes and when the tab comes back into view. Since 13 Nov the tab compares with the
+  server's id when it opened, not the id built into the page, so Refresh always clears the pill.
 
 - **Company email domain** (6 Nov 2026): a company's domain is its first admin's
   (`organizations.email_domain`, existing companies filled from their earliest admin). Inviting
