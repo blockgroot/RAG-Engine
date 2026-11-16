@@ -15,6 +15,20 @@ export function isUnreachable(err: unknown): boolean {
   return !(err instanceof ApiError) || UNREACHABLE.has(err.status);
 }
 
+const WAKE_URL = process.env.NEXT_PUBLIC_API_WAKE_URL || "";
+
+/**
+ * Asks the API to start. Through the /api proxy a sleeping server is met by its
+ * host's bot challenge and never starts, so the browser also calls it directly;
+ * the reply is opaque and unused, no cookie is sent.
+ */
+export function wakeServer(): void {
+  fetch("/api/health", { cache: "no-store" }).catch(() => {});
+  if (WAKE_URL) {
+    fetch(WAKE_URL, { mode: "no-cors", cache: "no-store", credentials: "omit" }).catch(() => {});
+  }
+}
+
 let connecting = false;
 const listeners = new Set<() => void>();
 
@@ -56,6 +70,7 @@ export async function untilReachable<T>(read: () => Promise<T>): Promise<T> {
         throw err;
       }
       setConnecting(true);
+      wakeServer();
       await new Promise((r) => setTimeout(r, wait));
       wait = Math.min(wait * 1.5, MAX_RETRY_MS);
     }

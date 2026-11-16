@@ -38,6 +38,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
+    // The API host's bot challenge for a sleeping server: it is starting, not refusing.
+    if (response.headers.get("cf-mitigated")) {
+      throw new ApiError(503, "The server is starting.");
+    }
     const body = await response.json().catch(() => ({ detail: response.statusText }));
     const parsed = parseApiDetail(body.detail ?? body);
     throw new ApiError(response.status, parsed.message, parsed.code);

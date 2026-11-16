@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
-import { isUnreachable } from "@/lib/serverWake";
+import { isUnreachable, wakeServer } from "@/lib/serverWake";
 
 /** Seconds the button rests after "unreachable" or "too many tries". */
 const COOLDOWN_SECONDS = 30;
@@ -26,7 +26,7 @@ export function useServerSubmit() {
   const inFlight = useRef(false);
 
   useEffect(() => {
-    fetch("/api/health", { cache: "no-store" }).catch(() => {});
+    wakeServer();
   }, []);
 
   useEffect(() => {
@@ -53,6 +53,7 @@ export function useServerSubmit() {
       return null;
     } catch (err) {
       if (isUnreachable(err)) {
+        wakeServer();
         setToast("We couldn't reach the server just now. Please try again in a minute.");
         setCooldown(COOLDOWN_SECONDS);
         return null;
