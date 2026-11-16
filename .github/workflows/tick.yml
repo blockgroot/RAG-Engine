@@ -38,11 +38,12 @@
 name: background-tick
 
 on:
-  schedule:
-    # Every 10 minutes. The instance idles out at ~15, so this keeps it warm
-    # with margin for GitHub's scheduling drift.
-    - cron: "*/10 * * * *"
-  # Manual run, for verifying the wiring without waiting for the schedule.
+  # No schedule (16 Nov 2026): keeping Render's free instance awake used up its
+  # monthly instance hours, so it now sleeps after 15 idle minutes. Webhooks and
+  # people wake it. To bring the tick back, restore:
+  #   schedule:
+  #     - cron: "*/10 * * * *"
+  # Manual run, for verifying the wiring or catching up after a quiet spell.
   workflow_dispatch:
 
 # Never queue ticks behind each other: a delayed run plus a fresh one would

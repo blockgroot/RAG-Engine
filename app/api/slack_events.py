@@ -470,10 +470,55 @@ def _with_chart_values(response) -> str:
 
 #: Shown while the answer is built, then replaced by it. Names no source: that is not decided yet.
 _SEARCHING = "_Searching your connected tools…_"
+#: The same, when the message waited (a cold start of a server that sleeps
+#: when idle): the first thing the asker sees acknowledges the wait.
+_SEARCHING_LATE = "_Thank you for your patience. Searching your connected tools now…_"
+#: Seconds between Slack sending a message and us starting on it beyond which
+#: the reply acknowledges the wait. A warm server starts within a second or two.
+DELAY_NOTICE_SECONDS = 15
 
 
-def _handle(event: dict, team_id: str) -> None:
-    """Resolve who asked, answer, and post back. Runs AFTER Slack was acked."""
+def _first_delivery(event_id: str) -> bool | None:
+    """True for the first delivery of a Slack event, False for a repeat.
+
+    None when the receipt cannot be written: the caller then falls back to
+    dropping Slack's resends, so a broken table never answers twice.
+    """
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "INSERT INTO slack_event_receipts (event_id) VALUES (%s) "
+                "ON CONFLICT (event_id) DO NOTHING RETURNING 1",
+                (event_id,),
+            ).fetchone()
+        return row is not None
+    except Exception:  # noqa: BLE001 - fall back to the resend rule
+        logger.warning("slack.bot: could not record event %s", event_id, exc_info=True)
+        return None
+
+
+def _waited(payload: dict) -> bool:
+    """Did this message wait long enough that the reply should say so?"""
+    try:
+        return time.time() - float(payload.get("event_time")) > DELAY_NOTICE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+def purge_event_receipts() -> int:
+    """Forget receipts older than a day: Slack resends within minutes."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM slack_event_receipts WHERE received_at < now() - interval '1 day'"
+        )
+        return cur.rowcount or 0
+
+
+def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
+    """Resolve who asked, answer, and post back. Runs AFTER Slack was acked.
+
+    ``waited``: the message arrived late (a cold start); the first reply says so.
+    """
     channel = event.get("channel")
     slack_user = event.get("user")
     # The leading "<@U…>" addresses the bot and is not part of the question.
@@ -528,7 +573,7 @@ def _handle(event: dict, team_id: str) -> None:
     if request is not None:
         handle_act(request=request, org_id=org_id, token=token, user=user,
                    slack_user=slack_user, channel=channel, thread_ts=thread_ts, is_dm=is_dm,
-                   in_thread=bool(event.get("thread_ts")))
+                   in_thread=bool(event.get("thread_ts")), waited=waited)
         return
 
     # A DM reads the asker's own scopes (`_dm_scopes`). A channel reads THAT
@@ -567,7 +612,7 @@ def _handle(event: dict, team_id: str) -> None:
     # An answer can take 10-30s and Slack shows nothing meanwhile, so post a
     # placeholder first and edit the answer into it (`slack_utils.update_message`
     # explains why not `assistant.threads.setStatus`).
-    placeholder_ts = post_message(token, channel, _SEARCHING, thread_ts)
+    placeholder_ts = post_message(token, channel, _SEARCHING_LATE if waited else _SEARCHING, thread_ts)
 
     try:
         reply = _answer(
@@ -765,12 +810,6 @@ async def _receive(
         )
         return {"ok": True}
 
-    # Drop Slack retries: the first delivery is already answering (a cold start
-    # misses the 3s ack), and honouring them posts duplicates.
-    if x_slack_retry_num:
-        logger.info("slack.bot ignoring retry #%s", x_slack_retry_num)
-        return {"ok": True}
-
     # Never react to our own posts (or any bot's): the bot's reply is itself a
     # message event, so answering one would loop forever.
     if event.get("bot_id") or event.get("subtype"):
@@ -778,5 +817,17 @@ async def _receive(
     if event.get("type") not in ("message", "app_mention"):
         return {"ok": True}
 
-    background.add_task(_handle, event, payload.get("team_id") or "")
+    # Each message is answered once. A cold start can miss Slack's 3s ack, and
+    # Slack then resends; the first delivery may never have reached us, so a
+    # resend is answered unless that event id already was. Without an id (or
+    # when the receipt cannot be written), every resend is dropped as before.
+    event_id = str(payload.get("event_id") or "")
+    first = _first_delivery(event_id) if event_id else None
+    if first is False or (first is None and x_slack_retry_num):
+        logger.info("slack.bot ignoring a repeat delivery (retry #%s)", x_slack_retry_num or 0)
+        return {"ok": True}
+
+    background.add_task(
+        _handle, event, payload.get("team_id") or "", waited=_waited(payload)
+    )
     return {"ok": True}

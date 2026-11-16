@@ -87,7 +87,7 @@ def test_answers_the_url_verification_handshake(client):
 def test_ignores_its_own_messages(client, monkeypatch):
     """The bot's reply is itself a message event -- reacting would loop."""
     called = []
-    monkeypatch.setattr(slack_events, "_handle", lambda *a: called.append(a))
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: called.append(a))
     raw, headers = _signed(
         {
             "type": "event_callback",
@@ -236,7 +236,7 @@ def test_a_dm_never_checks_channel_indexing(monkeypatch):
 def test_a_retry_delivery_is_dropped(client, monkeypatch):
     """Slack retries on a missed 3s ack; the first delivery is already answering."""
     called = []
-    monkeypatch.setattr(slack_events, "_handle", lambda *a: called.append(a))
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: called.append(a))
     raw, headers = _signed(
         {
             "type": "event_callback",
@@ -806,3 +806,70 @@ def test_a_space_only_slack_answers_dms_for_that_spaces_members_only(monkeypatch
     monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", None))
     slack_events._handle(dm, "T1")
     assert seen == [(None, None, "Company")]
+
+
+def _receipts(monkeypatch) -> set:
+    """Slack event receipts in memory, as the table would keep them."""
+    seen: set = set()
+
+    def first(event_id):
+        if event_id in seen:
+            return False
+        seen.add(event_id)
+        return True
+
+    monkeypatch.setattr(slack_events, "_first_delivery", first)
+    return seen
+
+
+def _mention(event_id: str, **extra) -> dict:
+    return {
+        "type": "event_callback", "team_id": "T1", "event_id": event_id,
+        "event": {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q", "ts": "1"},
+        **extra,
+    }
+
+
+def test_a_resend_is_answered_when_the_original_never_arrived(client, monkeypatch):
+    """A cold start can lose the first delivery; dropping every resend lost the question."""
+    _receipts(monkeypatch)
+    called = []
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: called.append(a))
+    raw, headers = _signed(_mention("Ev1"))
+    client.post("/slack/events", content=raw, headers={**headers, "X-Slack-Retry-Num": "1"})
+    assert len(called) == 1
+
+
+def test_a_resend_of_an_answered_event_is_ignored(client, monkeypatch):
+    _receipts(monkeypatch)
+    called = []
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: called.append(a))
+    raw, headers = _signed(_mention("Ev2"))
+    client.post("/slack/events", content=raw, headers=headers)
+    client.post("/slack/events", content=raw, headers={**headers, "X-Slack-Retry-Num": "1"})
+    client.post("/slack/events", content=raw, headers={**headers, "X-Slack-Retry-Num": "2"})
+    assert len(called) == 1, "one message, one answer"
+
+
+def test_without_receipts_every_resend_is_still_dropped(client, monkeypatch):
+    """If the table cannot be written, never risk answering twice."""
+    monkeypatch.setattr(slack_events, "_first_delivery", lambda event_id: None)
+    called = []
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: called.append(a))
+    raw, headers = _signed(_mention("Ev3"))
+    client.post("/slack/events", content=raw, headers={**headers, "X-Slack-Retry-Num": "1"})
+    assert called == []
+
+
+def test_a_late_message_is_answered_with_thanks_for_waiting(client, monkeypatch):
+    import time as _time
+
+    _receipts(monkeypatch)
+    waited = []
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **k: waited.append(k.get("waited")))
+    late, headers = _signed(_mention("Ev4", event_time=int(_time.time()) - 60))
+    client.post("/slack/events", content=late, headers=headers)
+    prompt, headers = _signed(_mention("Ev5", event_time=int(_time.time())))
+    client.post("/slack/events", content=prompt, headers=headers)
+    assert waited == [True, False]
+    assert slack_events._SEARCHING_LATE.startswith("_Thank you for your patience")

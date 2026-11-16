@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
-import { api, ApiError, MagicLinkResponse } from "@/lib/api";
+import { api, MagicLinkResponse } from "@/lib/api";
+import { useServerSubmit } from "@/lib/useServerSubmit";
 
 function SuccessMark() {
   return (
@@ -26,21 +27,18 @@ export default function LoginPage() {
   const [result, setResult] = useState<MagicLinkResponse | null>(null);
   const [sentTo, setSentTo] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const server = useServerSubmit();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
-    try {
-      const response = await api.requestMagicLink(email);
-      setSentTo(email);
-      setResult(response);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+    setError(
+      await server.submit(async () => {
+        const response = await api.requestMagicLink(email);
+        setSentTo(email);
+        setResult(response);
+      }),
+    );
   }
 
   function reset() {
@@ -141,11 +139,13 @@ export default function LoginPage() {
               {error}
             </p>
           )}
-          <button className="button auth-v2-submit" type="submit" disabled={loading}>
-            {loading ? "Sending…" : "Send sign-in link"}
+          <button className="button auth-v2-submit" type="submit" disabled={server.busy}>
+            {server.label("Send sign-in link", "Sending…")}
           </button>
+          {server.slowNote}
         </form>
       )}
+      {server.toastView}
     </AuthShell>
   );
 }

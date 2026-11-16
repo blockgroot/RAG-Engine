@@ -1068,6 +1068,15 @@ CREATE INDEX IF NOT EXISTS idx_kg_evidence_document ON kg_evidence (document_id)
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
 
 -- Live-read audit: one row per live read. Never the token, never the result text.
+-- Slack event ids already answered (app/api/slack_events.py). A cold start
+-- can miss Slack's 3-second ack, and Slack resends the event; this answers each
+-- event once, also when only a resend reached us. No content, no tenant: just
+-- Slack's id. Rows older than a day are deleted by the upkeep pass.
+CREATE TABLE IF NOT EXISTS slack_event_receipts (
+    event_id    TEXT PRIMARY KEY,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS live_tool_calls (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,

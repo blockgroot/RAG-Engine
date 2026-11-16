@@ -7,14 +7,10 @@
 # remember, on any platform (Render/Railway/Fly/a VPS all just run this image).
 set -e
 
-echo "Applying database schema..."
-python scripts/init_db.py
-
-echo "Checking LLM config..."
-python scripts/check_llm_config.py
-
-echo "Checking embedding config..."
-python scripts/check_embedding_config.py
+# Schema, LLM check and embedding check in one process, skipped when nothing
+# changed since the last boot (a wake-up from idle): scripts/boot.py.
+echo "Applying database schema and checking config..."
+python scripts/boot.py
 
 echo "Starting API on port ${PORT:-8000}..."
 exec uvicorn app.api.main:app --host 0.0.0.0 --port "${PORT:-8000}"

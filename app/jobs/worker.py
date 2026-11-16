@@ -22,6 +22,11 @@ from .autosync import start_cooled_down_pushes
 
 #: How often a worker loop starts pushes whose cooldown has ended (`autosync`).
 PUSH_CHECK_SECONDS = 15.0
+#: How often the worker inside the API runs ``run_upkeep`` while awake, and
+#: how long after boot the first pass waits (the request that woke the server
+#: goes first).
+UPKEEP_SECONDS = 3600.0
+UPKEEP_FIRST_DELAY_SECONDS = 60.0
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +299,84 @@ def run_facts_tick() -> int:
         return 0
 
 
+def run_upkeep() -> dict[str, int]:
+    """The background work that must not wait for an outside cron.
+
+    Run by ``run_external_tick`` (the cron, and the separate worker) and by the
+    worker inside the API about hourly while the server is awake
+    (``app/api/main.py``): on a free host that sleeps when idle there is no
+    cron, and without this a sleeping-and-waking server never polled, let
+    Drive's push channels lapse, and kept chats past their retention. Each
+    step is bounded and never raises.
+    """
+    synced = run_sync_tick()
+    facts = run_facts_tick()
+
+    # Drive push channels expire within a week; a lapsed one is only polled.
+    drive_watches = 0
+    try:
+        from ..sources.drive_watch import ensure_watches
+
+        drive_watches = ensure_watches()
+    except Exception:  # noqa: BLE001 - a lapsed push, never a failed tick
+        logger.exception("Upkeep: Drive watch renewal failed")
+
+    # Expire chat attachments: the shorter clock for a file in a live chat.
+    attachments_purged = 0
+    try:
+        from ..attachments import purge_expired_attachments
+
+        attachments_purged = purge_expired_attachments()
+    except Exception:  # noqa: BLE001
+        logger.exception("Upkeep: attachment purge failed")
+
+    # Retention: removes whole chats (attachments and turns cascade).
+    conversations_purged = 0
+    try:
+        from ..memory.conversations import purge_expired_conversations
+
+        conversations_purged = purge_expired_conversations()
+    except Exception:  # noqa: BLE001
+        logger.exception("Upkeep: conversation purge failed")
+
+    # Live-read audit rows past 90 days.
+    try:
+        from ..livetools.audit import purge_expired as purge_live_calls
+
+        purge_live_calls()
+    except Exception:  # noqa: BLE001 - a longer log, never a failed tick
+        logger.exception("Upkeep: live_tool_calls purge failed")
+
+    # Injection scores ingest could not write (rate limit, or older chunks).
+    # A no-op when GUARD_MODE=off.
+    injection_scored = 0
+    try:
+        from ..guard.backfill import backfill_injection_scores
+
+        injection_scored = backfill_injection_scores()
+    except Exception:  # noqa: BLE001 - an unscored chunk, never a failed tick
+        logger.exception("Upkeep: injection-score backfill failed")
+
+    # Slack event receipts: kept a day, Slack resends within minutes.
+    try:
+        from ..api.slack_events import purge_event_receipts
+
+        purge_event_receipts()
+    except Exception:  # noqa: BLE001 - a longer table, never a failed pass
+        logger.exception("Upkeep: Slack event receipt purge failed")
+
+    return {
+        "syncs_queued": synced,
+        "facts_recorded": facts,
+        "drive_watches_opened": drive_watches,
+        "attachments_purged": attachments_purged,
+        "conversations_purged": conversations_purged,
+        "injection_scored": injection_scored,
+    }
+
+
 def run_external_tick() -> dict[str, int]:
-    """One externally-driven pass: reap, sync, backfill, purge, run schedulers.
+    """One externally-driven pass: reap, upkeep, backfills, run schedulers.
 
     ``POST /internal/tick`` from an outside cron both wakes a host that sleeps
     without inbound traffic and does the work. ``run_maintenance`` is hourly
@@ -309,17 +390,7 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: reap failed")
 
-    synced = run_sync_tick()
-    facts = run_facts_tick()
-
-    # Drive push channels expire within a week; a lapsed one is only polled.
-    drive_watches = 0
-    try:
-        from ..sources.drive_watch import ensure_watches
-
-        drive_watches = ensure_watches()
-    except Exception:  # noqa: BLE001 - a lapsed push, never a failed tick
-        logger.exception("External tick: Drive watch renewal failed")
+    upkeep = run_upkeep()
 
     # Document facts for tenants not ingested since charts shipped.
     backfilled = 0
@@ -336,42 +407,6 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a thinner graph, never a failed tick
         logger.exception("External tick: graph backfill failed")
 
-    # Expire chat attachments: the shorter clock for a file in a live chat.
-    attachments_purged = 0
-    try:
-        from ..attachments import purge_expired_attachments
-
-        attachments_purged = purge_expired_attachments()
-    except Exception:  # noqa: BLE001
-        logger.exception("External tick: attachment purge failed")
-
-    # Retention: removes whole chats (attachments and turns cascade).
-    conversations_purged = 0
-    try:
-        from ..memory.conversations import purge_expired_conversations
-
-        conversations_purged = purge_expired_conversations()
-    except Exception:  # noqa: BLE001
-        logger.exception("External tick: conversation purge failed")
-
-    # Live-read audit rows past 90 days.
-    try:
-        from ..livetools.audit import purge_expired as purge_live_calls
-
-        purge_live_calls()
-    except Exception:  # noqa: BLE001 - a longer log, never a failed tick
-        logger.exception("External tick: live_tool_calls purge failed")
-
-    # Injection scores ingest could not write (rate limit, or older chunks).
-    # A no-op when GUARD_MODE=off.
-    injection_scored = 0
-    try:
-        from ..guard.backfill import backfill_injection_scores
-
-        injection_scored = backfill_injection_scores()
-    except Exception:  # noqa: BLE001 - an unscored chunk, never a failed tick
-        logger.exception("External tick: injection-score backfill failed")
-
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -379,13 +414,8 @@ def run_external_tick() -> dict[str, int]:
 
     return {
         "reaped": reaped,
-        "syncs_queued": synced,
-        "facts_recorded": facts,
-        "drive_watches_opened": drive_watches,
+        **upkeep,
         "facts_backfilled": backfilled,
-        "attachments_purged": attachments_purged,
-        "conversations_purged": conversations_purged,
-        "injection_scored": injection_scored,
         "schedulers_ran": schedulers_ran,
     }
 

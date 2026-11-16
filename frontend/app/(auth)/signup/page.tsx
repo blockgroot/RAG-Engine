@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
+import { useServerSubmit } from "@/lib/useServerSubmit";
 
 function SuccessMark() {
   return (
@@ -26,20 +27,17 @@ export default function SignupPage() {
   const [companyName, setCompanyName] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const server = useServerSubmit();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
-    try {
-      await api.signup(email, companyName);
-      setSubmitted(true);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+    setError(
+      await server.submit(async () => {
+        await api.signup(email, companyName);
+        setSubmitted(true);
+      }),
+    );
   }
 
   return (
@@ -105,11 +103,13 @@ export default function SignupPage() {
               {error}
             </p>
           )}
-          <button className="button auth-v2-submit" type="submit" disabled={loading}>
-            {loading ? "Submitting…" : "Request access"}
+          <button className="button auth-v2-submit" type="submit" disabled={server.busy}>
+            {server.label("Request access", "Submitting…")}
           </button>
+          {server.slowNote}
         </form>
       )}
+      {server.toastView}
     </AuthShell>
   );
 }

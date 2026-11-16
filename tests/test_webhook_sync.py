@@ -59,7 +59,7 @@ def recorded(monkeypatch):
         slack_events, "request_sync_external",
         lambda provider, team, **kw: flagged.append((provider, team, kw.get("slack_channel"))),
     )
-    monkeypatch.setattr(slack_events, "_handle", lambda *a: answered.append(a))
+    monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: answered.append(a))
     return flagged, answered
 
 

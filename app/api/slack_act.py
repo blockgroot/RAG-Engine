@@ -172,14 +172,17 @@ def _post(token: str, method: str, payload: dict) -> dict | None:
 
 
 _DRAFTING = "_Drafting that for you… nothing is sent until you approve._"
+_DRAFTING_LATE = "_Thank you for your patience. Drafting that for you now… nothing is sent until you approve._"
 
 
-def _drafting(token: str, *, channel: str, user: str, thread_ts: str | None, is_dm: bool) -> str | None:
+def _drafting(token: str, *, channel: str, user: str, thread_ts: str | None, is_dm: bool,
+              waited: bool = False) -> str | None:
     """Say a draft is on its way. Returns the DM message's ts, to edit into the reply."""
+    note = _DRAFTING_LATE if waited else _DRAFTING
     if is_dm:
-        sent = _post(token, "chat.postMessage", {"channel": channel, "text": _DRAFTING})
+        sent = _post(token, "chat.postMessage", {"channel": channel, "text": note})
         return (sent or {}).get("ts")
-    _say(token, channel=channel, user=user, thread_ts=thread_ts, is_dm=False, text=_DRAFTING)
+    _say(token, channel=channel, user=user, thread_ts=thread_ts, is_dm=False, text=note)
     return None
 
 
@@ -277,7 +280,7 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
 
 
 def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, channel: str, thread_ts: str | None, is_dm: bool,
-               in_thread: bool = False) -> None:
+               in_thread: bool = False, waited: bool = False) -> None:
     """Propose one write for a Slack request and show the card; never raises.
 
     Inside a channel thread, the thread is read live (``thread_context``), never a channel search.
@@ -291,7 +294,8 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
         return
     # Drafting takes seconds; show a note. In a DM it is edited into the reply;
     # an ephemeral one cannot be edited, so in a channel it stays.
-    placeholder = [_drafting(token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm)]
+    placeholder = [_drafting(token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm,
+                             waited=waited)]
 
     def say(text, blocks=None):
         ts, placeholder[0] = placeholder[0], None

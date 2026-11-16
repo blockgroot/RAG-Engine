@@ -131,7 +131,7 @@ def test_a_companys_slack_app_is_trusted_only_for_its_own_workspace(store, org_c
         conn.execute("UPDATE oauth_connections SET needs_reauth = false WHERE org_id = %s", (acme,))
     key = app_key(acme, "slack")
     handled = []
-    monkeypatch.setattr(slack_events, "_handle", lambda event, team: handled.append(team))
+    monkeypatch.setattr(slack_events, "_handle", lambda event, team, **_: handled.append(team))
     client = TestClient(create_app())
 
     assert client.post("/slack/events/no-such-key", json={}).status_code == 404

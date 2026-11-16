@@ -59,8 +59,11 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
     from ..jobs.autosync import start_cooled_down_pushes
     from ..jobs.worker import (
         PUSH_CHECK_SECONDS,
+        UPKEEP_FIRST_DELAY_SECONDS,
+        UPKEEP_SECONDS,
         run_once,
         run_scheduler_tick,
+        run_upkeep,
     )
 
     worker_settings = IngestWorkerSettings.from_env()
@@ -95,6 +98,9 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
             logger.exception("Failed to re-queue interrupted scheduler runs")
         last_reap = 0.0
         last_push = 0.0
+        # No cron on a host that sleeps when idle: polling, Drive watch renewal
+        # and retention run here while awake, first a minute after boot.
+        last_upkeep = time.monotonic() - UPKEEP_SECONDS + UPKEEP_FIRST_DELAY_SECONDS
         # Start at -poll_seconds so a scheduler due during downtime runs right after boot.
         last_scheduler = -float(scheduler_settings.poll_seconds)
         while not stop.is_set():
@@ -113,6 +119,9 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
                 ):
                     run_scheduler_tick(scheduler_settings)
                     last_scheduler = now
+                if now - last_upkeep >= UPKEEP_SECONDS:
+                    logger.info("In-API upkeep: %s", run_upkeep())
+                    last_upkeep = now
                 job = run_once()
                 if job is None:
                     stop.wait(poll_interval)
