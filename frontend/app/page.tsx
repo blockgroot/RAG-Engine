@@ -1,9 +1,6 @@
 "use client";
 
-import { PageLoader } from "@/components/PageLoader";
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { LandingShell } from "@/components/LandingShell";
 import { AnswerFigure, AskSteps } from "@/components/site/AnswerFigure";
 import { HeroFigure } from "@/components/site/HeroFigure";
@@ -14,11 +11,9 @@ import { CloseFigure } from "@/components/site/CloseFigure";
 import { Receipts, Scoreboard } from "@/components/site/Proof";
 import { TrustList } from "@/components/site/TrustList";
 import { SetupSteps } from "@/components/site/SetupSteps";
-import { api } from "@/lib/api";
-import { homePathFor } from "@/lib/routing";
 
 /**
- * Public product story. Signed-in users skip it; everyone else should leave
+ * Public product story. Signed-in users skip it (middleware.ts); everyone else should leave
  * knowing what Handbook DOES for them, in their words: ask your own tools a
  * question and get a checkable answer, a chart, or a summary in your inbox.
  *
@@ -26,30 +21,6 @@ import { homePathFor } from "@/lib/routing";
  * "your documents" and "your tools", not "retrieval" or "the corpus".
  */
 export default function RootPage() {
-  const router = useRouter();
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .me()
-      .then((me) => {
-        if (!cancelled) router.replace(homePathFor(me));
-      })
-      .catch(() => {
-        if (!cancelled) setReady(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [router]);
-
-  if (!ready) {
-    return (
-      <PageLoader />
-    );
-  }
-
   return (
     <LandingShell>
       <section className="site-wrap hero" aria-labelledby="landing-title">
