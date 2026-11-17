@@ -1,4 +1,5 @@
 import { API_BASE_URL, type ActCard, type InsightPanel } from "./api";
+import { apiFetch } from "./serverWake";
 
 export interface CitedSource {
   n: number;
@@ -90,7 +91,7 @@ export async function streamChat(
 ): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/chat/stream`, {
+    response = await apiFetch(`${API_BASE_URL}/chat/stream`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -172,7 +173,7 @@ export async function streamAct(
   model: string | null | undefined,
   onStatus: (line: string) => void,
 ): Promise<ActReply> {
-  const response = await fetch(`${API_BASE_URL}/act/stream`, {
+  const response = await apiFetch(`${API_BASE_URL}/act/stream`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -208,7 +209,7 @@ export async function streamContinue(
   actionId: string,
   onStatus: (line: string) => void,
 ): Promise<ActReply | null> {
-  const response = await fetch(`${API_BASE_URL}/act/actions/${encodeURIComponent(actionId)}/continue/stream`, {
+  const response = await apiFetch(`${API_BASE_URL}/act/actions/${encodeURIComponent(actionId)}/continue/stream`, {
     method: "POST",
     credentials: "include",
   });

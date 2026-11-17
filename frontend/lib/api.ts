@@ -1,3 +1,5 @@
+import { apiFetch } from "./serverWake";
+
 /** Typed fetch wrapper for the FastAPI backend. */
 
 function resolveApiBaseUrl(): string {
@@ -29,7 +31,7 @@ function parseApiDetail(detail: unknown): { message: string; code: string | null
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, {
     ...init,
     credentials: "include",
     headers: {
@@ -1161,7 +1163,7 @@ export const api = {
     const form = new FormData();
     // One request: the server accepts what it can and names what it refused.
     for (const file of files) form.append("file", file);
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE_URL}/chat/conversations/${conversationId}/attachments${q}`,
       { method: "POST", credentials: "include", body: form },
     );

@@ -29,14 +29,9 @@ const releaseId = (() => {
 })();
 const buildId = process.env.HANDBOOK_IMAGE_VERSION || releaseId || "";
 
-// The API host's edge (Cloudflare, on Render) answers a server-to-server request
-// for a SLEEPING service with a bot challenge, so the /api proxy alone never wakes
-// it. The browser calls this address directly (no cookie) to start it.
-const wakeUrl = apiProxyTarget.startsWith("https://") ? `${apiProxyTarget}/health` : "";
-
 const nextConfig = {
   reactStrictMode: true,
-  env: { NEXT_PUBLIC_BUILD_ID: buildId, NEXT_PUBLIC_API_WAKE_URL: wakeUrl },
+  env: { NEXT_PUBLIC_BUILD_ID: buildId },
   // The Docker image (frontend/Dockerfile) needs a self-contained server;
   // Vercel builds without it, so production there is unchanged.
   ...(process.env.NEXT_STANDALONE === "1" ? { output: "standalone" } : {}),

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { api, Me } from "./api";
-import { isUnreachable, untilReachable } from "./serverWake";
+import { isUnreachable } from "./serverWake";
 import { canAccessAdminPortal, homePathFor, isSetupComplete } from "./routing";
 
 type Options = {
@@ -33,8 +33,8 @@ let inflight: Promise<Me> | null = null;
 
 function loadMe(force = false): Promise<Me> {
   if (!force && inflight) return inflight;
-  // Retried while the server starts: a 502 is not "signed out".
-  const request = untilReachable(() => api.me()).then(
+  // api.me() waits while the server starts: a 502 is not "signed out".
+  const request = api.me().then(
     (user) => {
       cachedMe = user;
       if (inflight === request) inflight = null;

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BrandGlyph, type BrandName } from "./BrandGlyph";
+import { useConnecting } from "@/lib/serverWake";
 
 const BRAND: Record<string, BrandName> = {
   Notion: "notion",
@@ -69,7 +70,10 @@ export function AnswerProgress({ steps }: { steps?: string[] }) {
     const t = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
-  const all = steps?.length ? steps : ["Finding a grounded answer"];
+  // The question waits while the server starts (lib/serverWake.ts): say so,
+  // not "finding an answer", until the server's own steps arrive.
+  const connecting = useConnecting();
+  const all = steps?.length ? steps : [connecting ? "Connecting…" : "Finding a grounded answer"];
   const done = all.slice(0, -1).slice(-5);
   const live = all.at(-1)!;
   return (
