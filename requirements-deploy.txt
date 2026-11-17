@@ -1,6 +1,6 @@
 # Production/deploy dependency set — used ONLY by the Dockerfile.
 #
-# This is `requirements.txt` minus `sentence-transformers` (which drags in
+# requirements.txt includes this file and adds `sentence-transformers` (which drags in
 # torch, multi-GB and unused once EMBEDDING_BACKEND=remote /
 # RERANKER_BACKEND=remote point at a hosted provider — see app/embeddings/
 # local.py and app/reranker/local.py, both of which `import sentence_transformers`
@@ -29,9 +29,8 @@
 # back into the image (or just build from requirements.txt instead of this
 # file) — the app raises a clear ImportError rather than silently degrading.
 #
-# Keep this in sync with requirements.txt (same versions) whenever a
-# non-local-model dependency changes — same discipline CLAUDE.md already
-# documents for requirements.txt vs pyproject.toml.
+# The one list of runtime versions: requirements.txt reads it with `-r`. Keep
+# pyproject.toml in step (CI installs from there).
 
 openai>=1.40.0
 python-dotenv>=1.0.0
@@ -67,5 +66,5 @@ uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 
 # Agent orchestration graph (app/agent/orchestration.py). Pinned to 0.2.x for
-# langchain-core compatibility — see requirements.txt for the full reasoning.
+# langchain-core compatibility.
 langgraph==0.2.74
