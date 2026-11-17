@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { api, Me } from "./api";
-import { isUnreachable } from "./serverWake";
+import { api, ApiError, Me } from "./api";
 import { canAccessAdminPortal, homePathFor, isSetupComplete } from "./routing";
 
 type Options = {
@@ -109,9 +108,11 @@ export function useMe(options: Options = {}) {
       .catch((err) => {
         if (cancelled) return;
         clearMeCache();
-        // Still unreachable after the wait: reload rather than sign them out.
-        if (isUnreachable(err)) window.location.reload();
-        else router.replace("/login");
+        // Only our API's 401 means signed out. A server that is down or
+        // restarting can answer anything else (the host's 404, a 500, a
+        // challenge past the wait): keep them here and try again.
+        if (err instanceof ApiError && err.status === 401) router.replace("/login");
+        else setTimeout(() => window.location.reload(), 5000);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
