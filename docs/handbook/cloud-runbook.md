@@ -30,7 +30,7 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 - [ ] `CLAUDE_API_KEY` is set (or `LLM_ADAPTER=anthropic` with `LLM_API_KEY`), so the picker offers Claude Sonnet 5.5 and Claude Haiku 5.5.
 - [ ] `RATE_LIMIT_ENABLED` is not `false`.
 - [ ] `LLM_MAX_RPM` matches the Anthropic account's requests-per-minute tier (the default 15 is a free-tier value).
-- [ ] `AI_COMPANY_DOLLARS_PER_DAY` and `AI_PERSON_DOLLARS_PER_DAY` are set to the budget agreed with the company (defaults $3.00 and $0.30 are trial values).
+- [ ] `AI_COMPANY_DOLLARS_PER_DAY` and `AI_PERSON_DOLLARS_PER_DAY` are set to the budget agreed with the company (defaults $3.30 and $0.50 are trial values).
 - [ ] `AI_TOKEN_LIMITS` fits within the Anthropic account's tokens-per-minute limit for each model.
 - [ ] `CHAT_MAX_CONCURRENT` (default 20) is no higher than the Anthropic and Jina plans serve at once.
 - [ ] `AUTH_ENCRYPTION_KEYS` is in the team's password manager. Without it, every saved tool connection is unreadable after a database restore.

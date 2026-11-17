@@ -298,7 +298,7 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
   limit's name, never the question.
 - **AI limits in two layers** (11–13 Nov): tokens a minute per answering model, input and output
   apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet
-  whichever model answers (`AI_PERSON_DOLLARS_PER_DAY` 0.30, `AI_COMPANY_DOLLARS_PER_DAY` 3.00,
+  whichever model answers (`AI_PERSON_DOLLARS_PER_DAY` 0.50, `AI_COMPANY_DOLLARS_PER_DAY` 3.30,
   priced by `AI_PRICES`). Background work on the aux model is not charged
   (`tests/test_ai_spend.py`).
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or

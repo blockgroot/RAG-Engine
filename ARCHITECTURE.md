@@ -323,7 +323,7 @@ All read in `app/config/` and imported through `app/config/settings.py`. The ann
 | **RAG** | `RAG_SIMILARITY_THRESHOLD` (0.35), `RETRIEVAL_REUSE_THRESHOLD` (0.72) |
 | **Second Brain** | `GRAPH_RETRIEVAL_ENABLED` (false), `LIVE_TOOLS_ENABLED` (false), `LIVE_TOOLS_PROVIDERS` (linear), `PERSONAL_MEMORY_ENABLED` (false) |
 | **Safety** | `GUARD_MODE` (off), `GUARD_API_KEY` + `GUARD_BASE_URL` (both or neither), `GUARD_SAFEGUARD_MODEL`, `RAG_AUDIT_ENABLED` (false), `MASK_IDENTIFIERS` (true) |
-| **Limits** | `RATE_LIMIT_*`, `REDIS_URL`, `CHAT_MAX_CONCURRENT` (20), `CHAT_MAX_CONCURRENT_PER_PERSON` (2), `AI_TOKEN_LIMITS`, `AI_PRICES`, `AI_PERSON_DOLLARS_PER_DAY` (0.30), `AI_COMPANY_DOLLARS_PER_DAY` (3.00); 0 turns a limit off |
+| **Limits** | `RATE_LIMIT_*`, `REDIS_URL`, `CHAT_MAX_CONCURRENT` (20), `CHAT_MAX_CONCURRENT_PER_PERSON` (2), `AI_TOKEN_LIMITS`, `AI_PRICES`, `AI_PERSON_DOLLARS_PER_DAY` (0.50), `AI_COMPANY_DOLLARS_PER_DAY` (3.30); 0 turns a limit off |
 | **Tables** | `DOCTABLES_TEXT_ENABLED` (true), `DOCTABLES_ANSWERS_ENABLED` (false), `DOCTABLES_BACKFILL_BATCH` (20) |
 | **Agent mode** | `ACTION_TTL_SECONDS` (900), `ACTION_RATE_PER_HOUR` (100), `ACTIONS_BLOCK_WIDER` (false), `MCP_*`, `HANDBOOK_MCP_URL` |
 | **Email** | `EMAIL_SENDER` (`console` in code; `smtp`, `resend` or `sendgrid` for real mail) |

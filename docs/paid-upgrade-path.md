@@ -192,7 +192,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 
 ## 10. Illustrative monthly bill (small production)
 
-Assumptions: one always-on API, paid Flash-Lite, SendGrid free sender, Tavily Project, Jina after the welcome grant, existing Supabase. This is the August 2026 estimate. Production now answers on Claude instead; that spend is capped in code by `AI_COMPANY_DOLLARS_PER_DAY` and `AI_PERSON_DOLLARS_PER_DAY` (defaults $3.00 and $0.30, sized for a $100 a month credit and 30 people), and a Redis (Valkey) instance holds the rate limits.
+Assumptions: one always-on API, paid Flash-Lite, SendGrid free sender, Tavily Project, Jina after the welcome grant, existing Supabase. This is the August 2026 estimate. Production now answers on Claude instead; that spend is capped in code by `AI_COMPANY_DOLLARS_PER_DAY` and `AI_PERSON_DOLLARS_PER_DAY` (defaults $3.30 and $0.50, sized for a $100 a month credit and 30 people), and a Redis (Valkey) instance holds the rate limits.
 
 | Line | Monthly |
 | --- | --- |

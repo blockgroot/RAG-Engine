@@ -177,8 +177,8 @@ Handbook limits how much each person and the company can use Claude Sonnet 5.5 a
 
 | Setting | Default | What it limits |
 | --- | --- | --- |
-| `AI_PERSON_DOLLARS_PER_DAY` | `0.30` | Dollars a day per person, whichever of the two models answers |
-| `AI_COMPANY_DOLLARS_PER_DAY` | `3.00` | Dollars a day for the whole company |
+| `AI_PERSON_DOLLARS_PER_DAY` | `0.50` | Dollars a day per person, whichever of the two models answers |
+| `AI_COMPANY_DOLLARS_PER_DAY` | `3.30` | Dollars a day for the whole company |
 | `AI_TOKEN_LIMITS` | 60,000 input and 8,000 output tokens a minute per person; 400,000 and 40,000 for the company; for each model | Tokens a minute, per model |
 
 `AI_TOKEN_LIMITS` is written per model, separated by commas: `model=person_in:person_out:company_in:company_out`, for example `claude-sonnet-5-5=60000:8000:400000:40000`.

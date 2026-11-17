@@ -80,7 +80,7 @@ def test_a_person_over_their_day_is_refused_with_a_wait_in_minutes_or_hours(ids)
     assert rate_limit.question_decision(user, org).allowed
     charge_to(user, org)
     # ~21 typical Sonnet questions' worth in one go.
-    assert charge_call("claude-sonnet-5-5", 150_000, 2_000) == pytest.approx(0.32)
+    assert charge_call("claude-sonnet-5-5", 250_000, 2_000) == pytest.approx(0.52)
     decision = rate_limit.question_decision(user, org)
     assert not decision.allowed and decision.refused_by == f"ai:user:day:{user}"
     message = rate_limit.refusal_message(decision.retry_after, decision.refused_by)
@@ -92,7 +92,7 @@ def test_a_person_over_their_day_is_refused_with_a_wait_in_minutes_or_hours(ids)
 
 def test_the_company_day_stops_everyone_in_it(ids):
     user, org = ids
-    for _ in range(11):                       # 11 people x $0.30 > the company's $3.00
+    for _ in range(12):                       # 12 people x $0.30 > the company's $3.30
         charge_to(str(uuid.uuid4()), org)
         charge_call("claude-sonnet-5-5", 140_000, 2_000)
     decision = rate_limit.question_decision(user, org)
@@ -103,7 +103,7 @@ def test_the_company_day_stops_everyone_in_it(ids):
 def test_a_refused_question_spends_no_question_allowance(ids):
     user, org = ids
     charge_to(user, org)
-    charge_call("claude-sonnet-5-5", 150_000, 2_000)
+    charge_call("claude-sonnet-5-5", 250_000, 2_000)
     for _ in range(10):                       # far past the question burst of 5
         assert not rate_limit.question_decision(user, org).allowed
     assert rate_limit.refusal_message(4, "q:user:x") == "Too many requests. Please try again in 4 seconds."

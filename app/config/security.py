@@ -201,8 +201,8 @@ class RateLimitSettings:
     chat_max_concurrent_per_person: int = 2
     # AI spend in dollars on answering models only (security/ai_spend.py); 0 = off.
     # Sized for a $100/month Claude credit and 30 people, with $10 kept as margin.
-    ai_company_dollars_per_day: float = 3.00
-    ai_person_dollars_per_day: float = 0.30
+    ai_company_dollars_per_day: float = 3.30
+    ai_person_dollars_per_day: float = 0.50
     # (model id, $ per million input, $ per million output)
     ai_prices: tuple[tuple[str, float, float], ...] = ()
     # (model id, person in, person out, company in, company out) tokens a minute.

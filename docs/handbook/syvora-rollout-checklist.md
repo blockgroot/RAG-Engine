@@ -103,7 +103,7 @@ Limits keep any one person, script or company from exhausting the shared service
 | Answers being written at once | 2 per person; 20 across the service |
 | Agent mode writes | 100 per person per hour |
 | AI tokens per minute, for each model (Sonnet and Haiku) | Per person: 60k input, 8k output. Per company: 400k input, 40k output |
-| AI spend per day, whichever model answers | $0.30 per person; $3.00 per company |
+| AI spend per day, whichever model answers | $0.50 per person; $3.30 per company |
 
 Every answer is counted in tokens against the model that answers, and in dollars against the daily budget. A question is refused once any of these runs out, and allowed again as it refills. Background work is not counted. The Handbook team sets Syvora's limits and watches usage.
 
