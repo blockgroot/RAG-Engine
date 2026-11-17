@@ -8,6 +8,25 @@ import { isUnreachable, wakeServer } from "@/lib/serverWake";
 const COOLDOWN_SECONDS = 30;
 /** After this long, the request is probably waiting for the server to start. */
 const SLOW_MS = 4000;
+/** Where the rest's end is kept, so a refresh does not cut it short. */
+const COOLDOWN_KEY = "serverSubmit.cooldownUntil";
+
+function savedCooldown(): number {
+  try {
+    const until = Number(localStorage.getItem(COOLDOWN_KEY) || 0);
+    return Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  } catch {
+    return 0;
+  }
+}
+
+function saveCooldown(seconds: number): void {
+  try {
+    localStorage.setItem(COOLDOWN_KEY, String(Date.now() + seconds * 1000));
+  } catch {
+    // Storage blocked: the rest still holds until the page is reloaded.
+  }
+}
 
 /**
  * One send at a time from a public form (sign-in, sign-up), with honest waits.
@@ -27,6 +46,7 @@ export function useServerSubmit() {
 
   useEffect(() => {
     wakeServer();
+    setCooldown(savedCooldown());
   }, []);
 
   useEffect(() => {
@@ -42,6 +62,12 @@ export function useServerSubmit() {
   }, [toast]);
 
   /** Runs `send`; resolves to the error message for the form, or null. */
+  function rest(message: string) {
+    setToast(message);
+    setCooldown(COOLDOWN_SECONDS);
+    saveCooldown(COOLDOWN_SECONDS);
+  }
+
   async function submit(send: () => Promise<void>): Promise<string | null> {
     if (inFlight.current || cooldown > 0) return null;
     inFlight.current = true;
@@ -54,13 +80,11 @@ export function useServerSubmit() {
     } catch (err) {
       if (isUnreachable(err)) {
         wakeServer();
-        setToast("We couldn't reach the server just now. Please try again in a minute.");
-        setCooldown(COOLDOWN_SECONDS);
+        rest("We couldn't reach the server just now. Please try again in a minute.");
         return null;
       }
       if (err instanceof ApiError && err.status === 429) {
-        setToast("Too many requests. Please wait a moment and try again.");
-        setCooldown(COOLDOWN_SECONDS);
+        rest("Too many requests. Please wait a moment and try again.");
         return null;
       }
       return err instanceof Error ? err.message : "Something went wrong.";
