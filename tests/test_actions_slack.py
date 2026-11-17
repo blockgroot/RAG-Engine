@@ -536,3 +536,43 @@ def test_a_chain_continued_from_slack_posts_its_next_card_where_it_was_asked(mon
     slack_act.continue_chain(org_id="o", token="xoxb", user=SimpleNamespace(id="u", email="a@x.com"), action_id="a1")
     assert said and all(s["channel"] == "C1" and s["thread_ts"] == "1.2" and not s["is_dm"] for s in said)
     assert seen["viewer"].channels == ("C1",)        # a channel reads as the room, as when asked
+
+
+def test_a_mentioned_person_stays_in_the_request():
+    """Slack sends "@Raj" as a bare <@U…>; stripping every mention left
+    "send the summary to" with no recipient, and it was answered as a question."""
+    text = "<@UBOT> send the summary to <@U07RAJ>"
+    assert slack_act.plain_slack_text(text.removeprefix("<@UBOT> ")) == "send the summary to @U07RAJ"
+    assert slack_act.act_request("<@UBOT> act DM <@U07RAJ> the fix") == "DM @U07RAJ the fix"
+
+    seen = []
+
+    class Model:
+        def generate(self, prompt, max_tokens=None):
+            seen.append(prompt)
+            return '{"act": true, "request_words": "send the summary to @U07RAJ"}'
+
+    import app.api.slack_act as mod
+    orig_on, orig_surface = mod.policy.act_on, mod.policy.surface_enabled
+    mod.policy.act_on = lambda *a, **k: True
+    mod.policy.surface_enabled = lambda *a, **k: True
+    try:
+        assert slack_act.slack_request(text, org_id="o", is_dm=False, llm=Model()) == \
+            "send the summary to @U07RAJ"
+    finally:
+        mod.policy.act_on, mod.policy.surface_enabled = orig_on, orig_surface
+    assert "@U07RAJ" in seen[0]
+
+
+def test_approve_takes_the_buttons_away_before_the_write_runs(click_env, monkeypatch):
+    """A card left clickable for the seconds a write takes was clicked again."""
+    order = []
+    monkeypatch.setattr(slack_act, "_respond", lambda url, text, replace=True: order.append(("said", text, replace)))
+    monkeypatch.setattr(slack_act.service, "confirm", lambda **kw: order.append(("confirm",)) or _row(
+        status="succeeded", result={"external_id": "x", "url": "https://slack.com/archives/D1/p1"}))
+    payload, act = _click("U1", "act_approve", f"{uuid.uuid4()}:{'h' * 64}")
+    payload["state"] = {"values": {}}                       # a card with no sharing tick
+    slack_act.decide(payload, act)
+    assert order[0] == ("said", slack_act._SENDING, True)   # replaced at once
+    assert order[1] == ("confirm",)
+    assert order[2][1].startswith("✅ Done") and "https://slack.com/archives/D1/p1" in order[2][1]

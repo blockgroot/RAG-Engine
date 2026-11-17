@@ -53,11 +53,12 @@ API = "https://slack.com/api"
 _TIMEOUT = 15.0
 _SECTION_LIMIT = 2900  # Slack's section text limit is 3000
 
-_MENTION = re.compile(r"<@[A-Z0-9]+(?:\|[^>]*)?>")
 _ACT = re.compile(r"^\s*(?:agent|act)\b[\s:,\-]*(.*)$", re.IGNORECASE | re.DOTALL)
 _CHANNEL_REF = re.compile(r"<#[A-Z0-9]+\|([^>]*)>")
 _USER_REF = re.compile(r"<@[A-Z0-9]+\|([^>]*)>")
 _LINK = re.compile(r"<((?:https?|mailto):[^|>]+)(?:\|[^>]*)?>")
+_LEADING_MENTIONS = re.compile(r"^\s*(?:<@[A-Z0-9]+(?:\|[^>]*)?>\s*)+")
+_BARE_USER_REF = re.compile(r"<@([UW][A-Z0-9]+)>")
 
 USAGE = (
     "Tell me what to do after `act`, for example: "
@@ -70,7 +71,7 @@ def act_request(text: str) -> str | None:
 
     Bot mentions are dropped first. An exact command word, never a guess at intent.
     """
-    match = _ACT.match(_MENTION.sub(" ", text or "").strip())
+    match = _ACT.match(_LEADING_MENTIONS.sub("", text or "").strip())
     if not match:
         return None
     return plain_slack_text(match.group(1)).strip()
@@ -139,7 +140,7 @@ def slack_request(text: str, *, org_id: str, is_dm: bool, llm=None) -> str | Non
     if not policy.surface_enabled(org_id, kind):
         logger.info("slack.act org=%s: not a request (%s is off)", org_id, kind)
         return None
-    words = plain_slack_text(_MENTION.sub(" ", text)).strip()
+    words = plain_slack_text(_LEADING_MENTIONS.sub("", text)).strip()
     asked = bool(words) and asks_to_act(words, llm=llm)
     # Logged so "why was this answered, not drafted?" has an answer in the logs.
     logger.info("slack.act org=%s: %s (plain words, %s)", org_id,
@@ -151,7 +152,10 @@ def plain_slack_text(text: str) -> str:
     """The asker's words as they typed them: ``#eng``, not ``<#C1|eng>``."""
     text = _CHANNEL_REF.sub(lambda m: f"#{m.group(1)}", text)
     text = _USER_REF.sub(lambda m: f"@{m.group(1)}", text)
-    text = _MENTION.sub("", text)
+    # Only the bot's leading mention addresses Handbook; any other "<@U…>" is a
+    # person the request names ("DM @Raj"). Kept as "@U…", which the Slack host
+    # resolves; dropping it left "send the summary to" with no recipient.
+    text = _BARE_USER_REF.sub(lambda m: f"@{m.group(1)}", text)
     # A typed email arrives as <mailto:a@b|a@b>: keep the address as typed.
     text = _LINK.sub(lambda m: m.group(1).removeprefix("mailto:"), text)
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
@@ -419,6 +423,17 @@ def _acked(payload: dict) -> bool:
     return bool((values.get("act_ack") or {}).get("selected_options"))
 
 
+_SENDING = "⏳ Sending… the link appears here when it's done."
+
+
+def _needs_tick(payload: dict) -> bool:
+    """The card has the sharing tick and it is not ticked."""
+    blocks = (payload.get("message") or {}).get("blocks") or []
+    values = (payload.get("state") or {}).get("values") or {}
+    has_tick = "act_ack" in values or any(b.get("block_id") == "act_ack" for b in blocks)
+    return has_tick and not _acked(payload)
+
+
 def _outcome_text(row: ActionRow) -> str:
     result = row.result or {}
     if row.status == "succeeded":
@@ -592,6 +607,12 @@ def decide(payload: dict, act: dict) -> None:
             _respond_raw(response_url, {"delete_original": True})
         _post(token, "chat.postEphemeral", {"channel": container["channel_id"], "user": slack_user,
                                             "text": text, "thread_ts": container["thread_ts"]})
+
+    # The buttons go at once: a card that stays clickable while the write runs
+    # (seconds) reads as "not working" and gets clicked again. Not when a
+    # required tick is missing: that card must stay, to be ticked.
+    if act.get("action_id") == "act_approve" and not _needs_tick(payload):
+        respond(_SENDING)
 
     email = _slack_email(token, slack_user)
     user = get_member_by_address(email, org_id) if email else None
