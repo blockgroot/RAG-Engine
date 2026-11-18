@@ -522,7 +522,8 @@ we write has a TTL.
 AI usage is limited in two layers (`security/ai_spend.py`), as Anthropic, LiteLLM and
 Kong do: TOKENS a minute per model (`AI_TOKEN_LIMITS`: input and output apart, person and
 company, each model its own buckets keyed by its listed id) and DOLLARS a day, one wallet
-whichever model answers (the models differ 20x in price). Every paid call is charged where
+whichever model answers (the models differ 20x in price), with a model's own share inside
+it (`AI_MODEL_DOLLARS_PER_DAY`: spending Sonnet's stops Sonnet only, never Haiku). Every paid call is charged where
 it is made (`OpenAICompatProvider`, never per caller) to whoever `charge_to` names, set
 where the model is chosen (inside the answering stream); a question is checked against
 the model the asker picked (`limit_question(session, model)`, None = the default) and

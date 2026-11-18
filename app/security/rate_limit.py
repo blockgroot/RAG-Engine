@@ -56,6 +56,13 @@ _SPEND_NEED = 0.0001
 
 
 def refusal_message(retry_after: float, refused_by: str = "") -> str:
+    if refused_by.startswith(("ai:user:mday:", "ai:org:mday:")):
+        from ..llm.catalog import ALL_MODELS
+
+        model = refused_by.split(":")[3]
+        label = next((m.label for m in ALL_MODELS if m.id == model), model)
+        return (f"You've reached today's limit for {label}. You can switch to another model, "
+                f"or try again in {_wait(retry_after)}.")
     if refused_by.startswith("ai:"):
         return f"You've reached the AI usage limit for now. Please try again in {_wait(retry_after)}."
     seconds = max(1, math.ceil(retry_after))
@@ -93,8 +100,9 @@ def question_decision(
     # Routes that answer in this context (charts, scheduler setup, Slack) are
     # charged to this person; streams set it again where they answer.
     charge_to(user_id, org_id)
-    ins, outs = token_buckets(user_id, org_id, model or LLMSettings.from_env().model, settings)
-    usage = ins + outs + spend_buckets(user_id, org_id, settings)
+    model = model or LLMSettings.from_env().model
+    ins, outs = token_buckets(user_id, org_id, model, settings)
+    usage = ins + outs + spend_buckets(user_id, org_id, settings, model)
     spend = _take(usage, settings, need=_SPEND_NEED, spend=0.0)
     if not spend.allowed:
         return spend
@@ -238,6 +246,8 @@ _LIMIT_NAMES = {
     "ai:org:tout": "ai-tokens:company-output-minute",
     "ai:user:day": "ai-spend:person-day",
     "ai:org:day": "ai-spend:company-day",
+    "ai:user:mday": "ai-spend:person-model-day",
+    "ai:org:mday": "ai-spend:company-model-day",
 }
 
 

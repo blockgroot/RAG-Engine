@@ -3,7 +3,8 @@
 * Tokens a minute per answering model, input and output apart, for the
   person and the company (``token_buckets``).
 * Dollars a day for the person and the company (``spend_buckets``), one
-  wallet whichever model answers.
+  wallet whichever model answers, and inside it a model's own share
+  (``AI_MODEL_DOLLARS_PER_DAY``): spending the Sonnet share stops Sonnet only.
 
 One question can cost ten times another and models differ twentyfold in
 price, so every paid call is charged its real cost and a question is
@@ -95,10 +96,11 @@ def cost_of(
 
 
 def spend_buckets(
-    user_id: str | None, org_id: str | None, settings: RateLimitSettings
+    user_id: str | None, org_id: str | None, settings: RateLimitSettings,
+    model: str | None = None,
 ) -> list[Bucket]:
     """The person's and the company's day buckets in dollars, refilling evenly
-    over the day."""
+    over the day, plus ``model``'s own share when it has one."""
     buckets = []
     if user_id and settings.ai_person_dollars_per_day:
         buckets.append(Bucket(f"ai:user:day:{user_id}", settings.ai_person_dollars_per_day,
@@ -106,6 +108,12 @@ def spend_buckets(
     if org_id and settings.ai_company_dollars_per_day:
         buckets.append(Bucket(f"ai:org:day:{org_id}", settings.ai_company_dollars_per_day,
                               settings.ai_company_dollars_per_day / _MINUTES_PER_DAY))
+    row = _listed(model, settings.ai_model_dollars_per_day) if model else None
+    if row:
+        key, person, company = row
+        for who, scope, limit in ((user_id, "user", person), (org_id, "org", company)):
+            if who and limit:
+                buckets.append(Bucket(f"ai:{scope}:mday:{key}:{who}", limit, limit / _MINUTES_PER_DAY))
     return buckets
 
 
@@ -126,7 +134,7 @@ def charge_call(
         return 0.0
     ins, outs = token_buckets(user_id, org_id, model, settings)
     cost = cost_of(model, input_tokens, output_tokens, settings)
-    dollars = spend_buckets(user_id, org_id, settings) if cost > 0 else []
+    dollars = spend_buckets(user_id, org_id, settings, model) if cost > 0 else []
     charges = [(b, n) for b, n in ((ins, input_tokens or 0), (outs, output_tokens or 0), (dollars, cost))
                if b and n > 0]
     try:

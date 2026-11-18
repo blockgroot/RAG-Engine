@@ -299,7 +299,9 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
 - **AI limits in two layers** (11–13 Nov): tokens a minute per answering model, input and output
   apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet
   whichever model answers (`AI_PERSON_DOLLARS_PER_DAY` 0.50, `AI_COMPANY_DOLLARS_PER_DAY` 3.30,
-  priced by `AI_PRICES`). Background work on the aux model is not charged
+  priced by `AI_PRICES`). Inside it, Sonnet has its own share (`AI_MODEL_DOLLARS_PER_DAY`,
+  $0.30 a person, $2.00 a company, 18 Nov): spending it stops Sonnet only, and Haiku still
+  answers. Background work on the aux model is not charged
   (`tests/test_ai_spend.py`).
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or
   neither) and `GUARD_SAFEGUARD_MODEL`, so the guard never spends the answering models' quota.

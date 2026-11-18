@@ -499,7 +499,9 @@ app that issued it.
   person; the rest wait for a place, then are told Handbook is busy.
 - **AI limits, two layers.** Tokens a minute for each answering model, for the person and for the
   company, input and output counted apart; and dollars a day for the person and the company,
-  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day.
+  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day. Sonnet may use
+  only part of that ($0.30 a person, $2.00 a company): when its share is spent, Sonnet stops
+  and the person can keep asking on Haiku.
 
 Limits are counted in Redis when it is set up, so every server shares them. Redis holds rate
 limits only: there is no answer cache, and every question is answered fresh.
