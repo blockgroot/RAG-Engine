@@ -377,3 +377,19 @@ def test_a_company_model_named_like_ours_runs_on_the_companys_key(keys):
     assert (client.api_key, client.billing) == ("sk-o", COMPANY)
     assert billing_of(f"company:{HAIKU}") == COMPANY
     assert own_model.selectable("o", "u", f"company:{HAIKU}")
+
+
+def test_the_menu_starts_on_the_persons_key_then_the_companys_then_ours(keys, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.api.chat import list_models
+
+    monkeypatch.setenv("LLM_MODEL", HAIKU)
+    monkeypatch.setenv("CLAUDE_API_KEY", "c")
+    session = SimpleNamespace(org_id="o", user_id="u")
+    assert list_models(session=session)["preferred"] == "auto"
+    keys["company"]["o"] = "gpt-5"
+    menu = list_models(session=session)
+    assert menu["preferred"] == "company:gpt-5" and "company:gpt-5" in [m["id"] for m in menu["models"]]
+    keys["own"]["u"] = "claude-sonnet-5-5"
+    assert list_models(session=session)["preferred"] == "own:claude-sonnet-5-5"

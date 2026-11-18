@@ -544,6 +544,7 @@ company's, else ours, NEVER a person's (their key may vanish, and the corpus is 
 Slack has no picker: a DM answers on that order, a channel on the company's, else ours.
 A company model is picked as `company:<model>`, so one named like ours runs on its key.
 The picker never steers machinery; a removed key falls back to ours, never a failed check.
+The menu starts on the same order (`/chat/models` `preferred`); a remembered pick wins.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

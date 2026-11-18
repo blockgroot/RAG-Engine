@@ -171,6 +171,9 @@ def list_models(session: SessionClaims = Depends(get_session)):
         or default_model or "Auto",
         # The default model builds charts; Chart mode always offers it.
         "default_charts": True,
+        # What the menu starts on: the person's own model, else the company's,
+        # else Handbook's ("auto"). The same order as whose key runs the checks.
+        "preferred": (mine and mine["id"]) or (own and COMPANY_PREFIX + own["model"]) or catalog.AUTO,
         "models": models,
     }
 

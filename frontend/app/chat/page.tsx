@@ -121,6 +121,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // The deployment's own model name, shown on the default option instead of
   // "Auto". Falls back until /chat/models answers.
   const [defaultLabel, setDefaultLabel] = useState("Auto");
+  // The person's own model, else the company's, else Handbook's ("auto"):
+  // what the menu starts on and labels "Default".
+  const [preferred, setPreferred] = useState("auto");
   // "auto" sends no model (the deployment default). A stored id no longer in
   // the catalog is dropped on load, not sent and rejected.
   const [model, setModel] = useState<string>("auto");
@@ -215,13 +218,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     let cancelled = false;
     api
       .chatModels()
-      .then(({ models: available, default_label }) => {
+      .then(({ models: available, default_label, preferred: start }) => {
         if (cancelled) return;
         setModels(available);
         if (default_label) setDefaultLabel(default_label);
+        const first = start && available.some((m) => m.id === start) ? start : "auto";
+        setPreferred(first);
         const saved = localStorage.getItem("chat.model");
-        // Only restore a choice the backend still offers.
-        if (saved && available.some((m) => m.id === saved)) setModel(saved);
+        // A choice the person made and the backend still offers wins; else
+        // their own model, else the company's, else Handbook's.
+        setModel(saved && available.some((m) => m.id === saved) ? saved : first);
       })
       // A picker is an enhancement: if the catalog cannot be read, chat still
       // works on the default model. Never surface this as a chat error.
@@ -1262,11 +1268,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
                 footer={{ href: "/account/model", label: "Add your own key" }}
                 options={[
-                  { value: "auto", label: modelName(defaultLabel), hint: "Default" },
+                  { value: "auto", label: modelName(defaultLabel), hint: preferred === "auto" ? "Default" : "Handbook’s model" },
                   ...pickerModels.map((m) => ({
                     value: m.id,
                     label: modelName(m.label),
-                    hint: chartMode && m.charts == null ? "May not support charts" : undefined,
+                    hint: chartMode && m.charts == null
+                      ? "May not support charts"
+                      : m.id === preferred ? "Default" : undefined,
                   })),
                 ]}
                 onChange={(next) => {

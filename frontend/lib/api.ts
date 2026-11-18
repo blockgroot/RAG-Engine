@@ -1302,7 +1302,7 @@ export const api = {
   },
 
   chatModels: () =>
-    request<{ default: string; default_label: string; models: ModelChoice[] }>(
+    request<{ default: string; default_label: string; models: ModelChoice[]; preferred?: string }>(
       "/chat/models",
     ),
 
