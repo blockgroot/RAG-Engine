@@ -2,9 +2,10 @@
 
 import { PageLoader } from "@/components/PageLoader";
 /**
- * Admin-only: connect the organisation's own model.
- * Says which calls use the org's key (chat answers) and which still run on
- * ours (indexing, the quality check): implying full isolation would mislead.
+ * Admin-only: connect the organisation's own model, and set its limits.
+ * Says what runs on the company's key (answers when picked, the checks around
+ * questions, indexing and other company work) and what never does (search and
+ * ranking): implying full isolation would mislead.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -318,7 +319,7 @@ export default function AdminModelPage() {
         <section className="room-section model-boundary" aria-labelledby="usage-title">
           <div className="studio-section-head">
             <h2 id="usage-title">How your model is used</h2>
-            <p className="muted">Connecting a key changes one part of Handbook, not all of it.</p>
+            <p className="muted">Once connected, your key runs your company&rsquo;s AI work. Search and ranking stay on Handbook.</p>
           </div>
           <div className="model-split">
             <article className="model-split-card is-yours">
@@ -330,7 +331,7 @@ export default function AdminModelPage() {
                 </span>
                 <div>
                   <span className="model-split-tag">Your key</span>
-                  <h3>Answers in chat</h3>
+                  <h3>Answers and checks</h3>
                 </div>
               </header>
               <ol className="model-split-flow">
@@ -338,9 +339,12 @@ export default function AdminModelPage() {
                 <li><span className="is-model">{activePreset?.label ?? "Your model"}</span></li>
                 <li><span>Answer</span></li>
               </ol>
-              <p>Every chat answer uses your model. Billed by {activePreset?.label ?? "your provider"}.</p>
+              <p>
+                Answers when someone picks it, and the checks around every question, unless that person added their
+                own key. Billed by {activePreset?.label ?? "your provider"}.
+              </p>
             </article>
-            <article className="model-split-card">
+            <article className="model-split-card is-yours">
               <header>
                 <span className="model-split-icon" aria-hidden>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -349,16 +353,19 @@ export default function AdminModelPage() {
                   </svg>
                 </span>
                 <div>
-                  <span className="model-split-tag">Handbook&rsquo;s model</span>
-                  <h3>Indexing and checks</h3>
+                  <span className="model-split-tag">Your key</span>
+                  <h3>Indexing and company work</h3>
                 </div>
               </header>
               <ol className="model-split-flow">
                 <li><span>Your documents</span></li>
-                <li><span className="is-model">Handbook</span></li>
+                <li><span className="is-model">{activePreset?.label ?? "Your model"}</span></li>
                 <li><span>Search index</span></li>
               </ol>
-              <p>Reading, indexing and quality checks. Your key is never used here.</p>
+              <p>
+                Context for every synced document, figures read from text, grouping unanswered questions and
+                reports. This runs on every sync, so a large model costs more here.
+              </p>
             </article>
           </div>
           <footer className="model-split-note">
@@ -369,8 +376,8 @@ export default function AdminModelPage() {
               </svg>
             </span>
             <p>
-              <strong>Built-in fallback stays available.</strong> If your key stops working, members can switch
-              models and keep working.
+              <strong>Handbook&rsquo;s model stays available.</strong> Without a key, or if yours is removed, everything
+              runs on Handbook&rsquo;s model, and members can always switch to it in chat.
             </p>
           </footer>
         </section>

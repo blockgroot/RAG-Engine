@@ -314,9 +314,10 @@ export default function OwnModelPage() {
               </svg>
             </span>
             <p>
-              <strong>Only your chat answers use it.</strong> When you pick it, the documents behind your answer are
-              sent to {activePreset?.label ?? "your provider"} on your key. Searching, indexing and quality checks
-              stay on Handbook&rsquo;s model, and Handbook&rsquo;s and your company&rsquo;s limits don&rsquo;t apply.
+              <strong>Your questions run on it.</strong> Your answers when you pick it, and the checks around every
+              question you ask (on the web and in Slack DMs), send the documents behind them to{" "}
+              {activePreset?.label ?? "your provider"} on your key. Indexing your company&rsquo;s documents never uses
+              your key, and Handbook&rsquo;s and your company&rsquo;s limits don&rsquo;t apply to it.
             </p>
           </footer>
         </section>

@@ -144,15 +144,18 @@ def test_selectable_rejects_anything_uncatalogued(value):
 def test_aux_provider_is_not_routable():
     """Ingest contextualization must never follow a member's model choice.
 
-    Guaranteed structurally — the aux factory does not wrap — because chunks
-    authored by different models would end up ranked against each other in one
-    index.
+    Chunks authored by different models would be ranked against each other in
+    one index. The aux provider follows only whose KEY pays (the company's own
+    model, else ours): one model per company corpus, never the picker.
     """
-    from app.llm.factory import build_aux_llm_provider
-
     import app.llm.factory as factory_module
+    from app.llm.routed import PayerKeyProvider
+
     source = __import__("inspect").getsource(factory_module.build_aux_llm_provider)
-    assert "RoutedLLMProvider" not in source
+    assert "RoutedLLMProvider" not in source and "PayerKeyProvider" in source
+    use_model(catalog.CLAUDE_MODELS[0].id, org_id="o")                 # a pick
+    aux = PayerKeyProvider(default=_Recording("aux"))
+    assert aux.active() is aux._default
 
 
 # --------------------------------------------------------------------------

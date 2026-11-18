@@ -282,8 +282,11 @@ def _cannot_call_tools(org_id: str, user_id: str, model: str) -> bool:
     if model and model.startswith(own_model.OWN_PREFIX):
         own = own_model.get_own_model_summary(org_id, user_id)
         return bool(own and own["id"] == model and own.get("agent") == "none")
+    from ..llm.routed import COMPANY_PREFIX
+
     own = org_model.get_org_model_summary(org_id)
-    return bool(own and own["model"] == model and own.get("agent") == "none")
+    return bool(own and own["model"] == model.removeprefix(COMPANY_PREFIX)
+                and own.get("agent") == "none")
 
 
 class ActRequest(BaseModel):

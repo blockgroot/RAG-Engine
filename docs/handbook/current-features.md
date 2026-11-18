@@ -298,7 +298,13 @@ Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Cl
 of provider presets; its key is tested before it is saved and stored encrypted. Each person can
 also add their own model and key on its own page (Account › Your own model, or "Add your own key"
 in the chat's model menu): provider, key, model, and optional limits of their own (0 = none). Only
-they can pick it, it is billed to them, and no Handbook or company limit applies to it. Background work
+they can pick it, it is billed to them, and no Handbook or company limit applies to it.
+
+Whose key does the work: a person's questions (the answer when picked, and the checks around
+every question, on the web and in Slack DMs) run on their own key, else the company's, else
+Handbook's. Company work (indexing, figures read from text, grouping unanswered questions,
+sentiment, reports) and Slack channel replies run on the company's key, else Handbook's, never
+a person's. Search and ranking always stay on Handbook. Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
 

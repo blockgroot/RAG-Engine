@@ -254,10 +254,11 @@ def propose(
     if why_not:
         return ActOutcome(why_not)
 
-    from ..llm.routed import use_model
+    from ..llm.routed import use_model, use_payer_keys
 
     # The picked model (None = default). Set here so no request inherits another's.
     use_model(model, org_id=org_id, user_id=user_id)
+    use_payer_keys(org_id, user_id)
     charge_to(user_id, org_id)
     offered = _fit_tools(offered, question, embedder, settings.mcp_max_tools)
     tools = [a.tool for a in offered]
@@ -410,7 +411,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
     surface)``, or ``None`` when nothing remains. New cards are approved on their own.
     ``viewer_for(surface)`` is who the drafts read as there."""
     from . import runs
-    from ..llm.routed import use_model
+    from ..llm.routed import use_model, use_payer_keys
 
     settings = settings or ActionsSettings.from_env()
     try:
@@ -437,6 +438,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
         if why_not:
             return ActOutcome(why_not), run.surface
         use_model(run.model, org_id=org_id, user_id=user_id)
+        use_payer_keys(org_id, user_id)
         charge_to(user_id, org_id)
         offered = _fit_tools(offered, run.question, embedder, settings.mcp_max_tools)
         found, sources, messages, statuses = list(run.found), run.source_list(), list(run.messages), []
@@ -578,9 +580,10 @@ def revise(
         raise ActionRejected("This action is no longer available.")
     current = action.editable(row.payload)
 
-    from ..llm.routed import use_model
+    from ..llm.routed import use_model, use_payer_keys
 
     use_model(model, org_id=org_id, user_id=user_id)
+    use_payer_keys(org_id, user_id)
     charge_to(user_id, org_id)
     reply = llm.generate(build_revise_prompt(current, instruction), max_tokens=4000)
     try:

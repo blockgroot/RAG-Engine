@@ -305,7 +305,9 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
   person can add their own model and key (Account › Your own model), billed to them with no
   limits; an admin sets the company's limits in tokens a minute and a day (Admin › Model), which
   narrow ours on our key and are the only limits on the company's model. Calls on the company's
-  key are no longer charged to our credit (`tests/test_own_model.py`).
+  key are no longer charged to our credit (`tests/test_own_model.py`). Whose key pays also runs
+  the work: a question's checks on the asker's key, else the company's, else ours; indexing,
+  reports and other company work on the company's, else ours; Slack DMs and channels likewise.
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or
   neither) and `GUARD_SAFEGUARD_MODEL`, so the guard never spends the answering models' quota.
 

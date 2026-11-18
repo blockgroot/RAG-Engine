@@ -164,5 +164,7 @@ def selectable(org_id: str, user_id: str | None, model: str | None) -> bool:
     if model.startswith(OWN_PREFIX):
         own = get_own_model_summary(org_id, user_id) if user_id else None
         return bool(own and own["id"] == model)
+    from .routed import COMPANY_PREFIX
+
     company = get_org_model_summary(org_id)
-    return bool(company and company["model"] == model)
+    return bool(company and company["model"] == model.removeprefix(COMPANY_PREFIX))

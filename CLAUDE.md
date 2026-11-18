@@ -536,7 +536,14 @@ charged to our credit, including its save-time test; a person's own model (`own:
 never answered on another key. Its key is write-only, like the company's.
 The picker offers Claude Sonnet 5.5 and Haiku 5.5 only (`catalog.CLAUDE_MODELS`); every
 model a person can pick must be priced (`test_production_offers_claude_sonnet_and_haiku_only`).
-Background work runs on the Gemini AUX model, never pickable and never charged.
+Background work runs on the Gemini AUX model, never pickable and never charged, unless a
+key pays for it (`routed.payer_choice`): a question's machinery (`default_model_only`) and
+the aux stages run on the asker's own model, else the company's, else ours; company work
+(ingest, figures, gap topics, sentiment, reports: `on_company_key`/`payer_keys`) on the
+company's, else ours, NEVER a person's (their key may vanish, and the corpus is shared).
+Slack has no picker: a DM answers on that order, a channel on the company's, else ours.
+A company model is picked as `company:<model>`, so one named like ours runs on its key.
+The picker never steers machinery; a removed key falls back to ours, never a failed check.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

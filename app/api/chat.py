@@ -71,7 +71,7 @@ from ..memory import personal as personal_memory
 from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
-from ..llm.routed import answering_model, selected_model, use_model
+from ..llm.routed import answering_model, selected_model, use_model, use_payer_keys
 from ..security.ai_spend import charge_to
 from ..db.connection import get_connection
 from ..feedback import record_gap
@@ -120,6 +120,7 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # Only models whose backend has credentials: otherwise the default would
     # answer under another model's label.
     from ..llm import build_llm_provider
+    from ..llm.routed import COMPANY_PREFIX
 
     provider = build_llm_provider()
     backends = provider.configured_backends()
@@ -139,7 +140,9 @@ def list_models(session: SessionClaims = Depends(get_session)):
         models.append(
             {
                 # Company first: `note` is only a hover title, and touch has no hover.
-                "id": own["model"],
+                # Prefixed: a company model named like one of ours still runs on
+                # the company's key (`routed.COMPANY_PREFIX`).
+                "id": COMPANY_PREFIX + own["model"],
                 "label": f"Your company's model — {own['model']}",
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
@@ -1522,6 +1525,8 @@ def _stream_answer_body(
     # Set inside the generator: Starlette runs it in a threadpool, so a ContextVar
     # set in the route may not reach it, and a pooled thread must not leak it.
     use_model(model, org_id=org_id, user_id=session.user_id if session else None)
+    # The checks around the answer run on the asker's key, else the company's, else ours.
+    use_payer_keys(org_id, session.user_id if session else None)
     # Who pays for this answer's model calls, for the same reason.
     charge_to(session.user_id if session else None, org_id)
     # Logged, never refused (see guard/live.py for the measured reason).

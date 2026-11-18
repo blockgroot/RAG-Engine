@@ -7,7 +7,7 @@ from ..privacy import build_detector
 from . import adapters
 from .base import LLMProvider
 from .masking import MaskingLLMProvider
-from .routed import RoutedLLMProvider
+from .routed import PayerKeyProvider, RoutedLLMProvider
 
 
 def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
@@ -54,8 +54,9 @@ def aux_endpoint(settings: LLMSettings) -> adapters.Endpoint:
 def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     """Build the auxiliary LLM for background and classification stages.
 
-    Never wrapped for per-request model selection: ingest contextualization
-    must be written by one model across a corpus. A test reads this source.
+    Never follows the picker: ingest contextualization must be written by one
+    model across a company's corpus. It runs on whoever's key pays
+    (``routed.payer_keys``): the company's own model, else ours.
 
     Uses its own endpoint (``LLM_AUX_ADAPTER`` or ``LLM_AUX_BASE_URL``, plus
     ``LLM_AUX_API_KEY``) only when BOTH halves are set, so background work has
@@ -64,9 +65,11 @@ def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     """
     settings = settings or LLMSettings.from_env()
     return MaskingLLMProvider(
-        adapters.build_provider(
-            aux_endpoint(settings), timeout=settings.timeout,
-            reasoning_effort=settings.reasoning_effort,
+        PayerKeyProvider(
+            adapters.build_provider(
+                aux_endpoint(settings), timeout=settings.timeout,
+                reasoning_effort=settings.reasoning_effort,
+            )
         ),
         build_detector(),
     )

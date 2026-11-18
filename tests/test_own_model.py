@@ -292,3 +292,88 @@ def test_default_company_limits_come_from_settings(monkeypatch, raw, expected):
     else:
         monkeypatch.setenv("AI_ORG_DEFAULT_LIMITS", raw)
     assert RateLimitSettings.from_env().org_default_limits == expected
+
+
+# --- Whose key runs the checks and the company's work ---------------------------------
+
+import app.llm.org_model as org_model_module  # noqa: E402
+from app.llm import routed  # noqa: E402
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    """Who has saved a key: set per test. The routing reads these, never the picker."""
+    saved = {"own": {}, "company": {}}
+
+    def own_summary(org, user):
+        model = saved["own"].get(user)
+        return {"id": f"own:{model}", "model": model} if model else None
+
+    def company_summary(org):
+        model = saved["company"].get(org)
+        return {"model": model} if model else None
+
+    monkeypatch.setattr(own_model, "get_own_model_summary", own_summary)
+    monkeypatch.setattr(org_model_module, "get_org_model_summary", company_summary)
+    monkeypatch.setattr(own_model, "get_own_model",
+                        lambda org, user: _own(saved["own"][user], f"sk-{user}") if user in saved["own"] else None)
+    monkeypatch.setattr(org_model_module, "get_org_model",
+                        lambda org: _own(saved["company"][org], f"sk-{org}") if org in saved["company"] else None)
+    yield saved
+    routed.use_model(None)
+    routed._PAYER.set(None)
+
+
+def test_whose_key_pays_is_the_persons_then_the_companys_then_ours(keys):
+    assert routed.payer_choice("o", "u") is None                       # nobody: ours
+    keys["company"]["o"] = "gpt-5"
+    assert routed.payer_choice("o", "u") == "company:gpt-5"
+    keys["own"]["u"] = "claude-sonnet-5-5"
+    assert routed.payer_choice("o", "u") == "own:claude-sonnet-5-5"
+    assert routed.payer_choice("o", None) == "company:gpt-5"           # company work: never a person's
+
+
+def test_a_questions_checks_run_on_the_payers_key_not_the_pick(keys):
+    keys["own"]["u"] = "gpt-5"
+    provider = routed.RoutedLLMProvider(default=_Default())
+    routed.use_model(HAIKU, org_id="o", user_id="u")                  # the menu says Haiku
+    routed.use_payer_keys("o", "u")
+    with routed.default_model_only():
+        checks = provider.active()
+    assert (checks.api_key, checks.billing) == ("sk-u", OWN)
+
+
+def test_company_work_runs_on_the_company_key_and_is_restored(keys):
+    keys["company"]["o"] = "gpt-5"
+    aux = routed.PayerKeyProvider(default=_Default())
+    assert isinstance(aux.active(), _Default)                          # outside any company: ours
+    with routed.payer_keys("o"):
+        client = aux.active()
+        assert (client.api_key, client.billing) == ("sk-o", COMPANY)
+    assert isinstance(aux.active(), _Default)                          # the next job starts clean
+
+    @routed.on_company_key
+    def job(adapter, org_id, *, provider):
+        return aux.active()
+
+    assert job(None, "o", provider="drive").api_key == "sk-o"
+    assert isinstance(job(None, "other", provider="drive"), _Default)
+
+
+def test_a_removed_key_leaves_the_checks_on_ours(keys):
+    keys["company"]["o"] = "gpt-5"
+    aux = routed.PayerKeyProvider(default=_Default())
+    with routed.payer_keys("o"):
+        del keys["company"]["o"]                                        # removed mid-job
+        assert isinstance(aux.active(), _Default)
+
+
+def test_a_company_model_named_like_ours_runs_on_the_companys_key(keys):
+    """An admin's own Anthropic key on claude-haiku-5-5 must not answer on ours."""
+    keys["company"]["o"] = HAIKU
+    provider = routed.RoutedLLMProvider(default=_Default())
+    routed.use_model(f"company:{HAIKU}", org_id="o")
+    client = provider.active()
+    assert (client.api_key, client.billing) == ("sk-o", COMPANY)
+    assert billing_of(f"company:{HAIKU}") == COMPANY
+    assert own_model.selectable("o", "u", f"company:{HAIKU}")
