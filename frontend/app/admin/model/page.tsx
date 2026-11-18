@@ -94,7 +94,13 @@ function AiLimitsPanel() {
             </div>
           ))}
           <div className="model-form-actions">
-            <span />
+            <div className="model-test-note">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="m7 12 3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+              </svg>
+              <span>Applies from the next question.</span>
+            </div>
             <button className="button" type="submit" disabled={busy}>
               {busy ? "Saving…" : "Save limits"}
             </button>
@@ -184,8 +190,8 @@ export default function AdminModelPage() {
       <main className="page-wide studio-page stack model-admin-page">
         <PageHeader
           eyebrow="Company"
-          title="Company model"
-          description="Connect one model for your team’s chat answers. This is optional; Handbook’s built-in models remain available."
+          title="Company model and limits"
+          description="Connect one model for your team’s chat answers, and set how much AI each person and the company may use. Both are optional; Handbook’s built-in models remain available."
           meta={
             <span className="hero-facts">
               {saved ? (
