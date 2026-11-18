@@ -1,4 +1,4 @@
-"""A person's own model: their key, their bill, no Handbook limits.
+"""A person's own model: their key, their bill, only the limits they set.
 
 The company's model (``org_model``) is the admin's; this is one per person,
 offered only to them. Same presets (fixed base URLs, never a typed address),
@@ -45,15 +45,17 @@ def get_own_model_summary(org_id: str, user_id: str) -> dict | None:
     """What the Account page shows. Never decrypts, never returns the key."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT preset, model, key_tail, agent, saved_at "
+            "SELECT preset, model, key_tail, agent, saved_at, tokens_per_minute, tokens_per_day "
             "FROM user_llm_models WHERE org_id = %s AND user_id = %s",
             (org_id, user_id),
         ).fetchone()
     if not row:
         return None
-    preset_id, model, key_tail, agent, saved = row
+    preset_id, model, key_tail, agent, saved, per_minute, per_day = row
     preset = _PRESETS_BY_ID.get(preset_id)
     return {
+        "tokens_per_minute": per_minute,
+        "tokens_per_day": per_day,
         "id": own_id(model),
         "model": model,
         "preset": preset_id,
@@ -65,18 +67,69 @@ def get_own_model_summary(org_id: str, user_id: str) -> dict | None:
 
 
 def save_own_model(org_id: str, user_id: str, preset_id: str, model: str, api_key: str,
-                   agent: str | None) -> None:
+                   agent: str | None, tokens_per_minute: int = 0, tokens_per_day: int = 0) -> None:
     get_preset(preset_id)  # raises on an unknown provider
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO user_llm_models (org_id, user_id, preset, model, api_key_encrypted, "
-            "key_tail, agent, saved_at) VALUES (%s, %s, %s, %s, %s, %s, %s, now()) "
+            "key_tail, agent, tokens_per_minute, tokens_per_day, saved_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
             "ON CONFLICT (org_id, user_id) DO UPDATE SET preset = EXCLUDED.preset, "
             "model = EXCLUDED.model, api_key_encrypted = EXCLUDED.api_key_encrypted, "
-            "key_tail = EXCLUDED.key_tail, agent = EXCLUDED.agent, saved_at = now()",
+            "key_tail = EXCLUDED.key_tail, agent = EXCLUDED.agent, "
+            "tokens_per_minute = EXCLUDED.tokens_per_minute, "
+            "tokens_per_day = EXCLUDED.tokens_per_day, saved_at = now()",
             # Last 4 only: enough to recognise the key, useless to a reader.
-            (org_id, user_id, preset_id, model, encrypt(api_key), api_key[-4:], agent),
+            (org_id, user_id, preset_id, model, encrypt(api_key), api_key[-4:], agent,
+             tokens_per_minute, tokens_per_day),
         )
+    forget_own_limits(user_id)
+
+
+def save_own_limits(org_id: str, user_id: str, tokens_per_minute: int, tokens_per_day: int) -> bool:
+    """Change only the limits, without the key again. False when there is no model."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE user_llm_models SET tokens_per_minute = %s, tokens_per_day = %s "
+            "WHERE org_id = %s AND user_id = %s",
+            (tokens_per_minute, tokens_per_day, org_id, user_id),
+        )
+    forget_own_limits(user_id)
+    return bool(cur.rowcount)
+
+
+#: Read on every call on the person's key; cached a minute like the admin's.
+_OWN_LIMITS_TTL_SECONDS = 60
+_own_limits: dict[str, tuple[float, tuple[int, int]]] = {}
+
+
+def own_limits(org_id: str, user_id: str) -> tuple[int, int]:
+    """``(tokens a minute, tokens a day)`` the person set on their own key; 0 = none.
+    A read fault means none: the limiter never takes the product down."""
+    import logging
+    import time
+
+    now = time.monotonic()
+    cached = _own_limits.get(user_id)
+    if cached and now - cached[0] < _OWN_LIMITS_TTL_SECONDS:
+        return cached[1]
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT tokens_per_minute, tokens_per_day FROM user_llm_models "
+                "WHERE org_id = %s AND user_id = %s",
+                (org_id, user_id),
+            ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("Could not read own-model limits: %s", exc)
+        return (0, 0)
+    limits = (int(row[0]), int(row[1])) if row else (0, 0)
+    _own_limits[user_id] = (now, limits)
+    return limits
+
+
+def forget_own_limits(user_id: str) -> None:
+    _own_limits.pop(user_id, None)
 
 
 def delete_own_model(org_id: str, user_id: str) -> None:
@@ -87,7 +140,7 @@ def delete_own_model(org_id: str, user_id: str) -> None:
 
 
 #: Whose key pays for a call: ours (Handbook's limits), the company's (its
-#: admin's limits), or the person's own (no limits).
+#: admin's limits), or the person's own (only the limits they set).
 OURS, COMPANY, OWN = "ours", "company", "own"
 
 

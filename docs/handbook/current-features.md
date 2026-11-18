@@ -296,12 +296,13 @@ others. In Chart mode a file's tables and figures can be charted (see §10).
 Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Claude Haiku 5.5
 (fast and low cost). Both build charts. Admins can also add the company's own model from a list
 of provider presets; its key is tested before it is saved and stored encrypted. Each person can
-also add their own model and key on their Account page ("Your own model"); only they can pick it,
-it is billed to them, and no Handbook or company limit applies to it. Background work
+also add their own model and key on its own page (Account › Your own model, or "Add your own key"
+in the chat's model menu): provider, key, model, and optional limits of their own (0 = none). Only
+they can pick it, it is billed to them, and no Handbook or company limit applies to it. Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
 
-**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `app/llm/own_model.py`, `frontend/components/ModelPicker.tsx`, `frontend/components/OwnModelPanel.tsx`
+**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `app/llm/own_model.py`, `frontend/components/ModelPicker.tsx`, `frontend/app/account/model/page.tsx`
 
 ## 15. Feedback and documentation gaps
 

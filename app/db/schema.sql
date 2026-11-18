@@ -1078,7 +1078,8 @@ CREATE TABLE IF NOT EXISTS slack_event_receipts (
 );
 
 -- A person's OWN model and key (app/llm/own_model.py): answers on it are paid
--- by them and never counted against Handbook's limits. The key is encrypted
+-- by them and never counted against Handbook's or the admin's limits, only the
+-- ones they set themselves. The key is encrypted
 -- like OAuth tokens and is never returned by any route. One per person.
 CREATE TABLE IF NOT EXISTS user_llm_models (
     org_id            UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -1091,6 +1092,11 @@ CREATE TABLE IF NOT EXISTS user_llm_models (
     saved_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, user_id)
 );
+-- Limits the person sets on their own key, in tokens; 0 = no limit (the default).
+ALTER TABLE user_llm_models
+    ADD COLUMN IF NOT EXISTS tokens_per_minute INTEGER NOT NULL DEFAULT 0 CHECK (tokens_per_minute >= 0);
+ALTER TABLE user_llm_models
+    ADD COLUMN IF NOT EXISTS tokens_per_day INTEGER NOT NULL DEFAULT 0 CHECK (tokens_per_day >= 0);
 
 -- The limits a company's admin sets (app/security/ai_spend.py), in tokens,
 -- input and output together; 0 = no limit. They narrow Handbook's own limits

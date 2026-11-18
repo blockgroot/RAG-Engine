@@ -649,7 +649,12 @@ export interface OwnModel {
   key_tail: string | null;
   agent: OrgModel["agent"];
   saved_at: string | null;
+  /** Limits the person set on their own key, in tokens; 0 = no limit. */
+  tokens_per_minute: number;
+  tokens_per_day: number;
 }
+
+export type OwnLimits = Pick<OwnModel, "tokens_per_minute" | "tokens_per_day">;
 
 /** The limits a company admin sets, in tokens (input and output together); 0 = no limit. */
 export interface AiLimits {
@@ -1051,10 +1056,15 @@ export const api = {
     }),
   getOwnModel: () =>
     request<{ model: OwnModel | null; presets: ModelPreset[] }>("/account/llm-model"),
-  saveOwnModel: (preset: string, model: string, apiKey: string) =>
+  saveOwnModel: (preset: string, model: string, apiKey: string, limits: OwnLimits) =>
     request<{ model: OwnModel }>("/account/llm-model", {
       method: "PUT",
-      body: JSON.stringify({ preset, model, api_key: apiKey }),
+      body: JSON.stringify({ preset, model, api_key: apiKey, ...limits }),
+    }),
+  saveOwnLimits: (limits: OwnLimits) =>
+    request<{ model: OwnModel }>("/account/llm-model/limits", {
+      method: "PUT",
+      body: JSON.stringify(limits),
     }),
   deleteOwnModel: () => request<void>("/account/llm-model", { method: "DELETE" }),
 

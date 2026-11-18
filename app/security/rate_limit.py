@@ -36,7 +36,7 @@ from ..config.settings import LLMSettings, RateLimitSettings
 from ..core.exceptions import AuthError, RateLimiterError
 from ..db.connection import get_connection
 from ..ratelimit import Bucket, Decision, build_rate_limiter
-from .ai_spend import admin_buckets, charge_to, spend_buckets, token_buckets
+from .ai_spend import admin_buckets, charge_to, own_buckets, spend_buckets, token_buckets
 from .client_ip import resolve_client_ip
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ _SPEND_NEED = 0.0001
 
 
 def refusal_message(retry_after: float, refused_by: str = "") -> str:
+    if refused_by.startswith("ai:user:o"):
+        return (f"You've reached the limit you set for your own model. "
+                f"Please try again in {_wait(retry_after)}, or change it in Your own model.")
     if refused_by.startswith(("ai:user:a", "ai:org:a")):
         return (f"You've reached the AI usage limit your company set. "
                 f"Please try again in {_wait(retry_after)}.")
@@ -99,9 +102,9 @@ def question_decision(
     from ..llm.own_model import OURS, OWN, billing_of
 
     # Whose key answers decides which limits apply (``ai_spend``); a person's
-    # own key has none, but still takes the question buckets below.
+    # own key has only the ones they set, and still takes the question buckets below.
     billing = billing_of(model)
-    usage = admin_buckets(user_id, org_id) if billing != OWN else []
+    usage = own_buckets(user_id, org_id) if billing == OWN else admin_buckets(user_id, org_id)
     if billing == OURS:
         ins, outs = token_buckets(user_id, org_id, model or LLMSettings.from_env().model, settings)
         usage += ins + outs + spend_buckets(user_id, org_id, settings)
@@ -252,6 +255,8 @@ _LIMIT_NAMES = {
     "ai:user:aday": "ai-admin:person-tokens-day",
     "ai:org:amin": "ai-admin:company-tokens-minute",
     "ai:org:aday": "ai-admin:company-tokens-day",
+    "ai:user:omin": "ai-own:person-tokens-minute",
+    "ai:user:oday": "ai-own:person-tokens-day",
 }
 
 

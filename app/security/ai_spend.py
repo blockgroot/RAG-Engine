@@ -9,7 +9,7 @@
 
 Whose key answers decides which apply (``own_model.billing_of``): on ours,
 all of them (an admin's can only narrow ours); on the company's key, only
-the admin's; on a person's own key, none.
+the admin's; on a person's own key, only the ones they set (``own_buckets``).
 
 One question can cost ten times another and models differ twentyfold in
 price, so every paid call is charged its real cost and a question is
@@ -170,6 +170,21 @@ def admin_buckets(user_id: str | None, org_id: str | None) -> list[Bucket]:
     return buckets
 
 
+def own_buckets(user_id: str | None, org_id: str | None) -> list[Bucket]:
+    """The limits a person set on their own key, in tokens; none by default."""
+    if not (user_id and org_id):
+        return []
+    from ..llm.own_model import own_limits
+
+    per_min, per_day = own_limits(org_id, user_id)
+    buckets = []
+    if per_min:
+        buckets.append(Bucket(f"ai:user:omin:{user_id}", per_min, per_min))
+    if per_day:
+        buckets.append(Bucket(f"ai:user:oday:{user_id}", per_day, per_day / _MINUTES_PER_DAY))
+    return buckets
+
+
 def charge_call(
     model: str | None,
     input_tokens: int | None,
@@ -180,8 +195,6 @@ def charge_call(
     """Charge one finished call to the limits of whoever's key answered
     (``billing``). Returns dollars charged to our credit. A store fault is
     logged and the call stands."""
-    if billing == OWN:  # their key, their bill: no limits
-        return 0.0
     user_id, org_id = _SPENDER.get()
     if not (user_id or org_id):
         return 0.0
@@ -189,7 +202,8 @@ def charge_call(
     if not settings.enabled:
         return 0.0
     tokens = (input_tokens or 0) + (output_tokens or 0)
-    charges = [(admin_buckets(user_id, org_id), tokens)]
+    # Their key, their bill: only the limits they set themselves.
+    charges = [(own_buckets(user_id, org_id) if billing == OWN else admin_buckets(user_id, org_id), tokens)]
     cost, dollars = 0.0, []
     if billing == OURS:
         ins, outs = token_buckets(user_id, org_id, model, settings)

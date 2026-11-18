@@ -280,7 +280,8 @@ def _is_uuid(value: str) -> bool:
 
 # --- Your own model ------------------------------------------------------------
 # A person's own key and model: only they can pick it, they pay for it, and
-# Handbook's and the admin's limits never apply to it. The key is write-only.
+# Handbook's and the admin's limits never apply to it, only limits they set
+# themselves (0 = none, the default). The key is write-only.
 
 
 @router.get("/llm-model")
@@ -300,10 +301,26 @@ def put_own_model(payload: dict, session: SessionClaims = Depends(get_session)):
     """Test the key and model with one real call, then save. Never stores one
     that cannot answer."""
     from ..llm import own_model
-    from .llm_model import checked_model
+    from .llm_model import checked_model, token_limit
 
+    per_minute = token_limit(payload, "tokens_per_minute")
+    per_day = token_limit(payload, "tokens_per_day")
     preset_id, model, api_key, agent = checked_model(payload, own_model.OWN)
-    own_model.save_own_model(session.org_id, session.user_id, preset_id, model, api_key, agent)
+    own_model.save_own_model(session.org_id, session.user_id, preset_id, model, api_key, agent,
+                             per_minute, per_day)
+    return {"model": own_model.get_own_model_summary(session.org_id, session.user_id)}
+
+
+@router.put("/llm-model/limits")
+def put_own_limits(payload: dict, session: SessionClaims = Depends(get_session)):
+    """Change the limits on your own key without entering the key again."""
+    from ..llm import own_model
+    from .llm_model import token_limit
+
+    per_minute = token_limit(payload, "tokens_per_minute")
+    per_day = token_limit(payload, "tokens_per_day")
+    if not own_model.save_own_limits(session.org_id, session.user_id, per_minute, per_day):
+        raise HTTPException(status_code=404, detail="Add your own model first.")
     return {"model": own_model.get_own_model_summary(session.org_id, session.user_id)}
 
 

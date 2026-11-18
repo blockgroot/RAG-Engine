@@ -21,12 +21,15 @@ from app.security import ai_spend, rate_limit
 from app.security.ai_spend import charge_call, charge_to
 
 HAIKU = "claude-haiku-5-5"
+#: The real reader, kept before the autouse fixture stubs it for the limiter tests.
+_read_own_limits = own_model.own_limits
 
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     charge_to(None, None)
     monkeypatch.setattr(rate_limit, "_member_count", lambda org: 30)
+    monkeypatch.setattr(own_model, "own_limits", lambda org, user: (0, 0))   # none set
     yield
     charge_to(None, None)
 
@@ -94,7 +97,7 @@ def test_the_company_key_takes_the_admins_day_limit(monkeypatch, ids):
         ("minutes.", "hour.", "hours."))
 
 
-def test_a_persons_own_key_is_never_limited(monkeypatch, ids):
+def test_a_persons_own_key_takes_none_of_our_or_the_admins_limits(monkeypatch, ids):
     user, org = ids
     _admin_limits(monkeypatch, person_min=1, person_day=1, company_min=1, company_day=1)
     charge_to(user, org)
@@ -102,6 +105,20 @@ def test_a_persons_own_key_is_never_limited(monkeypatch, ids):
     assert rate_limit.question_decision(user, org, model="own:gpt-5").allowed
     # Their spending never touched the company's: a colleague on ours is fine.
     assert rate_limit.question_decision(str(uuid.uuid4()), org, model=HAIKU).allowed
+
+
+def test_a_person_may_limit_their_own_key(monkeypatch, ids):
+    user, org = ids
+    _admin_limits(monkeypatch)
+    monkeypatch.setattr(own_model, "own_limits", lambda o, u: (0, 30_000))
+    charge_to(user, org)
+    charge_call("gpt-5", 25_000, 6_000, billing=OWN)     # 31,000: past their 30,000 a day
+    decision = rate_limit.question_decision(user, org, model="own:gpt-5")
+    assert not decision.allowed and decision.refused_by == f"ai:user:oday:{user}"
+    assert rate_limit.refusal_message(decision.retry_after, decision.refused_by).startswith(
+        "You've reached the limit you set for your own model.")
+    # Their own cap never touches Handbook's model.
+    assert rate_limit.question_decision(user, org, model=HAIKU).allowed
 
 
 def test_no_admin_limits_is_handbooks_limits_alone(monkeypatch, ids):
@@ -223,6 +240,9 @@ def test_an_own_key_is_stored_encrypted_and_never_shown(person):
 
     org, user = person
     own_model.save_own_model(org, user, "openai", "gpt-5", "sk-secret-1234", "native")
+    assert own_model.get_own_model_summary(org, user)["tokens_per_day"] == 0     # none by default
+    assert own_model.save_own_limits(org, user, 10_000, 200_000)
+    assert _read_own_limits(org, user) == (10_000, 200_000)
     with get_connection() as conn:
         stored = conn.execute("SELECT api_key_encrypted FROM user_llm_models WHERE user_id = %s",
                               (user,)).fetchone()[0]
@@ -236,6 +256,7 @@ def test_an_own_key_is_stored_encrypted_and_never_shown(person):
     own_model.delete_own_model(org, user)
     own_model.delete_own_model(org, user)                 # idempotent
     assert own_model.get_own_model(org, user) is None
+    assert not own_model.save_own_limits(org, user, 1, 1)   # nothing to limit
 
 
 @requires_db

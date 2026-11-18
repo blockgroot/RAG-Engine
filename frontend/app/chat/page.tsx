@@ -1260,10 +1260,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 value={model}
                 disabled={busy}
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
-                footer={{
-                  href: "/account#own-model",
-                  label: models.some((m) => m.id.startsWith("own:")) ? "Change your own key" : "Add your own key",
-                }}
+                footer={{ href: "/account/model", label: "Add your own key" }}
                 options={[
                   { value: "auto", label: modelName(defaultLabel), hint: "Default" },
                   ...pickerModels.map((m) => ({

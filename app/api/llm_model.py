@@ -200,6 +200,15 @@ LIMIT_FIELDS = ("person_tokens_per_minute", "person_tokens_per_day",
 MAX_LIMIT_TOKENS = 1_000_000_000
 
 
+def token_limit(payload: dict, name: str) -> int:
+    """A whole number of tokens from 0 (no limit) to ``MAX_LIMIT_TOKENS``."""
+    raw = payload.get(name, 0)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= MAX_LIMIT_TOKENS:
+        raise HTTPException(status_code=400,
+                            detail=f"{name} must be a whole number from 0 to {MAX_LIMIT_TOKENS:,}")
+    return raw
+
+
 @router.get("/limits")
 def get_limits(session: SessionClaims = Depends(require_admin)):
     """The company's AI limits. Zeros when the admin has set none."""
@@ -215,13 +224,7 @@ def put_limits(payload: dict, session: SessionClaims = Depends(require_admin)):
     from ..db.connection import get_connection
     from ..security.ai_spend import forget_org_limits, org_limits
 
-    values = []
-    for name in LIMIT_FIELDS:
-        raw = payload.get(name, 0)
-        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= MAX_LIMIT_TOKENS:
-            raise HTTPException(status_code=400,
-                                detail=f"{name} must be a whole number from 0 to {MAX_LIMIT_TOKENS:,}")
-        values.append(raw)
+    values = [token_limit(payload, name) for name in LIMIT_FIELDS]
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO org_ai_limits (org_id, person_tokens_per_minute, person_tokens_per_day, "
