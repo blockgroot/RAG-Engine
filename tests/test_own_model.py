@@ -267,8 +267,28 @@ def test_the_admins_limits_are_saved_and_read_back(person):
 
     org, _ = person
     session = SimpleNamespace(org_id=org)
-    assert get_limits(session=session)["limits"]["person_tokens_per_day"] == 0
+    # Handbook's defaults until the admin sets their own.
+    shown = get_limits(session=session)
+    assert shown["limits"] == shown["defaults"]
+    assert shown["limits"]["person_tokens_per_minute"] == 68_000
     saved = put_limits({"person_tokens_per_day": 200_000, "company_tokens_per_minute": 50_000},
                        session=session)["limits"]
     assert saved == {"person_tokens_per_minute": 0, "person_tokens_per_day": 200_000,
                      "company_tokens_per_minute": 50_000, "company_tokens_per_day": 0}
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, (68_000, 4_000_000, 440_000, 30_000_000)),
+    ("1:2:3:4", (1, 2, 3, 4)),
+    ("0:0:0:0", (0, 0, 0, 0)),
+    ("1:2:3", (68_000, 4_000_000, 440_000, 30_000_000)),      # malformed: defaults kept
+    ("1:-2:3:4", (68_000, 4_000_000, 440_000, 30_000_000)),
+])
+def test_default_company_limits_come_from_settings(monkeypatch, raw, expected):
+    from app.config.settings import RateLimitSettings
+
+    if raw is None:
+        monkeypatch.delenv("AI_ORG_DEFAULT_LIMITS", raising=False)
+    else:
+        monkeypatch.setenv("AI_ORG_DEFAULT_LIMITS", raw)
+    assert RateLimitSettings.from_env().org_default_limits == expected

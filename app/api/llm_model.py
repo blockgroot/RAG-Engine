@@ -211,10 +211,14 @@ def token_limit(payload: dict, name: str) -> int:
 
 @router.get("/limits")
 def get_limits(session: SessionClaims = Depends(require_admin)):
-    """The company's AI limits. Zeros when the admin has set none."""
+    """The company's AI limits: Handbook's defaults until the admin sets their own."""
+    from ..config.settings import RateLimitSettings
     from ..security.ai_spend import org_limits
 
-    return {"limits": dict(zip(LIMIT_FIELDS, org_limits(session.org_id)))}
+    return {
+        "limits": dict(zip(LIMIT_FIELDS, org_limits(session.org_id))),
+        "defaults": dict(zip(LIMIT_FIELDS, RateLimitSettings.from_env().org_default_limits)),
+    }
 
 
 @router.put("/limits")

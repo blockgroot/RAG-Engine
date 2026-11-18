@@ -30,6 +30,8 @@ def _nobody_paying():
 @pytest.fixture
 def ids(monkeypatch):
     monkeypatch.setattr(rate_limit, "_member_count", lambda org: 30)
+    # Handbook's own limits only: a company's limits are tests/test_own_model.py.
+    monkeypatch.setattr(ai_spend, "org_limits", lambda org: (0, 0, 0, 0))
     return str(uuid.uuid4()), str(uuid.uuid4())
 
 

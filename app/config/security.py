@@ -207,6 +207,11 @@ class RateLimitSettings:
     ai_prices: tuple[tuple[str, float, float], ...] = ()
     # (model id, person in, person out, company in, company out) tokens a minute.
     ai_token_limits: tuple[tuple[str, int, int, int, int], ...] = ()
+    # A company's limits until its admin sets its own (Admin > Model), in tokens,
+    # input and output together: person a minute, person a day, company a
+    # minute, company a day. A minute matches AI_TOKEN_LIMITS (60k + 8k, 400k +
+    # 40k); a day is about what the dollar defaults buy on Haiku.
+    org_default_limits: tuple[int, int, int, int] = (68_000, 4_000_000, 440_000, 30_000_000)
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
@@ -271,7 +276,28 @@ class RateLimitSettings:
             ai_token_limits=_parse_ai_token_limits(
                 os.getenv("AI_TOKEN_LIMITS") or DEFAULT_AI_TOKEN_LIMITS
             ),
+            org_default_limits=_parse_org_default_limits(
+                os.getenv("AI_ORG_DEFAULT_LIMITS"), cls.org_default_limits
+            ),
         )
+
+
+def _parse_org_default_limits(
+    raw: str | None, default: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """``person_minute:person_day:company_minute:company_day`` tokens; 0 = none.
+    Malformed is logged and the built-in defaults kept, never guessed."""
+    if not raw:
+        return default
+    try:
+        values = tuple(int(v) for v in raw.split(":"))
+        if len(values) == 4 and all(v >= 0 for v in values):
+            return values  # type: ignore[return-value]
+    except ValueError:
+        pass
+    logging.getLogger(__name__).warning(
+        "AI_ORG_DEFAULT_LIMITS: ignoring %r (want person_minute:person_day:company_minute:company_day)", raw)
+    return default
 
 
 def _parse_ai_prices(raw: str) -> tuple[tuple[str, float, float], ...]:

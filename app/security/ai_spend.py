@@ -125,8 +125,9 @@ _NO_LIMITS = (0, 0, 0, 0)
 
 def org_limits(org_id: str) -> tuple[int, int, int, int]:
     """``(person a minute, person a day, company a minute, company a day)``
-    tokens the admin set; 0 = none. A read fault means none: the limiter must
-    never be what takes the product down."""
+    tokens the admin set (0 = none), or the defaults until they have set any
+    (``RateLimitSettings.org_default_limits``). A read fault means none: the
+    limiter must never be what takes the product down."""
     now = time.monotonic()
     cached = _org_limits.get(org_id)
     if cached and now - cached[0] < _ORG_LIMITS_TTL_SECONDS:
@@ -144,7 +145,7 @@ def org_limits(org_id: str) -> tuple[int, int, int, int]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not read the AI limits of org %s: %s", org_id, exc)
         return _NO_LIMITS
-    limits = tuple(int(v) for v in row) if row else _NO_LIMITS
+    limits = tuple(int(v) for v in row) if row else RateLimitSettings.from_env().org_default_limits
     _org_limits[org_id] = (now, limits)
     return limits
 

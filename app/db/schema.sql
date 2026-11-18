@@ -1099,7 +1099,8 @@ ALTER TABLE user_llm_models
     ADD COLUMN IF NOT EXISTS tokens_per_day INTEGER NOT NULL DEFAULT 0 CHECK (tokens_per_day >= 0);
 
 -- The limits a company's admin sets (app/security/ai_spend.py), in tokens,
--- input and output together; 0 = no limit. They narrow Handbook's own limits
+-- input and output together; 0 = no limit. No row = Handbook's defaults
+-- (RateLimitSettings.org_default_limits). They narrow Handbook's own limits
 -- on Handbook's key and are the only limits on the company's key. A person's
 -- own key is never limited.
 CREATE TABLE IF NOT EXISTS org_ai_limits (

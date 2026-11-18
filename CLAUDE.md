@@ -529,8 +529,8 @@ the model the asker picked (`limit_question(session, model)`, None = the default
 refused once any of its buckets is empty, so one request may overdraw. A model missing
 from `AI_PRICES` is not charged; one missing from `AI_TOKEN_LIMITS` has no token limit.
 Whose KEY answers decides the limits (`own_model.billing_of`, the client's `billing`): ours
-takes Handbook's and the admin's (`org_ai_limits`, tokens a minute and a day; an admin's only
-narrow ours, never raise them); the company's model takes the admin's only and is never
+takes Handbook's and the admin's (`org_ai_limits`, tokens a minute and a day, defaults
+`AI_ORG_DEFAULT_LIMITS` until the admin saves; an admin's only narrow ours, never raise them); the company's model takes the admin's only and is never
 charged to our credit, including its save-time test; a person's own model (`own:<model>`,
 `user_llm_models`) takes only the limits that person set on it (0 = none, the default). Only that person may pick it, and a missing one fails closed,
 never answered on another key. Its key is write-only, like the company's.

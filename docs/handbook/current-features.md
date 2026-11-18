@@ -504,7 +504,9 @@ app that issued it.
   company, input and output counted apart; and dollars a day for the person and the company,
   whichever model answers. Defaults: $0.50 a person and $3.30 a company a day.
 - **The company's own limits.** On Admin › Model an admin sets tokens a minute and a day, for each
-  person and for the whole company (0 = no limit). They narrow Handbook's limits on Handbook's
+  person and for the whole company (0 = no limit). Until they do, Handbook's defaults apply and are
+  shown filled in: 68,000 and 4,000,000 a person, 440,000 and 30,000,000 the company
+  (`AI_ORG_DEFAULT_LIMITS`). They narrow Handbook's limits on Handbook's
   model and are the only limits on the company's model. A person's own key is never limited.
 
 Limits are counted in Redis when it is set up, so every server shares them. Redis holds rate

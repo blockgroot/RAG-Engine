@@ -29,13 +29,17 @@ const LIMIT_ROWS: { key: keyof AiLimits; label: string }[] = [
  */
 function AiLimitsPanel() {
   const [limits, setLimits] = useState<AiLimits | null>(null);
+  const [defaults, setDefaults] = useState<AiLimits | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     api
       .getAiLimits()
-      .then(({ limits: current }) => setLimits(current))
+      .then(({ limits: current, defaults: preset }) => {
+        setLimits(current);
+        setDefaults(preset);
+      })
       .catch((err) => setMessage({ ok: false, text: err instanceof ApiError ? err.message : "Could not load the limits." }));
   }, []);
 
@@ -62,7 +66,7 @@ function AiLimitsPanel() {
         <p className="muted">
           Tokens are the pieces of text a model reads and writes; a typical question uses 10,000 to 40,000.
           These apply to Handbook&rsquo;s model and to your company&rsquo;s model. A person&rsquo;s own key is never
-          limited. 0 means no limit.
+          limited. Filled in with Handbook&rsquo;s defaults until you change them; 0 means no limit.
         </p>
       </div>
       {message && (
@@ -90,7 +94,10 @@ function AiLimitsPanel() {
                   setLimits({ ...limits, [row.key]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
                 }
               />
-              <p className="muted">{limits[row.key] ? `${limits[row.key].toLocaleString()} tokens` : "No limit"}</p>
+              <p className="muted">
+                {limits[row.key] ? `${limits[row.key].toLocaleString()} tokens` : "No limit"}
+                {defaults && limits[row.key] === defaults[row.key] ? " · Handbook default" : ""}
+              </p>
             </div>
           ))}
           <div className="model-form-actions">

@@ -1048,7 +1048,7 @@ export const api = {
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),
-  getAiLimits: () => request<{ limits: AiLimits }>("/admin/llm-model/limits"),
+  getAiLimits: () => request<{ limits: AiLimits; defaults: AiLimits }>("/admin/llm-model/limits"),
   saveAiLimits: (limits: AiLimits) =>
     request<{ limits: AiLimits }>("/admin/llm-model/limits", {
       method: "PUT",
