@@ -1077,6 +1077,34 @@ CREATE TABLE IF NOT EXISTS slack_event_receipts (
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- A person's OWN model and key (app/llm/own_model.py): answers on it are paid
+-- by them and never counted against Handbook's limits. The key is encrypted
+-- like OAuth tokens and is never returned by any route. One per person.
+CREATE TABLE IF NOT EXISTS user_llm_models (
+    org_id            UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id           UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    preset            TEXT NOT NULL,
+    model             TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    key_tail          TEXT,
+    agent             TEXT,
+    saved_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_id)
+);
+
+-- The limits a company's admin sets (app/security/ai_spend.py), in tokens,
+-- input and output together; 0 = no limit. They narrow Handbook's own limits
+-- on Handbook's key and are the only limits on the company's key. A person's
+-- own key is never limited.
+CREATE TABLE IF NOT EXISTS org_ai_limits (
+    org_id                    UUID PRIMARY KEY REFERENCES organizations (id) ON DELETE CASCADE,
+    person_tokens_per_minute  INTEGER NOT NULL DEFAULT 0 CHECK (person_tokens_per_minute >= 0),
+    person_tokens_per_day     INTEGER NOT NULL DEFAULT 0 CHECK (person_tokens_per_day >= 0),
+    company_tokens_per_minute INTEGER NOT NULL DEFAULT 0 CHECK (company_tokens_per_minute >= 0),
+    company_tokens_per_day    INTEGER NOT NULL DEFAULT 0 CHECK (company_tokens_per_day >= 0),
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS live_tool_calls (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,

@@ -35,7 +35,7 @@ PROBE_TIMEOUT = 30.0
 PROBE_PROMPT = "Reply with the single word: ready"
 
 
-def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
+def _probe(preset: org_model.Preset, model: str, api_key: str, billing: str = "company") -> None:
     """Call the endpoint once; raise ``HTTPException`` with the provider's own text.
 
     401 (key), 404 (model id) and a connection failure need different fixes.
@@ -51,6 +51,7 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
         max_retries=0,
         extra_body=extra_body,
         extra_body_optional=extra_optional,
+        billing=billing,  # their key: never counted against our limits
     )
     # Production's answer cap: a reasoning model can spend a tiny cap and return
     # empty, and an unbounded one would pass a model that fails in production.
@@ -91,7 +92,7 @@ AGENT_TOOL = {"type": "function", "function": {
 AGENT_PROMPT = 'Save a note that says "ready" with the save_note tool.'
 
 
-def _agent_probe(preset: org_model.Preset, model: str, api_key: str) -> str:
+def _agent_probe(preset: org_model.Preset, model: str, api_key: str, billing: str = "company") -> str:
     """How the model calls tools: ``"native"``, ``"text"`` (JSON text Agent mode reads), ``"none"`` or ``"unknown"`` (test failed).
 
     Never blocks saving: the model may still answer well.
@@ -101,7 +102,7 @@ def _agent_probe(preset: org_model.Preset, model: str, api_key: str) -> str:
     extra_body, extra_optional = preset_extra_body(preset.id, model)
     client = OpenAICompatProvider(model=model, api_key=api_key, base_url=preset.base_url,
                                   timeout=PROBE_TIMEOUT, max_retries=0, extra_body=extra_body,
-                                  extra_body_optional=extra_optional)
+                                  extra_body_optional=extra_optional, billing=billing)
     try:
         result = client.generate_with_tools([{"role": "user", "content": AGENT_PROMPT}],
                                             tools=[AGENT_TOOL], tool_choice="auto")
@@ -137,22 +138,9 @@ def list_presets(session: SessionClaims = Depends(require_admin)):
 @router.put("")
 def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
     """Validate, probe, then save. A model that cannot answer is never stored."""
-    preset_id = bounded(payload.get("preset") or "", field="preset", limit=40)
-    model = bounded(payload.get("model") or "", field="model", limit=MAX_MODEL_CHARS)
-    api_key = bounded(payload.get("api_key") or "", field="api_key", limit=MAX_KEY_CHARS)
-
-    try:
-        preset = org_model.get_preset(preset_id)
-    except ProviderError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    api_key = api_key.strip()
-    model = model.strip()
-
     # Probe BEFORE saving, so a typo never becomes a broken option in every
     # member's dropdown.
-    _probe(preset, model, api_key)
-    agent = _agent_probe(preset, model, api_key)
+    preset_id, model, api_key, agent = checked_model(payload, "company")
 
     from datetime import datetime, timezone
 
@@ -188,3 +176,62 @@ def delete_model(session: SessionClaims = Depends(require_admin)):
     """Remove the model. Members fall back to the built-in list immediately."""
     org_model.delete_org_model(session.org_id)
     return None
+
+
+def checked_model(payload: dict, billing: str) -> tuple[str, str, str, str]:
+    """``(preset, model, key, agent)`` from a form, after one real call with
+    them. Shared by the company's model and a person's own: a model that
+    cannot answer is never stored."""
+    preset_id = bounded(payload.get("preset") or "", field="preset", limit=40)
+    model = bounded(payload.get("model") or "", field="model", limit=MAX_MODEL_CHARS).strip()
+    api_key = bounded(payload.get("api_key") or "", field="api_key", limit=MAX_KEY_CHARS).strip()
+    try:
+        preset = org_model.get_preset(preset_id)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _probe(preset, model, api_key, billing)
+    return preset_id, model, api_key, _agent_probe(preset, model, api_key, billing)
+
+
+#: The admin's limits, in tokens (input and output together); 0 = no limit.
+LIMIT_FIELDS = ("person_tokens_per_minute", "person_tokens_per_day",
+                "company_tokens_per_minute", "company_tokens_per_day")
+#: Far above any real use, so a typo cannot overflow the column.
+MAX_LIMIT_TOKENS = 1_000_000_000
+
+
+@router.get("/limits")
+def get_limits(session: SessionClaims = Depends(require_admin)):
+    """The company's AI limits. Zeros when the admin has set none."""
+    from ..security.ai_spend import org_limits
+
+    return {"limits": dict(zip(LIMIT_FIELDS, org_limits(session.org_id)))}
+
+
+@router.put("/limits")
+def put_limits(payload: dict, session: SessionClaims = Depends(require_admin)):
+    """Save the company's AI limits. They narrow Handbook's own limits on
+    Handbook's key, and are the only limits on the company's key."""
+    from ..db.connection import get_connection
+    from ..security.ai_spend import forget_org_limits, org_limits
+
+    values = []
+    for name in LIMIT_FIELDS:
+        raw = payload.get(name, 0)
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= MAX_LIMIT_TOKENS:
+            raise HTTPException(status_code=400,
+                                detail=f"{name} must be a whole number from 0 to {MAX_LIMIT_TOKENS:,}")
+        values.append(raw)
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO org_ai_limits (org_id, person_tokens_per_minute, person_tokens_per_day, "
+            "company_tokens_per_minute, company_tokens_per_day, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, now()) ON CONFLICT (org_id) DO UPDATE SET "
+            "person_tokens_per_minute = EXCLUDED.person_tokens_per_minute, "
+            "person_tokens_per_day = EXCLUDED.person_tokens_per_day, "
+            "company_tokens_per_minute = EXCLUDED.company_tokens_per_minute, "
+            "company_tokens_per_day = EXCLUDED.company_tokens_per_day, updated_at = now()",
+            (session.org_id, *values),
+        )
+    forget_org_limits(session.org_id)
+    return {"limits": dict(zip(LIMIT_FIELDS, org_limits(session.org_id)))}

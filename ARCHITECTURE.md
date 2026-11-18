@@ -197,7 +197,7 @@ Two tables can be compared ("target vs achieved", `ChartSpec.versus`), and a wor
 
 - **Rate limits** (`app/security/rate_limit.py`, buckets in `app/ratelimit/`): every router a person calls takes a request bucket; a question takes the person's and the company's bucket together; sending an email takes its own. A limiter fault lets the request through.
 - **Answers at once** (`take_place`): `CHAT_MAX_CONCURRENT` (20) across servers, `CHAT_MAX_CONCURRENT_PER_PERSON` (2). A person over their own cap is refused at once; the shared cap waits up to `CHAT_QUEUE_WAIT_SECONDS`.
-- **AI limits** (`app/security/ai_spend.py`): tokens a minute per answering model, input and output apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet (`AI_PERSON_DOLLARS_PER_DAY`, `AI_COMPANY_DOLLARS_PER_DAY`, priced by `AI_PRICES`). Every paid call is charged where it is made; a model with no price is not charged.
+- **AI limits** (`app/security/ai_spend.py`): tokens a minute per answering model, input and output apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet (`AI_PERSON_DOLLARS_PER_DAY`, `AI_COMPANY_DOLLARS_PER_DAY`, priced by `AI_PRICES`). Every paid call is charged where it is made; a model with no price is not charged. Whose key answers decides which limits apply: Handbook's key takes ours plus the admin's (`org_ai_limits`, tokens a minute and a day, which only narrow ours); the company's model takes only the admin's and is never charged to our credit; a person's own model (`own:<model>`, `user_llm_models`, Account › Your own model) takes none.
 
 ### 6.5 Agent mode (writes into tools)
 

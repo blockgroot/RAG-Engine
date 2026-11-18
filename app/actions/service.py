@@ -257,7 +257,7 @@ def propose(
     from ..llm.routed import use_model
 
     # The picked model (None = default). Set here so no request inherits another's.
-    use_model(model, org_id=org_id)
+    use_model(model, org_id=org_id, user_id=user_id)
     charge_to(user_id, org_id)
     offered = _fit_tools(offered, question, embedder, settings.mcp_max_tools)
     tools = [a.tool for a in offered]
@@ -436,7 +436,7 @@ def continue_run(*, org_id: str, user_id: str, email: str, viewer_for, action_id
                                            run.workspace_id)
         if why_not:
             return ActOutcome(why_not), run.surface
-        use_model(run.model, org_id=org_id)
+        use_model(run.model, org_id=org_id, user_id=user_id)
         charge_to(user_id, org_id)
         offered = _fit_tools(offered, run.question, embedder, settings.mcp_max_tools)
         found, sources, messages, statuses = list(run.found), run.source_list(), list(run.messages), []
@@ -580,7 +580,7 @@ def revise(
 
     from ..llm.routed import use_model
 
-    use_model(model, org_id=org_id)
+    use_model(model, org_id=org_id, user_id=user_id)
     charge_to(user_id, org_id)
     reply = llm.generate(build_revise_prompt(current, instruction), max_tokens=4000)
     try:

@@ -110,14 +110,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-def _is_own_model(org_id: str, model: str | None) -> bool:
-    """True only for THIS org's configured model id."""
-    if not model:
-        return False
-    own = org_model.get_org_model_summary(org_id)
-    return bool(own and own["model"] == model)
-
-
 @router.get("/models")
 def list_models(session: SessionClaims = Depends(get_session)):
     """The models a member may pick, plus the default's identity.
@@ -152,6 +144,20 @@ def list_models(session: SessionClaims = Depends(get_session)):
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
                 # Not ours to judge: offered in Chart mode with a note.
+                "charts": None,
+            }
+        )
+    # The person's own model: their key, only they see it.
+    from ..llm import own_model
+
+    mine = own_model.get_own_model_summary(session.org_id, session.user_id)
+    if mine:
+        models.append(
+            {
+                "id": mine["id"],
+                "label": f"Your own model — {mine['model']}",
+                "note": f"Your {mine.get('preset_label') or 'own'} key. No Handbook limits.",
+                "backend": "own",
                 "charts": None,
             }
         )
@@ -1515,7 +1521,7 @@ def _stream_answer_body(
 ) -> Iterator[str]:
     # Set inside the generator: Starlette runs it in a threadpool, so a ContextVar
     # set in the route may not reach it, and a pooled thread must not leak it.
-    use_model(model, org_id=org_id)
+    use_model(model, org_id=org_id, user_id=session.user_id if session else None)
     # Who pays for this answer's model calls, for the same reason.
     charge_to(session.user_id if session else None, org_id)
     # Logged, never refused (see guard/live.py for the measured reason).
@@ -1725,7 +1731,9 @@ def chat_stream(
     # Validated before the stream starts: afterwards a raise is a truncated 200,
     # not a 400. The model string is untrusted input.
     model = body.get("model")
-    if not catalog.is_selectable(model) and not _is_own_model(session.org_id, model):
+    from ..llm.own_model import selectable
+
+    if not selectable(session.org_id, session.user_id, model):
         # Fails closed: an unknown id must never reach an outbound call.
         raise HTTPException(status_code=400, detail="Unknown model")
 

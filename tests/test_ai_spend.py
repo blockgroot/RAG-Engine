@@ -111,7 +111,7 @@ def test_a_refused_question_spends_no_question_allowance(ids):
 
 def test_every_provider_call_is_charged_to_the_asker(ids, monkeypatch):
     charged = []
-    monkeypatch.setattr(ai_spend, "charge_call", lambda m, i, o: charged.append((m, i, o)))
+    monkeypatch.setattr(ai_spend, "charge_call", lambda m, i, o, billing: charged.append((m, i, o, billing)))
     provider = OpenAICompatProvider(model="claude-haiku-5-5", api_key="k", base_url="https://llm.example/v1")
     reply = SimpleNamespace(
         model="claude-haiku-5-5",
@@ -123,7 +123,7 @@ def test_every_provider_call_is_charged_to_the_asker(ids, monkeypatch):
     monkeypatch.setattr(provider, "_create", lambda kwargs: reply)
     provider.generate("q")
     provider.generate_with_tools([{"role": "user", "content": "q"}], tools=[])
-    assert charged == [("claude-haiku-5-5", 5_000, 300)] * 2
+    assert charged == [("claude-haiku-5-5", 5_000, 300, "ours")] * 2
 
 
 def test_a_charge_that_cannot_be_recorded_never_fails_the_answer(ids, monkeypatch):

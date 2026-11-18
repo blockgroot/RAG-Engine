@@ -640,6 +640,25 @@ export interface OrgModel {
   agent: "native" | "text" | "none" | "unknown" | null;
 }
 
+/** A person's own model; `id` is what the picker sends (`own:<model>`). */
+export interface OwnModel {
+  id: string;
+  model: string;
+  preset: string;
+  preset_label: string | null;
+  key_tail: string | null;
+  agent: OrgModel["agent"];
+  saved_at: string | null;
+}
+
+/** The limits a company admin sets, in tokens (input and output together); 0 = no limit. */
+export interface AiLimits {
+  person_tokens_per_minute: number;
+  person_tokens_per_day: number;
+  company_tokens_per_minute: number;
+  company_tokens_per_day: number;
+}
+
 export interface ModelPreset {
   id: string;
   label: string;
@@ -1024,6 +1043,20 @@ export const api = {
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),
+  getAiLimits: () => request<{ limits: AiLimits }>("/admin/llm-model/limits"),
+  saveAiLimits: (limits: AiLimits) =>
+    request<{ limits: AiLimits }>("/admin/llm-model/limits", {
+      method: "PUT",
+      body: JSON.stringify(limits),
+    }),
+  getOwnModel: () =>
+    request<{ model: OwnModel | null; presets: ModelPreset[] }>("/account/llm-model"),
+  saveOwnModel: (preset: string, model: string, apiKey: string) =>
+    request<{ model: OwnModel }>("/account/llm-model", {
+      method: "PUT",
+      body: JSON.stringify({ preset, model, api_key: apiKey }),
+    }),
+  deleteOwnModel: () => request<void>("/account/llm-model", { method: "DELETE" }),
 
   checkConnectionHealth: (connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(

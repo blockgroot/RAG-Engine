@@ -22,7 +22,7 @@ from ..core.exceptions import AuthError, ConfigurationError, OAuthError
 from ..security.rate_limit import limit_email
 from .validation import MAX_EMAIL_CHARS, bounded
 from ..graph import identities
-from .deps import get_session, public_api_url
+from .deps import SessionClaims, get_session, public_api_url
 
 logger = logging.getLogger(__name__)
 
@@ -276,3 +276,40 @@ def _is_uuid(value: str) -> bool:
         return True
     except (ValueError, TypeError):
         return False
+
+
+# --- Your own model ------------------------------------------------------------
+# A person's own key and model: only they can pick it, they pay for it, and
+# Handbook's and the admin's limits never apply to it. The key is write-only.
+
+
+@router.get("/llm-model")
+def get_own_model(session: SessionClaims = Depends(get_session)):
+    """The person's own model (never the key), and the providers they may use."""
+    from ..llm import org_model, own_model
+
+    return {
+        "model": own_model.get_own_model_summary(session.org_id, session.user_id),
+        "presets": [{"id": p.id, "label": p.label, "models_url": p.models_url}
+                    for p in org_model.PRESETS],
+    }
+
+
+@router.put("/llm-model")
+def put_own_model(payload: dict, session: SessionClaims = Depends(get_session)):
+    """Test the key and model with one real call, then save. Never stores one
+    that cannot answer."""
+    from ..llm import own_model
+    from .llm_model import checked_model
+
+    preset_id, model, api_key, agent = checked_model(payload, own_model.OWN)
+    own_model.save_own_model(session.org_id, session.user_id, preset_id, model, api_key, agent)
+    return {"model": own_model.get_own_model_summary(session.org_id, session.user_id)}
+
+
+@router.delete("/llm-model", status_code=204)
+def delete_own_model(session: SessionClaims = Depends(get_session)):
+    from ..llm import own_model
+
+    own_model.delete_own_model(session.org_id, session.user_id)
+    return None

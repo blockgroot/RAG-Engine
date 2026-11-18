@@ -301,6 +301,11 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
   whichever model answers (`AI_PERSON_DOLLARS_PER_DAY` 0.50, `AI_COMPANY_DOLLARS_PER_DAY` 3.30,
   priced by `AI_PRICES`). Background work on the aux model is not charged
   (`tests/test_ai_spend.py`).
+- **Your own model, and the company's limits** (18 Nov, branch `feat/own-keys-and-limits`): each
+  person can add their own model and key (Account › Your own model), billed to them with no
+  limits; an admin sets the company's limits in tokens a minute and a day (Admin › Model), which
+  narrow ours on our key and are the only limits on the company's model. Calls on the company's
+  key are no longer charged to our credit (`tests/test_own_model.py`).
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or
   neither) and `GUARD_SAFEGUARD_MODEL`, so the guard never spends the answering models' quota.
 

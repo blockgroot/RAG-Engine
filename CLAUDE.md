@@ -528,6 +528,12 @@ where the model is chosen (inside the answering stream); a question is checked a
 the model the asker picked (`limit_question(session, model)`, None = the default) and
 refused once any of its buckets is empty, so one request may overdraw. A model missing
 from `AI_PRICES` is not charged; one missing from `AI_TOKEN_LIMITS` has no token limit.
+Whose KEY answers decides the limits (`own_model.billing_of`, the client's `billing`): ours
+takes Handbook's and the admin's (`org_ai_limits`, tokens a minute and a day; an admin's only
+narrow ours, never raise them); the company's model takes the admin's only and is never
+charged to our credit, including its save-time test; a person's own model (`own:<model>`,
+`user_llm_models`) takes none. Only that person may pick it, and a missing one fails closed,
+never answered on another key. Its key is write-only, like the company's.
 The picker offers Claude Sonnet 5.5 and Haiku 5.5 only (`catalog.CLAUDE_MODELS`); every
 model a person can pick must be priced (`test_production_offers_claude_sonnet_and_haiku_only`).
 Background work runs on the Gemini AUX model, never pickable and never charged.

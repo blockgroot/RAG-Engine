@@ -295,11 +295,13 @@ others. In Chart mode a file's tables and figures can be charted (see §10).
 
 Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Claude Haiku 5.5
 (fast and low cost). Both build charts. Admins can also add the company's own model from a list
-of provider presets; its key is tested before it is saved and stored encrypted. Background work
+of provider presets; its key is tested before it is saved and stored encrypted. Each person can
+also add their own model and key on their Account page ("Your own model"); only they can pick it,
+it is billed to them, and no Handbook or company limit applies to it. Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
 
-**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `frontend/components/ModelPicker.tsx`
+**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `app/llm/own_model.py`, `frontend/components/ModelPicker.tsx`, `frontend/components/OwnModelPanel.tsx`
 
 ## 15. Feedback and documentation gaps
 
@@ -500,6 +502,9 @@ app that issued it.
 - **AI limits, two layers.** Tokens a minute for each answering model, for the person and for the
   company, input and output counted apart; and dollars a day for the person and the company,
   whichever model answers. Defaults: $0.50 a person and $3.30 a company a day.
+- **The company's own limits.** On Admin › Model an admin sets tokens a minute and a day, for each
+  person and for the whole company (0 = no limit). They narrow Handbook's limits on Handbook's
+  model and are the only limits on the company's model. A person's own key is never limited.
 
 Limits are counted in Redis when it is set up, so every server shares them. Redis holds rate
 limits only: there is no answer cache, and every question is answered fresh.

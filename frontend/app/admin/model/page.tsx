@@ -12,89 +12,96 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
-import { ApiError, api, type ModelPreset, type OrgModel } from "@/lib/api";
+import { ApiError, api, type AiLimits, type ModelPreset, type OrgModel } from "@/lib/api";
+import { AGENT_RESULT, ProviderPicker } from "@/components/ProviderPicker";
 
-/** Agent mode's tool-calling test, said in the admin's terms. */
-const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
-  native: "Agent mode: works (calls tools)",
-  text: "Agent mode: works with a fallback (writes tool calls as text)",
-  none: "Agent mode: not available (this model doesn't call tools)",
-  unknown: "Agent mode: couldn't be tested — save again to retry",
-};
+const LIMIT_ROWS: { key: keyof AiLimits; label: string }[] = [
+  { key: "person_tokens_per_minute", label: "Each person, a minute" },
+  { key: "person_tokens_per_day", label: "Each person, a day" },
+  { key: "company_tokens_per_minute", label: "Whole company, a minute" },
+  { key: "company_tokens_per_day", label: "Whole company, a day" },
+];
 
-/** Provider logos (public/providers, from the MIT-licensed lobehub icon set).
- *  An id without a file falls back to its first letter. */
-const LOGOS = new Set(["openai", "anthropic", "openrouter", "nvidia", "google", "mistral", "deepseek", "xai", "together", "fireworks", "cerebras", "perplexity", "cohere", "groq"]);
+/**
+ * The company's own AI limits, in tokens. They narrow Handbook's limits on the
+ * built-in model and are the only limits on the company's model. A person's own
+ * key is never limited. 0 = no limit.
+ */
+function AiLimitsPanel() {
+  const [limits, setLimits] = useState<AiLimits | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
-function ProviderLogo({ id, label }: { id?: string; label?: string }) {
+  useEffect(() => {
+    api
+      .getAiLimits()
+      .then(({ limits: current }) => setLimits(current))
+      .catch((err) => setMessage({ ok: false, text: err instanceof ApiError ? err.message : "Could not load the limits." }));
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!limits) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { limits: next } = await api.saveAiLimits(limits);
+      setLimits(next);
+      setMessage({ ok: true, text: "Saved. The new limits apply from the next question." });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof ApiError ? err.message : "Could not save the limits." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <i aria-hidden className="provider-logo">
-      {id && LOGOS.has(id) ? <img src={`/providers/${id}.svg`} alt="" width={18} height={18} /> : (label ?? "?").charAt(0)}
-    </i>
-  );
-}
-
-function ProviderPicker({
-  presets,
-  value,
-  onChange,
-  disabled,
-}: {
-  presets: ModelPreset[];
-  value: string;
-  onChange: (id: string) => void;
-  disabled: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const picked = presets.find((p) => p.id === value);
-  return (
-    <div
-      className="provider-picker"
-      onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
-      }}
-      onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
-    >
-      <button
-        type="button"
-        id="preset"
-        className="input provider-picker-button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <ProviderLogo id={picked?.id} label={picked?.label} />
-        <span>{picked?.label ?? "Choose a provider"}</span>
-        <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden>
-          <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      </button>
-      {open && (
-        <div className="provider-menu" role="listbox" aria-label="Provider">
-          {presets.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              role="option"
-              aria-selected={p.id === value}
-              onClick={() => {
-                onChange(p.id);
-                setOpen(false);
-              }}
-            >
-              <ProviderLogo id={p.id} label={p.label} />
-              <span>{p.label}</span>
-              {p.id === value && (
-                <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
-                  <path d="m6 12 4 4 8-8" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </button>
-          ))}
+    <section className="room-section model-setup" aria-labelledby="limits-title">
+      <div className="studio-section-head">
+        <h2 id="limits-title">Usage limits</h2>
+        <p className="muted">
+          Tokens are the pieces of text a model reads and writes; a typical question uses 10,000 to 40,000.
+          These apply to Handbook&rsquo;s model and to your company&rsquo;s model. A person&rsquo;s own key is never
+          limited. 0 means no limit.
+        </p>
+      </div>
+      {message && (
+        <div className={`banner ${message.ok ? "banner-ok" : "banner-warn"}`} role={message.ok ? "status" : "alert"}>
+          {message.text}
         </div>
       )}
-    </div>
+      {!limits ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        <form onSubmit={save} className="model-form">
+          {LIMIT_ROWS.map((row) => (
+            <div className="field" key={row.key}>
+              <label htmlFor={row.key}>{row.label}</label>
+              <input
+                id={row.key}
+                className="input"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                step={1000}
+                value={limits[row.key]}
+                disabled={busy}
+                onChange={(e) =>
+                  setLimits({ ...limits, [row.key]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
+                }
+              />
+              <p className="muted">{limits[row.key] ? `${limits[row.key].toLocaleString()} tokens` : "No limit"}</p>
+            </div>
+          ))}
+          <div className="model-form-actions">
+            <span />
+            <button className="button" type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Save limits"}
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -292,6 +299,8 @@ export default function AdminModelPage() {
             </div>
           </form>
         </section>
+
+        <AiLimitsPanel />
 
         <section className="room-section model-boundary" aria-labelledby="usage-title">
           <div className="studio-section-head">

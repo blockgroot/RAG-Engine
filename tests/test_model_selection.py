@@ -480,7 +480,10 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
     # Stubbed: the route now also looks up the org's own model, and this test is
     # about the DEFAULT option's label, not about storage.
     monkeypatch.setattr(chat_module.org_model, "get_org_model_summary", lambda _org: None)
-    payload = list_models(session=SimpleNamespace(org_id="org-1"))
+    import app.llm.own_model as own_model
+
+    monkeypatch.setattr(own_model, "get_own_model_summary", lambda _org, _user: None)
+    payload = list_models(session=SimpleNamespace(org_id="org-1", user_id="user-1"))
 
     assert payload["default"] == catalog.AUTO == "auto"
     assert payload["default_label"] == "gemini-3.1-flash-lite"
@@ -488,7 +491,7 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
     # A catalogued default shows its label and is not offered a second time.
     monkeypatch.setenv("LLM_MODEL", "claude-sonnet-5-5")
     monkeypatch.setenv("CLAUDE_API_KEY", "c")
-    payload = list_models(session=SimpleNamespace(org_id="org-1"))
+    payload = list_models(session=SimpleNamespace(org_id="org-1", user_id="user-1"))
     assert payload["default_label"] == "Claude Sonnet 5.5"
     assert [m["id"] for m in payload["models"]] == ["claude-haiku-5-5"]
     # Not asserted here: the LLM_MODEL-unset case. ``build_llm_provider()``

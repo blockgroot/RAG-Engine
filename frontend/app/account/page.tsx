@@ -9,6 +9,7 @@ import { clearMeCache, useMe } from "@/lib/useMe";
 import { ApiError, LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
 import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
+import { OwnModelPanel } from "@/components/OwnModelPanel";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { spaceStyle } from "@/components/SpaceMark";
@@ -214,6 +215,8 @@ function AccountContent() {
         </section>
 
         {me.act_enabled && <ActPanel />}
+
+        <OwnModelPanel />
 
         <div className="account-settings-grid">
           <SignInEmailPanel />

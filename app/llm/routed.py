@@ -42,6 +42,8 @@ _RESOLVED: ContextVar[str | None] = ContextVar("llm_resolved_model", default=Non
 #: apart from ``_SELECTED`` so that stays a plain string (it reaches the
 #: browser in the ``done`` event; an org_id must not).
 _ORG: ContextVar[str | None] = ContextVar("llm_selected_org", default=None)
+#: Whose OWN model (``own:<model>``) answers: the person who asked.
+_USER: ContextVar[str | None] = ContextVar("llm_selected_user", default=None)
 
 # Routing preferences sent on EVERY OpenRouter request:
 # - ``data_collection: "deny"``: retrieved private content must never reach
@@ -104,7 +106,8 @@ def preset_extra_body(preset_id: str, model: str | None = None) -> tuple[dict | 
     return extra, preset_id in _PRESET_EXTRA_OPTIONAL
 
 
-def use_model(model_id: str | None, org_id: str | None = None) -> None:
+def use_model(model_id: str | None, org_id: str | None = None,
+              user_id: str | None = None) -> None:
     """Select the model for the rest of this request.
 
     ``None``/``"auto"`` is the default. Callers validate with
@@ -114,6 +117,7 @@ def use_model(model_id: str | None, org_id: str | None = None) -> None:
     """
     _SELECTED.set(normalize(model_id))
     _ORG.set(org_id)
+    _USER.set(user_id)
     # Reset too, so a pooled thread never reports the previous request's model.
     _RESOLVED.set(None)
 
@@ -196,6 +200,10 @@ class RoutedLLMProvider(LLMProvider):
         choice = catalog.get(model_id)
 
         if choice is None:
+            from .own_model import OWN_PREFIX
+
+            if model_id.startswith(OWN_PREFIX):
+                return self._own_client(org_id, _USER.get(), model_id[len(OWN_PREFIX):])
             return self._org_client(org_id, model_id)
 
         cache_key = (None, model_id, "catalog")
@@ -276,6 +284,28 @@ class RoutedLLMProvider(LLMProvider):
             timeout=self._custom_timeout,
             extra_body=extra_body,
             extra_body_optional=extra_optional,
+            billing="company",
+        )
+        self._clients[cache_key] = client
+        return client
+
+    def _own_client(self, org_id: str | None, user_id: str | None, model: str) -> LLMProvider:
+        """The asker's own model on their own key, or a hard failure: never ours."""
+        from .own_model import get_own_model
+
+        own = get_own_model(org_id, user_id) if org_id and user_id else None
+        if own is None or own.model != model:
+            raise ConfigurationError(f"Your own model {model!r} is not set up.")
+        # ponytail: one cached client per person who uses their own model; an LRU if that grows.
+        cache_key = (f"user:{user_id}", model, own.version)
+        client = self._clients.get(cache_key)
+        if client is not None:
+            return client
+        extra_body, extra_optional = preset_extra_body(own.preset, own.model)
+        client = OpenAICompatProvider(
+            model=own.model, api_key=own.api_key, base_url=own.base_url,
+            timeout=self._custom_timeout, extra_body=extra_body,
+            extra_body_optional=extra_optional, billing="own",
         )
         self._clients[cache_key] = client
         return client

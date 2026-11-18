@@ -12462,3 +12462,8 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 @media (prefers-reduced-motion: reduce) { .app-toast { animation: none; } }
 .auth-v2-wake-note { margin: 0; font-size: 0.82rem; text-align: center; }
 .page-loader-note { max-width: 22rem; margin-top: -0.4rem; font-size: 0.8rem; line-height: 1.5; text-align: center; color: var(--ink-muted, #667085); }
+
+/* The model menu's "Add your own key" link (ModelPicker footer). */
+.model-picker-foot { margin-top: 0.25rem; padding-top: 0.3rem; border-top: 1px solid var(--border); }
+.model-picker-foot a { display: block; padding: 0.45rem 0.6rem; border-radius: 8px; font-size: 0.8rem; font-weight: 600; color: var(--accent); text-decoration: none; }
+.model-picker-foot a:hover, .model-picker-foot a:focus-visible { outline: none; background: #f1f8f5; }
