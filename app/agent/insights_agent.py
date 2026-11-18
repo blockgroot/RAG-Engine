@@ -1005,7 +1005,7 @@ def _caption(
             "indexed, so this is a total rather than a breakdown by person. "
             "The next sync will start capturing who edited."
         )
-    return title
+    return f"{title}. {panel['room_cut']}" if panel.get("room_cut") else title
 
 
 def _grammar_caveat(metric, group_by, split_by, attrs=None) -> str:
@@ -1118,6 +1118,18 @@ def _run_spec(
         filters=filters,
         attrs=attrs,
     )
+    # A channel's ROOM counts only what every member can open: compare with the
+    # same query unfiltered (never shown) so a partial chart says it is partial.
+    room_cut = None
+    if viewer is not None and viewer.public_only and viewer.channels:
+        whole = store.run_metric(
+            spec.metric, org_id=org_id, workspace_id=workspace_id, period=period,
+            days=days, group_by=group_by, focus=focus, viewer=None, split_by=split_by,
+            measure=measure, filters=filters, attrs=attrs,
+        )
+        if whole != points:
+            room_cut = ("Some items aren't open to everyone in this channel, so they're "
+                        "not counted here. Ask me in a direct message to count what you can open.")
 
     # Everything in one bucket reads as "no data": step finer, at most twice
     # (same rows re-bucketed), and the caption names the period.
@@ -1217,8 +1229,10 @@ def _run_spec(
             period=period, chart=chart,
         ),
         "read_note": read_note,
+        # Also under the Slack caption (`_caption`): Slack shows no caveat line.
+        "room_cut": room_cut,
         "caveat": " ".join(n for n in (
-            read_note, stepped, _sparse_note(points, period, chosen.unit, group_by),
+            room_cut, read_note, stepped, _sparse_note(points, period, chosen.unit, group_by),
             _grammar_caveat(metric, group_by, split_by, attrs)) if n),
         "points": [
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}

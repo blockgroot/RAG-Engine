@@ -1210,6 +1210,8 @@ def _stream_attachment_answer(
             # chip only for a number listed here and strips the rest.
             "cited": list(getattr(response, "cited", None) or []),
             "deep_hint": deep_hint,
+            # A private GitHub repository was hidden: offer the Account page.
+            "github_link_hint": bool(getattr(response, "github_link_hint", False)),
         },
     )
 
@@ -1695,6 +1697,8 @@ def _stream_answer_body(
                 )
             ),
             "deep_hint": deep_hint,
+            # A private GitHub repository was hidden: offer the Account page.
+            "github_link_hint": bool(getattr(result, "github_link_hint", False)),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),

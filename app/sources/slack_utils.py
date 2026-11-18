@@ -425,3 +425,111 @@ def validate_slack_channels(
         "channel_ids": list(channel_ids),
         "channel_names": {cid: known[cid]["name"] for cid in channel_ids},
     }
+
+
+#: Members a channel's room is checked for; a larger room is "unknown".
+MAX_ROOM_MEMBERS = 100
+#: Seconds a Slack user's email is remembered: it almost never changes, and a
+#: room is then one `conversations.members` call, not one call per member.
+_EMAIL_TTL_SECONDS = 3600.0
+#: `users.info` calls in flight at once (Slack allows ~100 a minute).
+_EMAIL_WORKERS = 8
+#: user id -> (when, email, or "" for a bot/deleted user). An unreadable user is
+#: never remembered.
+_emails: dict[str, tuple[float, str]] = {}
+
+
+def _member_email(token: str, user_id: str) -> str | None:
+    """A human member's email (lowercased), ``""`` for a bot or deleted user,
+    ``None`` when it cannot be told."""
+    import time
+
+    hit = _emails.get(user_id)
+    if hit and time.monotonic() - hit[0] < _EMAIL_TTL_SECONDS:
+        return hit[1]
+    try:
+        user = _get(token, "users.info", {"user": user_id}).get("user") or {}
+    except SourceError:
+        return None
+    if user.get("is_bot") or user.get("deleted") or user_id == "USLACKBOT":
+        email = ""
+    else:
+        email = ((user.get("profile") or {}).get("email") or "").strip().lower()
+        if not email:
+            return None
+    _emails[user_id] = (time.monotonic(), email)
+    return email
+
+
+def channel_member_emails(token: str, channel_id: str) -> list[str] | None:
+    """Every human member's email, lowercased, or ``None`` when ANY cannot be told.
+
+    Unlike ``list_channel_members`` (which skips a member it cannot read), a
+    reply's audience must be whole: one unreadable member, a failed call or more
+    than ``MAX_ROOM_MEMBERS`` makes it unknown, and an unknown room reads nothing
+    private. Bots and deleted users do not read replies and are left out.
+    """
+    ids: list[str] = []
+    cursor = None
+    try:
+        for _ in range(_MAX_LIST_PAGES):
+            params = {"channel": channel_id, "limit": 200, **({"cursor": cursor} if cursor else {})}
+            data = _get(token, "conversations.members", params)
+            ids.extend(data.get("members", []))
+            if len(ids) > MAX_ROOM_MEMBERS:
+                return None
+            cursor = (data.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                break
+        else:
+            return None
+    except SourceError:
+        logger.warning("slack: could not read the members of %s", channel_id)
+        return None
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=_EMAIL_WORKERS) as pool:
+        found = list(pool.map(lambda uid: _member_email(token, uid), ids))
+    if any(email is None for email in found):
+        logger.warning("slack: a member of %s could not be identified", channel_id)
+        return None
+    return [email for email in found if email]
+
+
+#: Messages read live from the thread (or the channel's latest) a question was asked in.
+CONVERSATION_LIMIT = 50
+
+
+def recent_conversation(
+    token: str, channel_id: str, thread_ts: str | None, before_ts: str | None = None
+) -> tuple[str, bool] | None:
+    """The talk a channel question is about, read live, oldest first.
+
+    In a thread: that thread. At the top of a channel: its latest
+    ``CONVERSATION_LIMIT`` messages before the question (indexing lags behind a
+    live discussion). The bot's own messages are left out. ``(text, cut)``;
+    ``None`` when nothing could be read. The text is UNTRUSTED.
+    """
+    try:
+        if thread_ts:
+            data = _get(token, "conversations.replies",
+                        {"channel": channel_id, "ts": thread_ts, "limit": CONVERSATION_LIMIT})
+            messages = data.get("messages") or []
+        else:
+            params = {"channel": channel_id, "limit": CONVERSATION_LIMIT}
+            if before_ts:
+                params["latest"] = before_ts
+            data = _get(token, "conversations.history", params)
+            messages = list(reversed(data.get("messages") or []))
+    except SourceError:
+        logger.warning("slack: could not read the conversation in %s", channel_id)
+        return None
+    lines = [
+        f"<@{m.get('user') or '?'}>: {(m.get('text') or '').strip()}"
+        for m in messages[:CONVERSATION_LIMIT]
+        if not m.get("bot_id") and m.get("subtype") != "bot_message"
+        and (m.get("text") or "").strip()
+    ]
+    if not lines:
+        return None
+    return "\n".join(lines), bool(data.get("has_more"))

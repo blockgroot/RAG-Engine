@@ -150,6 +150,11 @@ export function ChatMessageView({
               <DeepIcon /> Try Deep analysis
             </button>
           )}
+          {message.done?.github_link_hint && (
+            <a className="chat-chart-hint" href="/account">
+              Link your GitHub account
+            </a>
+          )}
           {message.done?.remembered && message.done.remembered.length > 0 && (
             <RememberedNote facts={message.done.remembered} />
           )}

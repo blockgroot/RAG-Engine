@@ -61,6 +61,9 @@ class AgentResponse:
     #: "Matched but not shared with you", carried so `/chat` never logs a
     #: withheld document as a documentation gap (without matching text).
     access_restricted: bool = False
+    #: A private GitHub repository was hidden from the asker: the web chat offers
+    #: a button to the Account page, where a GitHub account is linked.
+    github_link_hint: bool = False
     #: Spread over several documents: Ask offers Deep analysis.
     wide_read: bool = False
     #: Connectors read LIVE for this answer, and whether a live read withheld

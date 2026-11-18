@@ -69,7 +69,6 @@ from .attachment_tools import (
     build_preview_block,
     run_reads,
 )
-from ..sources.slack_utils import channel_tag
 from .access_notice import live_withheld_notice, restricted_notice
 from ..guard import build_injection_guard
 from ..livetools import LiveRefresh, current_live_request
@@ -569,6 +568,8 @@ class RagPipeline:
             attachments=attachments,
             viewer=viewer,
         )
+        if result.answered and viewer is not None and viewer.public_only and viewer.channels:
+            result = self._note_room_withheld(result, resolved, org_id, workspace_id, viewer)
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -1975,6 +1976,24 @@ class RagPipeline:
             live_withheld=bool(live_withheld),
         )
 
+    def _note_room_withheld(self, result, question, org_id, workspace_id, viewer):
+        """A channel answer from what every member can open, with a line under it
+        when something relevant (past the gate) was left out for the room. Never
+        raises: the note may only ever add."""
+        try:
+            vec = self._embedder.embed([question])[0]
+            match = self._store.restricted_match(
+                org_id, vec, workspace_id=workspace_id, source_provider=self._source_provider,
+                viewer=viewer, min_score=self._settings.similarity_threshold, tags=None)
+        except Exception:  # noqa: BLE001
+            logger.warning("room withheld probe failed", exc_info=True)
+            return result
+        if match is None:
+            return result
+        from .access_notice import partly_withheld_note
+
+        return replace(result, answer=f"{result.answer}\n\n_{partly_withheld_note(match.source_provider)}_")
+
     def _withheld_notice(
         self,
         org_id: str,
@@ -1988,9 +2007,9 @@ class RagPipeline:
         Uses the answer path's ``similarity_threshold``, so it claims only that a
         document that would have passed the gate was withheld. Never raises.
         """
-        # A Slack channel reply reads that channel only, so only its threads may
-        # confirm a withheld match.
-        channel_tags = [channel_tag(c) for c in viewer.channels if c] or None
+        # A Slack channel reply reads every tool as its ROOM (`security.room`), so a
+        # withheld match may be anywhere in scope: pinning it to the channel's own
+        # threads (which the room always reads) found nothing, ever.
         try:
             match = self._store.restricted_match(
                 org_id,
@@ -1999,7 +2018,7 @@ class RagPipeline:
                 source_provider=self._source_provider,
                 viewer=viewer,
                 min_score=self._settings.similarity_threshold,
-                tags=channel_tags,
+                tags=None,
             )
         except Exception:  # noqa: BLE001
             logger.exception("restricted_match failed; falling back to the fixed refusal")
@@ -2010,7 +2029,8 @@ class RagPipeline:
             match.source_provider,
             org_id=org_id,
             workspace_id=workspace_id,
-            in_channel=bool(channel_tags),
+            # A channel's room (`security.room`) carries no tag any more.
+            in_channel=bool(viewer.public_only and viewer.channels),
         )
 
     # -- retrieval reuse (deterministic, no LLM) ---------------------------

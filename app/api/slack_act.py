@@ -317,10 +317,11 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
         tag = channel_tag(channel)
         resolved = _scope_for_channel(org_id, tag)
         workspace_id = None if resolved is _NO_SCOPE else resolved
-        tags = [tag]
+        # Every tool, as the room (`surface_viewer`), not that channel only.
+        tags = None
         surface = {"kind": "slack_channel", "slack_user": slack_user, "channel": channel,
                    "thread_ts": thread_ts}
-    viewer = surface_viewer(org_id, user.email, surface)
+    viewer = surface_viewer(org_id, user.email, surface, token)
     read_context = None
     if not is_dm and in_thread and thread_ts:
         from ..actions.slack_thread import thread_context
@@ -342,11 +343,18 @@ def handle_act(*, request: str, org_id: str, token: str, user, slack_user: str, 
     _show(outcome, say)
 
 
-def surface_viewer(org_id: str, email: str, surface: dict) -> Viewer:
-    """Who a draft reads as where it was asked: a DM as the person, a channel
-    only that channel, as the room (like a channel reply)."""
+def surface_viewer(org_id: str, email: str, surface: dict, token: str | None = None) -> Viewer:
+    """Who a draft reads as where it was asked: a DM as the person, a channel as
+    its ROOM, like a channel reply (`security.room`: what every member can open).
+    With no ``token`` (approved in the web app) the room as last read, never wider."""
     if surface.get("kind") == "slack_channel":
-        return Viewer(public_only=True, channels=(surface["channel"],))
+        from ..security.room import cached_room_viewer, known_room
+        from ..sources.slack_utils import channel_member_emails
+
+        channel = surface["channel"]
+        if token is None:
+            return known_room(org_id, channel)
+        return cached_room_viewer(org_id, channel, lambda: channel_member_emails(token, channel))
     from ..sources.google_groups import viewer_for_person
 
     return viewer_for_person(org_id, email)
@@ -375,7 +383,7 @@ def continue_chain(*, org_id: str, token: str, user, action_id: str) -> None:
         from .actions import _embedder, _llm
 
         got = service.continue_run(org_id=org_id, user_id=user.id, email=user.email,
-                                   viewer_for=lambda surface: surface_viewer(org_id, user.email, surface),
+                                   viewer_for=lambda surface: surface_viewer(org_id, user.email, surface, token),
                                    action_id=action_id, llm=_llm(), embedder=_embedder())
     except Exception:  # noqa: BLE001 - the approval itself is already reported
         logger.exception("slack.act continue failed")

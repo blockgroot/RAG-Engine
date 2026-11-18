@@ -60,7 +60,7 @@ def test_a_signed_in_viewer_with_no_email_fails_closed():
     """`deps.viewer_for` returns this when the users row cannot be read. It must
     behave as "scope-public only", never as "unrestricted"."""
     sql, params = _viewer_clause(Viewer(email="ada@example.com"))
-    assert "doc_is_public" in sql and "doc_viewers &&" in sql
+    assert "doc_is_public" in sql and "doc_viewers, 'doc:' || d.id::text) &&" in sql
     assert params == [["ada@example.com", "domain:example.com"]]
 
 
@@ -1273,3 +1273,43 @@ def test_the_channel_listing_is_fetched_once_for_the_whole_sync(monkeypatch):
     for cid in ("C1", "C2", "C3", "C1"):
         adapter._access_for(cid)
     assert calls["n"] == 1
+
+
+def test_a_channel_room_is_told_when_a_member_cannot_open_the_answer():
+    """In a channel the withheld probe spans every tool (the room reads them all);
+    pinned to the channel's own threads it could never find anything."""
+    from app.vectorstore.base import RestrictedMatch
+
+    seen = {}
+
+    class _Probe(_Store):
+        def restricted_match(self, *a, **k):
+            seen.update(k)
+            return RestrictedMatch(score=0.6, source_provider="google")
+
+    room = Viewer(public_only=True, channels=("C9",), room=("doc:1",))
+    notice = _pipeline_with(_Probe(None))._withheld_notice(
+        "o", [0.1], workspace_id=None, viewer=room)
+    assert seen["tags"] is None and seen["viewer"] is room
+    assert "Google Drive" in notice and "not everyone in this channel" in notice
+    assert "direct message" in notice
+
+
+def test_a_channel_answer_says_when_something_was_left_out_for_the_room():
+    """A partial answer must not read as whole: one line, the connector only."""
+    from app.rag.pipeline import RagResult
+    from app.vectorstore.base import RestrictedMatch
+
+    class _Probe(_Store):
+        def restricted_match(self, *a, **k):
+            return RestrictedMatch(score=0.5, source_provider="linear")
+
+    pipeline = _pipeline_with(_Probe(None))
+    pipeline._embedder = type("E", (), {"embed": lambda self, t: [[0.1]]})()
+    room = Viewer(public_only=True, channels=("C9",))
+    done = RagResult(answer="Ship Friday.", answered=True, source="slack", sources=[])
+    noted = pipeline._note_room_withheld(done, "q", "o", None, room)
+    assert noted.answer.startswith("Ship Friday.") and "Linear" in noted.answer
+    assert "isn't open to everyone in this channel" in noted.answer
+    pipeline._store = _Store(None)
+    assert pipeline._note_room_withheld(done, "q", "o", None, room) is done

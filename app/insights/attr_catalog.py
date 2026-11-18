@@ -53,7 +53,7 @@ def discover_scope(
         " AND occurred_at >= now() - make_interval(days => %(days)s)",
         workspace_id,
     )
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where += access
     # Unaliased on purpose: `_viewer_filter` names `activity_facts.provider`.
     sql = f"""

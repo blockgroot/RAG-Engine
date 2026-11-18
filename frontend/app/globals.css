@@ -1001,6 +1001,7 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   cursor: pointer;
 }
 .chat-chart-hint:hover { background: var(--surface-muted); }
+a.chat-chart-hint { text-decoration: none; }
 .chat-model-note { margin: 0.45rem 0 0; font-size: 0.8rem; text-align: center; }
 
 .attach-row {

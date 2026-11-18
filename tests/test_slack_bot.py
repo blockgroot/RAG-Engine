@@ -1,9 +1,9 @@
 """Ask-in-Slack: signature auth, and the channel-vs-DM scoping decision.
 
-The scoping test is the one that matters. Answering an in-channel question
-from Drive/Notion/another channel would broadcast content some people in the
-room may not be able to open, so "a channel question is filtered to that
-channel" is a permission guarantee, not a preference.
+The scoping tests are the ones that matter. A channel reply is read by everyone
+in it, so it reads every tool but only as the ROOM (`security.room`): what each
+member can open. Answering as the asker would broadcast content some people in
+the room cannot open, so that is a permission guarantee, not a preference.
 """
 
 from __future__ import annotations
@@ -20,6 +20,17 @@ from app.api import slack_events
 from app.sources.slack_utils import channel_tag
 
 SECRET = "test-slack-signing-secret"
+
+
+@pytest.fixture(autouse=True)
+def _no_live_room(monkeypatch):
+    """A channel's room and its live talk are Slack calls (`security.room`,
+    `recent_conversation`); faked here, tested in `test_slack_room.py`."""
+    from app.vectorstore.base import Viewer
+
+    monkeypatch.setattr(slack_events, "_channel_room",
+                        lambda org, tok, ch: Viewer(public_only=True, channels=(ch,)))
+    monkeypatch.setattr(slack_events, "_channel_conversation", lambda tok, ch, event: None)
 
 
 @pytest.fixture
@@ -653,33 +664,81 @@ def test_a_dm_chart_is_routed_with_the_askers_access(monkeypatch):
     assert seen[0]["viewer"] is viewer and seen[0]["chart_from_words"] is True
 
 
-def test_a_chart_ask_in_a_channel_charts_only_that_channel(monkeypatch):
-    seen = _capture_choose(monkeypatch)
+def test_a_chart_ask_in_a_channel_charts_any_tool_as_its_room(monkeypatch):
+    """Linear tickets by team, Drive figures... asked in a channel: any connector,
+    as the ROOM, with the channel named so "this channel" still means it."""
+    asked = []
+
+    def choose(q, org, workspace_id=None, **kwargs):
+        asked.append((q, kwargs))
+        return type("D", (), {"agent_key": "insights", "chart_spec": None,
+                              "chart_refusal": "no"})()
+
+    _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "choose_agent", choose)
     monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: True)
-    slack_events._answer("chart threads per week", "org-1", None, [channel_tag("C9")],
+    monkeypatch.setattr(slack_events, "_naming_channel", lambda q, *a: f"{q} (in #eng)")
+    slack_events._answer("chart tickets per team", "org-1", None, [channel_tag("C9")],
                          None, viewer=None, channel_id="C9")
-    kwargs = seen[0]
-    assert kwargs["chart_mode"] is True and kwargs["channel_tag"] == channel_tag("C9")
-    # The room's viewer, never the asker's: public plus this one channel.
+    question, kwargs = asked[0]
+    assert question == "chart tickets per team (in #eng)"
+    assert kwargs["chart_mode"] is True and "channel_tag" not in kwargs
+    # The room's viewer, never the asker's.
     assert kwargs["viewer"].public_only and kwargs["viewer"].channels == ("C9",)
 
 
-def test_an_ordinary_channel_question_stays_on_the_channel_pipeline(monkeypatch):
+def test_a_channel_question_reads_every_tool_as_its_room(monkeypatch):
+    """A channel question is routed like a DM (Linear, Drive, Notion, GitHub...),
+    but as the ROOM: what every member can open, never the asker's own access."""
+    from app.vectorstore.base import Viewer
+
     seen = _capture_choose(monkeypatch)
     monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: False)
-    calls = []
+    monkeypatch.setattr(slack_events, "_connected_plan", lambda *a: None)
+    room = Viewer(public_only=True, channels=("C9",), room=("doc:1",), room_members=("a@b.com",))
+    slack_events._answer("summarise this and the Linear ticket", "org-1", None,
+                         [channel_tag("C9")], None, viewer=room, channel_id="C9")
+    assert seen[0]["viewer"] is room
+    assert seen[0]["chart_from_words"] is False  # a channel charts only itself
+
+
+def test_a_channel_never_answers_as_the_asker(monkeypatch):
+    """Anything but this channel's room is replaced before routing."""
+    from app.vectorstore.base import Viewer
+
+    seen = _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: False)
+    monkeypatch.setattr(slack_events, "_connected_plan", lambda *a: None)
+    for wrong in (Viewer(email="ada@acme.com"),
+                  Viewer(public_only=True, channels=("C1",), room=("doc:1",))):
+        slack_events._answer("q", "org-1", None, [channel_tag("C9")], None,
+                             viewer=wrong, channel_id="C9")
+    for kwargs in seen:
+        assert kwargs["viewer"].acl() == ["channel:c9"]
+
+
+def test_the_channel_talk_joins_the_answer_like_an_attached_file(monkeypatch):
+    from app.vectorstore.base import Viewer
+
+    _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: False)
+    monkeypatch.setattr(slack_events, "_connected_plan", lambda *a: None)
+    got = {}
 
     class _Pipe:
-        def answer(self, question, **kw):
-            calls.append(kw["tags"])
-            return type("R", (), {"answer": "a", "answered": True,
-                                  "access_restricted": False})()
+        def answer(self, question, org_id, **kw):
+            got.update(kw)
+            from app.rag.pipeline import RagResult
+            return RagResult(answer="summary", answered=True, source="linear", sources=[])
 
-    monkeypatch.setattr(slack_events, "get_slack_agent",
-                        lambda: type("A", (), {"pipeline": _Pipe()})())
-    slack_events._answer("what did we decide?", "org-1", None, [channel_tag("C9")],
-                         None, channel_id="C9")
-    assert calls == [[channel_tag("C9")]] and seen == []
+    monkeypatch.setattr("app.api.chat._agent_getters",
+                        lambda: {"insights": lambda: type("A", (), {"pipeline": _Pipe()})()})
+    room = Viewer(public_only=True, channels=("C9",))
+    talk = ("this Slack thread", "<@U1>: ship friday?", False)
+    reply = slack_events._answer("summarise this", "org-1", None, [channel_tag("C9")], None,
+                                 viewer=room, channel_id="C9", conversation=talk)
+    assert got["attachments"] == [talk] and got["viewer"] is room
+    assert "summary" in reply.text
 
 
 def test_a_dm_chart_tries_the_askers_other_spaces(monkeypatch):
@@ -873,3 +932,40 @@ def test_a_late_message_is_answered_with_thanks_for_waiting(client, monkeypatch)
     client.post("/slack/events", content=prompt, headers=headers)
     assert waited == [True, False]
     assert slack_events._SEARCHING_LATE.startswith("_Thank you for your patience")
+
+
+def test_a_hidden_private_repo_links_to_the_account_page(monkeypatch):
+    """The web chat's "Link your GitHub account" button, as a Slack link."""
+    from app.api.slack_events import _account_link
+
+    monkeypatch.setenv("FRONTEND_URL", "https://hand-book.vercel.app/")
+    assert _account_link() == "\n<https://hand-book.vercel.app/account|Link your GitHub account>"
+    monkeypatch.delenv("FRONTEND_URL")
+    assert _account_link() == ""
+
+
+def test_a_github_answer_in_a_channel_reads_the_conversation_too(monkeypatch):
+    """"Summarise this thread and the PR": GitHub's live read and the talk, together."""
+    from app.vectorstore.base import Viewer
+
+    _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: False)
+    monkeypatch.setattr(slack_events, "_connected_plan", lambda *a: None)
+    monkeypatch.setattr(slack_events, "choose_agent", lambda q, org, **k: type(
+        "D", (), {"agent_key": "github", "chart_spec": None, "chart_refusal": None})())
+    got = {}
+
+    class _GitHub:
+        def answer(self, question, org_id, **kw):
+            got.update(kw)
+            from app.agent.base import AgentResponse
+            return AgentResponse(answer="PR 12 adds retries; the thread agreed to ship Friday.",
+                                 grounded=True, source="github", citations=[])
+
+    monkeypatch.setattr("app.api.chat._agent_getters", lambda: {"github": lambda: _GitHub()})
+    room = Viewer(public_only=True, channels=("C9",))
+    reply = slack_events._answer(
+        "summarise this and PR 12", "org-1", None, [channel_tag("C9")], None, viewer=room,
+        channel_id="C9", conversation=("this Slack thread", "<@U1>: ship PR 12 friday?", False))
+    assert got["conversation"] == "<@U1>: ship PR 12 friday?" and got["viewer"] is room
+    assert "Friday" in reply.text

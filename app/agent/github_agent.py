@@ -19,7 +19,7 @@ import re
 from collections.abc import Callable, Iterator
 
 from ..config.settings import GitHubAgentSettings, SecuritySettings
-from ..githublive.access import restrict, restricted_message
+from ..githublive.access import hidden_note, link_would_help, restrict, restricted_message
 from ..guard.moderation import answer_is_unsafe
 from ..security.links import enforce_link_provenance
 from ..security.untrusted import leaks_canary
@@ -130,7 +130,10 @@ class GitHubAgent(Agent):
         conversation_id: str | None = None,
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
+        conversation: str | None = None,
     ) -> AgentResponse:
+        """``conversation``: the Slack talk the question was asked in, read live;
+        it picks "this PR" and joins the answer, never as a repository fact."""
         # No GitHub connection costs zero LLM calls.
         try:
             reader = self._build_reader(org_id, workspace_id)
@@ -143,27 +146,27 @@ class GitHubAgent(Agent):
         try:
             repos = reader.list_repos()
         except ProviderError:
-            return self._fallback_response()
+            return self._fallback_response(reader)
         withheld = restricted_message(reader)
         if withheld:
             return AgentResponse(
                 answer=withheld, grounded=False, source=SOURCE_NONE, citations=[],
-                access_restricted=True,
+                access_restricted=True, github_link_hint=link_would_help(reader),
             )
 
-        decision = self._decide_tool(question, repos)
+        decision = self._decide_tool(question, repos, conversation)
         if decision is None:
-            return self._fallback_response()
+            return self._fallback_response(reader)
 
         evidence = self._run_tool(reader, decision, known_repos=repos)
         if evidence is None:
-            return self._fallback_response()
+            return self._fallback_response(reader)
 
         evidence_block, citations = evidence
 
-        composed = self._compose(question, evidence_block)
+        composed = self._compose(question, evidence_block, conversation)
         if composed is None:
-            return self._fallback_response()
+            return self._fallback_response(reader)
         mode, answer = composed
 
         # Mode C = nothing relevant, B = partial. For get_readme questions try one
@@ -176,13 +179,13 @@ class GitHubAgent(Agent):
             and (mode in ("B", "C") or thin_about_only)
         ):
             recovered = self._recover(
-                question, reader, decision, evidence_block, citations
+                question, reader, decision, evidence_block, citations, conversation
             )
             if recovered is not None:
                 return recovered
 
         if mode == "C":
-            return self._fallback_response()
+            return self._fallback_response(reader)
 
         return AgentResponse(
             answer=answer,
@@ -193,11 +196,13 @@ class GitHubAgent(Agent):
             response_mode=mode,
         )
 
-    def _compose(self, question: str, evidence_block: str) -> tuple[str | None, str] | None:
+    def _compose(
+        self, question: str, evidence_block: str, conversation: str | None = None
+    ) -> tuple[str | None, str] | None:
         """One generation over the evidence. ``None`` on failure/empty."""
         try:
             raw = self._llm.generate(
-                build_github_answer_prompt(question, evidence_block)
+                build_github_answer_prompt(question, evidence_block, conversation)
             )
         except LLMProviderError:
             return None
@@ -206,7 +211,9 @@ class GitHubAgent(Agent):
             logger.warning("security.canary_leak stage=github")
             return None
         if answer:
-            answer = enforce_link_provenance(answer, [evidence_block], self._link_allowlist)
+            # A link survives only if the model was shown it (the talk included).
+            answer = enforce_link_provenance(
+                answer, [evidence_block, conversation or ""], self._link_allowlist)
         if not answer or answer_is_unsafe(answer, org_id=None, stage="github"):
             return None
         return mode, answer
@@ -218,6 +225,7 @@ class GitHubAgent(Agent):
         decision: tuple[str, dict],
         evidence_block: str,
         citations: list[Citation],
+        conversation: str | None = None,
     ) -> AgentResponse | None:
         """ONE supplementary evidence round after a thin Mode B/C answer.
 
@@ -252,7 +260,7 @@ class GitHubAgent(Agent):
             "--- additional evidence: recent commit history ---\n"
             f"{commit_block}"
         )
-        composed = self._compose(question, combined)
+        composed = self._compose(question, combined, conversation)
         if composed is None:
             return None
         mode, answer = composed
@@ -332,15 +340,27 @@ class GitHubAgent(Agent):
         url = next((c.url for c in citations if (c.url or "").startswith("https://")), None)
         return (ref.full_name if ref else repo), block, bool(ref and ref.private is False), url
 
-    def _fallback_response(self) -> AgentResponse:
-        """The single place a GitHub refusal is built (``SOURCE_NONE``, like RAG)."""
+    def _fallback_response(self, reader: GitHubReader | None = None) -> AgentResponse:
+        """The single place a GitHub refusal is built (``SOURCE_NONE``, like RAG).
+
+        With ``reader``, says when private repositories were hidden from the asker,
+        so "not found" is never the answer about a repo they cannot open.
+        """
+        note = hidden_note(reader) if reader is not None else None
+        answer = f"{self._fallback}\n\n{note}" if note else self._fallback
+        # Not ``access_restricted``: the refusal may be about another tool, and that
+        # flag would stop the retry on it.
         return AgentResponse(
-            answer=self._fallback, grounded=False, source=SOURCE_NONE, citations=[]
+            answer=answer, grounded=False, source=SOURCE_NONE, citations=[],
+            github_link_hint=bool(note) and link_would_help(reader),
         )
 
-    def _decide_tool(self, question: str, repos) -> tuple[str, dict] | None:
+    def _decide_tool(
+        self, question: str, repos, conversation: str | None = None
+    ) -> tuple[str, dict] | None:
         """One call: which tool, with which arguments? ``None`` means "no tool"."""
-        prompt = build_github_decision_prompt(question, format_repo_catalog(repos))
+        prompt = build_github_decision_prompt(
+            question, format_repo_catalog(repos), conversation)
         try:
             # Pinned to the configured model: choosing a tool is machinery, and an
             # unreliable tool-caller would turn every question into the fallback. The

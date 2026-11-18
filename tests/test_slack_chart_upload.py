@@ -76,6 +76,11 @@ def _run_handle(monkeypatch, upload_status):
         "U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})())
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
     monkeypatch.setattr(slack_events, "viewer_for_person", lambda *a: None)
+    from app.vectorstore.base import Viewer
+
+    monkeypatch.setattr(slack_events, "_channel_room",
+                        lambda org, tok, ch: Viewer(public_only=True, channels=(ch,)))
+    monkeypatch.setattr(slack_events, "_channel_conversation", lambda tok, ch, event: None)
     monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: slack_events.SlackAnswer(
         "Commits by author", chart=PANEL, with_values="Commits by author\n•   ana: 3"))
     monkeypatch.setattr(slack_events, "post_message", lambda tok, ch, text, ts=None: "msg-1")

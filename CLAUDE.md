@@ -64,11 +64,26 @@ GitHub; employees get answers from *their* data.
   sharing cannot be read keeps the viewers it had. Revocation replaces the set on
   the next listing; it does not union.
 - Slack: a public channel is scope-public; a private channel's members are its ACL,
-  plus `channel:<id>`. A channel reply is public-only and carries exactly that
-  channel. A Slack DM (question or Agent) is open to the whole company only with a
+  plus `channel:<id>`. A channel reply is read by its ROOM, so it reads every
+  tool as the room (`security/room.py`): company-public, that channel, entries every
+  member shares, and `doc:<id>` for each private document EVERY member's ACL opens
+  (`visibility.room_documents`, matched by the one predicate). Members are read
+  whole (`slack_utils.channel_member_emails`): one unreadable member or more than
+  `MAX_ROOM_MEMBERS` leaves the room public-plus-channel, said under the reply. A
+  private repo is used only when every member's linked login can open it. The
+  thread (or the channel's latest talk) is read live and joins the answer like an
+  attached file (GitHub: a fenced CONVERSATION beside its live read, never a
+  repository fact). Act in a channel drafts from every tool as the room. Access
+  is per DOCUMENT (a sheet is one check, never per row). A channel answer or chart
+  that left out something relevant for the room says so under it, naming the tool
+  only (`access_notice.partly_withheld_note`, the chart's `room_cut`). A Slack DM (question or Agent) is open to the whole company only with a
   company-wide Slack connection; with only spaces' connections, only those spaces'
   members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
-  answers only an asker whose linked login can open it.
+  answers only an asker whose linked login can open it. A refusal while a private
+  repo was hidden says so (a count, never a name) and links the Account page
+  (`access.hidden_note`); a bare "not found" read as a missing repo. A GitHub
+  CHART counts only repos the viewer may read (`access.visible_repo_names`, on
+  `activity_facts.subject`): a private repo's activity is as private as its code.
 - A conversation is personal (`conversations.user_id`). There is no answer cache:
   every question is answered fresh. A cache keyed on the scope would serve one person's
   answer to the next asker, so any cache must be re-justified against that.
@@ -189,9 +204,9 @@ unnarrowed chart answers a broader question); otherwise Ask answers as before. S
 asker's `Viewer` into routing. A DM charts what they can open: the probed scope
 first, then (on a chart refusal) up to `MAX_DM_CHART_SCOPES` of their other
 scopes, and the reply names the scope that answered; a chart ask in a
-CHANNEL charts that channel only (`channel_tag`: Slack metrics focused on the
-channel, tables and paragraphs from its threads, the room's public+channel
-viewer), never another connector. Chart mode answers with a chart or a
+CHANNEL charts any connector as the channel's ROOM (`security.room`: only what
+every member can open), asked with the channel named (`_naming_channel`) so "this
+channel" still means it; `channel_tag` no longer pins it. Chart mode answers with a chart or a
 refusal, never a document answer. Ask runs the chart classifier only for a "count":
 its question check (`resolve.classify_route`) decides a live GitHub read, `needs_live`
 and `chart_ask` ("visual" gets the Chart-mode hint, "count" a SQL count or, when no
@@ -487,8 +502,9 @@ never retried. Every address must be public https. Nothing runs unattended.
 From Slack only a message that ASKS for an action proposes: a model check whose
 quote of the asking words must be in the message, only where that surface is on,
 or `act …` (`slack_act.slack_request`); a failed check is a question; a DM drafts as
-the person, a channel drafts from that channel only as the room (like a channel
-reply), and its card is ephemeral. Each Slack surface has its own admin switch.
+the person, a channel drafts from every tool as its ROOM (like a channel reply,
+`slack_act.surface_viewer`; approved in the web app, the room as last read), and
+its card is ephemeral. Each Slack surface has its own admin switch.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
 owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. The owner

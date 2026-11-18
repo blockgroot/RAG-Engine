@@ -47,14 +47,18 @@ def _scoped(sql_where: str, workspace_id: str | None) -> str:
     )
 
 
-def _viewer_filter(viewer: "Viewer | None") -> tuple[str, dict]:
+def _viewer_filter(
+    viewer: "Viewer | None", org_id: str | None = None, workspace_id: str | None = None
+) -> tuple[str, dict]:
     """Drop facts about documents this viewer may not open. ``("", {})`` = no filter.
 
     Without it a count and its hover included documents the asker cannot open.
     An ACL-capable provider's fact is kept only when its DOCUMENT is visible
     (the retrieval predicate, matched by external id or, for Linear, the issue
-    URL); no visible document fails closed. GitHub (installation repos) and
-    Forms (never indexed) facts are untouched.
+    URL); no visible document fails closed. A GitHub fact is kept only when its
+    repo (``subject``) is one the viewer may read (`githublive.access`: a private
+    repo needs a linked login that opens it; in a channel, every member's). Forms
+    facts (never indexed) are untouched.
 
     ponytail: the `OR` on url cannot use the unique index; fine at hundreds of
     facts per chart. Store the document key on the fact if charts get slow.
@@ -70,8 +74,14 @@ def _viewer_filter(viewer: "Viewer | None") -> tuple[str, dict]:
                    AND (d.source_external_id = activity_facts.external_id
                         OR d.source_uri = activity_facts.url)
                    AND {visibility_predicate("d", param="acl")}))
+           AND (activity_facts.provider <> 'github'
+                OR lower(activity_facts.subject) = ANY(%(github_repos)s::text[]))
     """
-    return clause, {"acl_providers": sorted(ACL_CAPABLE), "acl": viewer.acl()}
+    from ..githublive.access import visible_repo_names
+
+    repos = visible_repo_names(org_id, workspace_id, viewer) if org_id else []
+    return clause, {"acl_providers": sorted(ACL_CAPABLE), "acl": viewer.acl(),
+                    "github_repos": repos or []}
 
 
 def _floored(inner: str, metric, *, has_series: bool) -> str:
@@ -224,7 +234,7 @@ def run_metric(
         where += " AND subject = %(focus)s"
     filter_sql, filter_params = _filter_clause(metric, filters, attrs)
     where += filter_sql
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where += access
 
     inner = f"""
@@ -319,7 +329,7 @@ def list_facts(
     )
     filter_sql, filter_params = _filter_clause(metric, filters, attrs)
     where += filter_sql
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where += access
 
     try:
@@ -403,7 +413,7 @@ def state_types(
         """,
         workspace_id,
     )
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where += access
     try:
         with get_connection() as conn:
@@ -445,7 +455,7 @@ def list_values(
     )
     # A Drive subject is a FILE TITLE, and the refusal repeats the list back
     # ("What I do have: ..."), so an unfiltered list names withheld files.
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where += access
     try:
         with get_connection() as conn:
@@ -472,7 +482,7 @@ def scope_names(
     active first: what the classifier may pick a focus or person from ("our
     team" names nothing). Viewer-filtered: they reach a prompt and a refusal.
     """
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where = _scoped(
         """
          WHERE org_id = %(org_id)s
@@ -518,7 +528,7 @@ def recorded_kinds(
     """``(provider, kind)`` pairs this viewer has at least one fact for here,
     so a starter is never offered for a metric with nothing to draw."""
     where = _scoped(" WHERE org_id = %(org_id)s", workspace_id)
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     try:
         with get_connection() as conn:
             rows = conn.execute(
@@ -543,7 +553,7 @@ def first_fact_at(
     where = _scoped(
         " WHERE org_id = %(org_id)s AND provider = %(provider)s", workspace_id
     )
-    access, access_params = _viewer_filter(viewer)
+    access, access_params = _viewer_filter(viewer, org_id, workspace_id)
     where += access
     try:
         with get_connection() as conn:
