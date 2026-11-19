@@ -12,7 +12,7 @@ import { useState, type ReactNode } from "react";
 import type { ModelPreset } from "@/lib/api";
 import { ProviderLogo } from "./ProviderPicker";
 
-type IconName = "key" | "lock" | "clock" | "calendar" | "person" | "building" | "check" | "bolt" | "gauge" | "chat" | "doc" | "shield" | "spark" | "external";
+type IconName = "key" | "lock" | "clock" | "calendar" | "person" | "building" | "check" | "bolt" | "gauge" | "chat" | "doc" | "shield" | "spark" | "external" | "bell";
 
 const PATHS: Record<IconName, ReactNode> = {
   key: <><circle cx="8" cy="15" r="4" /><path d="m11 12 8-8M16 7l2 2M14 9l2 2" /></>,
@@ -28,6 +28,7 @@ const PATHS: Record<IconName, ReactNode> = {
   doc: <><path d="M6.5 3.5h7l4.5 4.5v10a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 18V6a2.5 2.5 0 0 1 2.5-2.5Z" /><path d="M13.5 3.5V8H18M8 13h7M8 16.5h5" /></>,
   shield: <><path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-2.5Z" /><path d="m9 12 2 2 4-4" /></>,
   spark: <path d="M12 3.5 13.8 10.2 20.5 12l-6.7 1.8L12 20.5l-1.8-6.7L3.5 12l6.7-1.8L12 3.5Z" />,
+  bell: <><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14l1.5-2Z" /><path d="M10 20.5a2 2 0 0 0 4 0" /></>,
   external: <path d="M14 4.5h5.5V10M19.5 4.5 11 13M17 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h4" />,
 };
 
@@ -70,7 +71,7 @@ export function ModelCard({
   );
 }
 
-const LOGO_STRIP = ["anthropic", "openai", "google", "mistral", "openrouter"];
+export const LOGO_STRIP = ["anthropic", "openai", "google", "mistral", "openrouter"];
 
 /**
  * Top of the page: the connected model, or a quiet "not connected" state.

@@ -3,6 +3,8 @@
 import Link from "next/link";
 
 import type { Me } from "@/lib/api";
+import { Icon, LOGO_STRIP } from "./ModelSetup";
+import { ProviderLogo } from "./ProviderPicker";
 
 /** True when nothing can answer this person: no Handbook model, company key or own key. */
 export function noModel(me: Me | null | undefined): boolean {
@@ -19,7 +21,7 @@ export function noCompanyModel(me: Me | null | undefined): boolean {
  * Shown wherever AI work starts (chat, starters, Agent, charts, reports) while
  * no model is connected. The admin can fix it, so they get the button to
  * Admin › Model; anyone else learns their admins have a reminder, and can use
- * their own key meanwhile.
+ * their own key meanwhile. Styled like the Model pages (ModelSetup).
  */
 export function NoModelCard({
   me,
@@ -34,41 +36,71 @@ export function NoModelCard({
   companyWork?: boolean;
 }) {
   const admin = me.role === "admin";
+  const title = admin ? "Connect your AI model to start" : "Your company hasn’t connected an AI model yet";
+  const text = companyWork
+    ? admin
+      ? "Reports are written with your company’s AI model. Add its key once and everyone’s reports can run."
+      : "Reports are written with your company’s AI model. Your admins have a reminder to connect one."
+    : admin
+      ? "Handbook answers with your company’s own AI model. Add its key once and everyone can ask, chart and draft."
+      : "Your admins have a reminder to connect one. Meanwhile you can use your own key.";
+  const steps = admin
+    ? ["Choose a provider", "Paste its API key", "Everyone can ask"]
+    : ["Add your own key", "Pick it in the model menu", "Ask away"];
+
+  const actions = (
+    <div className="nm-actions">
+      {admin && (
+        <Link className="button button-sm" href="/admin/model">
+          <Icon name="key" size={15} /> Connect model
+        </Link>
+      )}
+      {!companyWork && (
+        <Link className={`button button-sm${admin ? " button-secondary" : ""}`} href="/account/model">
+          {admin ? "Use my own key" : <><Icon name="key" size={15} /> Add my own key</>}
+        </Link>
+      )}
+      {companyWork && !admin && (
+        <span className="nm-chip">
+          <Icon name="bell" size={14} /> Admins reminded
+        </span>
+      )}
+    </div>
+  );
+
   return (
     <section
-      className={`no-model-card${nudge ? " is-nudged" : ""}${compact ? " is-compact" : ""}`}
+      className={`nm-card${nudge ? " is-nudged" : ""}${compact ? " is-compact" : ""}`}
       role="status"
       aria-live="polite"
     >
-      <span className="no-model-card-icon" aria-hidden>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
-      </span>
-      <div className="no-model-card-body">
-        <strong>{admin ? "Connect your AI model to start" : "Your company hasn’t connected an AI model yet"}</strong>
-        <p>
-          {companyWork
-            ? admin
-              ? "Reports are written with your company’s AI model. Add its key once and everyone’s reports can run."
-              : "Reports are written with your company’s AI model. Your admins have a reminder to connect one."
-            : admin
-              ? "Handbook answers with your company’s own AI model. Add its key once and everyone can ask, chart and draft."
-              : "Your admins have a reminder to connect one. Meanwhile you can use your own key."}
-        </p>
-      </div>
-      <div className="no-model-card-actions">
-        {admin ? (
-          <Link className="button button-sm" href="/admin/model">
-            Connect model
-          </Link>
-        ) : null}
-        {!companyWork && (
-          <Link className={`button button-sm${admin ? " button-secondary" : ""}`} href="/account/model">
-            {admin ? "Use my own key" : "Add my own key"}
-          </Link>
+      <div className="nm-main">
+        {compact ? (
+          <span className="mk-icon-tile">
+            <Icon name="spark" />
+          </span>
+        ) : (
+          <div className="mk-logo-strip nm-logos" aria-hidden>
+            {LOGO_STRIP.map((id) => (
+              <ProviderLogo key={id} id={id} />
+            ))}
+          </div>
         )}
+        <div className="nm-body">
+          <strong>{title}</strong>
+          <p>{text}</p>
+        </div>
+        {actions}
       </div>
+      {!compact && (
+        <ol className="nm-steps">
+          {steps.map((s, i) => (
+            <li key={s}>
+              <b>{i + 1}</b> {s}
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   );
 }
