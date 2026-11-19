@@ -110,6 +110,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+@router.get("/usage")
+def ai_usage(model: str | None = None, session: SessionClaims = Depends(get_session)):
+    """How much of today's AI use is left on the key that answers ``model``,
+    for the ring beside the model menu. Reads the limits; spends nothing."""
+    from ..llm.own_model import selectable
+    from ..security.rate_limit import usage
+
+    if not selectable(session.org_id, session.user_id, model):
+        model = None  # an id this person cannot pick: show Handbook's
+    return usage(session.user_id, session.org_id, model)
+
+
 @router.get("/models")
 def list_models(session: SessionClaims = Depends(get_session)):
     """The models a member may pick, plus the default's identity.

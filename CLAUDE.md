@@ -522,7 +522,10 @@ we write has a TTL.
 AI usage is limited in two layers (`security/ai_spend.py`), as Anthropic, LiteLLM and
 Kong do: TOKENS a minute per model (`AI_TOKEN_LIMITS`: input and output apart, person and
 company, each model its own buckets keyed by its listed id) and DOLLARS a day, one wallet
-whichever model answers (the models differ 20x in price). Every paid call is charged where
+whichever model answers (the models differ 20x in price), as Claude.ai and ChatGPT do: a
+bigger model uses it faster; no model has a share of its own. The ring beside the model menu
+(`GET /chat/usage`, `rate_limit.usage`, `RateLimiter.levels`, read only) shows the tightest
+DAILY limit on the key that answers, as a share left, never dollars. Every paid call is charged where
 it is made (`OpenAICompatProvider`, never per caller) to whoever `charge_to` names, set
 where the model is chosen (inside the answering stream); a question is checked against
 the model the asker picked (`limit_question(session, model)`, None = the default) and

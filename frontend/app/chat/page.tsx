@@ -2,6 +2,7 @@
 
 import { PageLoader } from "@/components/PageLoader";
 import { ModelPicker } from "@/components/ModelPicker";
+import { UsageRing } from "@/components/UsageRing";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
@@ -1259,6 +1260,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           />
           {models.length > 0 && (
             <>
+              <UsageRing model={model} refresh={busy} />
               <ModelPicker
                 value={model}
                 disabled={busy}

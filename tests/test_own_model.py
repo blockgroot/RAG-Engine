@@ -393,3 +393,69 @@ def test_the_menu_starts_on_the_persons_key_then_the_companys_then_ours(keys, mo
     assert menu["preferred"] == "company:gpt-5" and "company:gpt-5" in [m["id"] for m in menu["models"]]
     keys["own"]["u"] = "claude-sonnet-5-5"
     assert list_models(session=session)["preferred"] == "own:claude-sonnet-5-5"
+
+
+# --- The usage ring: how much of today's AI use is left ------------------------------
+
+from app.ratelimit import Bucket, MemoryRateLimiter  # noqa: E402
+
+
+def test_the_ring_shows_the_day_left_on_handbooks_key(monkeypatch, ids):
+    user, org = ids
+    _admin_limits(monkeypatch)
+    assert rate_limit.usage(user, org, HAIKU) == {"limited": True, "left": 1.0, "whose": "person", "retry_after": 0}
+    charge_to(user, org)
+    charge_call("claude-sonnet-5-5", 100_000, 5_000)                 # $0.25 of the person's $0.50
+    shown = rate_limit.usage(user, org, HAIKU)
+    assert shown["left"] == pytest.approx(0.5, abs=0.01) and shown["whose"] == "person"
+    # One budget for every model: Sonnet's use shows on Haiku too.
+    assert rate_limit.usage(user, org, "claude-sonnet-5-5")["left"] == shown["left"]
+
+
+def test_the_ring_names_the_company_when_its_day_runs_lowest(monkeypatch, ids):
+    user, org = ids
+    _admin_limits(monkeypatch, company_day=100_000)
+    charge_to(str(uuid.uuid4()), org)                                # a colleague
+    charge_call(HAIKU, 90_000, 0)
+    shown = rate_limit.usage(user, org, HAIKU)
+    assert shown["whose"] == "company" and shown["left"] == pytest.approx(0.1, abs=0.01)
+
+
+def test_an_overdrawn_day_shows_empty_with_the_wait(monkeypatch, ids):
+    user, org = ids
+    _admin_limits(monkeypatch)
+    charge_to(user, org)
+    charge_call("claude-sonnet-5-5", 250_000, 2_000)                 # $0.52: past $0.50
+    shown = rate_limit.usage(user, org, HAIKU)
+    assert shown["left"] == 0.0 and shown["retry_after"] > 0
+    assert not rate_limit.question_decision(user, org, model=HAIKU).allowed
+
+
+def test_the_ring_is_hidden_on_an_own_key_without_limits(monkeypatch, ids):
+    user, org = ids
+    _admin_limits(monkeypatch, person_day=1, company_day=1)           # the admin's never apply to it
+    assert rate_limit.usage(user, org, "own:gpt-5") == {"limited": False}
+    monkeypatch.setattr(own_model, "own_limits", lambda o, u: (0, 200_000))
+    assert rate_limit.usage(user, org, "own:gpt-5")["left"] == 1.0
+
+
+def test_reading_levels_spends_nothing():
+    clock = [0.0]
+    lim = MemoryRateLimiter(clock=lambda: clock[0])
+    day = Bucket("ai:user:day:u", 0.5, 0.5 / 1440)
+    assert lim.levels([day]) == [0.5]                                 # unused is full
+    lim.take([day], need=None, spend=0.2)
+    assert lim.levels([day]) == pytest.approx([0.3])
+    assert lim.levels([day]) == pytest.approx([0.3])                  # reading twice changes nothing
+    clock[0] += 720 * 60                                              # half a day refills $0.25
+    assert lim.levels([day]) == pytest.approx([0.5])                  # capped at full
+
+
+def test_redis_levels_match_memory(redis_url):
+    from app.ratelimit import RedisRateLimiter
+
+    lim = RedisRateLimiter(redis_url)
+    day = Bucket(f"ai:user:day:{uuid.uuid4()}", 0.5, 0.5 / 1440)
+    assert lim.levels([day]) == [0.5]
+    lim.take([day], need=None, spend=0.2)
+    assert lim.levels([day]) == pytest.approx([0.3], abs=1e-4)

@@ -656,6 +656,11 @@ export interface OwnModel {
 
 export type OwnLimits = Pick<OwnModel, "tokens_per_minute" | "tokens_per_day">;
 
+/** How much of today's AI use is left on the key that answers (the menu's ring). */
+export type AiUsage =
+  | { limited: false }
+  | { limited: true; left: number; whose: "person" | "company"; retry_after: number };
+
 /** The limits a company admin sets, in tokens (input and output together); 0 = no limit. */
 export interface AiLimits {
   person_tokens_per_minute: number;
@@ -1303,6 +1308,8 @@ export const api = {
     return request<{ questions: string[] }>(`/chat/chart-starters${q ? `?${q}` : ""}`);
   },
 
+  chatUsage: (model: string) =>
+    request<AiUsage>(`/chat/usage?model=${encodeURIComponent(model)}`),
   chatModels: () =>
     request<{ default: string; default_label: string; models: ModelChoice[]; preferred?: string }>(
       "/chat/models",

@@ -308,6 +308,8 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
   key are no longer charged to our credit (`tests/test_own_model.py`). Whose key pays also runs
   the work: a question's checks on the asker's key, else the company's, else ours; indexing,
   reports and other company work on the company's, else ours; Slack DMs and channels likewise.
+  One daily budget for every model (Sonnet's own share dropped), shown as a usage ring beside
+  the model menu (`GET /chat/usage`).
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or
   neither) and `GUARD_SAFEGUARD_MODEL`, so the guard never spends the answering models' quota.
 

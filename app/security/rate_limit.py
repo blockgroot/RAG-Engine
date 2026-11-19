@@ -124,6 +124,48 @@ def question_decision(
     )
 
 
+def usage(
+    user_id: str,
+    org_id: str,
+    model: str | None = None,
+    settings: RateLimitSettings | None = None,
+) -> dict:
+    """How much of today's AI use is left, for the menu's ring: the tightest
+    DAILY limit on whoever's key answers ``model`` (minute limits are bursts,
+    not a day's use). ``{"limited": False}`` when nothing limits it (a person's
+    own key with no limit set) or the store cannot be read. Read only.
+    """
+    from ..llm.own_model import OURS, OWN, billing_of
+
+    settings = settings or RateLimitSettings.from_env()
+    billing = billing_of(model)
+    if billing == OWN:
+        buckets = [b for b in own_buckets(user_id, org_id) if ":oday:" in b.key]
+    else:
+        buckets = [b for b in admin_buckets(user_id, org_id) if ":aday:" in b.key]
+    if billing == OURS:
+        buckets += spend_buckets(user_id, org_id, settings)
+    if not settings.enabled or not buckets:
+        return {"limited": False}
+    try:
+        levels = build_rate_limiter(settings).levels(buckets)
+    except RateLimiterError as exc:
+        logger.error("Could not read AI usage: %s", exc.cause or exc)
+        return {"limited": False}
+    left, level, bucket = min(
+        (max(0.0, lvl) / b.burst, lvl, b) for lvl, b in zip(levels, buckets)
+    )
+    return {
+        "limited": True,
+        "left": round(left, 3),
+        # Whose day ran lowest: the company's shows when a colleague used it up.
+        "whose": "company" if bucket.key.startswith("ai:org:") else "person",
+        # Seconds until a question is let through again; 0 while it is.
+        "retry_after": round((_SPEND_NEED - level) * 60 / bucket.per_minute)
+        if level < _SPEND_NEED else 0,
+    }
+
+
 def limit_question(session, model: str | None = None) -> None:
     _raise_if_refused(question_decision(session.user_id, session.org_id, model=model))
 

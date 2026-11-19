@@ -101,6 +101,28 @@ class RedisRateLimiter(RateLimiter):
             allowed=False, retry_after=float(wait), refused_by=buckets[int(worst) - 1].key
         )
 
+    def levels(self, buckets: Sequence[Bucket]) -> list[float]:
+        """Read only: the same refill as ``_TAKE``, on Redis's clock, nothing written."""
+        if not buckets:
+            return []
+        try:
+            pipe = self._client.pipeline(transaction=False)
+            pipe.time()
+            for b in buckets:
+                pipe.hmget(_KEY_PREFIX + b.key, "tokens", "ts")
+            clock, *stored = pipe.execute()
+        except Exception as exc:  # noqa: BLE001 - any client/server fault
+            raise RateLimiterError("Rate limiter store unavailable", cause=exc) from exc
+        now = int(clock[0]) + int(clock[1]) / 1_000_000
+        out = []
+        for b, (tokens, ts) in zip(buckets, stored):
+            if tokens is None:  # never used, or expired because it was full again
+                out.append(float(b.burst))
+                continue
+            refilled = float(tokens) + max(0.0, now - float(ts)) * b.per_minute / 60
+            out.append(min(float(b.burst), refilled))
+        return out
+
     def acquire(self, key: str, limit: int, lease_seconds: float) -> str | None:
         token = uuid.uuid4().hex
         try:

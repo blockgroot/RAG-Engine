@@ -512,7 +512,10 @@ app that issued it.
   person; the rest wait for a place, then are told Handbook is busy.
 - **AI limits, two layers.** Tokens a minute for each answering model, for the person and for the
   company, input and output counted apart; and dollars a day for the person and the company,
-  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day.
+  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day. A bigger model uses
+  it faster. A ring beside the model menu shows how much of today's use is left (a share, never
+  dollars), names the company when its limit is the one running low, and says when you can ask
+  again once it is used up. It is hidden on your own key unless you set a limit on it.
 - **The company's own limits.** On Admin › Model an admin sets tokens a minute and a day, for each
   person and for the whole company (0 = no limit). Until they do, Handbook's defaults apply and are
   shown filled in: 68,000 and 4,000,000 a person, 440,000 and 30,000,000 the company

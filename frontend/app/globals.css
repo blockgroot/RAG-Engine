@@ -12612,3 +12612,21 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
   .mk-limits.is-two, .mk-uses { grid-template-columns: 1fr; }
   .mk-card, .mk-status { padding: 1.1rem; }
 }
+
+/* Today's AI use left, beside the model menu (UsageRing). */
+.usage-ring { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; cursor: default; outline: none; }
+.usage-ring:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent); }
+.usage-ring-track { fill: none; stroke: color-mix(in srgb, var(--accent) 14%, var(--border)); stroke-width: 3; }
+.usage-ring-fill { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray 0.4s ease; }
+.usage-ring.is-low .usage-ring-fill { stroke: #d97706; }
+.usage-ring.is-empty .usage-ring-track { stroke: color-mix(in srgb, var(--danger, #b42318) 35%, var(--border)); }
+.usage-ring-tip {
+  position: absolute; bottom: calc(100% + 0.5rem); right: -0.5rem; z-index: 30; display: none;
+  width: max-content; max-width: 15rem; padding: 0.55rem 0.7rem; border-radius: 10px;
+  background: #fff; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(15, 42, 38, 0.12);
+  text-align: left;
+}
+.usage-ring:hover .usage-ring-tip, .usage-ring:focus-visible .usage-ring-tip { display: grid; gap: 0.15rem; }
+.usage-ring-tip strong { font-size: 0.8rem; font-weight: 650; color: var(--ink); }
+.usage-ring-tip small { font-size: 0.72rem; color: var(--ink-muted); line-height: 1.35; }
+.usage-ring.is-empty .usage-ring-tip strong { color: var(--danger, #b42318); }
