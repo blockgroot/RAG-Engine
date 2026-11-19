@@ -95,6 +95,14 @@ def _facts() -> list[F]:
     return out
 
 
+@pytest.fixture(autouse=True)
+def _repos_open_to_the_viewer(monkeypatch):
+    """Both seeded repos are ones the viewer may read (`githublive.access`); the
+    filter itself is tested in `test_insights_access.py`."""
+    monkeypatch.setattr("app.githublive.access.visible_repo_names",
+                        lambda org, ws, viewer: ["acme/api", "acme/web"])
+
+
 @pytest.fixture(scope="module")
 def seeded():
     """One org holding every fact above; dropped at the end."""

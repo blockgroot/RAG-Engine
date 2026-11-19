@@ -69,7 +69,6 @@ from .attachment_tools import (
     build_preview_block,
     run_reads,
 )
-from ..sources.slack_utils import channel_tag
 from .access_notice import live_withheld_notice, restricted_notice
 from ..guard import build_injection_guard
 from ..livetools import LiveRefresh, current_live_request
@@ -111,6 +110,7 @@ from .prompts import (
     build_audit_prompt,
     build_decompose_prompt,
     ATTACHMENT_PROMPT_PROFILE,
+    CONVERSATION_PROMPT_PROFILE,
     connected_prompt_profile,
     build_attachment_paging_prompt,
     build_grounded_prompt,
@@ -569,6 +569,8 @@ class RagPipeline:
             attachments=attachments,
             viewer=viewer,
         )
+        if result.answered and viewer is not None and not viewer.is_unrestricted:
+            result = self._note_withheld(result, resolved, org_id, workspace_id, viewer)
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -1464,6 +1466,22 @@ class RagPipeline:
             source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE,
         )
 
+    def answer_from_conversation(
+        self, question: str, title: str, text: str, *, org_id: str | None = None
+    ) -> RagResult:
+        """Answer from the Slack conversation a question was asked in (read live),
+        named as that, never as an attached file. Same strict generation; it
+        refuses when the conversation does not answer."""
+        if not (text or "").strip():
+            return RagResult(answer=self._settings.fallback_response, answered=False,
+                             source=SOURCE_NONE, sources=[], top_score=None)
+        result = self._generate(
+            question, [], None, retrieval_reused=False, org_id=org_id,
+            contexts=[f"Slack conversation: {title}\n\n{text}"],
+            profile=CONVERSATION_PROMPT_PROFILE,
+        )
+        return replace(result, source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE)
+
     def _page_attachments(
         self,
         question: str,
@@ -1975,6 +1993,29 @@ class RagPipeline:
             live_withheld=bool(live_withheld),
         )
 
+    def _note_withheld(self, result, question, org_id, workspace_id, viewer):
+        """An answer from what this viewer can open (a person, or a channel's room),
+        with a line under it when something relevant (past the gate) was left out
+        for them. One embedding and one bounded query per answered question. Never
+        raises: the note may only ever add."""
+        try:
+            vec = self._embedder.embed([question])[0]
+            match = self._store.restricted_match(
+                org_id, vec, workspace_id=workspace_id, source_provider=self._source_provider,
+                viewer=viewer, min_score=self._settings.similarity_threshold, tags=None)
+        except Exception:  # noqa: BLE001
+            logger.warning("room withheld probe failed", exc_info=True)
+            return result
+        if match is None:
+            return result
+        from .access_notice import partly_withheld_note
+
+        # Plain text: the web chat renders only **bold**, and Slack reads it as is.
+        note = partly_withheld_note(
+            match.source_provider, in_channel=bool(viewer.public_only and viewer.channels),
+            workspace_id=workspace_id)
+        return replace(result, answer=f"{result.answer}\n\n{note}")
+
     def _withheld_notice(
         self,
         org_id: str,
@@ -1988,9 +2029,9 @@ class RagPipeline:
         Uses the answer path's ``similarity_threshold``, so it claims only that a
         document that would have passed the gate was withheld. Never raises.
         """
-        # A Slack channel reply reads that channel only, so only its threads may
-        # confirm a withheld match.
-        channel_tags = [channel_tag(c) for c in viewer.channels if c] or None
+        # A Slack channel reply reads every tool as its ROOM (`security.room`), so a
+        # withheld match may be anywhere in scope: pinning it to the channel's own
+        # threads (which the room always reads) found nothing, ever.
         try:
             match = self._store.restricted_match(
                 org_id,
@@ -1999,7 +2040,7 @@ class RagPipeline:
                 source_provider=self._source_provider,
                 viewer=viewer,
                 min_score=self._settings.similarity_threshold,
-                tags=channel_tags,
+                tags=None,
             )
         except Exception:  # noqa: BLE001
             logger.exception("restricted_match failed; falling back to the fixed refusal")
@@ -2010,7 +2051,8 @@ class RagPipeline:
             match.source_provider,
             org_id=org_id,
             workspace_id=workspace_id,
-            in_channel=bool(channel_tags),
+            # A channel's room (`security.room`) carries no tag any more.
+            in_channel=bool(viewer.public_only and viewer.channels),
         )
 
     # -- retrieval reuse (deterministic, no LLM) ---------------------------

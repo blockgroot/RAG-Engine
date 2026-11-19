@@ -203,13 +203,20 @@ def test_a_dm_drafts_as_the_person(act_env):
     assert kw["surface"]["kind"] == "slack_dm"
 
 
-def test_a_channel_drafts_from_that_channel_only_as_the_room(act_env, monkeypatch):
+def test_a_channel_drafts_from_every_tool_as_the_room(act_env, monkeypatch):
+    """Like a channel reply: every tool, as what EVERY member can open, never the
+    asker's own access (`security.room`)."""
+    from app.security import room
+
+    room._cache.clear()
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda org, tag: None)
+    monkeypatch.setattr("app.sources.slack_utils.channel_member_emails", lambda tok, ch: None)
     slack_act.handle_act(request="file it", org_id="o", token="t",
                          user=USER, slack_user="U1", channel="C9", thread_ts="5.5", is_dm=False)
     [kw] = act_env["propose"]
-    assert kw["viewer"] == Viewer(public_only=True, channels=("C9",))  # never the asker's access
-    assert kw["tags"] == [channel_tag("C9")]
+    # Members could not be read here, so the room is public plus this channel.
+    assert kw["viewer"].acl() == ["channel:c9"] and kw["viewer"].public_only
+    assert kw["tags"] is None
     assert kw["surface"] == {"kind": "slack_channel", "slack_user": "U1", "channel": "C9",
                              "thread_ts": "5.5"}
     assert act_env["said"][0]["is_dm"] is False  # shown to the asker only
@@ -576,3 +583,16 @@ def test_approve_takes_the_buttons_away_before_the_write_runs(click_env, monkeyp
     assert order[0] == ("said", slack_act._SENDING, True)   # replaced at once
     assert order[1] == ("confirm",)
     assert order[2][1].startswith("✅ Done") and "https://slack.com/archives/D1/p1" in order[2][1]
+
+
+
+def test_approved_in_the_web_app_a_channel_draft_reads_as_the_room_last_read():
+    """No Slack token there: the room as last read, else public plus the channel."""
+    from app.security import room
+
+    room._cache.clear()
+    surface = {"kind": "slack_channel", "channel": "C9"}
+    assert slack_act.surface_viewer("o", "a@b.com", surface).acl() == ["channel:c9"]
+    known = Viewer(public_only=True, channels=("C9",), room=("doc:1",))
+    room._cache[("o", "C9")] = (__import__("time").monotonic(), known)
+    assert slack_act.surface_viewer("o", "a@b.com", surface) is known

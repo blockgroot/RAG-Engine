@@ -3,8 +3,8 @@
 An adapter, not an agent: routing, the gate, the strict prompt and memory
 are reused, so nothing here decides an answer.
 
-- In a channel: answers from THAT channel only (`slack:channel:<id>` tag),
-which everyone present can already read.
+- In a channel: every connected tool, as the ROOM (`security.room`): only what
+EVERY member can open, plus that channel and its live thread. Never as the asker.
 - In a DM: what the asker can read in the app (company and their spaces).
 
 Identity: `team_id` is the connection's `external_workspace_id`; the Slack
@@ -226,15 +226,17 @@ class SlackAnswer:
 
 
 def _asks_for_chart(question: str) -> bool:
-    """Does this channel question ask to SEE a chart, or how many of something?
+    """Does this channel question ask to SEE a chart?
 
-    The same check Ask runs (``resolve.classify_route``). Never raises: a failed
+    The same check Ask runs (``resolve.classify_route``), read from the whole
+    question. A count is not a chart ask: it is routed like any question, and
+    charted only when narrowed (Ask's count-chart rule). Never raises: a failed
     check is an ordinary question.
     """
     try:
         from ..insights.resolve import classify_route
 
-        return classify_route(question, github=False).chart_ask in ("visual", "count")
+        return classify_route(question, github=False).chart_ask == "visual"
     except Exception:  # noqa: BLE001
         logger.warning("slack: chart question check failed", exc_info=True)
         return False
@@ -266,58 +268,39 @@ def _answer(
     viewer: Viewer | None = None,
     channel_id: str | None = None,
     other_scopes: list[tuple[str | None, str]] | None = None,
+    conversation: tuple[str, str, bool] | None = None,
 ) -> SlackAnswer:
-    """Run the existing pipeline; ``tags`` set means channel-scoped Slack only.
+    """Run the existing pipeline over every connected tool, as the web chat does.
 
     ``scope_label`` ("Company", a space) prefixes the reply with where it
     looked; omitted in a channel. ``user_id`` is carried so an unanswered
     question is logged as a gap with a person (counted distinct).
+    ``conversation`` (``(title, text, cut)``) is the channel talk the question
+    was asked in, read live, joining the answer like an attached file.
     """
     watch_question(question)  # logged, never refused (guard/live.py)
-    # A channel reply is read by the whole room, so it is built only from what
-    # the scope can read, never as the asker. Decided here so no caller forgets.
-    if scope_label is None:
-        # ...plus that ONE channel's own documents: everyone reading the reply is in
-        # it. Never the asker's other channels.
+    # A channel reply is read by the whole ROOM, so it reads only what every
+    # member can open (`security.room`), never as the asker. Anything but the room
+    # of THIS channel is replaced here, so no caller can widen it.
+    if scope_label is None and not _is_room_of(viewer, channel_id):
         viewer = Viewer(
             public_only=True,
             channels=(channel_id,) if channel_id else (),
         )
 
     chart_in_channel = bool(tags) and _asks_for_chart(question)
-    if tags and not chart_in_channel:
-        # Pinned to Slack and one channel, through the agent's pipeline: only this
-        # caller needs a tag filter.
-        result = get_slack_agent().pipeline.answer(
-            question,
-            org_id=org_id,
-            workspace_id=workspace_id,
-            tags=tags,
-            viewer=viewer,
-        )
-        if not result.answered and not result.access_restricted:
-            record_gap(
-                org_id=org_id,
-                question=question,
-                resolved_question=result.resolved_question,
-                answer=result.answer,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                agent="slack",
-                surface="slack",
-                gate_score=result.top_score,
-            )
-        return SlackAnswer(_to_slack_mrkdwn(result.answer))
-
     if chart_in_channel:
-        # A chart of THIS channel only, as the room's viewer (public + this channel).
-        decision = choose_agent(question, org_id, workspace_id=workspace_id,
-                                viewer=viewer, chart_mode=True, channel_tag=tags[0])
+        # Any connector's chart, as the ROOM (only what every member can open). The
+        # model reads which channel it was asked in, so "this channel" means it.
+        decision = choose_agent(
+            _naming_channel(question, org_id, workspace_id, channel_id), org_id,
+            workspace_id=workspace_id, viewer=viewer, chart_mode=True)
     else:
         # Slack has no Chart toggle: a chart ask goes to Chart mode. The viewer
-        # offers the asker's document tables and paragraph figures.
+        # offers the asker's document tables and paragraph figures. A channel draws
+        # only a chart of itself (above), so its words never pick another tool's.
         decision = choose_agent(question, org_id, workspace_id=workspace_id,
-                                viewer=viewer, chart_from_words=True)
+                                viewer=viewer, chart_from_words=scope_label is not None)
         if other_scopes and _chart_refused(decision):
             # A DM tries the asker's other scopes in turn; the label names the one that answered.
             for scope_id, name in other_scopes[:MAX_DM_CHART_SCOPES]:
@@ -350,10 +333,22 @@ def _answer(
     }
     from ..insights.table_answers import reset_answers, use_answers
 
+    from ..graph import plan as graph_plan
+
     figures = use_answers(getattr(decision, "table_answers", ()))
+    # Every tool the question names, searched together, as the web chat does.
+    plan = None if chart_spec is not None else _connected_plan(
+        question, org_id, workspace_id, viewer, decision.agent_key)
+    plan_token = graph_plan.use_plan(plan)
     try:
-        response = build_agent_graph(_agent_getters()).invoke(graph_input)["response"]
+        response = None
+        if conversation is not None and chart_spec is None:
+            response = _with_conversation(
+                question, org_id, workspace_id, viewer, decision.agent_key, conversation)
+        if response is None:
+            response = build_agent_graph(_agent_getters()).invoke(graph_input)["response"]
     finally:
+        graph_plan.reset_plan(plan_token)
         reset_answers(figures)
     if not getattr(response, "grounded", True) and not getattr(response, "access_restricted", False):
         # The web chat's one retry of a refusal across every tool that cleared
@@ -370,6 +365,9 @@ def _answer(
                     {**graph_input, "requested_agent": decision.agent_key})["response"]
             finally:
                 graph_plan.reset_plan(token)
+    if conversation is not None and chart_spec is None and not getattr(response, "grounded", True):
+        # The tool could not answer, but the thread may: never drop what was read.
+        response = _thread_and_the_rest(question, org_id, conversation, response)
     # Same gap log as the web chat. `getattr`: a missing field costs the gap log,
     # never the answer; absent counts as grounded.
     if not getattr(response, "grounded", True) and not getattr(
@@ -405,7 +403,124 @@ def _answer(
             period=getattr(response, "chart_period", None) or "month",
             with_values=with_values + link,
         )
+    if getattr(response, "github_link_hint", False):
+        # The web chat's "Link your GitHub account" button, as a Slack link.
+        with_values += _account_link()
     return SlackAnswer(with_values)
+
+
+def _account_link() -> str:
+    """A link to the web app's Account page, where a GitHub account is linked.
+    Empty when the web address is not configured."""
+    from ..config.settings import ApiSettings
+
+    base = (ApiSettings.from_env().frontend_url or "").rstrip("/")
+    if not base.startswith(("https://", "http://")):
+        return ""
+    return f"\n<{base}/account|Link your GitHub account>"
+
+
+def _channel_room(org_id: str, token: str, channel: str) -> Viewer:
+    """The viewer for a reply in ``channel``: what EVERY member can open."""
+    from ..security.room import cached_room_viewer
+    from ..sources.slack_utils import channel_member_emails
+
+    return cached_room_viewer(org_id, channel, lambda: channel_member_emails(token, channel))
+
+
+def _channel_conversation(token: str, channel: str, event: dict) -> tuple[str, str, bool] | None:
+    """The thread the question is in, or the channel's latest talk before it, read
+    live as ``(title, text, cut)``. The room already reads this channel."""
+    from ..sources.slack_utils import recent_conversation
+
+    in_thread = event.get("thread_ts")
+    read = recent_conversation(token, channel, in_thread, before_ts=None if in_thread else event.get("ts"))
+    if read is None:
+        return None
+    text, cut = read
+    title = "this Slack thread" if in_thread else "the latest messages in this Slack channel"
+    return title, text, cut
+
+
+#: Joins a thread answer to the tool's own refusal, so what was NOT found (and
+#: why) is said plainly under what was.
+REST_OF_QUESTION = "About the rest of your question: "
+
+
+def _thread_and_the_rest(question, org_id, conversation, refused):
+    """The part of the question the channel talk answers, then the routed tool's
+    own refusal for the rest, word for word (not found, not open to everyone, or
+    needs reconnecting). ``refused`` unchanged when the talk answers nothing
+    either. Never raises."""
+    import dataclasses
+
+    from ..agent.rag_pipeline_agent import RagPipelineAgent
+    from .chat import AGENT_POLICY, _agent_getters
+
+    try:
+        title, text, _cut = conversation
+        thread = _agent_getters()[AGENT_POLICY]().pipeline.answer_from_conversation(
+            question, title, text, org_id=org_id)
+    except Exception:  # noqa: BLE001 - the refusal still stands
+        logger.warning("slack: thread answer failed", exc_info=True)
+        return refused
+    if not thread.answered:
+        return refused
+    talk = RagPipelineAgent._to_response(thread)
+    return dataclasses.replace(
+        refused, answer=f"{talk.answer}\n\n{REST_OF_QUESTION}{refused.answer}",
+        cited=talk.cited)
+
+
+def _is_room_of(viewer: Viewer | None, channel_id: str | None) -> bool:
+    """True only for the room viewer of exactly this channel (`security.room`)."""
+    return bool(
+        viewer is not None and channel_id and viewer.public_only and not viewer.email
+        and viewer.channels == (channel_id,)
+    )
+
+
+def _connected_plan(question, org_id, workspace_id, viewer, routed):
+    """The web chat's graph plan, narrowed to the tools the question names
+    (`chat._stream_answer_body`), or ``None``. Never fails an answer."""
+    from ..config.settings import GraphSettings
+    from ..graph import plan as graph_plan
+    from .chat import _graph_connected_enabled, _named_connected_tools
+
+    try:
+        settings = GraphSettings.from_env()
+        if not settings.retrieval_enabled:
+            return None
+        plan = graph_plan.build_plan(org_id, workspace_id, question, viewer, settings=settings)
+        if plan is not None and _graph_connected_enabled():
+            connected = graph_plan.connected_tools(
+                plan, routed, _named_connected_tools(question, org_id, workspace_id))
+            if connected:
+                plan = plan.connected(connected, search=connected - {routed})
+        return plan
+    except Exception:  # noqa: BLE001 - the graph may only ever add
+        logger.warning("slack: graph plan not built", exc_info=True)
+        return None
+
+
+def _with_conversation(question, org_id, workspace_id, viewer, routed, conversation):
+    """The routed tool's answer with the channel talk joined: like an attached file
+    for a searched tool (the pipeline's gate and strict prompt unchanged), as a
+    fenced CONVERSATION beside GitHub's live read. ``None`` for charts, which
+    answer as before."""
+    from ..agent.rag_pipeline_agent import RagPipelineAgent
+    from .chat import AGENT_GITHUB, _agent_getters
+
+    agent = _agent_getters().get(routed, lambda: None)()
+    if routed == AGENT_GITHUB and agent is not None:
+        return agent.answer(question, org_id, workspace_id=workspace_id, viewer=viewer,
+                            conversation=conversation[1])
+    pipeline = getattr(agent, "pipeline", None)
+    if pipeline is None:
+        return None
+    result = pipeline.answer(question, org_id, workspace_id=workspace_id,
+                             attachments=[conversation], viewer=viewer)
+    return RagPipelineAgent._to_response(result)
 
 
 def _naming_channel(
@@ -615,6 +730,20 @@ def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
     placeholder_ts = post_message(token, channel, _SEARCHING_LATE if waited else _SEARCHING, thread_ts)
 
     try:
+        conversation = None
+        if is_dm:
+            # Viewer from the resolved Handbook user, not the Slack profile, so both
+            # surfaces agree on who is asking.
+            viewer = viewer_for_person(org_id, user.email)
+        else:
+            # The ROOM reads the reply: only what every member can open. Both are
+            # Slack reads, so they run side by side.
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                room = pool.submit(_channel_room, org_id, token, channel)
+                talk = pool.submit(_channel_conversation, token, channel, event)
+                viewer, conversation = room.result(), talk.result()
         reply = _answer(
             text,
             org_id,
@@ -622,14 +751,18 @@ def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
             tags,
             scope_label,
             user_id=user.id,
-            # Viewer from the resolved Handbook user, not the Slack profile, so both
-            # surfaces agree on who is asking.
-            viewer=viewer_for_person(org_id, user.email),
+            viewer=viewer,
             # The room the reply lands in, so a channel answer may read that
             # channel's own threads without being anybody.
             channel_id=channel,
             other_scopes=other_scopes,
+            conversation=conversation,
         )
+        if getattr(viewer, "room_note", None):
+            # Never a partial room that reads as whole.
+            import dataclasses
+
+            reply = dataclasses.replace(reply, text=reply.text + f"\n_{viewer.room_note}_")
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)
         reply = SlackAnswer(_ERROR)

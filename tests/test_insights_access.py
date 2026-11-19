@@ -147,9 +147,16 @@ def test_linear_issue_facts_follow_their_issue_by_url(org):
 
 
 @requires_db
-def test_github_facts_have_no_documents_and_are_not_filtered(org):
-    _fact(org, "github", "commit", external_id="sha1", subject="repo")
+def test_github_facts_count_only_repos_the_viewer_can_open(org, monkeypatch):
+    """A private repo's activity is as private as its code (`githublive.access`)."""
+    import app.githublive.access as access
+
+    _fact(org, "github", "commit", external_id="sha1", subject="acme/Docs")
+    _fact(org, "github", "commit", external_id="sha2", subject="acme/secret")
+    monkeypatch.setattr(access, "visible_repo_names", lambda o, ws, v: ["acme/docs"])
     assert _total(store.run_metric("commits_by_author", period="month", viewer=BO, **_kw(org))) == 1
+    monkeypatch.setattr(access, "visible_repo_names", lambda o, ws, v: [])
+    assert _total(store.run_metric("commits_by_author", period="month", viewer=BO, **_kw(org))) == 0
 
 
 @requires_db

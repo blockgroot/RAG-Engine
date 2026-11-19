@@ -137,7 +137,7 @@ query, before ranking. The same rule applies to charts, starter suggestions, rep
 and the knowledge graph.
 
 - **Google Drive: Live:** Access follows each file's sharing. If sharing can't be read, only the connected account sees the file.
-- **Slack: Live:** Public channels are open to the space. Private channels are open to members only. A reply posted in a channel uses only that channel's content.
+- **Slack: Live:** Public channels are open to the space. Private channels are open to members only. A reply posted in a channel searches every connected tool, but uses only what everyone in that channel can open, plus that channel's own messages and the thread it was asked in (read live). Something only some members can open is left out and the reply says so.
 - **Linear: public teams verified on staging, 1 Oct.** Private teams are limited to their members,
 admins and people an issue was shared with. This is built but not tested live, because private
 teams need Linear's Business plan.

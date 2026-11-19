@@ -48,6 +48,16 @@ class Viewer:
     #: Scope-public documents only. Distinct from ``Viewer(email=None)``, which is
     #: no filter at all. A Slack channel reply and an unresolvable identity get this.
     public_only: bool = False
+    #: A Slack channel's ROOM (`security.room`): ACL entries EVERY member satisfies,
+    #: plus ``doc:<id>`` for each private document every member can open. Only with
+    #: ``public_only``; empty = nothing private beyond ``channels``.
+    room: tuple[str, ...] = ()
+    #: The room's members by email (lowercased), for checks that are not a document
+    #: ACL (GitHub repositories). Empty = unknown, so nothing private.
+    room_members: tuple[str, ...] = ()
+    #: Why the room may see less than its members could (too large, a member
+    #: unknown). Said under the reply, never silent.
+    room_note: str | None = None
 
     @classmethod
     def unrestricted(cls) -> "Viewer":
@@ -80,7 +90,8 @@ class Viewer:
             # predicate reduces to `doc_is_public`. Groups need an identity, so they are
             # ignored here; a channel names the reading ROOM and is still honoured.
             # Lowercased to match `normalize_viewers` on write.
-            return [f"channel:{c.strip().lower()}" for c in self.channels if c.strip()]
+            return [f"channel:{c.strip().lower()}" for c in self.channels if c.strip()] + [
+                entry for entry in self.room if entry]
         seen: set[str] = set()
         for address in (email, *(a.strip().lower() for a in self.aliases)):
             if not address:

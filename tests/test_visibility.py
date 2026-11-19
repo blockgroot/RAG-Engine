@@ -17,9 +17,9 @@ APP = Path(__file__).resolve().parent.parent / "app"
 
 
 def test_the_predicate_binds_the_acl_and_never_formats_it():
-    assert visibility_predicate("d") == "(d.doc_is_public OR d.doc_viewers && %s::text[])"
-    assert visibility_predicate("fd") == "(fd.doc_is_public OR fd.doc_viewers && %s::text[])"
-    assert visibility_predicate(None) == "(doc_is_public OR doc_viewers && %s::text[])"
+    assert visibility_predicate("d") == "(d.doc_is_public OR array_append(d.doc_viewers, 'doc:' || d.id::text) && %s::text[])"
+    assert visibility_predicate("fd") == "(fd.doc_is_public OR array_append(fd.doc_viewers, 'doc:' || fd.id::text) && %s::text[])"
+    assert visibility_predicate(None) == "(doc_is_public OR array_append(doc_viewers, 'doc:' || id::text) && %s::text[])"
 
 
 def test_an_unrestricted_viewer_adds_no_clause_at_all():
@@ -30,7 +30,7 @@ def test_an_unrestricted_viewer_adds_no_clause_at_all():
 
 def test_a_person_gets_the_clause_and_their_acl():
     sql, params = viewer_clause(Viewer(email="Ada@Example.com"), alias="fd")
-    assert sql == " AND (fd.doc_is_public OR fd.doc_viewers && %s::text[])"
+    assert sql == " AND (fd.doc_is_public OR array_append(fd.doc_viewers, 'doc:' || fd.id::text) && %s::text[])"
     assert params == [Viewer(email="Ada@Example.com").acl()]
 
 
@@ -61,3 +61,11 @@ def test_no_module_spells_the_predicate_by_hand():
             if "doc_viewers &&" in code and ("%s" in code or "text[]" in code):
                 offenders.append(f"{path.relative_to(APP)}:{lineno}")
     assert offenders == [], f"hand-written access predicate: {offenders}"
+
+
+def test_a_room_binds_its_entries_after_its_channel():
+    """A channel's room: the channel, the entries every member shares, and one
+    `doc:<id>` per document every member can open."""
+    room = Viewer(public_only=True, channels=("C1",), room=("domain:acme.com", "doc:42"))
+    assert room.acl() == ["channel:c1", "domain:acme.com", "doc:42"]
+    assert not room.is_unrestricted

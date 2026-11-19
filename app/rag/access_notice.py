@@ -59,6 +59,26 @@ def _connected_scope_name(provider: str, org_id: str, workspace_id: str | None) 
     return name or None
 
 
+def partly_withheld_note(
+    provider: str | None, *, in_channel: bool = False, workspace_id: str | None = None
+) -> str:
+    """Under an answer when something relevant (past the gate) was left out
+    because the asker, or in a channel not every member, can open it: a partial
+    answer never reads as whole. Names the connector only, never the document."""
+    where = _PROVIDER_LABELS.get(provider or "", "a connected tool")
+    if in_channel:
+        return (
+            f"Something related in {where} isn't open to everyone in this channel, so I "
+            "left it out. Ask me in a direct message to include what you can open."
+        )
+    # A space has an owner who can share; company-wide content is an admin's.
+    who = "the owner of this space" if workspace_id else "an admin"
+    return (
+        f"Something related in {where} hasn't been shared with you, so I left it out. "
+        f"Ask {who} to give you access in {where} to include it."
+    )
+
+
 def restricted_notice(
     provider: str | None,
     *,
@@ -73,10 +93,11 @@ def restricted_notice(
     ROOM, so "shared with you" and "ask for access" do not apply.
     """
     if in_channel:
+        where = _PROVIDER_LABELS.get(provider or "", "a connected tool")
         return (
-            "I found Slack messages that look like they answer this, but they're "
-            "not visible to everyone in this channel, so I can't quote them here. "
-            "Ask me in a direct message and I'll answer from what you can see."
+            f"I found something in {where} that looks like it answers this, but not "
+            "everyone in this channel can open it, so I can't use it here. Ask me in a "
+            "direct message and I'll answer from what you can open."
         )
     source = _PROVIDER_LABELS.get(provider or "", "connected")
     scope_name = _connected_scope_name(provider or "", org_id, workspace_id)

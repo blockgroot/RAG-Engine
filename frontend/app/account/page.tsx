@@ -150,7 +150,8 @@ function AccountContent() {
               <h2 id="linked-title">Your accounts</h2>
               <p className="muted">
                 Handbook uses these to know which messages, documents and pull
-                requests are yours. Linking never changes what anyone can see.
+                requests are yours. Private GitHub repositories are answered only
+                for a linked GitHub account that can open them.
               </p>
             </div>
             {data?.github_link_available && (
