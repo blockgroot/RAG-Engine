@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from ..llm.routed import on_company_key
 from ..db.connection import get_connection
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
 from .store import CHART_AGENT
@@ -92,6 +93,7 @@ def _same_topic(llm, question: str, labels: list[str]) -> int | None:
     return n - 1 if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= len(labels) else None
 
 
+@on_company_key
 def assign_topics(org_id: str, *, embedder=None, llm=None) -> None:
     """Group this org's ungrouped recent gaps, now. Never raises."""
     if time.monotonic() < _quiet_until.get(org_id, 0.0):

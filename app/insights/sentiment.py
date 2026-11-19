@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+from ..llm.routed import on_company_key
 from ..db.connection import get_connection
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
 
@@ -72,6 +73,7 @@ def classify(text: str, llm) -> str | None:
     return None
 
 
+@on_company_key
 def record_form_sentiment(
     org_id: str,
     *,

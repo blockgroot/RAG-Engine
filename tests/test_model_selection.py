@@ -144,15 +144,18 @@ def test_selectable_rejects_anything_uncatalogued(value):
 def test_aux_provider_is_not_routable():
     """Ingest contextualization must never follow a member's model choice.
 
-    Guaranteed structurally — the aux factory does not wrap — because chunks
-    authored by different models would end up ranked against each other in one
-    index.
+    Chunks authored by different models would be ranked against each other in
+    one index. The aux provider follows only whose KEY pays (the company's own
+    model, else ours): one model per company corpus, never the picker.
     """
-    from app.llm.factory import build_aux_llm_provider
-
     import app.llm.factory as factory_module
+    from app.llm.routed import PayerKeyProvider
+
     source = __import__("inspect").getsource(factory_module.build_aux_llm_provider)
-    assert "RoutedLLMProvider" not in source
+    assert "RoutedLLMProvider" not in source and "PayerKeyProvider" in source
+    use_model(catalog.CLAUDE_MODELS[0].id, org_id="o")                 # a pick
+    aux = PayerKeyProvider(default=_Recording("aux"))
+    assert aux.active() is aux._default
 
 
 # --------------------------------------------------------------------------
@@ -480,7 +483,10 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
     # Stubbed: the route now also looks up the org's own model, and this test is
     # about the DEFAULT option's label, not about storage.
     monkeypatch.setattr(chat_module.org_model, "get_org_model_summary", lambda _org: None)
-    payload = list_models(session=SimpleNamespace(org_id="org-1"))
+    import app.llm.own_model as own_model
+
+    monkeypatch.setattr(own_model, "get_own_model_summary", lambda _org, _user: None)
+    payload = list_models(session=SimpleNamespace(org_id="org-1", user_id="user-1"))
 
     assert payload["default"] == catalog.AUTO == "auto"
     assert payload["default_label"] == "gemini-3.1-flash-lite"
@@ -488,7 +494,7 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
     # A catalogued default shows its label and is not offered a second time.
     monkeypatch.setenv("LLM_MODEL", "claude-sonnet-5-5")
     monkeypatch.setenv("CLAUDE_API_KEY", "c")
-    payload = list_models(session=SimpleNamespace(org_id="org-1"))
+    payload = list_models(session=SimpleNamespace(org_id="org-1", user_id="user-1"))
     assert payload["default_label"] == "Claude Sonnet 5.5"
     assert [m["id"] for m in payload["models"]] == ["claude-haiku-5-5"]
     # Not asserted here: the LLM_MODEL-unset case. ``build_llm_provider()``

@@ -31,12 +31,15 @@ export function ModelPicker({
   disabled,
   title,
   onChange,
+  footer,
 }: {
   value: string;
   options: ModelOption[];
   disabled?: boolean;
   title?: string;
   onChange: (value: string) => void;
+  /** A link under the list, e.g. to add your own key. */
+  footer?: { href: string; label: string };
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
@@ -59,8 +62,8 @@ export function ModelPicker({
   function move(e: React.KeyboardEvent<HTMLUListElement>) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
-    const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>("button, a")];
+    const at = items.indexOf(document.activeElement as HTMLElement);
     items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
   }
 
@@ -102,6 +105,11 @@ export function ModelPicker({
               </button>
             </li>
           ))}
+          {footer && (
+            <li className="model-picker-foot">
+              <a href={footer.href}>{footer.label}</a>
+            </li>
+          )}
         </ul>
       )}
     </span>

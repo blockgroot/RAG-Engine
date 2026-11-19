@@ -10,8 +10,11 @@ CLIENTS (the default endpoint vs a selected backend), and satisfies
 needed within one request beyond the existing main/aux split, thread it
 explicitly instead of widening this.``
 
-``build_aux_llm_provider`` does not wrap: ingest contextualization must be
-written by one consistent model across a corpus.
+Machinery (rewrite, audit, web decision, ...) and company work (indexing,
+gap grouping, reports) never follow the picker. They run on whoever's KEY
+pays (``use_payer_keys``, ``payer_keys``): inside a question the person's own
+model, else the company's, else ours; company work the company's, else ours.
+A key a person or admin saved is a standing choice, not a per-question pick.
 """
 
 from __future__ import annotations
@@ -42,6 +45,16 @@ _RESOLVED: ContextVar[str | None] = ContextVar("llm_resolved_model", default=Non
 #: apart from ``_SELECTED`` so that stays a plain string (it reaches the
 #: browser in the ``done`` event; an org_id must not).
 _ORG: ContextVar[str | None] = ContextVar("llm_selected_org", default=None)
+#: Whose OWN model (``own:<model>``) answers: the person who asked.
+_USER: ContextVar[str | None] = ContextVar("llm_selected_user", default=None)
+#: The key machinery and company work run on: ``own:<model>``,
+#: ``company:<model>``, or None for ours (``payer_choice``).
+_PAYER: ContextVar[str | None] = ContextVar("llm_payer_model", default=None)
+#: Inside ``default_model_only``: the call is machinery, so it runs on ``_PAYER``.
+_MACHINERY: ContextVar[bool] = ContextVar("llm_machinery", default=False)
+
+#: The picker id prefix for the company's model (a person's is ``own:``).
+COMPANY_PREFIX = "company:"
 
 # Routing preferences sent on EVERY OpenRouter request:
 # - ``data_collection: "deny"``: retrieved private content must never reach
@@ -104,7 +117,8 @@ def preset_extra_body(preset_id: str, model: str | None = None) -> tuple[dict | 
     return extra, preset_id in _PRESET_EXTRA_OPTIONAL
 
 
-def use_model(model_id: str | None, org_id: str | None = None) -> None:
+def use_model(model_id: str | None, org_id: str | None = None,
+              user_id: str | None = None) -> None:
     """Select the model for the rest of this request.
 
     ``None``/``"auto"`` is the default. Callers validate with
@@ -114,6 +128,7 @@ def use_model(model_id: str | None, org_id: str | None = None) -> None:
     """
     _SELECTED.set(normalize(model_id))
     _ORG.set(org_id)
+    _USER.set(user_id)
     # Reset too, so a pooled thread never reports the previous request's model.
     _RESOLVED.set(None)
 
@@ -127,10 +142,72 @@ def default_model_only():
     including on an exception.
     """
     token = _SELECTED.set(None)
+    machinery = _MACHINERY.set(True)
     try:
         yield
     finally:
+        _MACHINERY.reset(machinery)
         _SELECTED.reset(token)
+
+
+def payer_choice(org_id: str | None, user_id: str | None = None) -> str | None:
+    """Whose key runs machinery: the person's own model, else the company's,
+    else None (ours). Without a person, the company's or ours. A read fault
+    is ours: the checks must still run."""
+    if not org_id:
+        return None
+    from .org_model import get_org_model_summary
+    from .own_model import get_own_model_summary
+
+    try:
+        own = get_own_model_summary(org_id, user_id) if user_id else None
+        if own:
+            return own["id"]
+        company = get_org_model_summary(org_id)
+        return COMPANY_PREFIX + company["model"] if company else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read whose key pays for org %s: %s", org_id, exc)
+        return None
+
+
+def use_payer_keys(org_id: str | None, user_id: str | None = None) -> str | None:
+    """For the rest of this request, machinery runs on ``payer_choice``.
+    Returns it, so a surface with no picker (Slack) can answer on it too."""
+    choice = payer_choice(org_id, user_id)
+    _PAYER.set(choice)
+    if choice:
+        _ORG.set(org_id)
+        _USER.set(user_id)
+    return choice
+
+
+@contextmanager
+def payer_keys(org_id: str | None, user_id: str | None = None):
+    """``use_payer_keys`` for one block of company work, restored after: a
+    worker thread runs many companies' jobs one after another."""
+    tokens = (_PAYER.set(payer_choice(org_id, user_id)), _ORG.set(org_id), _USER.set(user_id))
+    try:
+        yield
+    finally:
+        _USER.reset(tokens[2])
+        _ORG.reset(tokens[1])
+        _PAYER.reset(tokens[0])
+
+
+def on_company_key(fn):
+    """Run a company job (it takes ``org_id``) on the company's key, else ours."""
+    import functools
+    import inspect
+
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        org_id = signature.bind_partial(*args, **kwargs).arguments.get("org_id")
+        with payer_keys(org_id):
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def selected_org() -> str | None:
@@ -195,8 +272,16 @@ class RoutedLLMProvider(LLMProvider):
         org_id = selected_org()
         choice = catalog.get(model_id)
 
+        if model_id.startswith(COMPANY_PREFIX):
+            # Prefixed so a company model named like one of ours ("claude-haiku-5-5")
+            # still runs on the COMPANY's key, never ours.
+            return self._org_client(org_id, model_id[len(COMPANY_PREFIX):])
         if choice is None:
-            return self._org_client(org_id, model_id)
+            from .own_model import OWN_PREFIX
+
+            if model_id.startswith(OWN_PREFIX):
+                return self._own_client(org_id, _USER.get(), model_id[len(OWN_PREFIX):])
+            return self._org_client(org_id, model_id)  # an unprefixed company id, from older pages
 
         cache_key = (None, model_id, "catalog")
         client = self._clients.get(cache_key)
@@ -261,7 +346,7 @@ class RoutedLLMProvider(LLMProvider):
                 f"Model {model_id!r} is not available for this organization."
             )
 
-        cache_key = (org_id, model_id, org.version)
+        cache_key = (org_id, COMPANY_PREFIX + model_id, org.version)
         client = self._clients.get(cache_key)
         if client is not None:
             return client
@@ -276,12 +361,48 @@ class RoutedLLMProvider(LLMProvider):
             timeout=self._custom_timeout,
             extra_body=extra_body,
             extra_body_optional=extra_optional,
+            billing="company",
         )
         self._clients[cache_key] = client
         return client
 
+    def _own_client(self, org_id: str | None, user_id: str | None, model: str) -> LLMProvider:
+        """The asker's own model on their own key, or a hard failure: never ours."""
+        from .own_model import get_own_model
+
+        own = get_own_model(org_id, user_id) if org_id and user_id else None
+        if own is None or own.model != model:
+            raise ConfigurationError(f"Your own model {model!r} is not set up.")
+        # ponytail: one cached client per person who uses their own model; an LRU if that grows.
+        cache_key = (f"user:{user_id}", model, own.version)
+        client = self._clients.get(cache_key)
+        if client is not None:
+            return client
+        extra_body, extra_optional = preset_extra_body(own.preset, own.model)
+        client = OpenAICompatProvider(
+            model=own.model, api_key=own.api_key, base_url=own.base_url,
+            timeout=self._custom_timeout, extra_body=extra_body,
+            extra_body_optional=extra_optional, billing="own",
+        )
+        self._clients[cache_key] = client
+        return client
+
+    def _payer_client(self) -> LLMProvider:
+        """Machinery's provider: whoever's key pays (``payer_choice``), else
+        ours. A key removed since is ours, never a failed check."""
+        choice = _PAYER.get()
+        if not choice:
+            return self._default
+        try:
+            return self._client_for(choice)
+        except ConfigurationError as exc:
+            logger.warning("Machinery key unavailable (%s); using the default model", exc)
+            return self._default
+
     def active(self) -> LLMProvider:
         """The provider answering right now, per this request's selection."""
+        if _MACHINERY.get():
+            return self._payer_client()
         model_id = selected_model()
         if model_id is None:
             return self._default
@@ -343,3 +464,13 @@ class RoutedLLMProvider(LLMProvider):
     def last_resolved_model(self) -> str | None:
         """What the endpoint reported as the answering model, if it said."""
         return getattr(self.active(), "last_resolved_model", None)
+
+
+class PayerKeyProvider(RoutedLLMProvider):
+    """The background model, on whoever's key pays (``payer_keys``): the
+    company's for company work, the person's or company's for a question's
+    machinery. Never the picker: one company's corpus is written by one model,
+    its own or ours."""
+
+    def active(self) -> LLMProvider:
+        return self._payer_client()

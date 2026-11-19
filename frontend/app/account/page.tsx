@@ -9,6 +9,8 @@ import { clearMeCache, useMe } from "@/lib/useMe";
 import { ApiError, LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
 import { ActPanel } from "@/components/ActPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
+import Link from "next/link";
+import type { OwnModel } from "@/lib/api";
 import { SignInEmailPanel } from "@/components/SignInEmailPanel";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { spaceStyle } from "@/components/SpaceMark";
@@ -39,6 +41,31 @@ function accountLabel(identity: LinkedIdentity) {
     identity.display_name ||
     identity.email ||
     identity.account.replace(/^email:/, "")
+  );
+}
+
+/** Your own model, in brief; it is added and changed on its own page. */
+function OwnModelCard() {
+  const [own, setOwn] = useState<OwnModel | null | undefined>(undefined);
+  useEffect(() => {
+    api.getOwnModel().then((r) => setOwn(r.model)).catch(() => setOwn(null));
+  }, []);
+  return (
+    <section className="studio-panel stack" aria-labelledby="own-model-title">
+      <div className="account-identities-head">
+        <div className="studio-section-head">
+          <h2 id="own-model-title">Your own model</h2>
+          <p className="muted">
+            {own
+              ? `${own.model} on your ${own.preset_label ?? ""} key ending ${own.key_tail}. Only you can pick it in chat.`
+              : "Answer with your own AI provider and key. Only you can pick it, and you pay your provider directly."}
+          </p>
+        </div>
+        <Link className="button button-secondary button-sm" href="/account/model">
+          {own ? "Manage" : "Add your own key"}
+        </Link>
+      </div>
+    </section>
   );
 }
 
@@ -214,6 +241,8 @@ function AccountContent() {
         </section>
 
         {me.act_enabled && <ActPanel />}
+
+        <OwnModelCard />
 
         <div className="account-settings-grid">
           <SignInEmailPanel />

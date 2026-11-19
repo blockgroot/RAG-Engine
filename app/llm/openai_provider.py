@@ -20,7 +20,7 @@ from .usage import TokenUsage
 logger = logging.getLogger(__name__)
 
 
-def _charge(model: str, usage: TokenUsage) -> None:
+def _charge(model: str, usage: TokenUsage, billing: str = "ours") -> None:
     """Charge the asker for a finished call (``security/ai_spend.py``).
 
     Here, so no call site can forget. Before the reply is checked: a rejected
@@ -29,7 +29,7 @@ def _charge(model: str, usage: TokenUsage) -> None:
     try:
         from ..security.ai_spend import charge_call
 
-        charge_call(model, usage.input_tokens, usage.output_tokens)
+        charge_call(model, usage.input_tokens, usage.output_tokens, billing=billing)
     except Exception:  # noqa: BLE001 - accounting must never fail a real call
         logger.warning("Could not charge AI spend", exc_info=True)
 
@@ -107,6 +107,7 @@ class OpenAICompatProvider(LLMProvider):
         extra_body_optional: bool = False,
         max_retries: int | None = None,
         default_headers: dict | None = None,
+        billing: str = "ours",
     ) -> None:
         if not model:
             raise ConfigurationError("Missing required LLM configuration: LLM_MODEL")
@@ -115,6 +116,8 @@ class OpenAICompatProvider(LLMProvider):
             raise ConfigurationError("Missing required LLM configuration: LLM_API_KEY")
 
         self.model = model
+        #: Whose key this is: "ours", "company" or "own" (``security/ai_spend.py``).
+        self.billing = billing
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
@@ -250,7 +253,7 @@ class OpenAICompatProvider(LLMProvider):
             input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
         )
-        _charge(self.model, self.last_usage)
+        _charge(self.model, self.last_usage, self.billing)
 
         choice = response.choices[0]
         content = choice.message.content
@@ -331,7 +334,7 @@ class OpenAICompatProvider(LLMProvider):
             input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
         )
-        _charge(self.model, self.last_usage)
+        _charge(self.model, self.last_usage, self.billing)
 
         message = response.choices[0].message
         tool_calls = [

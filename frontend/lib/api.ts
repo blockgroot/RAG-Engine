@@ -640,6 +640,35 @@ export interface OrgModel {
   agent: "native" | "text" | "none" | "unknown" | null;
 }
 
+/** A person's own model; `id` is what the picker sends (`own:<model>`). */
+export interface OwnModel {
+  id: string;
+  model: string;
+  preset: string;
+  preset_label: string | null;
+  key_tail: string | null;
+  agent: OrgModel["agent"];
+  saved_at: string | null;
+  /** Limits the person set on their own key, in tokens; 0 = no limit. */
+  tokens_per_minute: number;
+  tokens_per_day: number;
+}
+
+export type OwnLimits = Pick<OwnModel, "tokens_per_minute" | "tokens_per_day">;
+
+/** How much of today's AI use is left on the key that answers (the menu's ring). */
+export type AiUsage =
+  | { limited: false }
+  | { limited: true; left: number; whose: "person" | "company"; retry_after: number };
+
+/** The limits a company admin sets, in tokens (input and output together); 0 = no limit. */
+export interface AiLimits {
+  person_tokens_per_minute: number;
+  person_tokens_per_day: number;
+  company_tokens_per_minute: number;
+  company_tokens_per_day: number;
+}
+
 export interface ModelPreset {
   id: string;
   label: string;
@@ -653,6 +682,8 @@ export interface ModelChoice {
   /** Builds charts. `null` for the company's own model: not ours to judge,
    *  so Chart mode offers it with a note. */
   charts?: boolean | null;
+  /** Whose key: "custom" is the company's model, "own" the person's. */
+  backend?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1055,25 @@ export const api = {
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),
+  getAiLimits: () => request<{ limits: AiLimits; defaults: AiLimits }>("/admin/llm-model/limits"),
+  saveAiLimits: (limits: AiLimits) =>
+    request<{ limits: AiLimits }>("/admin/llm-model/limits", {
+      method: "PUT",
+      body: JSON.stringify(limits),
+    }),
+  getOwnModel: () =>
+    request<{ model: OwnModel | null; presets: ModelPreset[] }>("/account/llm-model"),
+  saveOwnModel: (preset: string, model: string, apiKey: string, limits: OwnLimits) =>
+    request<{ model: OwnModel }>("/account/llm-model", {
+      method: "PUT",
+      body: JSON.stringify({ preset, model, api_key: apiKey, ...limits }),
+    }),
+  saveOwnLimits: (limits: OwnLimits) =>
+    request<{ model: OwnModel }>("/account/llm-model/limits", {
+      method: "PUT",
+      body: JSON.stringify(limits),
+    }),
+  deleteOwnModel: () => request<void>("/account/llm-model", { method: "DELETE" }),
 
   checkConnectionHealth: (connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
@@ -1258,8 +1308,10 @@ export const api = {
     return request<{ questions: string[] }>(`/chat/chart-starters${q ? `?${q}` : ""}`);
   },
 
+  chatUsage: (model: string) =>
+    request<AiUsage>(`/chat/usage?model=${encodeURIComponent(model)}`),
   chatModels: () =>
-    request<{ default: string; default_label: string; models: ModelChoice[] }>(
+    request<{ default: string; default_label: string; models: ModelChoice[]; preferred?: string }>(
       "/chat/models",
     ),
 

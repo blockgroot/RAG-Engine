@@ -522,16 +522,32 @@ we write has a TTL.
 AI usage is limited in two layers (`security/ai_spend.py`), as Anthropic, LiteLLM and
 Kong do: TOKENS a minute per model (`AI_TOKEN_LIMITS`: input and output apart, person and
 company, each model its own buckets keyed by its listed id) and DOLLARS a day, one wallet
-whichever model answers (the models differ 20x in price), with a model's own share inside
-it (`AI_MODEL_DOLLARS_PER_DAY`: spending Sonnet's stops Sonnet only, never Haiku). Every paid call is charged where
+whichever model answers (the models differ 20x in price), as Claude.ai and ChatGPT do: a
+bigger model uses it faster; no model has a share of its own. The ring beside the model menu
+(`GET /chat/usage`, `rate_limit.usage`, `RateLimiter.levels`, read only) shows the tightest
+DAILY limit on the key that answers, as a share left, never dollars. Every paid call is charged where
 it is made (`OpenAICompatProvider`, never per caller) to whoever `charge_to` names, set
 where the model is chosen (inside the answering stream); a question is checked against
 the model the asker picked (`limit_question(session, model)`, None = the default) and
 refused once any of its buckets is empty, so one request may overdraw. A model missing
 from `AI_PRICES` is not charged; one missing from `AI_TOKEN_LIMITS` has no token limit.
+Whose KEY answers decides the limits (`own_model.billing_of`, the client's `billing`): ours
+takes Handbook's and the admin's (`org_ai_limits`, tokens a minute and a day, defaults
+`AI_ORG_DEFAULT_LIMITS` until the admin saves; an admin's only narrow ours, never raise them); the company's model takes the admin's only and is never
+charged to our credit, including its save-time test; a person's own model (`own:<model>`,
+`user_llm_models`) takes only the limits that person set on it (0 = none, the default). Only that person may pick it, and a missing one fails closed,
+never answered on another key. Its key is write-only, like the company's.
 The picker offers Claude Sonnet 5.5 and Haiku 5.5 only (`catalog.CLAUDE_MODELS`); every
 model a person can pick must be priced (`test_production_offers_claude_sonnet_and_haiku_only`).
-Background work runs on the Gemini AUX model, never pickable and never charged.
+Background work runs on the Gemini AUX model, never pickable and never charged, unless a
+key pays for it (`routed.payer_choice`): a question's machinery (`default_model_only`) and
+the aux stages run on the asker's own model, else the company's, else ours; company work
+(ingest, figures, gap topics, sentiment, reports: `on_company_key`/`payer_keys`) on the
+company's, else ours, NEVER a person's (their key may vanish, and the corpus is shared).
+Slack has no picker: a DM answers on that order, a channel on the company's, else ours.
+A company model is picked as `company:<model>`, so one named like ours runs on its key.
+The picker never steers machinery; a removed key falls back to ours, never a failed check.
+The menu starts on the same order (`/chat/models` `preferred`); a remembered pick wins.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

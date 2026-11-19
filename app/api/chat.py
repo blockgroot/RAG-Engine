@@ -71,7 +71,7 @@ from ..memory import personal as personal_memory
 from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
-from ..llm.routed import answering_model, selected_model, use_model
+from ..llm.routed import answering_model, selected_model, use_model, use_payer_keys
 from ..security.ai_spend import charge_to
 from ..db.connection import get_connection
 from ..feedback import record_gap
@@ -110,12 +110,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-def _is_own_model(org_id: str, model: str | None) -> bool:
-    """True only for THIS org's configured model id."""
-    if not model:
-        return False
-    own = org_model.get_org_model_summary(org_id)
-    return bool(own and own["model"] == model)
+@router.get("/usage")
+def ai_usage(model: str | None = None, session: SessionClaims = Depends(get_session)):
+    """How much of today's AI use is left on the key that answers ``model``,
+    for the ring beside the model menu. Reads the limits; spends nothing."""
+    from ..llm.own_model import selectable
+    from ..security.rate_limit import usage
+
+    if not selectable(session.org_id, session.user_id, model):
+        model = None  # an id this person cannot pick: show Handbook's
+    return usage(session.user_id, session.org_id, model)
 
 
 @router.get("/models")
@@ -128,6 +132,7 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # Only models whose backend has credentials: otherwise the default would
     # answer under another model's label.
     from ..llm import build_llm_provider
+    from ..llm.routed import COMPANY_PREFIX
 
     provider = build_llm_provider()
     backends = provider.configured_backends()
@@ -147,11 +152,28 @@ def list_models(session: SessionClaims = Depends(get_session)):
         models.append(
             {
                 # Company first: `note` is only a hover title, and touch has no hover.
-                "id": own["model"],
-                "label": f"Your company's model — {own['model']}",
+                # Prefixed: a company model named like one of ours still runs on
+                # the company's key (`routed.COMPANY_PREFIX`).
+                "id": COMPANY_PREFIX + own["model"],
+                # The menu says whose key under the name ("Company"), from `backend`.
+                "label": own["model"],
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
                 # Not ours to judge: offered in Chart mode with a note.
+                "charts": None,
+            }
+        )
+    # The person's own model: their key, only they see it.
+    from ..llm import own_model
+
+    mine = own_model.get_own_model_summary(session.org_id, session.user_id)
+    if mine:
+        models.append(
+            {
+                "id": mine["id"],
+                "label": mine["model"],  # shown with "User" under it
+                "note": f"Your {mine.get('preset_label') or 'own'} key. No Handbook limits.",
+                "backend": "own",
                 "charts": None,
             }
         )
@@ -162,6 +184,9 @@ def list_models(session: SessionClaims = Depends(get_session)):
         or default_model or "Auto",
         # The default model builds charts; Chart mode always offers it.
         "default_charts": True,
+        # What the menu starts on: the person's own model, else the company's,
+        # else Handbook's ("auto"). The same order as whose key runs the checks.
+        "preferred": (mine and mine["id"]) or (own and COMPANY_PREFIX + own["model"]) or catalog.AUTO,
         "models": models,
     }
 
@@ -1515,7 +1540,9 @@ def _stream_answer_body(
 ) -> Iterator[str]:
     # Set inside the generator: Starlette runs it in a threadpool, so a ContextVar
     # set in the route may not reach it, and a pooled thread must not leak it.
-    use_model(model, org_id=org_id)
+    use_model(model, org_id=org_id, user_id=session.user_id if session else None)
+    # The checks around the answer run on the asker's key, else the company's, else ours.
+    use_payer_keys(org_id, session.user_id if session else None)
     # Who pays for this answer's model calls, for the same reason.
     charge_to(session.user_id if session else None, org_id)
     # Logged, never refused (see guard/live.py for the measured reason).
@@ -1725,7 +1752,9 @@ def chat_stream(
     # Validated before the stream starts: afterwards a raise is a truncated 200,
     # not a 400. The model string is untrusted input.
     model = body.get("model")
-    if not catalog.is_selectable(model) and not _is_own_model(session.org_id, model):
+    from ..llm.own_model import selectable
+
+    if not selectable(session.org_id, session.user_id, model):
         # Fails closed: an unknown id must never reach an outbound call.
         raise HTTPException(status_code=400, detail="Unknown model")
 

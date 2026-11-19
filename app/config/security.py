@@ -22,9 +22,6 @@ DEFAULT_AI_TOKEN_LIMITS = (
 DEFAULT_AI_PRICES = (
     "claude-sonnet-5-5=2:10,claude-haiku-5-5=0.10:0.50"
 )
-# A model's own share of the day's dollars, person:company. Inside the totals:
-# a person who spends their Sonnet share can still ask on Haiku.
-DEFAULT_AI_MODEL_DOLLARS = "claude-sonnet-5-5=0.30:2.00"
 
 #: Hosts an answer may link to without the link being in its sources (the
 #: connected tools' domains). Query strings are still cut (`security/links.py`).
@@ -206,12 +203,15 @@ class RateLimitSettings:
     # Sized for a $100/month Claude credit and 30 people, with $10 kept as margin.
     ai_company_dollars_per_day: float = 3.30
     ai_person_dollars_per_day: float = 0.50
-    # (model id, person $ a day, company $ a day): that model's share of the totals.
-    ai_model_dollars_per_day: tuple[tuple[str, float, float], ...] = ()
     # (model id, $ per million input, $ per million output)
     ai_prices: tuple[tuple[str, float, float], ...] = ()
     # (model id, person in, person out, company in, company out) tokens a minute.
     ai_token_limits: tuple[tuple[str, int, int, int, int], ...] = ()
+    # A company's limits until its admin sets its own (Admin > Model), in tokens,
+    # input and output together: person a minute, person a day, company a
+    # minute, company a day. A minute matches AI_TOKEN_LIMITS (60k + 8k, 400k +
+    # 40k); a day is about what the dollar defaults buy on Haiku.
+    org_default_limits: tuple[int, int, int, int] = (68_000, 4_000_000, 440_000, 30_000_000)
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
@@ -272,20 +272,37 @@ class RateLimitSettings:
             ai_person_dollars_per_day=dollars(
                 "AI_PERSON_DOLLARS_PER_DAY", cls.ai_person_dollars_per_day
             ),
-            ai_model_dollars_per_day=_parse_ai_prices(
-                os.getenv("AI_MODEL_DOLLARS_PER_DAY") or DEFAULT_AI_MODEL_DOLLARS,
-                name="AI_MODEL_DOLLARS_PER_DAY",
-            ),
             ai_prices=_parse_ai_prices(os.getenv("AI_PRICES") or DEFAULT_AI_PRICES),
             ai_token_limits=_parse_ai_token_limits(
                 os.getenv("AI_TOKEN_LIMITS") or DEFAULT_AI_TOKEN_LIMITS
             ),
+            org_default_limits=_parse_org_default_limits(
+                os.getenv("AI_ORG_DEFAULT_LIMITS"), cls.org_default_limits
+            ),
         )
 
 
-def _parse_ai_prices(raw: str, name: str = "AI_PRICES") -> tuple[tuple[str, float, float], ...]:
-    """``model=a:b,…`` (prices per million tokens, or a model's dollars a day).
-    A malformed entry is skipped and logged, never guessed."""
+def _parse_org_default_limits(
+    raw: str | None, default: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """``person_minute:person_day:company_minute:company_day`` tokens; 0 = none.
+    Malformed is logged and the built-in defaults kept, never guessed."""
+    if not raw:
+        return default
+    try:
+        values = tuple(int(v) for v in raw.split(":"))
+        if len(values) == 4 and all(v >= 0 for v in values):
+            return values  # type: ignore[return-value]
+    except ValueError:
+        pass
+    logging.getLogger(__name__).warning(
+        "AI_ORG_DEFAULT_LIMITS: ignoring %r (want person_minute:person_day:company_minute:company_day)", raw)
+    return default
+
+
+def _parse_ai_prices(raw: str) -> tuple[tuple[str, float, float], ...]:
+    """``model=in:out,…`` in dollars per million tokens. A malformed entry is
+    skipped and logged, never guessed: an unpriced model is simply not counted."""
     prices = []
     for entry in raw.split(","):
         entry = entry.strip()
@@ -296,7 +313,7 @@ def _parse_ai_prices(raw: str, name: str = "AI_PRICES") -> tuple[tuple[str, floa
             inp, out = cost.split(":", 1)
             prices.append((model.strip().lower(), float(inp), float(out)))
         except ValueError:
-            logging.getLogger(__name__).warning("%s: ignoring %r (want model=a:b)", name, entry)
+            logging.getLogger(__name__).warning("AI_PRICES: ignoring %r (want model=in:out)", entry)
     return tuple(prices)
 
 

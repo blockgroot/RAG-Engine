@@ -295,11 +295,24 @@ others. In Chart mode a file's tables and figures can be charted (see §10).
 
 Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Claude Haiku 5.5
 (fast and low cost). Both build charts. Admins can also add the company's own model from a list
-of provider presets; its key is tested before it is saved and stored encrypted. Background work
+of provider presets; its key is tested before it is saved and stored encrypted. Each person can
+also add their own model and key on its own page (Account › Your own model, or "Add your own key"
+in the chat's model menu): provider, key, model, and optional limits of their own (0 = none). Only
+they can pick it, it is billed to them, and no Handbook or company limit applies to it.
+
+Whose key does the work: a person's questions (the answer when picked, and the checks around
+every question, on the web and in Slack DMs) run on their own key, else the company's, else
+Handbook's. Company work (indexing, figures read from text, grouping unanswered questions,
+sentiment, reports) and Slack channel replies run on the company's key, else Handbook's, never
+a person's. Search and ranking always stay on Handbook. The chat's model menu starts on the same
+order (their own model, else the company's, else Handbook's); a model the person picked themselves
+is remembered and wins. Each option says whose it is under its name: "Default" (Handbook's),
+"Company key" or "Your key"; the menu's link reads "Add your own key", or "Change your key" once
+there is one. Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
 
-**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `frontend/components/ModelPicker.tsx`
+**Code:** `app/llm/catalog.py`, `app/llm/routed.py`, `app/llm/org_model.py`, `app/llm/own_model.py`, `frontend/components/ModelPicker.tsx`, `frontend/app/account/model/page.tsx`
 
 ## 15. Feedback and documentation gaps
 
@@ -499,9 +512,15 @@ app that issued it.
   person; the rest wait for a place, then are told Handbook is busy.
 - **AI limits, two layers.** Tokens a minute for each answering model, for the person and for the
   company, input and output counted apart; and dollars a day for the person and the company,
-  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day. Sonnet may use
-  only part of that ($0.30 a person, $2.00 a company): when its share is spent, Sonnet stops
-  and the person can keep asking on Haiku.
+  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day. A bigger model uses
+  it faster. A ring beside the model menu shows how much of today's use is left (a share, never
+  dollars), names the company when its limit is the one running low, and says when you can ask
+  again once it is used up. It is hidden on your own key unless you set a limit on it.
+- **The company's own limits.** On Admin › Model an admin sets tokens a minute and a day, for each
+  person and for the whole company (0 = no limit). Until they do, Handbook's defaults apply and are
+  shown filled in: 68,000 and 4,000,000 a person, 440,000 and 30,000,000 the company
+  (`AI_ORG_DEFAULT_LIMITS`). They narrow Handbook's limits on Handbook's
+  model and are the only limits on the company's model. A person's own key is never limited.
 
 Limits are counted in Redis when it is set up, so every server shares them. Redis holds rate
 limits only: there is no answer cache, and every question is answered fresh.

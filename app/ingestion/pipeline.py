@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
+from ..llm.routed import on_company_key
 from ..config.settings import (
     ChunkingSettings,
     ContextualSettings,
@@ -519,6 +520,7 @@ def _unreadable_again(document_id, doc, org_id, workspace_id) -> bool:
     return attempts < MAX_UNREADABLE_READS
 
 
+@on_company_key
 def backfill_tables(
     adapter: SourceAdapter,
     *,
@@ -569,6 +571,7 @@ def backfill_tables(
     return done
 
 
+@on_company_key
 def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
@@ -902,6 +905,7 @@ def refresh_missing_meta(
         return 0
 
 
+@on_company_key
 def enrich_source_contextual(
     adapter: SourceAdapter,
     org_id: str,

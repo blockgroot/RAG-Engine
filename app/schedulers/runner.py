@@ -17,7 +17,7 @@ from ..auth.users import get_user
 from ..config.settings import ApiSettings
 from ..core.exceptions import ConfigurationError
 from ..llm import build_aux_llm_provider
-from ..llm.routed import default_model_only
+from ..llm.routed import default_model_only, payer_keys
 from ..llm.base import LLMProvider
 from ..sources.google_groups import viewer_for_person
 from ..workspaces.store import get_workspace_name
@@ -120,8 +120,8 @@ def run_scheduler_once(
         prompt = build_scheduler_report_prompt(
             scheduler.prompt, digest, scheduler.provider
         )
-        # Unattended: always the configured model, never a picked one.
-        with default_model_only():
+        # Unattended: never a picked model. Company work: the company's key, else ours.
+        with payer_keys(scheduler.org_id), default_model_only():
             report = llm.generate(prompt).strip()
 
     # Items and notes stored as data, so links are never invented or dropped

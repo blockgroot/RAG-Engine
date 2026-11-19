@@ -45,6 +45,11 @@ class MemoryRateLimiter(RateLimiter):
                 return Decision(allowed=True)
             return Decision(allowed=False, retry_after=wait, refused_by=refused_by)
 
+    def levels(self, buckets: Sequence[Bucket]) -> list[float]:
+        with self._lock:
+            now = self._clock()
+            return [self._refilled(b, now) for b in buckets]
+
     def acquire(self, key: str, limit: int, lease_seconds: float) -> str | None:
         with self._lock:
             now = self._clock()

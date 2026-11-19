@@ -515,6 +515,9 @@ def setup_chat(
     # githublive/credentials defer theirs.
     from ..core.exceptions import ProviderError
     from ..llm import build_aux_llm_provider
+    from ..llm.routed import use_payer_keys
+
+    use_payer_keys(session.org_id, session.user_id)  # their key, else the company's, else ours
 
     messages = [
         {"role": "system", "content": build_setup_system_prompt(connected)},

@@ -2,6 +2,7 @@
 
 import { PageLoader } from "@/components/PageLoader";
 import { ModelPicker } from "@/components/ModelPicker";
+import { UsageRing } from "@/components/UsageRing";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
@@ -215,13 +216,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     let cancelled = false;
     api
       .chatModels()
-      .then(({ models: available, default_label }) => {
+      .then(({ models: available, default_label, preferred: start }) => {
         if (cancelled) return;
         setModels(available);
         if (default_label) setDefaultLabel(default_label);
+        // The menu starts on the person's own model, else the company's, else Handbook's.
+        const first = start && available.some((m) => m.id === start) ? start : "auto";
         const saved = localStorage.getItem("chat.model");
-        // Only restore a choice the backend still offers.
-        if (saved && available.some((m) => m.id === saved)) setModel(saved);
+        // A choice the person made and the backend still offers wins; else
+        // their own model, else the company's, else Handbook's.
+        setModel(saved && available.some((m) => m.id === saved) ? saved : first);
       })
       // A picker is an enhancement: if the catalog cannot be read, chat still
       // works on the default model. Never surface this as a chat error.
@@ -1256,17 +1260,26 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           />
           {models.length > 0 && (
             <>
+              <UsageRing model={model} refresh={busy} />
               <ModelPicker
                 value={model}
                 disabled={busy}
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
+                footer={{ href: "/account/model", label: models.some((m) => m.backend === "own") ? "Change your key" : "Add your own key" }}
                 options={[
                   { value: "auto", label: modelName(defaultLabel), hint: "Default" },
-                  ...pickerModels.map((m) => ({
-                    value: m.id,
-                    label: modelName(m.label),
-                    hint: chartMode && m.charts == null ? "May not support charts" : undefined,
-                  })),
+                  ...pickerModels.map((m) => {
+                    // Whose key, under the name: Handbook's is "Default".
+                    const whose = m.backend === "own" ? "Your key" : m.backend === "custom" ? "Company key" : undefined;
+                    const charts = chartMode && m.charts == null ? "May not support charts" : undefined;
+                    return {
+                      value: m.id,
+                      // A key someone added shows the exact model ID they typed, so
+                      // the maker's logo is found and it reads as they named it.
+                      label: whose ? m.label : modelName(m.label),
+                      hint: [whose, charts].filter(Boolean).join(" · ") || undefined,
+                    };
+                  }),
                 ]}
                 onChange={(next) => {
                   setModel(next);
