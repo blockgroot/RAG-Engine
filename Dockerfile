@@ -42,4 +42,9 @@ ENV HANDBOOK_IMAGE_VERSION=${HANDBOOK_IMAGE_VERSION}
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
+# Not root: a code-execution bug in the app is then not root in the container.
+# Nothing here writes to the image at run time (bytecode is compiled above).
+RUN useradd --system --uid 10001 --no-create-home handbook
+USER handbook
+
 ENTRYPOINT ["docker-entrypoint.sh"]

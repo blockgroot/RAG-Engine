@@ -74,11 +74,21 @@ async def notion_webhook(
 
     token = payload.get("verification_token")
     if token and len(payload) == 1:
-        logger.warning(
-            "notion webhook: verification token received -- paste it into the "
-            "subscription's Verify form and set NOTION_WEBHOOK_VERIFICATION_TOKEN: %s",
-            token,
-        )
+        if settings.notion_verification_token:
+            # Already set up: never print the value again. It is the HMAC secret,
+            # and a re-sent verification put the live secret in the logs.
+            logger.warning(
+                "notion webhook: a verification token arrived but "
+                "NOTION_WEBHOOK_VERIFICATION_TOKEN is already set; not logged. "
+                "Unset it to receive a new one."
+            )
+        else:
+            # The only way the operator ever sees it: Notion shows it nowhere else.
+            logger.warning(
+                "notion webhook: verification token received -- paste it into the "
+                "subscription's Verify form and set NOTION_WEBHOOK_VERIFICATION_TOKEN: %s",
+                token,
+            )
         return {"ok": True}
 
     secret = settings.notion_verification_token

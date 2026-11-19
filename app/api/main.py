@@ -195,7 +195,9 @@ async def lifespan(_app: FastAPI):
             worker.join(timeout=8)
         # Finish any in-flight summary folds before dropping the pool
         # so a mid-shutdown request doesn't silently lose bookkeeping.
-        shutdown_summary_folds(wait=True, timeout=30.0)
+        # 10s, not 30: with uvicorn's 10s graceful window and the worker's 8s join
+        # this ends inside the platform's 30s grace, so close_pool() still runs.
+        shutdown_summary_folds(wait=True, timeout=10.0)
         close_pool()
 
 
@@ -242,7 +244,25 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
+        """Liveness: the process answers. Says nothing about the database."""
         return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready():
+        """Readiness: the database answers. ``/health`` stayed 200 while every
+        chat failed on a full pool or a rotated password. Redis is not checked:
+        a limiter fault lets requests through by design."""
+        from fastapi.responses import JSONResponse
+
+        from ..db.connection import get_pool
+
+        try:
+            with get_pool().connection(timeout=3) as conn:
+                conn.execute("SELECT 1")
+        except Exception:  # noqa: BLE001 - any failure is "not ready"; the log says why
+            logger.warning("Readiness check failed: database", exc_info=True)
+            return JSONResponse({"status": "unavailable", "database": "down"}, status_code=503)
+        return {"status": "ok", "database": "ok"}
 
     return app
 

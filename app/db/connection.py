@@ -75,6 +75,13 @@ def _configure(conn: "psycopg.Connection") -> None:
         ) from exc
     _register_vector_once(conn)
     conn.execute("SET hnsw.iterative_scan = strict_order")
+    settings = DatabaseSettings.from_env()
+    # Session-level, so every query on this connection is bounded server-side.
+    conn.execute(f"SET statement_timeout = {int(settings.statement_timeout_seconds) * 1000}")
+    conn.execute(
+        "SET idle_in_transaction_session_timeout = "
+        f"{int(settings.idle_in_transaction_seconds) * 1000}"
+    )
     conn.commit()
 
 
@@ -96,6 +103,11 @@ def get_pool(settings: DatabaseSettings | None = None) -> ConnectionPool:
                 min_size=settings.pool_min_size,
                 max_size=settings.pool_max_size,
                 configure=_configure,
+                # Bounded wait for a free connection (default 30s), and a dead one
+                # (the pooler dropped it) is replaced at checkout, not surfaced as
+                # an error on first use.
+                timeout=settings.pool_wait_seconds,
+                check=ConnectionPool.check_connection,
                 open=True,
             )
         except psycopg.Error as exc:
