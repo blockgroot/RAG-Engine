@@ -175,6 +175,11 @@ def update_scheduler(
         params.append(interval)
     if not sets:
         return get_scheduler(org_id, user_id, scheduler_id)
+    # An edit resumes one stopped after repeated failures: delete-and-recreate was
+    # the only way back, and lost last_run_at (the next report re-read 90 days).
+    sets.append("attempts = CASE WHEN status = 'failed' THEN 0 ELSE attempts END")
+    sets.append("last_error = CASE WHEN status = 'failed' THEN NULL ELSE last_error END")
+    sets.append("status = CASE WHEN status = 'failed' THEN 'active' ELSE status END")
 
     params.extend([scheduler_id, org_id, user_id])
     with get_connection() as conn:

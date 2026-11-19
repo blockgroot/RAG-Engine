@@ -15,12 +15,12 @@ from datetime import datetime, timedelta, timezone
 from ..auth.email import send_scheduler_report_email_safe
 from ..auth.users import get_user
 from ..config.settings import ApiSettings
-from ..core.exceptions import ConfigurationError
+from ..core.exceptions import AuthError, ConfigurationError
 from ..llm import build_aux_llm_provider
 from ..llm.routed import default_model_only
 from ..llm.base import LLMProvider
 from ..sources.google_groups import viewer_for_person
-from ..workspaces.store import get_workspace_name
+from ..workspaces.store import assert_member, get_workspace_name
 from . import reports
 from .activity import fetch_activity
 from .prompts import NO_ACTIVITY_NOTE, build_scheduler_report_prompt
@@ -78,6 +78,15 @@ def run_scheduler_once(
             f"Scheduler {scheduler.id} has no deliverable owner (user "
             f"{scheduler.user_id} is gone)."
         )
+    if scheduler.workspace_id:
+        # A space's activity reaches only its members: one removed since setting
+        # this up gets nothing (raised before any read; the attempts cap retires it).
+        try:
+            assert_member(scheduler.workspace_id, scheduler.org_id, scheduler.user_id)
+        except AuthError as exc:
+            raise ConfigurationError(
+                f"Scheduler {scheduler.id}: its owner is no longer a member of the space."
+            ) from exc
 
     window_end = datetime.now(timezone.utc)
     since = window_start(scheduler)

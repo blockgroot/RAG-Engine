@@ -159,6 +159,13 @@ def run_once() -> queue.IngestionJob | None:
     if job is None:
         return None
 
+    with queue.alive(job.id):
+        _run_job(job)
+    return queue.get_job(job.org_id, job.id)
+
+
+def _run_job(job: queue.IngestionJob) -> None:
+    """One claimed job, start to recorded outcome; never raises."""
     provider = None
     try:
         provider = queue.get_connection_provider(job.connection_id, job.org_id)
@@ -233,8 +240,6 @@ def run_once() -> queue.IngestionJob | None:
                     "Could not mark needs_reauth for job %s", job.id, exc_info=True
                 )
         queue.mark_failed(job.id, str(exc))
-
-    return queue.get_job(job.org_id, job.id)
 
 
 def run_maintenance() -> None:

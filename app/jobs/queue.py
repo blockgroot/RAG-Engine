@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -20,6 +23,11 @@ from ..db.connection import DatabaseError, get_connection
 logger = logging.getLogger(__name__)
 
 DEFAULT_REAP_TIMEOUT_MINUTES = 30
+
+#: A running job's process beats ``alive_at`` this often (``alive``).
+HEARTBEAT_SECONDS = 30
+#: Silent this long, its process is gone: four missed beats.
+DEAD_AFTER_SECONDS = 120
 
 # Claims before `requeue_interrupted_running` gives up: room for a deploy or
 # reload, but a job that kills the process every time is bounded.
@@ -133,7 +141,8 @@ def claim_next() -> IngestionJob | None:
         row = conn.execute(
             f"""
             UPDATE ingestion_jobs
-            SET status = 'running', started_at = now(), attempts = attempts + 1
+            SET status = 'running', started_at = now(), alive_at = now(),
+                attempts = attempts + 1
             WHERE id = (
                 SELECT id FROM ingestion_jobs
                 WHERE status = 'queued'
@@ -194,9 +203,10 @@ def mark_succeeded(
     not be read) is written on success too: that is the case it describes."""
     with get_connection() as conn:
         conn.execute(
+            # Only a running job: one the reaper already failed stays failed.
             "UPDATE ingestion_jobs SET status = 'succeeded', doc_count = %s, "
             "permission_unreadable_documents = %s, "
-            "finished_at = now() WHERE id = %s",
+            "finished_at = now() WHERE id = %s AND status = 'running'",
             (doc_count, permission_unreadable, job_id),
         )
 
@@ -205,10 +215,40 @@ def mark_failed(job_id: str, error: str) -> None:
     with get_connection() as conn:
         conn.execute(
             "UPDATE ingestion_jobs SET status = 'failed', error = %s, "
-            "finished_at = now() WHERE id = %s",
+            "finished_at = now() WHERE id = %s AND status = 'running'",
             (error, job_id),
         )
 
+
+
+@contextmanager
+def alive(job_id: str) -> Iterator[None]:
+    """Beat ``alive_at`` every ``HEARTBEAT_SECONDS`` while the block runs.
+
+    Liveness of the PROCESS, apart from ``progress_at``: a slow document stalls
+    progress (and ``reap_stuck`` judges that) but never this. A failed beat is
+    skipped: four in a row mark the job dead.
+    """
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(HEARTBEAT_SECONDS):
+            try:
+                with get_connection() as conn:
+                    conn.execute(
+                        "UPDATE ingestion_jobs SET alive_at = now() "
+                        "WHERE id = %s AND status = 'running'",
+                        (job_id,),
+                    )
+            except Exception:  # noqa: BLE001 - a missed beat, never a failed job
+                logger.warning("Job %s: heartbeat write failed", job_id, exc_info=True)
+
+    thread = threading.Thread(target=beat, name=f"job-alive-{job_id}", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def requeue_interrupted_running(
@@ -219,8 +259,15 @@ def requeue_interrupted_running(
     Safe: an incremental ingest skips pages already stored. Capped at
     ``max_attempts``, past which the job is ``failed``: a job that OOMs the
     process would otherwise crash every boot forever (two real incidents).
+    Only jobs whose process stopped beating (``alive_at``): a rolling deploy or
+    a second instance requeued live jobs and ran one connection twice. Run at
+    start and with every reap, since a fresh crash is not yet stale at boot.
     Returns the number requeued.
     """
+    dead = (
+        "status = 'running' AND coalesce(alive_at, progress_at, started_at)"
+        f" < now() - interval '{DEAD_AFTER_SECONDS} seconds'"
+    )
     with get_connection() as conn:
         exhausted = conn.execute(
             """
@@ -230,7 +277,7 @@ def requeue_interrupted_running(
                 error = 'Abandoned after ' || attempts || ' interrupted attempts'
                         || ' — the worker process did not survive this job'
                         || ' (see INGEST_MAX_JOB_ATTEMPTS).'
-            WHERE status = 'running' AND attempts >= %s
+            WHERE """ + dead + """ AND attempts >= %s
             RETURNING id
             """,
             (max_attempts,),
@@ -242,7 +289,7 @@ def requeue_interrupted_running(
             SET status = 'queued',
                 started_at = NULL,
                 error = NULL
-            WHERE status = 'running'
+            WHERE """ + dead + """
             RETURNING id
             """
         ).fetchall()
@@ -261,8 +308,10 @@ def reap_stuck(timeout_minutes: int = DEFAULT_REAP_TIMEOUT_MINUTES) -> int:
     """Flip any silent ``running`` job to ``failed``. Returns how many.
 
     Measures silence (``coalesce(progress_at, started_at)``), not age: by age
-    alone a healthy long ingest was failed while still working.
+    alone a healthy long ingest was failed while still working. First requeues
+    jobs whose process died (no heartbeat), which are a restart, not a hang.
     """
+    requeue_interrupted_running()
     with get_connection() as conn:
         rows = conn.execute(
             """

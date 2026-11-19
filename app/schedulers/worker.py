@@ -21,6 +21,12 @@ def run_due_schedulers_once(settings: SchedulerSettings | None = None) -> int:
     if not settings.enabled:
         # Kill switch for every caller, manual runs included.
         return 0
+    try:
+        # A run whose process died (or hung) goes back to due: boot alone missed
+        # a crash too fresh to be stale yet.
+        scheduler_queue.requeue_interrupted_running(max_attempts=settings.max_attempts)
+    except Exception:  # noqa: BLE001 - requeue is recovery, never the tick's failure
+        logger.exception("Scheduler requeue failed")
     due = scheduler_queue.claim_due(limit=settings.batch_size)
     if not due:
         return 0

@@ -85,7 +85,8 @@ def test_get_job_scoped_to_org_never_returns_another_orgs_job(_connected_org, st
 def test_list_jobs_scoped_to_org(_connected_org, store, org_cleanup):
     org_id, connection_id = _connected_org
     first = queue.enqueue(org_id, connection_id)
-    queue.mark_succeeded(first, 0)
+    with get_connection() as conn:  # finished (mark_succeeded moves only a claimed job)
+        conn.execute("UPDATE ingestion_jobs SET status = 'succeeded' WHERE id = %s", (first,))
     queue.enqueue(org_id, connection_id)
 
     other_org, other_connection = _make_connected_org(store, org_cleanup)
@@ -166,6 +167,16 @@ def test_mark_succeeded_and_mark_failed(_connected_org):
 
 
 
+def _process_died(job_id: str) -> None:
+    """Age every liveness stamp past ``DEAD_AFTER_SECONDS``: the process stopped."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE ingestion_jobs SET alive_at = now() - interval '10 minutes', "
+            "started_at = now() - interval '10 minutes', progress_at = NULL WHERE id = %s",
+            (job_id,),
+        )
+
+
 @requires_db
 def test_requeue_interrupted_running_returns_orphans_to_queued(_connected_org):
     """Worker crash/reload must resume, not leave Updating forever."""
@@ -174,6 +185,11 @@ def test_requeue_interrupted_running_returns_orphans_to_queued(_connected_org):
     claimed = queue.claim_next()
     assert claimed is not None and claimed.status == "running"
 
+    # A live job is never requeued: another instance may be running it.
+    assert queue.requeue_interrupted_running() == 0
+    assert queue.get_job(org_id, job_id).status == "running"
+
+    _process_died(job_id)
     n = queue.requeue_interrupted_running()
     assert n >= 1
     job = queue.get_job(org_id, job_id)
@@ -200,6 +216,7 @@ def test_claim_next_counts_attempts(_connected_org):
     first = queue.claim_next()
     assert first.attempts == 1
 
+    _process_died(job_id)
     queue.requeue_interrupted_running()
     second = queue.claim_next()
     assert second.id == job_id
@@ -224,6 +241,7 @@ def test_requeue_abandons_a_job_that_keeps_killing_the_worker(_connected_org):
         queue.requeue_interrupted_running(max_attempts=3)
         claimed = queue.claim_next()
         assert claimed is not None, "should still be claimable below the cap"
+        _process_died(job_id)
 
     # Fourth boot: the cap is reached, so it must be abandoned, not requeued.
     requeued = queue.requeue_interrupted_running(max_attempts=3)
@@ -553,8 +571,9 @@ def test_reap_measures_silence_not_age(store, org_cleanup):
                 (org_id, provider, f"ws-{provider}"),
             ).fetchone()[0]
             job_id = conn.execute(
-                "INSERT INTO ingestion_jobs (org_id, connection_id, status, started_at) "
-                "VALUES (%s::uuid, %s::uuid, 'running', now() - interval '2 hours') "
+                # alive_at: the process is up (a hang, not a crash, which is requeued).
+                "INSERT INTO ingestion_jobs (org_id, connection_id, status, started_at, alive_at) "
+                "VALUES (%s::uuid, %s::uuid, 'running', now() - interval '2 hours', now()) "
                 "RETURNING id::text",
                 (org_id, connection_id),
             ).fetchone()[0]
@@ -609,3 +628,54 @@ def test_update_progress_stamps_the_heartbeat(store, org_cleanup):
             "SELECT progress_at FROM ingestion_jobs WHERE id = %s::uuid", (job_id,)
         ).fetchone()[0]
     assert progress_at is not None
+
+
+@requires_db
+def test_restart_requeues_only_jobs_whose_process_stopped_beating(store, org_cleanup):
+    """A rolling deploy's new instance requeued the old one's LIVE job, and one
+    connection was ingested twice. Built from rows, never ``claim_next``: the
+    shared queue may hold other jobs."""
+    org_id = store.create_organization(f"Liveness {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+
+    def running_job(provider: str, beat: str) -> str:
+        with get_connection() as conn:
+            connection_id = conn.execute(
+                "INSERT INTO oauth_connections (org_id, provider, "
+                "external_workspace_id, access_token_encrypted) "
+                "VALUES (%s::uuid, %s, %s, 'x') RETURNING id::text",
+                (org_id, provider, f"ws-{provider}"),
+            ).fetchone()[0]
+            return conn.execute(
+                "INSERT INTO ingestion_jobs (org_id, connection_id, status, started_at, "
+                "alive_at, attempts) VALUES (%s::uuid, %s::uuid, 'running', "
+                f"now() - interval '1 hour', now() - interval '{beat}', 1) RETURNING id::text",
+                (org_id, connection_id),
+            ).fetchone()[0]
+
+    live = running_job("notion", "10 seconds")
+    dead = running_job("google", "10 minutes")
+    queue.requeue_interrupted_running()
+
+    assert queue.get_job(org_id, live).status == "running"
+    assert queue.get_job(org_id, dead).status == "queued"
+
+
+@requires_db
+def test_a_reaped_job_finishing_late_stays_failed(store, org_cleanup):
+    """A job the reaper failed but kept running overwrote 'failed' with 'succeeded'."""
+    org_id = store.create_organization(f"Zombie {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    with get_connection() as conn:
+        connection_id = conn.execute(
+            "INSERT INTO oauth_connections (org_id, provider, external_workspace_id, "
+            "access_token_encrypted) VALUES (%s::uuid, 'notion', 'ws-z', 'x') RETURNING id::text",
+            (org_id,),
+        ).fetchone()[0]
+        job_id = conn.execute(
+            "INSERT INTO ingestion_jobs (org_id, connection_id, status) "
+            "VALUES (%s::uuid, %s::uuid, 'failed') RETURNING id::text",
+            (org_id, connection_id),
+        ).fetchone()[0]
+    queue.mark_succeeded(job_id, 5)
+    assert queue.get_job(org_id, job_id).status == "failed"

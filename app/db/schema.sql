@@ -397,6 +397,10 @@ ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAUL
 -- Liveness heartbeat, written on every progress report: `reap_stuck()` judges
 -- a job dead by silence, not by how long it has run.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ;
+-- Process liveness, beaten every 30s while a worker holds the job (apart from
+-- progress, which a slow document stalls): a restart requeues only jobs whose
+-- process stopped beating, never one another live instance is running.
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS alive_at TIMESTAMPTZ;
 
 -- Files this run could not read the SHARING of. On the job, not the
 -- connection, so the notification (latest job only) clears itself on a later 0.
@@ -513,6 +517,9 @@ CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE 
 -- (always with org_id).
 ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS workspace_id UUID
     REFERENCES workspaces (id) ON DELETE CASCADE;
+-- When the running run was claimed: a restart requeues only runs old enough to
+-- be dead, never one a live instance is still sending.
+ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 
 -- A `schedulers.model` column briefly existed and was removed (reports run on
 -- the configured model); old databases keep an unused nullable column.

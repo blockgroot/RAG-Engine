@@ -218,6 +218,14 @@ def test_one_schedulers_failure_leaves_the_others_untouched(scheduler_org):
     assert good_after.last_run_at is not None
 
 
+def _claimed_long_ago(scheduler_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE schedulers SET claimed_at = now() - interval '2 hours' WHERE id = %s",
+            (scheduler_id,),
+        )
+
+
 @requires_db
 def test_requeue_returns_orphans_but_abandons_a_run_that_keeps_killing_the_worker(
     scheduler_org,
@@ -232,12 +240,16 @@ def test_requeue_returns_orphans_but_abandons_a_run_that_keeps_killing_the_worke
     for _ in range(2):
         _make_due(sched.id)
         scheduler_queue.claim_due(limit=10)
+        # A fresh run may be a live instance's: left alone.
+        assert scheduler_queue.requeue_interrupted_running(max_attempts=3) == 0
+        _claimed_long_ago(sched.id)
         assert scheduler_queue.requeue_interrupted_running(max_attempts=3) >= 1
         assert sched_store.get_scheduler(org_id, user_id, sched.id).status == "active"
 
     # Third claim reaches the cap; this requeue retires it instead.
     _make_due(sched.id)
     scheduler_queue.claim_due(limit=10)
+    _claimed_long_ago(sched.id)
     scheduler_queue.requeue_interrupted_running(max_attempts=3)
     retired = sched_store.get_scheduler(org_id, user_id, sched.id)
     assert retired.status == "failed"
@@ -261,3 +273,21 @@ def test_update_changes_prompt_and_rebases_the_next_run(scheduler_org):
 
     other = invite_member(f"nope-{org_id[:8]}@example.com", org_id)
     assert sched_store.update_scheduler(org_id, other.id, sched.id, prompt="x") is None
+
+
+@requires_db
+def test_an_edit_resumes_a_scheduler_stopped_after_failures(scheduler_org):
+    """Delete-and-recreate was the only way back, and lost last_run_at."""
+    org_id, user_id, connection_id = scheduler_org
+    sched = sched_store.create_scheduler(
+        org_id, user_id, connection_id, "slack", "weekly", "stopped"
+    )
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE schedulers SET status = 'failed', attempts = 3, last_error = 'x' "
+            "WHERE id = %s", (sched.id,),
+        )
+    resumed = sched_store.update_scheduler(org_id, user_id, sched.id, prompt="again")
+    assert resumed.status == "active"
+    assert resumed.attempts == 0
+    assert resumed.last_error is None

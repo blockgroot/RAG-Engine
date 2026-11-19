@@ -49,3 +49,20 @@ def test_confirm_refuses_a_removed_space_member(monkeypatch):
         service.confirm(org_id="o", user_id="u", action_id="a", shown_hash="h",
                         acknowledged=False, settings=SimpleNamespace())
     assert not claimed
+
+
+def test_a_space_digest_stops_when_its_owner_leaves(monkeypatch):
+    """Raised before any read, so a removed member's report holds nothing."""
+    from app.schedulers import runner
+
+    monkeypatch.setattr(runner, "get_user", lambda uid: SimpleNamespace(email="a@x.com"))
+
+    def not_member(*a):
+        raise AuthError("Not a member of this workspace")
+    monkeypatch.setattr(runner, "assert_member", not_member)
+    read = []
+    monkeypatch.setattr(runner, "window_start", lambda s: read.append(1))
+    scheduler = SimpleNamespace(id="s", user_id="u", org_id="o", workspace_id="ws")
+    with pytest.raises(Exception, match="no longer a member"):
+        runner.run_scheduler_once(scheduler)
+    assert not read

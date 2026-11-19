@@ -673,7 +673,7 @@ export default function SchedulersPage() {
                               {scheduler.last_error && (
                                 <span className="sched-error">
                                   {stopped
-                                    ? "Stopped after repeated failures: "
+                                    ? "Stopped after repeated failures (edit it to resume): "
                                     : "Last run failed, will retry: "}
                                   {scheduler.last_error}
                                 </span>
