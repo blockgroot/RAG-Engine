@@ -66,6 +66,8 @@ class ApiSettings:
     port: int = 8000
     frontend_url: str | None = None
     model_warmup: bool = True  # off on low-RAM machines
+    #: Root log level for our own loggers (uvicorn configures only its own).
+    log_level: str = "INFO"
 
     @classmethod
     def from_env(cls) -> "ApiSettings":
@@ -77,6 +79,7 @@ class ApiSettings:
             port=int(os.getenv("API_PORT") or cls.port),
             frontend_url=os.getenv("FRONTEND_URL"),
             model_warmup=env_bool("MODEL_WARMUP_ON_STARTUP", True),
+            log_level=(os.getenv("LOG_LEVEL") or cls.log_level).upper(),
         )
 
 

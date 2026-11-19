@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import ApiSettings, IngestWorkerSettings, SchedulerSettings
+from ..core.logs import RequestIdMiddleware, configure_logging
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from ..security.rate_limit import limit_request, report_store
@@ -203,7 +204,9 @@ async def lifespan(_app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = ApiSettings.from_env()
+    configure_logging(settings.log_level)
     app = FastAPI(title="RAG Engine API", lifespan=lifespan)
+    app.add_middleware(RequestIdMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

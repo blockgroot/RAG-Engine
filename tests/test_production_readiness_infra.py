@@ -42,3 +42,28 @@ def test_every_pooled_connection_is_bounded_server_side():
     with get_connection() as conn:
         assert conn.execute("SHOW statement_timeout").fetchone()[0] == "2min"
         assert conn.execute("SHOW idle_in_transaction_session_timeout").fetchone()[0] == "5min"
+
+
+def test_every_response_carries_a_request_id_and_a_safe_one_is_kept():
+    client = TestClient(create_app())
+    made = client.get("/health").headers["x-request-id"]
+    assert len(made) == 16
+    assert client.get("/health", headers={"X-Request-ID": "abc-123"}).headers[
+        "x-request-id"] == "abc-123"
+    forged = client.get("/health", headers={"X-Request-ID": "x\nERROR fake"}).headers[
+        "x-request-id"]
+    assert "\n" not in forged and forged != "x\nERROR fake"
+
+
+def test_log_lines_carry_the_request_id():
+    import logging
+
+    from app.core.logs import REQUEST_ID, _RequestIdFilter
+
+    record = logging.LogRecord("t", logging.INFO, __file__, 1, "m", None, None)
+    token = REQUEST_ID.set("req-9")
+    try:
+        _RequestIdFilter().filter(record)
+    finally:
+        REQUEST_ID.reset(token)
+    assert record.request_id == "req-9"

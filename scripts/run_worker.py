@@ -42,6 +42,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from app.config.settings import ApiSettings
+    from app.core.logs import configure_logging
+
+    configure_logging(ApiSettings.from_env().log_level)
     try:
         apply_schema()
         print("Ingestion worker started. Waiting for queued jobs (Ctrl+C to stop)...")
