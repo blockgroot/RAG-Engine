@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 export type ModelOption = { value: string; label: string; hint?: string };
 
@@ -30,12 +30,15 @@ export function ModelPicker({
   options,
   disabled,
   title,
+  badge,
   onChange,
 }: {
   value: string;
   options: ModelOption[];
   disabled?: boolean;
   title?: string;
+  /** Drawn in the button after the name: the usage ring. */
+  badge?: ReactNode;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -71,13 +74,15 @@ export function ModelPicker({
         className="model-picker-button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`Model: ${current?.label}`}
+        // With a badge the name is read from the contents, so the ring's words are part of it.
+        aria-label={badge ? undefined : `Model: ${current?.label}`}
         title={title}
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
         <Logo label={current?.label} />
         <span className="model-picker-name">{current?.label}</span>
+        {badge}
         <span className="model-picker-chevron" aria-hidden />
       </button>
       {open && (

@@ -12,7 +12,7 @@ function waitWords(seconds: number): string {
 }
 
 /**
- * How much of today's AI use is left, as a ring beside the model menu, the
+ * How much of today's AI use is left, as a ring inside the model button, the
  * way Claude.ai and ChatGPT show it. One budget for every model: a bigger one
  * uses it faster. Hidden when nothing limits the key that answers (your own
  * key with no limit set). Re-read when the model changes and after each answer.
@@ -50,8 +50,8 @@ export function UsageRing({ model, refresh }: { model: string; refresh: unknown 
   const C = 2 * Math.PI * 8;
 
   return (
-    <span className={`usage-ring ${tone}`} tabIndex={0} aria-label={`${headline}. ${detail}`}>
-      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden>
+    <span className={`usage-ring ${tone}`} role="img" aria-label={`${headline}. ${detail}`}>
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden>
         <circle cx="11" cy="11" r="8" className="usage-ring-track" />
         <circle
           cx="11"

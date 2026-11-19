@@ -1261,11 +1261,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           />
           {modelsLoaded && (
             <>
-              <UsageRing model={model} refresh={busy} />
               <ModelPicker
                 value={model}
                 disabled={busy}
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
+                badge={<UsageRing model={model} refresh={busy} />}
                 options={[
                   { value: "auto", label: modelName(defaultLabel), hint: "Default" },
                   ...pickerModels.map((m) => ({
