@@ -12,73 +12,22 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageLoader } from "@/components/PageLoader";
-import { AGENT_RESULT, ProviderPicker } from "@/components/ProviderPicker";
+import { AGENT_RESULT } from "@/components/ProviderPicker";
+import {
+  FormFooter,
+  Icon,
+  IconInput,
+  LimitTile,
+  ModelCard,
+  ModelStatus,
+  ProviderGrid,
+  Step,
+  UseTile,
+} from "@/components/ModelSetup";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type ModelPreset, type OwnLimits, type OwnModel } from "@/lib/api";
 
 const NO_LIMITS: OwnLimits = { tokens_per_minute: 0, tokens_per_day: 0 };
-
-const LIMIT_ROWS: { key: keyof OwnLimits; label: string }[] = [
-  { key: "tokens_per_minute", label: "Tokens a minute" },
-  { key: "tokens_per_day", label: "Tokens a day" },
-];
-
-function TestNote({ text }: { text: string }) {
-  return (
-    <div className="model-test-note">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-        <path d="m7 12 3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
-      </svg>
-      <span>{text}</span>
-    </div>
-  );
-}
-
-function LimitFields({
-  limits,
-  onChange,
-  disabled,
-  step,
-}: {
-  limits: OwnLimits;
-  onChange: (next: OwnLimits) => void;
-  disabled: boolean;
-  step?: number;
-}) {
-  return (
-    <>
-      {step && (
-        <div className="field field-wide">
-          <label htmlFor="tokens_per_minute">
-            <span aria-hidden>{step}</span> Limits (optional)
-          </label>
-          <p className="muted">
-            Caps on your own key, so a long day can&rsquo;t run up your bill. Tokens are the pieces of text a model
-            reads and writes; a typical question uses 10,000 to 40,000. Leave 0 for no limit.
-          </p>
-        </div>
-      )}
-      {LIMIT_ROWS.map((row) => (
-        <div className="field" key={row.key}>
-          <label htmlFor={row.key}>{row.label}</label>
-          <input
-            id={row.key}
-            className="input"
-            type="number"
-            inputMode="numeric"
-            min={0}
-            step={1000}
-            value={limits[row.key]}
-            disabled={disabled}
-            onChange={(e) => onChange({ ...limits, [row.key]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
-          />
-          <p className="muted">{limits[row.key] ? `${limits[row.key].toLocaleString()} tokens` : "No limit"}</p>
-        </div>
-      ))}
-    </>
-  );
-}
 
 export default function OwnModelPage() {
   const { me, loading } = useMe();
@@ -93,6 +42,8 @@ export default function OwnModelPage() {
   const [savedLimits, setSavedLimits] = useState<OwnLimits>(NO_LIMITS);
 
   const [busy, setBusy] = useState(false);
+  // The form to replace a saved model opens only when asked for.
+  const [replacing, setReplacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -142,7 +93,8 @@ export default function OwnModelPage() {
       setSavedLimits(limits);
       setModel("");
       setApiKey("");
-      return "Saved. Pick “Your own model” in the chat’s model menu.";
+      setReplacing(false);
+      return "Saved. Pick it in the chat’s model menu.";
     });
   };
 
@@ -157,6 +109,7 @@ export default function OwnModelPage() {
     run(async () => {
       await api.deleteOwnModel();
       setSaved(null);
+      setReplacing(false);
       setLimits(NO_LIMITS);
       setSavedLimits(NO_LIMITS);
       return "Removed. Your key is deleted.";
@@ -165,22 +118,36 @@ export default function OwnModelPage() {
   const limitsChanged =
     limits.tokens_per_minute !== savedLimits.tokens_per_minute || limits.tokens_per_day !== savedLimits.tokens_per_day;
 
+  const limitTiles = (
+    <div className="mk-limits is-two">
+      <LimitTile
+        id="tokens_per_minute"
+        icon="clock"
+        label="Per minute"
+        value={limits.tokens_per_minute}
+        onChange={(n) => setLimits({ ...limits, tokens_per_minute: n })}
+        disabled={busy}
+        note="Caps a burst of questions"
+      />
+      <LimitTile
+        id="tokens_per_day"
+        icon="calendar"
+        label="Per day"
+        value={limits.tokens_per_day}
+        onChange={(n) => setLimits({ ...limits, tokens_per_day: n })}
+        disabled={busy}
+        note="Caps a whole day’s use"
+      />
+    </div>
+  );
+
   return (
     <AppShell me={me}>
-      <main className="page-wide studio-page stack model-admin-page">
+      <main className="page-wide studio-page stack mk-page">
         <PageHeader
           eyebrow="You"
           title="Your own model"
-          description="Add your own AI provider and key to answer with the model you choose. Only you can pick it, and you pay your provider directly."
-          meta={
-            <span className="hero-facts">
-              {saved ? (
-                <span className="hero-fact-ok">Connected to {saved.preset_label}</span>
-              ) : (
-                <>Using your company&rsquo;s models</>
-              )}
-            </span>
-          }
+          description="Answer with the model you choose, on your own key. Only you can pick it, and you pay your provider directly."
         />
 
         {error && (
@@ -194,133 +161,108 @@ export default function OwnModelPage() {
           </div>
         )}
 
-        {saved && (
-          <section className="room-section model-current-panel" aria-labelledby="current-title">
-            <div className="studio-section-head">
-              <p className="model-section-label">Current connection</p>
-              <h2 id="current-title">Available only to you</h2>
-            </div>
-            <div className="model-current">
-              <div className="model-current-identity">
-                <span className="model-current-name">{saved.model}</span>
-                <span>
-                  {saved.preset_label} · key ending {saved.key_tail}
-                </span>
-              </div>
-              {saved.agent && <span className="model-current-checked">{AGENT_RESULT[saved.agent]}</span>}
-              <button className="button button-secondary" onClick={remove} disabled={busy}>
-                Remove model
-              </button>
-            </div>
-          </section>
-        )}
+        <ModelStatus
+          saved={saved}
+          scope="Only you can pick it"
+          emptyTitle="You’re using your company’s models"
+          emptyText="Add a key from any provider below. It’s tested first, then appears in your chat’s model menu."
+          chips={saved?.agent ? [{ icon: "bolt", text: AGENT_RESULT[saved.agent], tone: saved.agent === "native" || saved.agent === "text" ? "ok" : "warn" }] : []}
+          busy={busy}
+          replacing={replacing}
+          onReplace={() => setReplacing(true)}
+          onRemove={remove}
+        />
 
-        <section className="room-section model-setup" aria-labelledby="add-title">
-          <div className="studio-section-head">
-            <h2 id="add-title">{saved ? "Replace your model" : "Add your own key"}</h2>
-            <p className="muted">We test it before it appears in your model menu.</p>
-          </div>
-
-          <form onSubmit={save} className="model-form">
-            <div className="field">
-              <label htmlFor="preset">
-                <span aria-hidden>1</span> Provider
-              </label>
-              <ProviderPicker presets={presets} value={preset} onChange={setPreset} disabled={busy} />
-            </div>
-
-            <div className="field">
-              <label htmlFor="apiKey">
-                <span aria-hidden>2</span> API key
-              </label>
-              <input
-                id="apiKey"
-                className="input"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Paste the full API key"
-                disabled={busy}
-                required
-                autoComplete="off"
-              />
-              <p className="muted">Encrypted before storage. Only the final four characters remain visible after saving.</p>
-            </div>
-
-            <div className="field field-wide">
-              <label htmlFor="model">
-                <span aria-hidden>3</span> Model ID
-              </label>
-              <input
-                id="model"
-                className="input"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="For example, claude-sonnet-5-5"
-                disabled={busy}
-                required
-              />
-              <p className="muted">
-                Use the provider&rsquo;s exact ID.{" "}
-                {activePreset && (
-                  <a href={activePreset.models_url} target="_blank" rel="noreferrer">
-                    Browse model IDs
-                  </a>
+        {(!saved || replacing) && (
+          <ModelCard
+            icon="key"
+            title={saved ? "Replace your model" : "Connect your key"}
+            description="Three steps. We test the connection before anything is saved."
+          >
+            <form onSubmit={save} className="mk-steps">
+              <Step n={1} title="Choose a provider">
+                <ProviderGrid presets={presets} value={preset} onChange={setPreset} disabled={busy} />
+              </Step>
+              <Step n={2} title="Paste your API key" hint="Encrypted before it’s stored. Only its last four characters are shown afterwards.">
+                <IconInput
+                  icon="lock"
+                  id="apiKey"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={`Your ${activePreset?.label ?? "provider"} API key`}
+                  disabled={busy}
+                  required
+                  autoComplete="off"
+                />
+              </Step>
+              <Step
+                n={3}
+                title="Enter the model ID"
+                hint={
+                  activePreset && (
+                    <a className="mk-link" href={activePreset.models_url} target="_blank" rel="noreferrer">
+                      Browse {activePreset.label} model IDs <Icon name="external" size={13} />
+                    </a>
+                  )
+                }
+              >
+                <IconInput
+                  icon="spark"
+                  id="model"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="For example, claude-sonnet-5-5"
+                  disabled={busy}
+                  required
+                />
+              </Step>
+              {!saved && (
+                <Step n={4} title="Set limits (optional)" hint="A typical question uses 10,000 to 40,000 tokens. Leave 0 for no limit.">
+                  {limitTiles}
+                </Step>
+              )}
+              <FormFooter note="A short test runs first. Nothing is saved if it fails.">
+                {saved && (
+                  <button className="button button-secondary" type="button" onClick={() => setReplacing(false)} disabled={busy}>
+                    Cancel
+                  </button>
                 )}
-              </p>
-            </div>
-
-            {!saved && <LimitFields limits={limits} onChange={setLimits} disabled={busy} step={4} />}
-
-            <div className="model-form-actions">
-              <TestNote text="A short test runs first. Nothing is saved if it fails." />
-              <button className="button" type="submit" disabled={busy || !model.trim() || !apiKey.trim()}>
-                {busy ? "Testing connection…" : saved ? "Test and replace" : "Test and save"}
-              </button>
-            </div>
-          </form>
-        </section>
-
-        {saved && (
-          <section className="room-section model-setup" aria-labelledby="limits-title">
-            <div className="studio-section-head">
-              <h2 id="limits-title">Your limits</h2>
-              <p className="muted">
-                Optional caps on your own key, so a long day can&rsquo;t run up your bill. Tokens are the pieces of
-                text a model reads and writes; a typical question uses 10,000 to 40,000. 0 means no limit.
-              </p>
-            </div>
-            <div className="model-form">
-              <LimitFields limits={limits} onChange={setLimits} disabled={busy} />
-              <div className="model-form-actions">
-                <TestNote text="Applies from the next question." />
-                <button className="button" type="button" onClick={saveLimits} disabled={busy || !limitsChanged}>
-                  {busy ? "Saving…" : "Save limits"}
+                <button className="button" type="submit" disabled={busy || !model.trim() || !apiKey.trim()}>
+                  {busy ? "Testing connection…" : saved ? "Test and replace" : "Test and save"}
                 </button>
-              </div>
-            </div>
-          </section>
+              </FormFooter>
+            </form>
+          </ModelCard>
         )}
 
-        <section className="room-section model-boundary" aria-labelledby="usage-title">
-          <div className="studio-section-head">
-            <h2 id="usage-title">How your model is used</h2>
+        {saved && (
+          <ModelCard
+            icon="gauge"
+            title="Your limits"
+            description="Optional caps on your own key, so a long day can’t run up your bill. A typical question uses 10,000 to 40,000 tokens."
+          >
+            {limitTiles}
+            <FormFooter note="Applies from your next question.">
+              <button className="button" type="button" onClick={saveLimits} disabled={busy || !limitsChanged}>
+                {busy ? "Saving…" : "Save limits"}
+              </button>
+            </FormFooter>
+          </ModelCard>
+        )}
+
+        <ModelCard icon="shield" title="How your key is used">
+          <div className="mk-uses">
+            <UseTile icon="chat" tag="On your key" title="Your questions">
+              Answers when you pick it, and the checks around every question you ask on the web and in Slack DMs.
+              The documents behind them go to {activePreset?.label ?? "your provider"}.
+            </UseTile>
+            <UseTile icon="doc" tag="Never on your key" title="Company work" tone="muted">
+              Indexing your company&rsquo;s documents and everyone else&rsquo;s questions. Handbook&rsquo;s and your
+              company&rsquo;s limits don&rsquo;t apply to your key.
+            </UseTile>
           </div>
-          <footer className="model-split-note">
-            <span aria-hidden>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-2.5Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
-                <path d="m9 12 2 2 4-4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            <p>
-              <strong>Your questions run on it.</strong> Your answers when you pick it, and the checks around every
-              question you ask (on the web and in Slack DMs), send the documents behind them to{" "}
-              {activePreset?.label ?? "your provider"} on your key. Indexing your company&rsquo;s documents never uses
-              your key, and Handbook&rsquo;s and your company&rsquo;s limits don&rsquo;t apply to it.
-            </p>
-          </footer>
-        </section>
+        </ModelCard>
       </main>
     </AppShell>
   );

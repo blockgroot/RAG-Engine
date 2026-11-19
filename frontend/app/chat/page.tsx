@@ -1263,16 +1263,18 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 value={model}
                 disabled={busy}
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
-                footer={{ href: "/account/model", label: "Add your own key" }}
+                footer={{ href: "/account/model", label: models.some((m) => m.backend === "own") ? "Change your key" : "Add your own key" }}
                 options={[
                   { value: "auto", label: modelName(defaultLabel), hint: "Default" },
                   ...pickerModels.map((m) => {
                     // Whose key, under the name: Handbook's is "Default".
-                    const whose = m.backend === "own" ? "User" : m.backend === "custom" ? "Company" : undefined;
+                    const whose = m.backend === "own" ? "Your key" : m.backend === "custom" ? "Company key" : undefined;
                     const charts = chartMode && m.charts == null ? "May not support charts" : undefined;
                     return {
                       value: m.id,
-                      label: modelName(m.label),
+                      // A key someone added shows the exact model ID they typed, so
+                      // the maker's logo is found and it reads as they named it.
+                      label: whose ? m.label : modelName(m.label),
                       hint: [whose, charts].filter(Boolean).join(" · ") || undefined,
                     };
                   }),
