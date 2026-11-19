@@ -108,6 +108,7 @@ rights, §11) or on an open pull request (§12).
 | Company email domain | Invites and email changes must match the first admin's domain | Merged (6 Nov) | `tests/test_api_admin.py`, `tests/test_email_change.py` | Exact match; a subdomain is another domain |
 | Rate limits | Token buckets per person and per company, in Redis when set; at most 20 answers written at once, 2 per person | Merged (4 Nov) | `tests/test_rate_limit.py`, `tests/test_slack_rate_limit.py` | Without `REDIS_URL` each server counts on its own |
 | AI limits | Tokens a minute per answering model (person and company, input and output apart) and dollars a day | Merged (11–13 Nov) | `tests/test_ai_spend.py` | A model not priced is not charged |
+| Limits on the company's own key | Admin › Model sets tokens a minute and a day, per person and for the company (0 = none); answers on the company's key never use Handbook's budget, and the ring shows the admin's daily limit | Merged (19 Nov) | `tests/test_company_limits.py` | Applies only to the company's key |
 | Identifier masking | Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values replaced before text leaves | Merged | `tests/test_privacy_masking.py` | Bank account numbers, order ids, names and emails are not masked |
 | Self-hosted install and Updates | Installer, one company per install, Admin › Updates, release emails | Released 0.2.0–0.4.1 | `tests/test_updates.py` | — |
 

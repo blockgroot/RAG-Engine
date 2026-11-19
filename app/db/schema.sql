@@ -1082,6 +1082,18 @@ CREATE TABLE IF NOT EXISTS slack_event_receipts (
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- The limits a company's admin sets on its OWN key (Admin > Model;
+-- app/security/ai_spend.py), in tokens, input and output together; 0 = no
+-- limit. Handbook's own model keeps Handbook's limits.
+CREATE TABLE IF NOT EXISTS org_ai_limits (
+    org_id                    UUID PRIMARY KEY REFERENCES organizations (id) ON DELETE CASCADE,
+    person_tokens_per_minute  INTEGER NOT NULL DEFAULT 0 CHECK (person_tokens_per_minute >= 0),
+    person_tokens_per_day     INTEGER NOT NULL DEFAULT 0 CHECK (person_tokens_per_day >= 0),
+    company_tokens_per_minute INTEGER NOT NULL DEFAULT 0 CHECK (company_tokens_per_minute >= 0),
+    company_tokens_per_day    INTEGER NOT NULL DEFAULT 0 CHECK (company_tokens_per_day >= 0),
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS live_tool_calls (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,

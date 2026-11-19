@@ -111,7 +111,7 @@ def test_a_refused_question_spends_no_question_allowance(ids):
 
 def test_every_provider_call_is_charged_to_the_asker(ids, monkeypatch):
     charged = []
-    monkeypatch.setattr(ai_spend, "charge_call", lambda m, i, o: charged.append((m, i, o)))
+    monkeypatch.setattr(ai_spend, "charge_call", lambda m, i, o, billing="ours": charged.append((m, i, o, billing)))
     provider = OpenAICompatProvider(model="claude-haiku-5-5", api_key="k", base_url="https://llm.example/v1")
     reply = SimpleNamespace(
         model="claude-haiku-5-5",
@@ -123,7 +123,7 @@ def test_every_provider_call_is_charged_to_the_asker(ids, monkeypatch):
     monkeypatch.setattr(provider, "_create", lambda kwargs: reply)
     provider.generate("q")
     provider.generate_with_tools([{"role": "user", "content": "q"}], tools=[])
-    assert charged == [("claude-haiku-5-5", 5_000, 300)] * 2
+    assert charged == [("claude-haiku-5-5", 5_000, 300, "ours")] * 2
 
 
 def test_a_charge_that_cannot_be_recorded_never_fails_the_answer(ids, monkeypatch):
@@ -160,16 +160,14 @@ SONNET, HAIKU = "claude-sonnet-5-5", "claude-haiku-5-5"
 def test_each_model_has_its_own_minute_of_tokens(ids):
     user, org = ids
     charge_to(user, org)
-    charge_call(SONNET, 61_000, 500)               # past a person's 60k input a minute
-    sonnet = rate_limit.question_decision(user, org, model=SONNET)
-    assert not sonnet.allowed and sonnet.refused_by == f"ai:user:tin:{SONNET}:{user}"
+    charge_call(HAIKU, 61_000, 500)                # past a person's 60k input a minute
+    haiku = rate_limit.question_decision(user, org, model=HAIKU)
+    assert not haiku.allowed and haiku.refused_by == f"ai:user:tin:{HAIKU}:{user}"
     # 1k tokens over at 60k a minute: about a second, said in seconds, never hours.
-    assert 0 < sonnet.retry_after <= 2
-    assert rate_limit.refusal_message(sonnet.retry_after, sonnet.refused_by).endswith(("second.", "seconds."))
-    # Haiku is another model: its own buckets are full.
-    assert rate_limit.question_decision(user, org, model=HAIKU).allowed
+    assert 0 < haiku.retry_after <= 2
+    assert rate_limit.refusal_message(haiku.retry_after, haiku.refused_by).endswith(("second.", "seconds."))
     # A colleague is unaffected.
-    assert rate_limit.question_decision(str(uuid.uuid4()), org, model=SONNET).allowed
+    assert rate_limit.question_decision(str(uuid.uuid4()), org, model=HAIKU).allowed
 
 
 def test_output_tokens_are_limited_apart_from_input(ids):

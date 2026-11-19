@@ -640,6 +640,14 @@ export interface OrgModel {
   agent: "native" | "text" | "none" | "unknown" | null;
 }
 
+/** Limits an admin sets on the company's own key, in tokens; 0 = no limit. */
+export interface OrgLimits {
+  person_tokens_per_minute: number;
+  person_tokens_per_day: number;
+  company_tokens_per_minute: number;
+  company_tokens_per_day: number;
+}
+
 export interface ModelPreset {
   id: string;
   label: string;
@@ -1029,6 +1037,12 @@ export const api = {
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),
+  getOrgLimits: () => request<{ limits: OrgLimits }>("/admin/llm-model/limits"),
+  saveOrgLimits: (limits: OrgLimits) =>
+    request<{ limits: OrgLimits }>("/admin/llm-model/limits", {
+      method: "PUT",
+      body: JSON.stringify(limits),
+    }),
 
   checkConnectionHealth: (connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(

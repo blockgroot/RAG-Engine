@@ -4,6 +4,9 @@
   person and the company (``token_buckets``).
 * Dollars a day for the person and the company (``spend_buckets``), one
   wallet whichever model answers.
+* On the company's OWN key (Admin > Model), none of those: only the limits
+  its admin sets (``admin_buckets``), in tokens a minute and a day, person
+  and company, input and output together. Their key, their bill.
 
 One question can cost ten times another and models differ twentyfold in
 price, so every paid call is charged its real cost and a question is
@@ -18,6 +21,7 @@ charged.
 from __future__ import annotations
 
 import logging
+import time
 from contextvars import ContextVar
 
 from ..config.settings import RateLimitSettings
@@ -32,6 +36,18 @@ _MINUTES_PER_DAY = 1440
 _SPENDER: ContextVar[tuple[str | None, str | None]] = ContextVar(
     "ai_spender", default=(None, None)
 )
+
+
+#: Whose key answers a call: Handbook's, or the company's own (Admin > Model).
+OURS, COMPANY = "ours", "company"
+
+
+def billing_of(model: str | None) -> str:
+    """Whose key answers a picker selection. A model we ship (or the default)
+    is ours; anything else that passed the route's check is the company's."""
+    from ..llm import catalog
+
+    return OURS if catalog.is_selectable(model) else COMPANY
 
 
 def charge_to(user_id: str | None, org_id: str | None) -> None:
@@ -109,26 +125,85 @@ def spend_buckets(
     return buckets
 
 
+#: An admin's limits change rarely; reading them on every call would be a query per call.
+_ORG_LIMITS_TTL_SECONDS = 60
+_org_limits: dict[str, tuple[float, tuple[int, int, int, int]]] = {}
+_NO_LIMITS = (0, 0, 0, 0)
+
+
+def org_limits(org_id: str) -> tuple[int, int, int, int]:
+    """``(person a minute, person a day, company a minute, company a day)``
+    tokens the admin set; 0 = none. A read fault means none: the limiter must
+    never be what takes the product down."""
+    now = time.monotonic()
+    cached = _org_limits.get(org_id)
+    if cached and now - cached[0] < _ORG_LIMITS_TTL_SECONDS:
+        return cached[1]
+    from ..db.connection import get_connection
+
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT person_tokens_per_minute, person_tokens_per_day, "
+                "company_tokens_per_minute, company_tokens_per_day "
+                "FROM org_ai_limits WHERE org_id = %s",
+                (org_id,),
+            ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read the AI limits of org %s: %s", org_id, exc)
+        return _NO_LIMITS
+    limits = tuple(int(v) for v in row) if row else _NO_LIMITS
+    _org_limits[org_id] = (now, limits)
+    return limits
+
+
+def forget_org_limits(org_id: str) -> None:
+    """After the admin saves, so this server applies the new limits at once."""
+    _org_limits.pop(org_id, None)
+
+
+def admin_buckets(user_id: str | None, org_id: str | None, *, daily_only: bool = False) -> list[Bucket]:
+    """The admin's token buckets on the company's key: a minute's worth at
+    once, and a day's refilling evenly over the day."""
+    if not org_id:
+        return []
+    person_min, person_day, company_min, company_day = org_limits(org_id)
+    buckets = []
+    for who, scope, per_min, per_day in ((user_id, "user", person_min, person_day),
+                                         (org_id, "org", company_min, company_day)):
+        if who and per_min and not daily_only:
+            buckets.append(Bucket(f"ai:{scope}:amin:{who}", per_min, per_min))
+        if who and per_day:
+            buckets.append(Bucket(f"ai:{scope}:aday:{who}", per_day, per_day / _MINUTES_PER_DAY))
+    return buckets
+
+
 def charge_call(
     model: str | None,
     input_tokens: int | None,
     output_tokens: int | None,
     settings: RateLimitSettings | None = None,
+    billing: str = OURS,
 ) -> float:
-    """Charge one finished call: tokens to the model's minute buckets, cost to
-    the dollar buckets. Returns dollars charged. A store fault is logged and
-    the call stands."""
+    """Charge one finished call to the limits of whoever's key answered:
+    ours (the model's minute buckets and the dollar buckets) or the company's
+    (only its admin's token buckets). Returns dollars charged to our credit.
+    A store fault is logged and the call stands."""
     user_id, org_id = _SPENDER.get()
     if not (user_id or org_id):
         return 0.0
     settings = settings or RateLimitSettings.from_env()
     if not settings.enabled:
         return 0.0
-    ins, outs = token_buckets(user_id, org_id, model, settings)
-    cost = cost_of(model, input_tokens, output_tokens, settings)
-    dollars = spend_buckets(user_id, org_id, settings) if cost > 0 else []
-    charges = [(b, n) for b, n in ((ins, input_tokens or 0), (outs, output_tokens or 0), (dollars, cost))
-               if b and n > 0]
+    cost, dollars = 0.0, []
+    if billing == COMPANY:
+        charges = [(admin_buckets(user_id, org_id), (input_tokens or 0) + (output_tokens or 0))]
+    else:
+        ins, outs = token_buckets(user_id, org_id, model, settings)
+        cost = cost_of(model, input_tokens, output_tokens, settings)
+        dollars = spend_buckets(user_id, org_id, settings) if cost > 0 else []
+        charges = [(ins, input_tokens or 0), (outs, output_tokens or 0), (dollars, cost)]
+    charges = [(b, n) for b, n in charges if b and n > 0]
     try:
         limiter = build_rate_limiter(settings)
         for buckets, amount in charges:

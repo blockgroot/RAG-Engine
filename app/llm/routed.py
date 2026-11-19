@@ -276,6 +276,7 @@ class RoutedLLMProvider(LLMProvider):
             timeout=self._custom_timeout,
             extra_body=extra_body,
             extra_body_optional=extra_optional,
+            billing="company",  # their key: only their admin's limits
         )
         self._clients[cache_key] = client
         return client

@@ -563,6 +563,7 @@ The picker offers Claude Haiku 5.5 only (`catalog.CLAUDE_MODELS`), shown as the 
 with nothing else to pick; every model a person can pick must be priced
 (`test_production_offers_claude_haiku_only`).
 Background work runs on the Gemini AUX model, never pickable and never charged.
+An answer on the company's OWN key (Admin > Model) is never checked against or charged to our budgets: only the token limits its admin sets (`org_ai_limits`, `ai_spend.admin_buckets`; 0 = none), decided by `ai_spend.billing_of` for the check and the client's `billing` for the charge (the save-time test too).
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

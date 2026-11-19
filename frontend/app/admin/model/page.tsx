@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
-import { ApiError, api, type ModelPreset, type OrgModel } from "@/lib/api";
+import { ApiError, api, type ModelPreset, type OrgLimits, type OrgModel } from "@/lib/api";
 
 /** Agent mode's tool-calling test, said in the admin's terms. */
 const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
@@ -98,6 +98,20 @@ function ProviderPicker({
   );
 }
 
+const NO_LIMITS: OrgLimits = {
+  person_tokens_per_minute: 0,
+  person_tokens_per_day: 0,
+  company_tokens_per_minute: 0,
+  company_tokens_per_day: 0,
+};
+
+const LIMIT_INPUTS: { key: keyof OrgLimits; label: string }[] = [
+  { key: "person_tokens_per_minute", label: "Each person, per minute" },
+  { key: "person_tokens_per_day", label: "Each person, per day" },
+  { key: "company_tokens_per_minute", label: "Whole company, per minute" },
+  { key: "company_tokens_per_day", label: "Whole company, per day" },
+];
+
 export default function AdminModelPage() {
   const { me, loading } = useMe({ requireAdmin: true });
 
@@ -108,17 +122,23 @@ export default function AdminModelPage() {
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
 
+  const [limits, setLimits] = useState<OrgLimits>(NO_LIMITS);
+  const [savedLimits, setSavedLimits] = useState<OrgLimits>(NO_LIMITS);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [{ presets: list }, { model: current }] = await Promise.all([
+      const [{ presets: list }, { model: current }, { limits: now }] = await Promise.all([
         api.listModelPresets(),
         api.getOrgModel(),
+        api.getOrgLimits(),
       ]);
       setPresets(list);
+      setLimits(now);
+      setSavedLimits(now);
       setSaved(current);
       if (current?.preset) setPreset(current.preset);
     } catch (err) {
@@ -156,6 +176,25 @@ export default function AdminModelPage() {
       setBusy(false);
     }
   }
+
+  async function saveLimits(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const { limits: next } = await api.saveOrgLimits(limits);
+      setLimits(next);
+      setSavedLimits(next);
+      setNotice("Limits saved. They apply from the next question.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save the limits.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const limitsChanged = LIMIT_INPUTS.some(({ key }) => limits[key] !== savedLimits[key]);
 
   async function remove() {
     setBusy(true);
@@ -220,6 +259,46 @@ export default function AdminModelPage() {
                 Remove model
               </button>
             </div>
+          </section>
+        )}
+
+        {saved && (
+          <section className="room-section model-setup" aria-labelledby="limits-title">
+            <div className="studio-section-head">
+              <p className="model-section-label">Usage limits</p>
+              <h2 id="limits-title">Limits on your key</h2>
+              <p className="muted">
+                Caps on answers from your model, so a busy day can&rsquo;t run up your bill. A typical question uses
+                10,000 to 40,000 tokens. Leave 0 for no limit. Handbook&rsquo;s built-in model keeps its own limits.
+              </p>
+            </div>
+            <form onSubmit={saveLimits} className="model-form">
+              {LIMIT_INPUTS.map(({ key, label }) => (
+                <div className="field" key={key}>
+                  <label htmlFor={key}>{label}</label>
+                  <input
+                    id={key}
+                    className="input"
+                    type="number"
+                    min={0}
+                    step={1000}
+                    inputMode="numeric"
+                    value={limits[key]}
+                    onChange={(e) => setLimits({ ...limits, [key]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                    disabled={busy}
+                  />
+                  <p className="muted">{limits[key] ? `${limits[key].toLocaleString()} tokens` : "No limit"}</p>
+                </div>
+              ))}
+              <div className="model-form-actions">
+                <div className="model-test-note">
+                  <span>Each person sees what is left of today&rsquo;s limit beside the model menu.</span>
+                </div>
+                <button className="button" type="submit" disabled={busy || !limitsChanged}>
+                  {busy ? "Saving…" : "Save limits"}
+                </button>
+              </div>
+            </form>
           </section>
         )}
 
