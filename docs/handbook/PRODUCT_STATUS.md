@@ -441,6 +441,21 @@ Open pull requests (13 Nov): a benchmark of encrypted chunk text with keyword se
 a design note on tenant direct access (PR #62); neither changes the product. The items below were
 in progress on 13 Oct and are now on `main`; the shorter entries for each are in §2–§9.
 
+**Production-readiness fixes** (branch `fix/production-readiness`, 19 Nov 2026, **In progress**).
+From an audit against production AI-system practice. Model calls: no SDK retries (a 429 is the
+quota), a cap on every reply including tool turns, a cut-off chat answer says so, every request
+paced. Agent mode: a write whose connection broke after sending is "unknown" (never re-approved
+into a duplicate); stuck "Sending…" cards settle; confirm re-checks space membership; deleting a
+space expires its drafts. Token refresh: a network error no longer forces a reconnect; one
+refresh per connection at a time. Jobs: a restart requeues only jobs whose process stopped
+beating (`alive_at`), never a live instance's; a space digest stops when its owner leaves; an
+edit resumes a stopped scheduler. Infra: statement and pool timeouts, `GET /ready`, a lock on
+schema apply, bounded shutdown, a non-root image, logs that actually reach the log with a request
+id. Web search and the Lettuce audit are masked; Slack questions capped at 4000 characters; a
+dropped stream no longer freezes the chat; browser security headers; `scripts/delete_company.py`.
+Covered by `tests/test_production_readiness_*.py` plus updated `test_jobs.py`,
+`test_scheduler_queue.py` and `test_token_refresh.py` (staging database).
+
 **Each company's own Google and Slack app** (PR #64, 3 Nov 2026). Set up under **Sources**; see
 §6. Self-hosted installs keep using `.env`. Covered by `tests/test_own_connector_apps.py`; not yet
 walked through with real Google and Slack apps.

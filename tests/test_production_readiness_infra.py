@@ -67,3 +67,29 @@ def test_log_lines_carry_the_request_id():
     finally:
         REQUEST_ID.reset(token)
     assert record.request_id == "req-9"
+
+
+@requires_db
+def test_delete_company_needs_the_exact_name_then_removes_everything(store, org_cleanup):
+    import importlib.util
+    import uuid
+    from pathlib import Path
+
+    from app.db.connection import get_connection
+
+    spec = importlib.util.spec_from_file_location(
+        "delete_company", Path(__file__).parent.parent / "scripts" / "delete_company.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    name = f"Delete Me {uuid.uuid4().hex[:8]}"
+    org_id = store.create_organization(name)
+    org_cleanup.append(org_id)
+
+    deleted, message = module.delete_company(org_id, "delete me")
+    assert not deleted and "exact name" in message
+    deleted, _ = module.delete_company(org_id, name)
+    assert deleted
+    with get_connection(all_orgs=True) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM organizations WHERE id = %s::uuid", (org_id,)).fetchone() is None
