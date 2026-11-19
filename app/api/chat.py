@@ -144,6 +144,11 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # The default is already the first option; listing it again under its
     # catalog label would offer one model twice.
     models = [m for m in catalog.as_dicts(backends) if m["id"] != default_model]
+    from ..llm.routed import handbook_model_on
+
+    handbook = handbook_model_on()
+    if not handbook:
+        models = []  # Handbook's own models are not offered: only keys added here
 
     # The org's own model, added beside the built-ins so members have a way out
     # when its key breaks.
@@ -179,6 +184,9 @@ def list_models(session: SessionClaims = Depends(get_session)):
         )
 
     return {
+        # False when Handbook offers no model of its own: the menu lists only the
+        # company's and the person's, and has no "Default" option.
+        "default_available": handbook,
         "default": catalog.AUTO,
         "default_label": getattr(catalog.get(default_model or ""), "label", None)
         or default_model or "Auto",

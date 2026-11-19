@@ -3,6 +3,7 @@
 import { PageLoader } from "@/components/PageLoader";
 import { ModelPicker } from "@/components/ModelPicker";
 import { UsageRing } from "@/components/UsageRing";
+import { NoModelCard, noModel } from "@/components/NoModelCard";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
@@ -124,6 +125,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [defaultLabel, setDefaultLabel] = useState("Auto");
   // "auto" sends no model (the deployment default). A stored id no longer in
   // the catalog is dropped on load, not sent and rejected.
+  // False when Handbook offers no model of its own: the menu has no "Default".
+  const [defaultAvailable, setDefaultAvailable] = useState(true);
+  // Bumped when someone asks with no model connected, to draw the eye to the card.
+  const [noModelNudge, setNoModelNudge] = useState(0);
   const [model, setModel] = useState<string>("auto");
   // Chart mode: the answer is a chart or a refusal. Off, charts are never guessed.
   const [chartMode, setChartMode] = useState(false);
@@ -216,9 +221,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     let cancelled = false;
     api
       .chatModels()
-      .then(({ models: available, default_label, preferred: start }) => {
+      .then(({ models: available, default_label, preferred: start, default_available }) => {
         if (cancelled) return;
         setModels(available);
+        setDefaultAvailable(default_available !== false);
         if (default_label) setDefaultLabel(default_label);
         // The menu starts on the person's own model, else the company's, else Handbook's.
         const first = start && available.some((m) => m.id === start) ? start : "auto";
@@ -649,6 +655,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   /** `mode` overrides the composer's, for "Try Deep analysis" under an answer. */
   async function ask(question: string, mode?: "deep") {
     if (!question || busy) return;
+    // Nothing can answer yet: a typed question or a starter clicked shows the
+    // "connect a model" card again instead of a question that fails.
+    if (noModel(me)) {
+      setNoModelNudge((n) => n + 1);
+      return;
+    }
     if (actMode && !mode) return draftAction(question);
     setInput("");
     setBusy(true);
@@ -1203,6 +1215,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           )}
           <ReleaseChip admin={me.role === "admin"} />
         </div>
+        {noModel(me) ? (
+          <NoModelCard key={noModelNudge} me={me} nudge={noModelNudge > 0} />
+        ) : (
         <form onSubmit={handleSubmit} className={`chat-composer is-${mode}${extraEffort ? " is-extra" : ""}`} aria-label="Ask a question">
           <label className="sr-only" htmlFor="ask-input">
             Your question
@@ -1267,7 +1282,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
                 footer={{ href: "/account/model", label: models.some((m) => m.backend === "own") ? "Change your key" : "Add your own key" }}
                 options={[
-                  { value: "auto", label: modelName(defaultLabel), hint: "Default" },
+                  ...(defaultAvailable ? [{ value: "auto", label: modelName(defaultLabel), hint: "Default" }] : []),
                   ...pickerModels.map((m) => {
                     // Whose key, under the name: Handbook's is "Default".
                     const whose = m.backend === "own" ? "Your key" : m.backend === "custom" ? "Company key" : undefined;
@@ -1315,6 +1330,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
           </button>
         </form>
+        )}
         {actMode ? (
           <p className="muted chat-model-note" role="status">
             Agent mode drafts up to five actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved

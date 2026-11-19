@@ -23,7 +23,7 @@ from ..sources.google_groups import viewer_for_person
 from ..workspaces.store import get_workspace_name
 from . import reports
 from .activity import fetch_activity
-from .prompts import NO_ACTIVITY_NOTE, build_scheduler_report_prompt
+from .prompts import NO_ACTIVITY_NOTE, NO_MODEL_NOTE, build_scheduler_report_prompt
 from .store import Scheduler
 
 logger = logging.getLogger(__name__)
@@ -109,10 +109,15 @@ def run_scheduler_once(
     if scheduler.last_run_at is None:
         notes.append(FIRST_RUN_NOTE)
 
+    from ..llm.routed import model_available
+
     if not digest:
         # No LLM on an empty context: that is where invention happens.
         # `digest` is falsy on items, not notes.
         report = NO_ACTIVITY_NOTE
+    elif llm is None and not model_available(scheduler.org_id):
+        # Said in the report, not a failed run that burns its retries.
+        report = NO_MODEL_NOTE
     else:
         # Background work runs on the aux model. Keep it a full model: a lite
         # one wrote one-line summaries of substantial content.

@@ -304,7 +304,15 @@ Whose key does the work: a person's questions (the answer when picked, and the c
 every question, on the web and in Slack DMs) run on their own key, else the company's, else
 Handbook's. Company work (indexing, figures read from text, grouping unanswered questions,
 sentiment, reports) and Slack channel replies run on the company's key, else Handbook's, never
-a person's. Search and ranking always stay on Handbook. The chat's model menu starts on the same
+a person's. Search and ranking always stay on Handbook.
+
+When Handbook offers no model of its own (`HANDBOOK_MODEL_ENABLED=false`) and nobody has added a
+key, every place that starts AI work says so instead of failing: the chat's question box (and any
+starter clicked) shows "Connect your AI model to start" with a Connect model button for admins, or
+"Your company hasn't connected an AI model yet" with Add my own key for everyone else; Reports ask
+for the company's model (a report never runs on a personal key); setup shows it first; admins get
+a bell item; Slack replies with the same words. Documents still index and are searchable; their AI
+context, figures, grouping and reports wait for a model. The chat's model menu starts on the same
 order (their own model, else the company's, else Handbook's); a model the person picked themselves
 is remembered and wins. Each option says whose it is under its name: "Default" (Handbook's),
 "Company key" or "Your key"; the menu's link reads "Add your own key", or "Change your key" once

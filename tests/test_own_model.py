@@ -459,3 +459,103 @@ def test_redis_levels_match_memory(redis_url):
     assert lim.levels([day]) == [0.5]
     lim.take([day], need=None, spend=0.2)
     assert lim.levels([day]) == pytest.approx([0.3], abs=1e-4)
+
+
+# --- No model connected (HANDBOOK_MODEL_ENABLED=false) -------------------------------
+
+
+@pytest.fixture
+def handbook_off(monkeypatch):
+    monkeypatch.setenv("HANDBOOK_MODEL_ENABLED", "false")
+
+
+def test_with_ours_off_and_no_key_nothing_answers_and_people_are_told(keys, handbook_off):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.core.exceptions import NoModelConfigured
+
+    assert not routed.model_available("o", "u")
+    for role, words in (("admin", "Connect your company's AI model first"),
+                        ("member", "Your company hasn't connected an AI model yet")):
+        with pytest.raises(HTTPException) as refused:
+            rate_limit.require_model(SimpleNamespace(org_id="o", user_id="u", role=role))
+        assert refused.value.status_code == 409 and refused.value.detail.startswith(words)
+    provider = routed.RoutedLLMProvider(default=_Default())
+    routed.use_model(None, org_id="o", user_id="u")
+    routed.use_payer_keys("o", "u")
+    with pytest.raises(NoModelConfigured):                             # never our key
+        provider.active()
+    with pytest.raises(NoModelConfigured), routed.default_model_only():
+        provider.active()                                              # nor the checks
+    aux = routed.PayerKeyProvider(default=_Default())
+    with routed.payer_keys("o"), pytest.raises(NoModelConfigured):
+        aux.active()                                                   # nor company work
+    routed.use_model(HAIKU, org_id="o")
+    with pytest.raises(NoModelConfigured):                             # nor our model picked by id
+        provider.active()
+
+
+def test_with_ours_off_a_key_answers_everything(keys, handbook_off):
+    keys["company"]["o"] = "gpt-5"
+    assert routed.model_available("o", "u") and routed.model_available("o")
+    provider = routed.RoutedLLMProvider(default=_Default())
+    routed.use_model(None, org_id="o", user_id="u")                    # "Default" = whoever's key
+    routed.use_payer_keys("o", "u")
+    assert provider.active().api_key == "sk-o"
+    keys["own"]["u"] = "claude-sonnet-5-5"
+    routed.use_payer_keys("o", "u")
+    assert provider.active().api_key == "sk-u"                         # theirs first
+
+
+def test_with_ours_off_the_menu_offers_only_added_keys(keys, handbook_off, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.api.chat import list_models
+
+    monkeypatch.setenv("LLM_MODEL", HAIKU)
+    monkeypatch.setenv("CLAUDE_API_KEY", "c")
+    session = SimpleNamespace(org_id="o", user_id="u")
+    menu = list_models(session=session)
+    assert menu["default_available"] is False and menu["models"] == []
+    keys["company"]["o"] = "gpt-5"
+    assert [m["id"] for m in list_models(session=session)["models"]] == ["company:gpt-5"]
+    assert not own_model.selectable("o", "u", HAIKU)                    # ours cannot be sent
+    assert own_model.selectable("o", "u", "auto")
+
+
+def test_me_and_the_bell_say_whether_a_model_is_connected(keys, handbook_off):
+    from app.api.notifications import _model_items
+    from app.api.orgs import _ai_status
+
+    assert _ai_status("o", "u") == {"ready": False, "handbook": False, "company": False, "own": False}
+    assert [i["href"] for i in _model_items("o")] == ["/admin/model"]
+    keys["own"]["u"] = "gpt-5"
+    assert _ai_status("o", "u")["ready"] is True                       # they can ask on their key
+    assert _model_items("o") != []                                     # the company still has none
+    keys["company"]["o"] = "gpt-5"
+    assert _model_items("o") == []
+
+
+def test_with_ours_on_nothing_changes(keys):
+    assert routed.model_available("o", "u")
+    provider = routed.RoutedLLMProvider(default=_Default())
+    routed.use_model(None, org_id="o", user_id="u")
+    assert isinstance(provider.active(), _Default)
+
+
+def test_reports_need_the_companys_model_not_a_persons(keys, handbook_off):
+    """A report runs as company work: someone's own key does not run it."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    keys["own"]["u"] = "gpt-5"
+    member = SimpleNamespace(org_id="o", user_id="u", role="member")
+    rate_limit.require_model(member)                                   # they can ask on their key
+    with pytest.raises(HTTPException) as refused:
+        rate_limit.require_company_model(member)
+    assert refused.value.status_code == 409 and "Reports are written with your company's" in refused.value.detail
+    keys["company"]["o"] = "gpt-5"
+    rate_limit.require_company_model(member)

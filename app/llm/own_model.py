@@ -159,8 +159,12 @@ def selectable(org_id: str, user_id: str | None, model: str | None) -> bool:
     from . import catalog
     from .org_model import get_org_model_summary
 
-    if catalog.is_selectable(model):
-        return True
+    if not model or model == catalog.AUTO:
+        return True  # "the default": ours, or with ours off, whoever's key pays
+    if catalog.get(model) is not None:
+        from .routed import handbook_model_on
+
+        return handbook_model_on()  # Handbook's own models only while it offers them
     if model.startswith(OWN_PREFIX):
         own = get_own_model_summary(org_id, user_id) if user_id else None
         return bool(own and own["id"] == model)

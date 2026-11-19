@@ -546,6 +546,16 @@ the aux stages run on the asker's own model, else the company's, else ours; comp
 company's, else ours, NEVER a person's (their key may vanish, and the corpus is shared).
 Slack has no picker: a DM answers on that order, a channel on the company's, else ours.
 A company model is picked as `company:<model>`, so one named like ours runs on its key.
+`HANDBOOK_MODEL_ENABLED=false` (a release where each company brings its model): nothing
+answers on our key, ever (`routed._ours` raises `NoModelConfigured`). Every question is
+refused BEFORE any work with a 409 that tells an admin to connect one and anyone else that
+their admins have a reminder or to use their own key (`rate_limit.require_model`, inside
+`limit_question`; Slack says the same in the thread). Report setup needs the COMPANY's model
+(`require_company_model`): reports never run on a person's key. `/me.ai` drives the card on
+every page that starts AI work (chat, starters, Agent, Chart, Reports, setup); the admin
+bell has a "Connect your company's AI model" item. Background work without a model indexes
+without context lines, leaves figures unchecked for a later sync, skips grouping and
+sentiment, and writes a report that says why; never retried per chunk.
 The picker never steers machinery; a removed key falls back to ours, never a failed check.
 The menu starts on the same order (`/chat/models` `preferred`); a remembered pick wins.
 

@@ -18,6 +18,8 @@ FENCE_END = "<<<END_UNTRUSTED_ACTIVITY_CONTENT>>>"
 
 # Fixed, so it is recognisable without matching model prose.
 NO_ACTIVITY_NOTE = "No activity was recorded on this service during this period."
+NO_MODEL_NOTE = ("This report could not be written: your company hasn't connected an AI model. "
+                 "An admin can add one in Admin › Model.")
 
 _PROVIDER_LABEL = {
     "github": "GitHub commit activity",

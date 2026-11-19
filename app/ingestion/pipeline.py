@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from ..llm.routed import on_company_key
+from ..llm.routed import model_available, on_company_key
 from ..config.settings import (
     ChunkingSettings,
     ContextualSettings,
@@ -472,13 +472,16 @@ def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) ->
                 mark_read(document_id, org_id=org_id, workspace_id=workspace_id,
                           external_id=doc.external_id, title=doc.title or "")
         except Exception as exc:  # noqa: BLE001 - see docstring; Chart mode can still read it
-            from ..core.exceptions import LLMRateLimitError
+            from ..core.exceptions import LLMRateLimitError, NoModelConfigured
             from ..doctables.text_adapter import UnreadableReply
 
             if isinstance(exc, UnreadableReply) and _unreadable_again(document_id, doc, org_id,
                                                                        workspace_id):
                 # A cut or garbled reply says nothing about the page: read it
                 # again on a later sync, a few times, never "no figures".
+                retry_later = True
+            elif isinstance(exc, NoModelConfigured) or isinstance(exc.__cause__, NoModelConfigured):
+                # No model connected yet: read once the company adds one.
                 retry_later = True
             elif isinstance(exc.__cause__, LLMRateLimitError):
                 # The quota, not this document: left unchecked so the next
@@ -601,6 +604,10 @@ def ingest_source(
     contextual = contextual or ContextualSettings.from_env()
     keywords = keywords or KeywordExtractionSettings.from_env()
     apply_contextual_inline = contextual.enabled and not contextual.defer
+    if apply_contextual_inline and llm is None and not model_available(org_id):
+        # No model connected for this company: documents are still indexed and
+        # searchable, without the AI-written context line (never retried per chunk).
+        apply_contextual_inline = False
     guard = guard or build_injection_guard()
     guard_threshold = GuardSettings.from_env().threshold
     if apply_contextual_inline and llm is None:
@@ -929,6 +936,8 @@ def enrich_source_contextual(
     contextual = contextual or ContextualSettings.from_env()
     if not contextual.enabled:
         return 0
+    if llm is None and not model_available(org_id):
+        return 0  # no model connected for this company: nothing to write it with
     keywords = keywords or KeywordExtractionSettings.from_env()
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()

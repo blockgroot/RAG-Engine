@@ -20,7 +20,7 @@ from ..schedulers import reports as sched_reports
 from ..schedulers import store as sched_store
 from ..schedulers.prompts import CREATE_SCHEDULER_TOOL, build_setup_system_prompt
 from ..schedulers.store import FREQUENCIES, SUPPORTED_PROVIDERS, SchedulerError
-from ..security.rate_limit import limit_question
+from ..security.rate_limit import limit_question, require_company_model
 from .deps import SessionClaims, get_session
 from .validation import bounded
 
@@ -314,6 +314,7 @@ class CreateSchedulerRequest(BaseModel):
 def create(
     body: CreateSchedulerRequest, session: SessionClaims = Depends(get_session)
 ):
+    require_company_model(session)  # its runs are company work: the company's key or ours
     return _payload(
         _create_scheduler_checked(
             session.org_id,
@@ -485,6 +486,7 @@ def setup_chat(
     conversation). Returns ``{"done": true, "scheduler": ...}`` or
     ``{"done": false, "reply": ...}``.
     """
+    require_company_model(session)
     limit_question(session)
 
     if not body.messages:

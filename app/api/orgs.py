@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
 
 from ..config.settings import UpdateSettings
@@ -10,6 +12,7 @@ from .deps import SessionClaims, get_session
 from .setup_status import content_setup_status
 
 router = APIRouter(tags=["me"])
+logger = logging.getLogger(__name__)
 
 
 
@@ -104,5 +107,25 @@ def me(session: SessionClaims = Depends(get_session)):
         # Notion and Drive get separate tabs so an answer is traceable to one source.
         "notion_ready": notion_ready,
         "drive_ready": drive_ready,
+        # Whether anything can answer this person: Handbook's model, the
+        # company's key, or their own. Every page that starts AI work asks the
+        # admin to connect a model, or tells anyone else, when it is False.
+        "ai": _ai_status(session.org_id, session.user_id),
         **status,
     }
+
+
+def _ai_status(org_id: str, user_id: str) -> dict:
+    from ..llm.org_model import get_org_model_summary
+    from ..llm.own_model import get_own_model_summary
+    from ..llm.routed import handbook_model_on
+
+    handbook = handbook_model_on()
+    company = own = False
+    try:
+        company = get_org_model_summary(org_id) is not None
+        own = get_own_model_summary(org_id, user_id) is not None
+    except Exception:  # noqa: BLE001 - a status line, never a failed page load
+        logger.warning("Could not read which models are connected", exc_info=True)
+    return {"ready": handbook or company or own, "handbook": handbook,
+            "company": company, "own": own}

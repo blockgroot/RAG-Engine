@@ -309,7 +309,9 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
   the work: a question's checks on the asker's key, else the company's, else ours; indexing,
   reports and other company work on the company's, else ours; Slack DMs and channels likewise.
   One daily budget for every model (Sonnet's own share dropped), shown as a usage ring beside
-  the model menu (`GET /chat/usage`).
+  the model menu (`GET /chat/usage`). With `HANDBOOK_MODEL_ENABLED=false` nothing answers on our
+  key: a company with no key is asked to connect one wherever AI work starts (chat, starters,
+  Reports, setup, the admin bell, Slack), and background work waits for it.
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or
   neither) and `GUARD_SAFEGUARD_MODEL`, so the guard never spends the answering models' quota.
 

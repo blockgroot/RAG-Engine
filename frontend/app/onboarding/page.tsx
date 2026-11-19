@@ -10,6 +10,7 @@ import { LinearTeamPicker } from "@/components/LinearTeamPicker";
 import { OwnAppSetup } from "@/components/OwnAppSetup";
 import { SlackChannelPicker } from "@/components/SlackChannelPicker";
 import { useMe } from "@/lib/useMe";
+import { NoModelCard, noModel } from "@/components/NoModelCard";
 import { api, ConnectionRecord, ConnectorApp, JobRecord, MemberRecord, Me } from "@/lib/api";
 import { isSetupComplete } from "@/lib/routing";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
@@ -351,6 +352,11 @@ function OnboardingInner() {
             Private to your company. Never used to train AI models or shared with anyone else.
           </p>
         </div>
+
+        {/* First, so the first sync is indexed with the company's model. It never
+            blocks connecting sources: documents index, and become askable once a
+            model is connected. */}
+        {noModel(effectiveMe) && <NoModelCard me={effectiveMe} compact />}
 
         {message && !syncInProgress && <div className="banner banner-ok">{message}</div>}
         {error && <div className="banner banner-warn">{error}</div>}

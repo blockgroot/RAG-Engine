@@ -91,7 +91,10 @@ def record_form_sentiment(
     """
     if llm is None:
         from ..llm.factory import build_aux_llm_provider
+        from ..llm.routed import model_available
 
+        if not model_available(org_id):
+            return 0  # no model connected for this company: classified once one is
         # Background work stays off a live question's budget, and one model
         # classifies every response in a chart.
         llm = build_aux_llm_provider()

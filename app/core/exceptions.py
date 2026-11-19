@@ -17,6 +17,12 @@ class LLMProviderError(ProviderError):
     """Raised when a chat/completion call fails."""
 
 
+class NoModelConfigured(LLMProviderError):
+    """No model may answer: Handbook's own is switched off and neither the
+    company nor the person has added a key. Said to people as "connect a
+    model", never retried, and never answered on another key."""
+
+
 class LLMRateLimitError(LLMProviderError):
     """The LLM endpoint refused for quota (429).
 

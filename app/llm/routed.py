@@ -27,7 +27,7 @@ from contextvars import ContextVar
 from ..config.settings import (
     ClaudeSettings, GeminiSettings, GroqSettings, OllamaSettings, OpenRouterSettings,
 )
-from ..core.exceptions import ConfigurationError
+from ..core.exceptions import ConfigurationError, NoModelConfigured
 from .base import ChatResult, LLMProvider
 from . import catalog
 from .catalog import (
@@ -168,6 +168,20 @@ def payer_choice(org_id: str | None, user_id: str | None = None) -> str | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not read whose key pays for org %s: %s", org_id, exc)
         return None
+
+
+def handbook_model_on() -> bool:
+    """Whether Handbook answers on its own key when nobody added one
+    (``HANDBOOK_MODEL_ENABLED``)."""
+    from ..config.settings import LLMSettings
+
+    return LLMSettings.from_env().handbook_model
+
+
+def model_available(org_id: str | None, user_id: str | None = None) -> bool:
+    """Can anything answer for this person (or, without one, the company's
+    work)? Handbook's model, or a key the company or they added."""
+    return handbook_model_on() or payer_choice(org_id, user_id) is not None
 
 
 def use_payer_keys(org_id: str | None, user_id: str | None = None) -> str | None:
@@ -387,17 +401,24 @@ class RoutedLLMProvider(LLMProvider):
         self._clients[cache_key] = client
         return client
 
+    def _ours(self) -> LLMProvider:
+        """Handbook's own model, unless it is switched off: then nothing
+        answers on our key, and the caller says "connect a model"."""
+        if not handbook_model_on():
+            raise NoModelConfigured("No AI model is connected for this company.")
+        return self._default
+
     def _payer_client(self) -> LLMProvider:
         """Machinery's provider: whoever's key pays (``payer_choice``), else
         ours. A key removed since is ours, never a failed check."""
         choice = _PAYER.get()
         if not choice:
-            return self._default
+            return self._ours()
         try:
             return self._client_for(choice)
         except ConfigurationError as exc:
             logger.warning("Machinery key unavailable (%s); using the default model", exc)
-            return self._default
+            return self._ours()
 
     def active(self) -> LLMProvider:
         """The provider answering right now, per this request's selection."""
@@ -405,7 +426,10 @@ class RoutedLLMProvider(LLMProvider):
             return self._payer_client()
         model_id = selected_model()
         if model_id is None:
-            return self._default
+            # "Default": ours, or with ours off, whoever's key pays.
+            return self._default if handbook_model_on() else self._payer_client()
+        if catalog.get(model_id) is not None and not handbook_model_on():
+            raise NoModelConfigured("Handbook's own models are not offered here.")
         return self._client_for(model_id)
 
     # -- LLMProvider ------------------------------------------------------

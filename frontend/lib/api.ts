@@ -210,6 +210,9 @@ export interface Me {
   linear_ready: boolean;
   notion_ready: boolean;
   drive_ready: boolean;
+  /** Whether anything can answer this person: Handbook's model, the company's
+   *  key or their own. False shows "connect a model" wherever AI work starts. */
+  ai?: { ready: boolean; handbook: boolean; company: boolean; own: boolean };
 }
 
 /** What a chain drafts next once its pending cards are decided; each new card
@@ -1311,7 +1314,14 @@ export const api = {
   chatUsage: (model: string) =>
     request<AiUsage>(`/chat/usage?model=${encodeURIComponent(model)}`),
   chatModels: () =>
-    request<{ default: string; default_label: string; models: ModelChoice[]; preferred?: string }>(
+    request<{
+      default: string;
+      default_label: string;
+      models: ModelChoice[];
+      preferred?: string;
+      /** False when Handbook offers no model of its own: no "Default" option. */
+      default_available?: boolean;
+    }>(
       "/chat/models",
     ),
 

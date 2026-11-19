@@ -42,6 +42,10 @@ class LLMSettings:
     #: Sent as ``reasoning_effort`` (``low``, ``none``...) so a reasoning model does
     #: not spend a short call's cap thinking. Dropped where refused.
     reasoning_effort: str | None = None
+    #: Whether Handbook answers on its OWN key when a company and a person have
+    #: added none. On for the pilot and self-hosted copies; off in a release where
+    #: each company brings its model (then nothing falls back to ours).
+    handbook_model: bool = True
 
     @property
     def aux_has_own_endpoint(self) -> bool:
@@ -67,6 +71,7 @@ class LLMSettings:
             aux_adapter=(os.getenv("LLM_AUX_ADAPTER") or "").strip().lower() or None,
             config_check=check if check in ("strict", "warn", "off") else "strict",
             reasoning_effort=(os.getenv("LLM_REASONING_EFFORT") or "").strip().lower() or None,
+            handbook_model=env_bool("HANDBOOK_MODEL_ENABLED", cls.handbook_model),
         )
 
 

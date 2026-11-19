@@ -98,6 +98,11 @@ def assign_topics(org_id: str, *, embedder=None, llm=None) -> None:
     """Group this org's ungrouped recent gaps, now. Never raises."""
     if time.monotonic() < _quiet_until.get(org_id, 0.0):
         return
+    if llm is None:
+        from ..llm.routed import model_available
+
+        if not model_available(org_id):
+            return  # no model connected: grouped once the company adds one
     try:
         with get_connection() as conn:
             rows = conn.execute(

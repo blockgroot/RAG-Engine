@@ -89,6 +89,28 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
     )
 
 
+def _model_items(org_id: str) -> list[dict]:
+    """Admins only, until the company can answer: Handbook offers no model of
+    its own and no company key is saved. Never fails the bell."""
+    try:
+        from ..llm.routed import model_available
+
+        if model_available(org_id):
+            return []
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    return [{
+        "kind": "model",
+        "severity": "high",
+        "provider": "",
+        "scope": "Company",
+        "title": "Connect your company's AI model",
+        "detail": "Nobody can ask questions until a model is connected.",
+        "action": "Connect model",
+        "href": "/admin/model",
+    }]
+
+
 def _update_items() -> list[dict]:
     """A newer version or what the last update changed, on a self-hosted copy.
     Admins only, and never fails the bell: an unreachable feed is no item.
@@ -238,6 +260,7 @@ def list_notifications(session: SessionClaims = Depends(get_session)):
     if session.role == "admin" or owned:
         assign_topics_soon(session.org_id)
     if session.role == "admin":
+        items += _model_items(session.org_id)
         items += _update_items()
         items += _items_in(session.org_id, None, "Company", "/admin/connections", "/admin/feedback")
     # A member cannot reconnect a space's sources (the space page disables
