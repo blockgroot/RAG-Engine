@@ -26,6 +26,9 @@ from .activity import fetch_activity
 from .prompts import NO_ACTIVITY_NOTE, build_scheduler_report_prompt
 from .store import Scheduler
 
+#: Output cap for one report: a ceiling sized to a long digest, never the endpoint's default.
+REPORT_MAX_TOKENS = 3000
+
 logger = logging.getLogger(__name__)
 
 # First run is a catch-up, not one cadence: a cadence-sized first window
@@ -122,7 +125,7 @@ def run_scheduler_once(
         )
         # Unattended: always the configured model, never a picked one.
         with default_model_only():
-            report = llm.generate(prompt).strip()
+            report = llm.generate(prompt, max_tokens=REPORT_MAX_TOKENS).strip()
 
     # Items and notes stored as data, so links are never invented or dropped
     # and notes reach the reader even if the model omits them.

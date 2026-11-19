@@ -60,13 +60,9 @@ def test_interactive_calls_count_toward_the_window():
     """Recording is what makes the reserve real. If only background calls were
     counted, live traffic would be invisible and the reserve would protect
     nothing."""
-    from app.llm.metering import log_llm_call
+    from app.llm.openai_provider import _pace
 
-    class _Provider:
-        model = "test-model"
-        last_usage = None
-
-    log_llm_call("generate", _Provider())
+    _pace()
     assert pacing.calls_in_window() == 1
 
 

@@ -376,7 +376,7 @@ def test_deferred_contextual_skips_llm_during_fast_sync():
     """Defer mode must not call the LLM while unlocking the product."""
 
     class _BoomLLM:
-        def generate(self, prompt: str) -> str:
+        def generate(self, prompt: str, **_kw) -> str:
             raise AssertionError("LLM must not run during deferred fast sync")
 
     result = ingest_source(
@@ -396,7 +396,7 @@ def test_enrich_source_contextual_rewrites_chunks_with_llm_prefix():
     from app.ingestion.pipeline import enrich_source_contextual
 
     class _PrefixLLM:
-        def generate(self, prompt: str) -> str:
+        def generate(self, prompt: str, **_kw) -> str:
             return "Section: leave policy."
 
     store = _FakeStore()
@@ -430,7 +430,7 @@ def test_enrich_source_contextual_rewrites_chunks_with_llm_prefix():
 
 
 class _BoomLLM:
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, **_kw) -> str:
         raise AssertionError("LLM must not run once max_chunks is exceeded")
 
 
