@@ -365,6 +365,16 @@ def run_upkeep() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a longer table, never a failed pass
         logger.exception("Upkeep: Slack event receipt purge failed")
 
+    # Agent cards: lapsed proposals say "expired"; a write whose process died
+    # says "unknown" (never retried) instead of "Sending…" for good.
+    try:
+        from ..actions import store as action_store
+
+        action_store.expire_stale()
+        action_store.settle_abandoned()
+    except Exception:  # noqa: BLE001
+        logger.exception("Upkeep: action expiry failed")
+
     # Expired tokens, old drafts, sync jobs, reports and questions (jobs/retention.py).
     rows_expired = 0
     try:

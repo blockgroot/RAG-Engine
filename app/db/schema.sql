@@ -1193,6 +1193,20 @@ ALTER TABLE actions ADD CONSTRAINT actions_surface_check
 -- Editable drafts: the model's draft as first proposed, kept on the first
 -- edit so the log shows both what the model wrote and what was approved.
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS original_payload JSONB;
+-- A deleted space must not turn its pending drafts company-wide: the FK sets
+-- workspace_id NULL, and a NULL draft is then checked against the company's
+-- switches only. Expired first, so no one can approve them.
+CREATE OR REPLACE FUNCTION expire_space_drafts() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE actions SET status = 'expired'
+     WHERE workspace_id = OLD.id AND status = 'proposed';
+    RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS workspaces_expire_drafts ON workspaces;
+CREATE TRIGGER workspaces_expire_drafts
+    BEFORE DELETE ON workspaces
+    FOR EACH ROW EXECUTE FUNCTION expire_space_drafts();
 
 -- Chains: a request whose next step needs an approved card's result. The
 -- model's conversation waits for the cards; pinned to org and user, and
