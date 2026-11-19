@@ -197,8 +197,9 @@ class AskIntent:
     #: live re-read; asked here because this call already runs. ``None`` = not
     #: said, and the gateway reads live (only False skips).
     needs_live: bool | None = None
-    #: ``"visual"`` (asked to see a chart), ``"count"`` (how many/much), or
-    #: None. Read by the model, never a word list.
+    #: ``"visual"`` (asked to see a chart), ``"count"`` (a number counted or added
+    #: up over many records), or None (incl. a single value a document states).
+    #: Read by the model from the whole question, never a word list.
     chart_ask: str | None = None
     #: Ask's question check only, when table answers are on: True when the
     #: question asks for a figure worked out over a table's rows (a total, a
@@ -432,10 +433,14 @@ def _route_prompt(question: str, *, github: bool, table: bool = False) -> str:
             "(false).\n"
             if github else ""
         )
-        + "chart: \"visual\" when they ask to SEE something as a chart, graph, "
-        "plot or other visual (an \"org chart\" is a document, not a visual); "
-        "\"count\" when they ask how many or how much of some activity; "
-        "otherwise null.\n"
+        + "chart: read the WHOLE question for what they want back. \"visual\" when "
+        "they ask to SEE something as a chart, graph, plot or other visual (an "
+        "\"org chart\" is a document, not a visual). \"count\" when the answer is a "
+        "number COUNTED or ADDED UP over many recorded items or events (issues "
+        "closed, deals won, messages sent, money spent across records). null when "
+        "the answer is a single value or fact a document states (a bonus amount, a "
+        "leave allowance, a price, a limit, a policy rule), however it is phrased, "
+        "and for anything else.\n"
         + (
             "table: true when it asks for figures worked out over many records "
             "of a list or spreadsheet: a total, a count, an average, a share or "

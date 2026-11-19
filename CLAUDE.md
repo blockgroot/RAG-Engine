@@ -73,7 +73,11 @@ GitHub; employees get answers from *their* data.
   private repo is used only when every member's linked login can open it. The
   thread (or the channel's latest talk) is read live and joins the answer like an
   attached file (GitHub: a fenced CONVERSATION beside its live read, never a
-  repository fact). Act in a channel drafts from every tool as the room. Access
+  repository fact). When the routed tool still refuses, the reply answers what
+  the thread covers (`pipeline.answer_from_conversation`, named as the
+  conversation, never a file) and then gives that tool's refusal word for word
+  under "About the rest of your question:" (`slack_events._thread_and_the_rest`).
+  Act in a channel drafts from every tool as the room. Access
   is per DOCUMENT (a sheet is one check, never per row). An answer that left out
   something relevant (past the gate) the asker, or in a channel not every member,
   can open says so under it in plain text, naming the tool only
@@ -83,7 +87,10 @@ GitHub; employees get answers from *their* data.
   members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it. A refusal while a private
   repo was hidden says so (a count, never a name) and links the Account page
-  (`access.hidden_note`); a bare "not found" read as a missing repo. A GitHub
+  (`access.hidden_note`); a bare "not found" read as a missing repo. A broken GitHub
+  connection (`needs_reauth`, a revoked installation) says "GitHub needs to be
+  reconnected… ask an admin / the space's owner", never "not found": a question
+  naming one of its repos is still routed to GitHub (`repo-named-reconnect`). A GitHub
   CHART counts only repos the viewer may read (`access.visible_repo_names`, on
   `activity_facts.subject`): a private repo's activity is as private as its code.
 - A conversation is personal (`conversations.user_id`). There is no answer cache:
@@ -199,10 +206,13 @@ emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
 list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 Charts are built in Chart mode (chat sends `mode: "chart"`; Slack: a question
-the question check reads as a chart ask, "visual" or "count"), and for an Ask
-question the check reads as "count" when a chart fits AND is narrowed by a filter or
+the question check reads as "visual", an ask to SEE a chart), and for a question
+(web or Slack) the check reads as "count" when a chart fits AND is narrowed by a filter or
 focus from the question (`count-chart`, its values also written under it; an
-unnarrowed chart answers a broader question); otherwise Ask answers as before. Slack passes the
+unnarrowed chart answers a broader question); otherwise Ask answers as before.
+The check reads the WHOLE question: "count" is a number counted or added up over
+many records, never a single value a document states ("how much is the referral
+bonus?" was drawn as a chart in Slack when "count" meant Chart mode there). Slack passes the
 asker's `Viewer` into routing. A DM charts what they can open: the probed scope
 first, then (on a chart refusal) up to `MAX_DM_CHART_SCOPES` of their other
 scopes, and the reply names the scope that answered; a chart ask in a

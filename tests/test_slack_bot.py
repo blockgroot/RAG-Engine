@@ -969,3 +969,49 @@ def test_a_github_answer_in_a_channel_reads_the_conversation_too(monkeypatch):
         channel_id="C9", conversation=("this Slack thread", "<@U1>: ship PR 12 friday?", False))
     assert got["conversation"] == "<@U1>: ship PR 12 friday?" and got["viewer"] is room
     assert "Friday" in reply.text
+
+
+def test_a_refusal_keeps_what_the_thread_answers_and_says_what_is_missing(monkeypatch):
+    """Routed to a tool that cannot answer, the reply was only its refusal, and
+    the thread already read was dropped."""
+    from app.agent.base import AgentResponse
+    from app.rag.pipeline import RagResult
+    from app.vectorstore.base import Viewer
+
+    _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: False)
+    monkeypatch.setattr(slack_events, "_connected_plan", lambda *a: None)
+    refusal = ("I found something in Google Drive that looks like it answers this, but not "
+               "everyone in this channel can open it, so I can't use it here.")
+    monkeypatch.setattr(slack_events, "_with_conversation", lambda *a: AgentResponse(
+        answer=refusal, grounded=False, source="none", citations=[], access_restricted=True))
+
+    class _Policy:
+        def answer_from_conversation(self, question, title, text, **kw):
+            return RagResult(answer="The thread agreed to fix ENG-2 first and ship Friday.",
+                             answered=True, source="policy", sources=[])
+
+    monkeypatch.setattr("app.api.chat._agent_getters", lambda: {
+        "policy": lambda: type("A", (), {"pipeline": _Policy()})()})
+    reply = slack_events._answer(
+        "Summarise this thread and what the rag-engine repo does", "org-1", None,
+        [channel_tag("C9")], None, viewer=Viewer(public_only=True, channels=("C9",)),
+        channel_id="C9", conversation=("this Slack thread", "<@U1>: fix ENG-2 first", False))
+    assert reply.text.startswith("The thread agreed to fix ENG-2 first")
+    assert f"About the rest of your question: {refusal}" in reply.text
+
+
+def test_a_thread_that_answers_nothing_leaves_the_refusal_alone(monkeypatch):
+    from app.agent.base import AgentResponse
+    from app.rag.pipeline import RagResult
+
+    refused = AgentResponse(answer="I couldn't find that.", grounded=False, source="none",
+                            citations=[])
+
+    class _Policy:
+        def answer_from_conversation(self, *a, **kw):
+            return RagResult(answer="I don't know.", answered=False, source="none", sources=[])
+
+    monkeypatch.setattr("app.api.chat._agent_getters", lambda: {
+        "policy": lambda: type("A", (), {"pipeline": _Policy()})()})
+    assert slack_events._thread_and_the_rest("q", "o", ("t", "x", False), refused) is refused

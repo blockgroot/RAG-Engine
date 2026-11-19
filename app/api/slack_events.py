@@ -226,15 +226,17 @@ class SlackAnswer:
 
 
 def _asks_for_chart(question: str) -> bool:
-    """Does this channel question ask to SEE a chart, or how many of something?
+    """Does this channel question ask to SEE a chart?
 
-    The same check Ask runs (``resolve.classify_route``). Never raises: a failed
+    The same check Ask runs (``resolve.classify_route``), read from the whole
+    question. A count is not a chart ask: it is routed like any question, and
+    charted only when narrowed (Ask's count-chart rule). Never raises: a failed
     check is an ordinary question.
     """
     try:
         from ..insights.resolve import classify_route
 
-        return classify_route(question, github=False).chart_ask in ("visual", "count")
+        return classify_route(question, github=False).chart_ask == "visual"
     except Exception:  # noqa: BLE001
         logger.warning("slack: chart question check failed", exc_info=True)
         return False
@@ -363,6 +365,9 @@ def _answer(
                     {**graph_input, "requested_agent": decision.agent_key})["response"]
             finally:
                 graph_plan.reset_plan(token)
+    if conversation is not None and chart_spec is None and not getattr(response, "grounded", True):
+        # The tool could not answer, but the thread may: never drop what was read.
+        response = _thread_and_the_rest(question, org_id, conversation, response)
     # Same gap log as the web chat. `getattr`: a missing field costs the gap log,
     # never the answer; absent counts as grounded.
     if not getattr(response, "grounded", True) and not getattr(
@@ -435,6 +440,36 @@ def _channel_conversation(token: str, channel: str, event: dict) -> tuple[str, s
     text, cut = read
     title = "this Slack thread" if in_thread else "the latest messages in this Slack channel"
     return title, text, cut
+
+
+#: Joins a thread answer to the tool's own refusal, so what was NOT found (and
+#: why) is said plainly under what was.
+REST_OF_QUESTION = "About the rest of your question: "
+
+
+def _thread_and_the_rest(question, org_id, conversation, refused):
+    """The part of the question the channel talk answers, then the routed tool's
+    own refusal for the rest, word for word (not found, not open to everyone, or
+    needs reconnecting). ``refused`` unchanged when the talk answers nothing
+    either. Never raises."""
+    import dataclasses
+
+    from ..agent.rag_pipeline_agent import RagPipelineAgent
+    from .chat import AGENT_POLICY, _agent_getters
+
+    try:
+        title, text, _cut = conversation
+        thread = _agent_getters()[AGENT_POLICY]().pipeline.answer_from_conversation(
+            question, title, text, org_id=org_id)
+    except Exception:  # noqa: BLE001 - the refusal still stands
+        logger.warning("slack: thread answer failed", exc_info=True)
+        return refused
+    if not thread.answered:
+        return refused
+    talk = RagPipelineAgent._to_response(thread)
+    return dataclasses.replace(
+        refused, answer=f"{talk.answer}\n\n{REST_OF_QUESTION}{refused.answer}",
+        cited=talk.cited)
 
 
 def _is_room_of(viewer: Viewer | None, channel_id: str | None) -> bool:

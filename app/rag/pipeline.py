@@ -110,6 +110,7 @@ from .prompts import (
     build_audit_prompt,
     build_decompose_prompt,
     ATTACHMENT_PROMPT_PROFILE,
+    CONVERSATION_PROMPT_PROFILE,
     connected_prompt_profile,
     build_attachment_paging_prompt,
     build_grounded_prompt,
@@ -1464,6 +1465,22 @@ class RagPipeline:
             result,
             source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE,
         )
+
+    def answer_from_conversation(
+        self, question: str, title: str, text: str, *, org_id: str | None = None
+    ) -> RagResult:
+        """Answer from the Slack conversation a question was asked in (read live),
+        named as that, never as an attached file. Same strict generation; it
+        refuses when the conversation does not answer."""
+        if not (text or "").strip():
+            return RagResult(answer=self._settings.fallback_response, answered=False,
+                             source=SOURCE_NONE, sources=[], top_score=None)
+        result = self._generate(
+            question, [], None, retrieval_reused=False, org_id=org_id,
+            contexts=[f"Slack conversation: {title}\n\n{text}"],
+            profile=CONVERSATION_PROMPT_PROFILE,
+        )
+        return replace(result, source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE)
 
     def _page_attachments(
         self,

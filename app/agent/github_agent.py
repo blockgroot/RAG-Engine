@@ -28,7 +28,13 @@ from ..core.answer_sources import (
     SOURCE_GITHUB,
     SOURCE_NONE,
 )
-from ..core.exceptions import ConfigurationError, LLMProviderError, ProviderError, SourceError
+from ..core.exceptions import (
+    ConfigurationError,
+    LLMProviderError,
+    OAuthReauthRequiredError,
+    ProviderError,
+    SourceError,
+)
 from ..llm.routed import default_model_only
 from ..core.streaming import chunk_answer
 from ..githublive.base import (
@@ -54,6 +60,23 @@ ReaderBuilder = Callable[..., GitHubReader]
 
 # Parses the "MODE: A|B|C\n\n<answer>" tag, same shape as ``RagPipeline``'s.
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
+
+
+def reconnect_message(workspace_id: str | None) -> str:
+    """What to do when GitHub's connection is broken (a revoked or changed
+    installation), never "not found": the repo may be right there."""
+    who = "the owner of this space" if workspace_id else "an admin"
+    return (
+        "GitHub needs to be reconnected before I can read it. Ask "
+        f"{who} to reconnect GitHub under Sources, then ask again."
+    )
+
+
+def _reconnect_response(workspace_id: str | None) -> AgentResponse:
+    # `access_restricted`: not a documentation gap, and no retry on another tool
+    # would answer a question about a repository.
+    return AgentResponse(answer=reconnect_message(workspace_id), grounded=False,
+                         source=SOURCE_NONE, citations=[], access_restricted=True)
 
 
 def cited_links(citations: list[Citation]) -> list[dict]:
@@ -137,6 +160,9 @@ class GitHubAgent(Agent):
         # No GitHub connection costs zero LLM calls.
         try:
             reader = self._build_reader(org_id, workspace_id)
+        except OAuthReauthRequiredError:
+            # Broken, not missing: "couldn't find that" sent people looking for a repo.
+            return _reconnect_response(workspace_id)
         except (ConfigurationError, ProviderError):
             return self._fallback_response()
 
@@ -145,6 +171,8 @@ class GitHubAgent(Agent):
         reader = restrict(reader, org_id, viewer)
         try:
             repos = reader.list_repos()
+        except OAuthReauthRequiredError:
+            return _reconnect_response(workspace_id)
         except ProviderError:
             return self._fallback_response(reader)
         withheld = restricted_message(reader)

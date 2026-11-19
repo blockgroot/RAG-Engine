@@ -44,9 +44,11 @@ def _encryption_key(monkeypatch):
     monkeypatch.setattr(routing, "_try_question_route", lambda *a, **k: None)
 
 
-def _stub(monkeypatch, *, connected: set[str], scores: dict | None = None, repos=None):
-    """Replace the three things that touch the world."""
+def _stub(monkeypatch, *, connected: set[str], scores: dict | None = None, repos=None,
+          reconnect: set[str] = frozenset()):
+    """Replace the things that touch the world."""
     monkeypatch.setattr(routing, "_connected_providers", lambda *a, **k: connected)
+    monkeypatch.setattr(routing, "_needs_reconnect", lambda org, ws, p: p in reconnect)
     monkeypatch.setattr(routing, "_probe_scores", lambda *a, **k: scores or {})
     monkeypatch.setattr(
         routing,
@@ -1290,3 +1292,47 @@ def test_slack_charts_a_how_many_question_too(monkeypatch):
                             INSIGHTS_KEY, "chart")))
     routing.choose_agent("how many issues closed per week?", ORG, chart_from_words=True)
     assert "chart" in seen
+
+
+
+def test_a_repo_named_on_a_broken_github_connection_still_goes_to_github(monkeypatch):
+    """Left out of `connected`, it went to Notion and was refused as "not found";
+    GitHub's agent says it needs reconnecting instead."""
+    _stub(monkeypatch, connected={"notion"}, scores={"notion": 0.62},
+          repos=["acme/rag-engine"], reconnect={"github"})
+    decision = routing.choose_agent("What does the rag-engine repo do?", "org-1")
+    assert decision.agent_key == "github" and decision.reason == "repo-named-reconnect"
+    # A question naming no repo is routed as before.
+    assert routing.choose_agent("What is the leave policy?", "org-1").agent_key == "notion"
+
+
+def test_a_slack_count_is_charted_only_when_narrowed_like_the_web(monkeypatch):
+    """"How much is the referral bonus?" was read as a count and drawn as a chart
+    in Slack: a count follows the web's rule, a chart ask alone is Chart mode."""
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"notion"}, scores={"notion": 0.7})
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="count"))
+    charted = []
+    monkeypatch.setattr(routing, "_chart_mode_route", lambda *a, **k: charted.append(1) or
+                        routing.RoutingDecision("insights", "chart", chart_spec=type(
+                            "S", (), {"filters": (), "focus": None})()))
+    decision = routing.choose_agent("How much is the referral bonus?", "org-1",
+                                    viewer=None, chart_from_words=True)
+    assert decision.agent_key == "notion"  # answered in words, not drawn
+
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="visual"))
+    assert routing.choose_agent("Show the bonus amounts as a bar chart", "org-1",
+                                viewer=None, chart_from_words=True).agent_key == "insights"
+
+
+def test_the_question_check_defines_count_by_meaning_not_wording():
+    from app.insights.resolve import _route_prompt
+
+    prompt = _route_prompt("How much is the referral bonus?", github=False)
+    assert "read the WHOLE question" in prompt
+    assert "single value or fact a document states" in prompt
+    assert "how many or how much" not in prompt

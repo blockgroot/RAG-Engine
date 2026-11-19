@@ -131,6 +131,19 @@ ATTACHMENT_PROMPT_PROFILE = PromptProfile(
 )
 
 
+CONVERSATION_PROMPT_PROFILE = PromptProfile(
+    persona=(
+        "an assistant answering from the Slack conversation the question was "
+        "asked in, and from nothing else"
+    ),
+    scope_adjective="conversation-specific",
+    scope_noun="Slack conversation",
+    # The reply says separately why the rest was not answered (`slack_events`).
+    escalation_hint="that isn't in this conversation",
+    source_label=SOURCE_ATTACHMENT,
+)
+
+
 def build_attachment_paging_prompt(*, question: str, preview_block: str) -> str:
     """Ask the model WHICH parts of a long attachment to read. Not an answer.
 
@@ -166,8 +179,9 @@ _FOCUS_RULE = (
 _PARTIAL_RULE = (
     "If CONTEXT answers only part of the QUESTION, answer that part (mode A "
     "or B), then end with one line that starts with \"Not covered:\" and names "
-    "the part CONTEXT does not cover. Use mode C only when CONTEXT supports no "
-    "part of the QUESTION."
+    "the part CONTEXT does not cover, in the reader's words (\"Not covered: what "
+    "the rag-engine repo does.\"): never the words CONTEXT, passages or excerpts. "
+    "Use mode C only when CONTEXT supports no part of the QUESTION."
 )
 _CONFLICT_RULE = (
     "If CONTEXT blocks disagree about the same thing, use the one that is "

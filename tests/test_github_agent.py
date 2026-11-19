@@ -497,3 +497,19 @@ def test_the_agent_passes_the_conversation_to_both_calls():
         "what did we decide about this repo?", "org-1", conversation="<@U1>: ship friday")
     assert response.grounded
     assert "ship friday" in llm.answer_prompts[0]
+
+
+
+def test_a_broken_connection_says_reconnect_not_not_found():
+    """A revoked installation read as "couldn't find that… check the installation"."""
+    from app.core.exceptions import OAuthReauthRequiredError
+
+    llm = _FakeLLM(tool_calls=[])
+    gone = OAuthReauthRequiredError("GitHub installation access failed; reconnect GitHub.")
+    response = _agent(llm, reader_error=gone).answer("what does payments-svc do?", "org-1")
+    assert response.answer.startswith("GitHub needs to be reconnected")
+    assert "Ask an admin to reconnect GitHub under Sources" in response.answer
+    assert response.access_restricted and not response.grounded
+    assert llm.answer_prompts == []  # no model call
+    in_space = _agent(llm, reader_error=gone).answer("q", "org-1", workspace_id="ws-1")
+    assert "Ask the owner of this space" in in_space.answer

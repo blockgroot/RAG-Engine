@@ -169,6 +169,24 @@ def _connected_providers(org_id: str, workspace_id: str | None) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _needs_reconnect(org_id: str, workspace_id: str | None, provider: str) -> bool:
+    """Whether this scope has ``provider`` connected but flagged for reconnect.
+    Never raises: routing must never fail a question."""
+    from ..db.connection import get_connection
+
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM oauth_connections WHERE org_id = %s "
+                "AND workspace_id IS NOT DISTINCT FROM %s AND provider = %s "
+                "AND needs_reauth = true",
+                (org_id, workspace_id, provider),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return False
+    return row is not None
+
+
 def _repo_named_in(question: str, repos) -> str | None:
     """The authorized repo this question names, if any.
 
@@ -631,8 +649,10 @@ def _try_question_route(
     if chart_out is not None:
         chart_out.append(getattr(intent, "chart_ask", None))
     ask = getattr(intent, "chart_ask", None)
-    if chart_from_words and ask in ("visual", "count"):
-        # Slack has no toggle: a chart or count ask IS Chart mode there.
+    if chart_from_words and ask == "visual":
+        # Slack has no toggle: an ask to SEE a chart is Chart mode there. A count
+        # follows the web's rule below (charted only when narrowed): "count" as
+        # Chart mode drew a chart for "how much is the referral bonus?".
         return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
     if ask == "visual":
         # A chart ask in web chat is pointed at Chart mode, not answered in words.
@@ -1287,6 +1307,12 @@ def _choose_agent(
         if named:
             logger.info("Agent routing: %r names repo %s", question[:60], named)
             return RoutingDecision("github", "repo-named")
+    elif _needs_reconnect(org_id, workspace_id, "github") and _named_repo(
+            question, org_id, workspace_id):
+        # A broken connection is left out of `connected`, so a question naming one
+        # of its repos went to Notion or Drive and was refused as "not found". The
+        # GitHub agent says it needs reconnecting instead.
+        return RoutingDecision("github", "repo-named-reconnect")
 
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
