@@ -74,9 +74,11 @@ GitHub; employees get answers from *their* data.
   thread (or the channel's latest talk) is read live and joins the answer like an
   attached file (GitHub: a fenced CONVERSATION beside its live read, never a
   repository fact). Act in a channel drafts from every tool as the room. Access
-  is per DOCUMENT (a sheet is one check, never per row). A channel answer or chart
-  that left out something relevant for the room says so under it, naming the tool
-  only (`access_notice.partly_withheld_note`, the chart's `room_cut`). A Slack DM (question or Agent) is open to the whole company only with a
+  is per DOCUMENT (a sheet is one check, never per row). An answer that left out
+  something relevant (past the gate) the asker, or in a channel not every member,
+  can open says so under it in plain text, naming the tool only
+  (`access_notice.partly_withheld_note`, `pipeline._note_withheld`: one embedding and
+  one query per answered question); a channel chart says it (`room_cut`). A Slack DM (question or Agent) is open to the whole company only with a
   company-wide Slack connection; with only spaces' connections, only those spaces'
   members (`slack_events._in_a_slack_space`). Linear: a team's membership is its issues' ACL. GitHub: a private repo
   answers only an asker whose linked login can open it. A refusal while a private

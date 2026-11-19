@@ -1295,21 +1295,30 @@ def test_a_channel_room_is_told_when_a_member_cannot_open_the_answer():
     assert "direct message" in notice
 
 
-def test_a_channel_answer_says_when_something_was_left_out_for_the_room():
-    """A partial answer must not read as whole: one line, the connector only."""
+def test_a_partial_answer_says_what_was_left_out_for_whoever_asked():
+    """A person (web, DM) and a channel's room alike: one plain line, the
+    connector only, never the document; nothing when nothing was withheld."""
     from app.rag.pipeline import RagResult
     from app.vectorstore.base import RestrictedMatch
 
     class _Probe(_Store):
         def restricted_match(self, *a, **k):
-            return RestrictedMatch(score=0.5, source_provider="linear")
+            return RestrictedMatch(score=0.5, source_provider="google")
 
     pipeline = _pipeline_with(_Probe(None))
     pipeline._embedder = type("E", (), {"embed": lambda self, t: [[0.1]]})()
-    room = Viewer(public_only=True, channels=("C9",))
-    done = RagResult(answer="Ship Friday.", answered=True, source="slack", sources=[])
-    noted = pipeline._note_room_withheld(done, "q", "o", None, room)
-    assert noted.answer.startswith("Ship Friday.") and "Linear" in noted.answer
-    assert "isn't open to everyone in this channel" in noted.answer
+    done = RagResult(answer="Q3 target is 40.", answered=True, source="google", sources=[])
+
+    person = pipeline._note_withheld(done, "q", "o", None, Viewer(email="ada@acme.com"))
+    assert person.answer == ("Q3 target is 40.\n\nSomething related in Google Drive hasn't "
+                             "been shared with you, so I left it out. Ask an admin to give "
+                             "you access in Google Drive to include it.")
+    in_space = pipeline._note_withheld(done, "q", "o", "ws-1", Viewer(email="ada@acme.com"))
+    assert "Ask the owner of this space" in in_space.answer
+    room = pipeline._note_withheld(done, "q", "o", None,
+                                   Viewer(public_only=True, channels=("C9",)))
+    assert "isn't open to everyone in this channel" in room.answer
+    assert "_" not in person.answer  # plain: the web renders no italics
+
     pipeline._store = _Store(None)
-    assert pipeline._note_room_withheld(done, "q", "o", None, room) is done
+    assert pipeline._note_withheld(done, "q", "o", None, Viewer(email="ada@acme.com")) is done

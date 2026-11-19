@@ -568,8 +568,8 @@ class RagPipeline:
             attachments=attachments,
             viewer=viewer,
         )
-        if result.answered and viewer is not None and viewer.public_only and viewer.channels:
-            result = self._note_room_withheld(result, resolved, org_id, workspace_id, viewer)
+        if result.answered and viewer is not None and not viewer.is_unrestricted:
+            result = self._note_withheld(result, resolved, org_id, workspace_id, viewer)
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -1976,9 +1976,10 @@ class RagPipeline:
             live_withheld=bool(live_withheld),
         )
 
-    def _note_room_withheld(self, result, question, org_id, workspace_id, viewer):
-        """A channel answer from what every member can open, with a line under it
-        when something relevant (past the gate) was left out for the room. Never
+    def _note_withheld(self, result, question, org_id, workspace_id, viewer):
+        """An answer from what this viewer can open (a person, or a channel's room),
+        with a line under it when something relevant (past the gate) was left out
+        for them. One embedding and one bounded query per answered question. Never
         raises: the note may only ever add."""
         try:
             vec = self._embedder.embed([question])[0]
@@ -1992,7 +1993,11 @@ class RagPipeline:
             return result
         from .access_notice import partly_withheld_note
 
-        return replace(result, answer=f"{result.answer}\n\n_{partly_withheld_note(match.source_provider)}_")
+        # Plain text: the web chat renders only **bold**, and Slack reads it as is.
+        note = partly_withheld_note(
+            match.source_provider, in_channel=bool(viewer.public_only and viewer.channels),
+            workspace_id=workspace_id)
+        return replace(result, answer=f"{result.answer}\n\n{note}")
 
     def _withheld_notice(
         self,

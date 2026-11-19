@@ -59,14 +59,23 @@ def _connected_scope_name(provider: str, org_id: str, workspace_id: str | None) 
     return name or None
 
 
-def partly_withheld_note(provider: str | None) -> str:
-    """Under a channel answer when something relevant was left out because not
-    every member can open it: a partial answer never reads as whole. Names the
-    connector only, never the document."""
+def partly_withheld_note(
+    provider: str | None, *, in_channel: bool = False, workspace_id: str | None = None
+) -> str:
+    """Under an answer when something relevant (past the gate) was left out
+    because the asker, or in a channel not every member, can open it: a partial
+    answer never reads as whole. Names the connector only, never the document."""
     where = _PROVIDER_LABELS.get(provider or "", "a connected tool")
+    if in_channel:
+        return (
+            f"Something related in {where} isn't open to everyone in this channel, so I "
+            "left it out. Ask me in a direct message to include what you can open."
+        )
+    # A space has an owner who can share; company-wide content is an admin's.
+    who = "the owner of this space" if workspace_id else "an admin"
     return (
-        f"Something related in {where} isn't open to everyone in this channel, so I "
-        "left it out. Ask me in a direct message to include what you can open."
+        f"Something related in {where} hasn't been shared with you, so I left it out. "
+        f"Ask {who} to give you access in {where} to include it."
     )
 
 
