@@ -307,7 +307,8 @@ sentiment, reports) and Slack channel replies run on the company's key, else Han
 a person's. Search and ranking always stay on Handbook. The chat's model menu starts on the same
 order (their own model, else the company's, else Handbook's); a model the person picked themselves
 is remembered and wins. Each option says whose it is under its name: "Default" (Handbook's),
-"Company" or "User". Background work
+"Company key" or "Your key"; the menu's link reads "Add your own key", or "Change your key" once
+there is one. Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
 
