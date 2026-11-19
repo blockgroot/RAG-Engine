@@ -351,7 +351,11 @@ class ReuseSettings:
     """Retrieval-reuse settings for conversation follow-ups."""
 
     enabled: bool = True
-    threshold: float = 0.72
+    #: Tuned on Jina v3, which scores a DIFFERENT follow-up high ("part-timers" 0.81
+    #: and "sick days" 0.78 against a full-time annual-leave passage) while an exact
+    #: repeat scores 0.91+. Erring high is safe: a missed reuse costs one retrieval,
+    #: a wrong one a wrong refusal. (0.72 was BGE-M3's.)
+    threshold: float = 0.85
 
     @classmethod
     def from_env(cls) -> "ReuseSettings":

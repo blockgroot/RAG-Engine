@@ -113,6 +113,9 @@ def test_linear_feed_keeps_every_simple_field_in_one_call():
     calls = []
 
     class Adapter:
+        def _team_filter(self):  # no teams picked: every team the token reads
+            return {}
+
         def _query(self, text, variables):
             calls.append(text)
             return {"issues": {

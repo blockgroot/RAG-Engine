@@ -154,7 +154,7 @@ flowchart TD
     ROUTE --> RAG["per-source RagPipeline"]
     RAG --> RW["rewrite follow-up if needed"]
     RW --> EMB["embed once"]
-    EMB --> REUSE{"reuse previous chunks ≥ 0.72?"}
+    EMB --> REUSE{"reuse previous chunks ≥ 0.85?"}
     REUSE -- yes --> GATE
     REUSE -- no --> RETRIEVE["vector + keyword, RRF, rerank\nviewer filter in the SQL"]
     RETRIEVE --> GATE{"best cosine ≥ 0.35?"}
@@ -167,7 +167,7 @@ flowchart TD
 ### 6.2 Steps that always hold
 
 1. **Rewrite** only when the chat has history. A first question can also be rewritten from a personal-memory *context* fact (office, team). Preferences never rewrite the search.
-2. **Reuse** at cosine **0.72** skips retrieval and still passes the gate.
+2. **Reuse** at cosine **0.85** skips retrieval and still passes the gate.
 3. **Retrieval** is hybrid: vector plus keyword, fused with RRF (k=60), reranked from a pool of **40** (`RETRIEVAL_CANDIDATE_POOL`) down to `RAG_TOP_K` (5). The gate reads the **best cosine**, never an RRF score or a reranker logit. The viewer predicate is in the same `WHERE` as `org_id`, before ranking.
 4. **Gate at 0.35.** Below it, at most one recovery expansion, then one labelled web search for a real external entity, then the fixed refusal. A document the asker cannot see can replace "I don't know" with an access notice that names the connector, never the title.
 5. **Generation** uses three modes only: explicitly supported, related but not explicit, or no supporting evidence. Outside text is fenced. Links in the answer must have appeared in that text. A `[n]` marker is kept only when a retrieved chunk sat at that block; the link is `documents.source_uri` from sync. One cited document is named under the answer; two or more keep a superscript. The citation list is stored on the turn and shown again when that chat is opened.
@@ -305,7 +305,7 @@ The **fixed fallback string** lives in ONE place (`RagSettings.fallback_response
 
 - **Verbatim window:** the most recent `MEMORY_RECENT_TURNS` (=3) turns are kept in full.
 - **Incremental summarization (Phase 8):** after *every* turn, the single turn that just left the window is folded into the running summary via one LLM call over `existing summary + that one turn`. Cost is small and ~constant regardless of conversation length. (Replaced Phase 5's bulk-at-threshold approach; `MEMORY_SUMMARIZE_AFTER` was removed.) Best-effort: on LLM error the fold is skipped and retried next turn.
-- **Retrieval reuse (Phase 8):** the deterministic non-LLM cosine check described in §6.2 step 3. Threshold **0.72**, deliberately conservative because on this corpus cosine cannot cleanly separate "same fact" (≈0.63) from "adjacent topic" (≈0.67); a wrong reuse produces a wrong "I don't know" while a missed reuse only costs one retrieval. Chunk **text** (not embeddings) is stored and re-embedded on demand.
+- **Retrieval reuse (Phase 8):** the deterministic non-LLM cosine check described in §6.2 step 3. Threshold **0.85**, deliberately conservative: under Jina v3 an exact repeat scores 0.91+ while a different follow-up scores up to 0.81 ("part-timers" against a full-time passage); a wrong reuse produces a wrong "I don't know" while a missed reuse only costs one retrieval. Chunk **text** (not embeddings) is stored and re-embedded on demand.
 
 ---
 
@@ -320,7 +320,7 @@ All read in `app/config/` and imported through `app/config/settings.py`. The ann
 | **Embeddings / rerank** | `EMBEDDING_BACKEND` (local), `RERANKER_BACKEND`, `RETRIEVAL_CANDIDATE_POOL` (40), `RETRIEVAL_RRF_K` (60), `RAG_TOP_K` (5) |
 | **Database** | `DATABASE_URL`, `EMBEDDING_DIM` (1024) |
 | **Chunking** | `CHUNK_SIZE` (256), `CHUNK_OVERLAP` (40), `CHUNK_MAX_CHARS` (4000), `CHUNK_TOKEN_BACKEND` (heuristic) |
-| **RAG** | `RAG_SIMILARITY_THRESHOLD` (0.35), `RETRIEVAL_REUSE_THRESHOLD` (0.72) |
+| **RAG** | `RAG_SIMILARITY_THRESHOLD` (0.35), `RETRIEVAL_REUSE_THRESHOLD` (0.85) |
 | **Second Brain** | `GRAPH_RETRIEVAL_ENABLED` (false), `LIVE_TOOLS_ENABLED` (false), `LIVE_TOOLS_PROVIDERS` (linear), `PERSONAL_MEMORY_ENABLED` (false) |
 | **Safety** | `GUARD_MODE` (off), `GUARD_API_KEY` + `GUARD_BASE_URL` (both or neither), `GUARD_SAFEGUARD_MODEL`, `RAG_AUDIT_ENABLED` (false), `MASK_IDENTIFIERS` (true) |
 | **Limits** | `RATE_LIMIT_*`, `REDIS_URL`, `CHAT_MAX_CONCURRENT` (20), `CHAT_MAX_CONCURRENT_PER_PERSON` (2), `AI_TOKEN_LIMITS`, `AI_PRICES`, `AI_PERSON_DOLLARS_PER_DAY` (0.50), `AI_COMPANY_DOLLARS_PER_DAY` (3.30), `AI_MODEL_DOLLARS_PER_DAY` (Sonnet 0.30:2.00); 0 turns a limit off |
@@ -388,7 +388,7 @@ pytest -m "not network and not live_llm"
 - The reranker downloads ~2.2 GB on first use, then caches.
 - Notion tokens are per-org and must **not** fall back; a page must be **explicitly shared** with the integration or `list_documents()` returns zero pages.
 - The Phase 3 grounding test fixture disables memory + web search for determinism.
-- Reuse fires rarely on a small corpus by design (0.72 threshold).
+- Reuse fires rarely on a small corpus by design (0.85 threshold).
 
 **Resolved since first written:** retrieval recall on typo'd queries (query normalization,
 `app/rag/query_normalize.py`, plus hybrid search) and over-inference on ambiguous text (the
