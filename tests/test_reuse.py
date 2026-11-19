@@ -138,28 +138,33 @@ def test_reuse_never_crosses_a_tenant_boundary():
 
 @requires_db  # uses the real BGE-M3 embedder fixture (loaded once per session)
 def test_reuse_threshold_separates_same_fact_from_new_topic_on_real_embeddings(embedder):
-    """Validate the 0.60 starting threshold against real BGE-M3 similarities.
+    """Validate the reuse threshold against the configured embedder's real
+    similarities (Jina v3 today; 0.72 was tuned on BGE-M3 and reused the wrong
+    passages under Jina).
 
-    A repeat/clarification about the already-retrieved fact must embed CLOSER to the
-    stored chunk than the reuse threshold, while a genuinely new-topic follow-up
-    embeds FURTHER — otherwise 0.60 would over- or under-trigger reuse in practice.
-    This is the empirical check behind the documented threshold (see CLAUDE.md §4).
+    A repeat about the already-retrieved fact must embed CLOSER to the stored chunk
+    than the threshold, and DIFFERENT follow-ups (another kind of leave, another
+    group of employees) FURTHER, or reuse answers them from the wrong passage.
+    This is the empirical check behind the documented threshold (CLAUDE.md §4).
     """
     threshold = ReuseSettings().threshold
     chunk = "Full-time employees are entitled to 25 days of paid annual leave per year."
     same_fact = "How many paid annual leave days do full-time employees get?"
-    new_topic = "How many paid sick days do employees get?"
+    different = (
+        "How many paid sick days do employees get?",
+        "How many leave days do part-time employees get?",  # 0.81 under Jina v3
+    )
 
-    cvec, same_vec, new_vec = embedder.embed([chunk, same_fact, new_topic])
+    cvec, same_vec, *new_vecs = embedder.embed([chunk, same_fact, *different])
     same_sim = RagPipeline._cosine(same_vec, cvec)
-    new_sim = RagPipeline._cosine(new_vec, cvec)
-
     assert same_sim >= threshold, (
         f"same-fact follow-up should reuse (sim {same_sim:.3f} >= {threshold})"
     )
-    assert new_sim < threshold, (
-        f"new-topic follow-up should retrieve fresh (sim {new_sim:.3f} < {threshold})"
-    )
+    for question, vec in zip(different, new_vecs):
+        sim = RagPipeline._cosine(vec, cvec)
+        assert sim < threshold, (
+            f"{question!r} should retrieve fresh (sim {sim:.3f} < {threshold})"
+        )
 
 
 class _LongInputRejectingEmbedder(KeywordEmbedder):

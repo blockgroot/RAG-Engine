@@ -122,10 +122,13 @@ def test_incremental_summary_compresses_old_turns_but_early_context_still_resolv
     # Phase 15: folds are deferred — drain before asserting the summary is set.
     wait_for_pending_summary_folds(timeout=60.0)
 
-    # The verbatim window stayed capped at 2, and a running summary was built up
-    # continuously (turn 1's content now lives only in that summary).
+    # A running summary was built up continuously, and it reaches past the window:
+    # turns are KEPT as the transcript (a reopened chat shows them all), the summary
+    # marks how far it folded (`folded_through`), and the prompt gets only the last 2.
     assert memory.get_summary(cid) is not None, "expected a continuously-built running summary"
-    assert len(memory.get_turns(cid)) == 2, "expected verbatim turns capped at the window"
+    assert len(memory.get_turns(cid)) == 4, "the transcript is kept whole"
+    assert memory.get_folded_through(cid) >= 1, "turns before the window were folded"
+    assert len(memory.get_context(cid, 2).recent_turns) == 2, "verbatim context capped at the window"
 
     # Turn 5 depends on turn 1 (now only in the summary): "those annual leave days".
     r5 = pipe.answer(

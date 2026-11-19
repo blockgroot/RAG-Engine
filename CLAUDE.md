@@ -103,7 +103,8 @@ GitHub; employees get answers from *their* data.
 
 - Two layers, both stay: the **0.35 cosine gate** refuses without calling the model,
   and the strict prompt refuses when the passages do not answer. Do not raise the
-  gate. Do not feed RRF scores or reranker logits into it. Reuse stays at 0.72.
+  gate. Do not feed RRF scores or reranker logits into it. Reuse stays at 0.85 (tuned on Jina v3; 0.72 reused
+  the full-time passage for "what about part-timers?").
 - **Citations** (`app/rag/cite.py`). The model may write `[n]` after a sentence.
   A number is kept only when a document sat at that block. A live read of an
   indexed document is that document, and a GitHub live read uses the address

@@ -1543,7 +1543,7 @@ def _stream_answer_body(
         viewer=viewer_for(session),
         chart_mode=chart_mode,
         uploads=_upload_scope(conversation_id, session),
-        user_id=session.user_id,
+        user_id=session.user_id if session is not None else None,
     )
     plan = _graph_plan_result(plan_future)
     # The live-data verdict rides the request note, reset when the stream ends.
