@@ -118,6 +118,17 @@ def _is_own_model(org_id: str, model: str | None) -> bool:
     return bool(own and own["model"] == model)
 
 
+@router.get("/usage")
+def ai_usage(model: str | None = None, session: SessionClaims = Depends(get_session)):
+    """How much of today's AI use is left, for the ring beside the model menu.
+    Reads the budgets; spends nothing."""
+    from ..security.rate_limit import usage
+
+    if not catalog.is_selectable(model) and not _is_own_model(session.org_id, model):
+        model = None  # an id nobody here can pick: show the default's
+    return usage(session.user_id, session.org_id, model)
+
+
 @router.get("/models")
 def list_models(session: SessionClaims = Depends(get_session)):
     """The models a member may pick, plus the default's identity.

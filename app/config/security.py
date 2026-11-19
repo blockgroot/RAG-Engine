@@ -22,9 +22,6 @@ DEFAULT_AI_TOKEN_LIMITS = (
 DEFAULT_AI_PRICES = (
     "claude-sonnet-5-5=2:10,claude-haiku-5-5=0.10:0.50"
 )
-# A model's own share of the day's dollars, person:company. Inside the totals:
-# a person who spends their Sonnet share can still ask on Haiku.
-DEFAULT_AI_MODEL_DOLLARS = "claude-sonnet-5-5=0.30:2.00"
 
 #: Hosts an answer may link to without the link being in its sources (the
 #: connected tools' domains). Query strings are still cut (`security/links.py`).
@@ -206,8 +203,6 @@ class RateLimitSettings:
     # Sized for a $100/month Claude credit and 30 people, with $10 kept as margin.
     ai_company_dollars_per_day: float = 3.30
     ai_person_dollars_per_day: float = 0.50
-    # (model id, person $ a day, company $ a day): that model's share of the totals.
-    ai_model_dollars_per_day: tuple[tuple[str, float, float], ...] = ()
     # (model id, $ per million input, $ per million output)
     ai_prices: tuple[tuple[str, float, float], ...] = ()
     # (model id, person in, person out, company in, company out) tokens a minute.
@@ -272,10 +267,6 @@ class RateLimitSettings:
             ai_person_dollars_per_day=dollars(
                 "AI_PERSON_DOLLARS_PER_DAY", cls.ai_person_dollars_per_day
             ),
-            ai_model_dollars_per_day=_parse_ai_prices(
-                os.getenv("AI_MODEL_DOLLARS_PER_DAY") or DEFAULT_AI_MODEL_DOLLARS,
-                name="AI_MODEL_DOLLARS_PER_DAY",
-            ),
             ai_prices=_parse_ai_prices(os.getenv("AI_PRICES") or DEFAULT_AI_PRICES),
             ai_token_limits=_parse_ai_token_limits(
                 os.getenv("AI_TOKEN_LIMITS") or DEFAULT_AI_TOKEN_LIMITS
@@ -283,9 +274,9 @@ class RateLimitSettings:
         )
 
 
-def _parse_ai_prices(raw: str, name: str = "AI_PRICES") -> tuple[tuple[str, float, float], ...]:
-    """``model=a:b,…`` (prices per million tokens, or a model's dollars a day).
-    A malformed entry is skipped and logged, never guessed."""
+def _parse_ai_prices(raw: str) -> tuple[tuple[str, float, float], ...]:
+    """``model=in:out,…`` in dollars per million tokens. A malformed entry is
+    skipped and logged, never guessed: an unpriced model is simply not counted."""
     prices = []
     for entry in raw.split(","):
         entry = entry.strip()
@@ -296,7 +287,7 @@ def _parse_ai_prices(raw: str, name: str = "AI_PRICES") -> tuple[tuple[str, floa
             inp, out = cost.split(":", 1)
             prices.append((model.strip().lower(), float(inp), float(out)))
         except ValueError:
-            logging.getLogger(__name__).warning("%s: ignoring %r (want model=a:b)", name, entry)
+            logging.getLogger(__name__).warning("AI_PRICES: ignoring %r (want model=in:out)", entry)
     return tuple(prices)
 
 

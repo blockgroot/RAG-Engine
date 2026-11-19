@@ -82,7 +82,7 @@ rights, §11) or on an open pull request (§12).
 | Follow-ups and memory of the conversation | Rewrites "what about dental?" into a full question; summarises long chats | Live | `tests/test_conversation*.py` | — |
 | Whole-space summaries | "Summarise everything discussed here" reads the whole channel or space | Live | `tests/test_whole_scope_read.py` | Capped at 120 passages / 60k characters; oldest dropped first |
 | Web search | For external topics only, clearly labelled; sends only words the user typed | Live | `tests/test_websearch.py`, `tests/test_outbound_query.py` | DuckDuckGo; one search per question |
-| Model choice / company's own model | Members pick Claude Sonnet 5.5 or Claude Haiku 5.5 (11 Nov); admins can add the company's own model from one of 14 provider presets; background work runs on the aux model | Live | `tests/test_model_selection.py`, `tests/test_llm_adapters.py` | — |
+| Model choice / company's own model | Claude Haiku 5.5 only, the default (19 Nov; Sonnet was offered 11–18 Nov); admins can add the company's own model from one of 14 provider presets; background work runs on the aux model | Live | `tests/test_model_selection.py`, `tests/test_llm_adapters.py` | — |
 | Chat history | Recent chats in the rail, `?c=` links, rename, pin, delete; each chat private to its owner | Live (rename and pin: Merged 12 Nov) | `tests/test_conversation_history.py`; UI checked by hand (30 Sep) | No automated browser test |
 | File uploads | Files join retrieval for the chat they're in | Live | `tests/test_attachment*.py` | No images; no reusable file library |
 | Charts | The AI fills in a request; code checks it and SQL adds up stored rows. The AI never produces a number | Live | `tests/test_insights_*.py`, `tests/test_doctables*.py`, `npm run check:charts` | GitHub charts are space-level; figures are charted only when a sentence states them (§4) |
@@ -299,9 +299,7 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
 - **AI limits in two layers** (11–13 Nov): tokens a minute per answering model, input and output
   apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet
   whichever model answers (`AI_PERSON_DOLLARS_PER_DAY` 0.50, `AI_COMPANY_DOLLARS_PER_DAY` 3.30,
-  priced by `AI_PRICES`). Inside it, Sonnet has its own share (`AI_MODEL_DOLLARS_PER_DAY`,
-  $0.30 a person, $2.00 a company, 18 Nov): spending it stops Sonnet only, and Haiku still
-  answers. Background work on the aux model is not charged
+  priced by `AI_PRICES`). Background work on the aux model is not charged
   (`tests/test_ai_spend.py`).
 - **Injection guard on its own account** (12 Nov): `GUARD_API_KEY` and `GUARD_BASE_URL` (both or
   neither) and `GUARD_SAFEGUARD_MODEL`, so the guard never spends the answering models' quota.
@@ -397,8 +395,8 @@ scored by the safety model; the answer fact-checker is off (§11).
 - **Notifications** (12 Nov 2026): one item can be dismissed, or all cleared; a dismissal is kept
   in that browser until the problem changes. A flagged-document item opens the flagged page
   itself. The panel shows each tool's icon.
-- **Model picker** (11–12 Nov 2026): Claude Sonnet 5.5 and Claude Haiku 5.5, plus the company's
-  own model when an admin added one. Gemini runs background work and is never offered.
+- **Model picker** (11–12 Nov 2026): Claude Haiku 5.5 (Sonnet 5.5 until 19 Nov, when the pilot
+  moved to one model), plus the company's own model when an admin added one. Gemini runs background work and is never offered.
 - **Release notice** (13 Nov 2026): admins see a short notice beside the chat modes when a new
   version is out. Chart starters are fetched when the chat opens and kept for the visit, with
   placeholder tiles while they load (12 Nov).

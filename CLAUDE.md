@@ -551,15 +551,17 @@ we write has a TTL.
 AI usage is limited in two layers (`security/ai_spend.py`), as Anthropic, LiteLLM and
 Kong do: TOKENS a minute per model (`AI_TOKEN_LIMITS`: input and output apart, person and
 company, each model its own buckets keyed by its listed id) and DOLLARS a day, one wallet
-whichever model answers (the models differ 20x in price), with a model's own share inside
-it (`AI_MODEL_DOLLARS_PER_DAY`: spending Sonnet's stops Sonnet only, never Haiku). Every paid call is charged where
+whichever model answers (the models differ 20x in price). Every paid call is charged where
 it is made (`OpenAICompatProvider`, never per caller) to whoever `charge_to` names, set
 where the model is chosen (inside the answering stream); a question is checked against
 the model the asker picked (`limit_question(session, model)`, None = the default) and
 refused once any of its buckets is empty, so one request may overdraw. A model missing
 from `AI_PRICES` is not charged; one missing from `AI_TOKEN_LIMITS` has no token limit.
-The picker offers Claude Sonnet 5.5 and Haiku 5.5 only (`catalog.CLAUDE_MODELS`); every
-model a person can pick must be priced (`test_production_offers_claude_sonnet_and_haiku_only`).
+The ring beside the model menu (`GET /chat/usage`, `rate_limit.usage`, `RateLimiter.levels`,
+read only) shows the tightest DAILY budget as a share left, never dollars.
+The picker offers Claude Haiku 5.5 only (`catalog.CLAUDE_MODELS`), shown as the default even
+with nothing else to pick; every model a person can pick must be priced
+(`test_production_offers_claude_haiku_only`).
 Background work runs on the Gemini AUX model, never pickable and never charged.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two

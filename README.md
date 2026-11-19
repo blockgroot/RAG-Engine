@@ -106,7 +106,7 @@ See [CLAUDE.md](CLAUDE.md) for the constraints behind each decision.
 - **Rate limits:** Redis-compatible store (Valkey) when `REDIS_URL` is set, else per process
 - **Embeddings:** BGE-M3 locally, or a remote OpenAI-compatible embedding API
 - **LLM:** any provider on the fixed `LLM_ADAPTER` list (Claude, OpenAI, Gemini, …). The picker
-  offers Claude Sonnet 5.5 and Claude Haiku 5.5; background work runs on a separate aux model
+  offers Claude Haiku 5.5 (the default); background work runs on a separate aux model
   (`LLM_AUX_*`). A company can also add its own model.
 - **Storage & email:** Cloudinary for uploads (optional); email through SMTP, Resend or SendGrid
 - **Frontend:** Next.js (App Router), plain CSS

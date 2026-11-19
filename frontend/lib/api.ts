@@ -646,6 +646,11 @@ export interface ModelPreset {
   models_url: string;
 }
 
+/** How much of today's AI use is left (the ring beside the model menu). */
+export type AiUsage =
+  | { limited: false }
+  | { limited: true; left: number; whose: "person" | "company"; retry_after: number };
+
 export interface ModelChoice {
   id: string;
   label: string;
@@ -1258,6 +1263,8 @@ export const api = {
     return request<{ questions: string[] }>(`/chat/chart-starters${q ? `?${q}` : ""}`);
   },
 
+  chatUsage: (model: string) =>
+    request<AiUsage>(`/chat/usage?model=${encodeURIComponent(model)}`),
   chatModels: () =>
     request<{ default: string; default_label: string; models: ModelChoice[] }>(
       "/chat/models",

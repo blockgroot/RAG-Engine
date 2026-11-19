@@ -179,7 +179,7 @@ A space can be created for any team that needs its own private area, such as HR.
 ### 5.4 Settings
 
 - [ ] **Actions** (Agent mode): the company switch is **off** (D10).
-- [ ] **Model**: shows "Using Handbook's built-in models" (no company model connected). The chat's model picker offers Claude Sonnet 5.5 and Claude Haiku 5.5.
+- [ ] **Model**: shows "Using Handbook's built-in models" (no company model connected). The chat's model picker shows Claude Haiku 5.5 as the default, and no Sonnet.
 - [ ] Scheduled reports: any member can set one up when they need it.
 
 **Turning on Agent mode later**

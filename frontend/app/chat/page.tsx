@@ -2,6 +2,7 @@
 
 import { PageLoader } from "@/components/PageLoader";
 import { ModelPicker } from "@/components/ModelPicker";
+import { UsageRing } from "@/components/UsageRing";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
@@ -123,6 +124,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [defaultLabel, setDefaultLabel] = useState("Auto");
   // "auto" sends no model (the deployment default). A stored id no longer in
   // the catalog is dropped on load, not sent and rejected.
+  // The menu shows once the list is read, even when the default is the only
+  // model: it says which model answers.
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [model, setModel] = useState<string>("auto");
   // Chart mode: the answer is a chart or a refusal. Off, charts are never guessed.
   const [chartMode, setChartMode] = useState(false);
@@ -218,6 +222,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       .then(({ models: available, default_label }) => {
         if (cancelled) return;
         setModels(available);
+        setModelsLoaded(true);
         if (default_label) setDefaultLabel(default_label);
         const saved = localStorage.getItem("chat.model");
         // Only restore a choice the backend still offers.
@@ -1254,8 +1259,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             disabled={busy}
             autoFocus
           />
-          {models.length > 0 && (
+          {modelsLoaded && (
             <>
+              <UsageRing model={model} refresh={busy} />
               <ModelPicker
                 value={model}
                 disabled={busy}

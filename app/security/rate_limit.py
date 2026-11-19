@@ -56,13 +56,6 @@ _SPEND_NEED = 0.0001
 
 
 def refusal_message(retry_after: float, refused_by: str = "") -> str:
-    if refused_by.startswith(("ai:user:mday:", "ai:org:mday:")):
-        from ..llm.catalog import ALL_MODELS
-
-        model = refused_by.split(":")[3]
-        label = next((m.label for m in ALL_MODELS if m.id == model), model)
-        return (f"You've reached today's limit for {label}. You can switch to another model, "
-                f"or try again in {_wait(retry_after)}.")
     if refused_by.startswith("ai:"):
         return f"You've reached the AI usage limit for now. Please try again in {_wait(retry_after)}."
     seconds = max(1, math.ceil(retry_after))
@@ -100,9 +93,8 @@ def question_decision(
     # Routes that answer in this context (charts, scheduler setup, Slack) are
     # charged to this person; streams set it again where they answer.
     charge_to(user_id, org_id)
-    model = model or LLMSettings.from_env().model
-    ins, outs = token_buckets(user_id, org_id, model, settings)
-    usage = ins + outs + spend_buckets(user_id, org_id, settings, model)
+    ins, outs = token_buckets(user_id, org_id, model or LLMSettings.from_env().model, settings)
+    usage = ins + outs + spend_buckets(user_id, org_id, settings)
     spend = _take(usage, settings, need=_SPEND_NEED, spend=0.0)
     if not spend.allowed:
         return spend
@@ -117,6 +109,42 @@ def question_decision(
         ],
         settings,
     )
+
+
+def usage(
+    user_id: str,
+    org_id: str,
+    model: str | None = None,
+    settings: RateLimitSettings | None = None,
+) -> dict:
+    """How much of today's AI use is left, for the ring beside the model menu:
+    the tightest DAILY budget (the person's, the company's; minute limits are
+    bursts, not a day's use). A share, never dollars. ``{"limited": False}``
+    when the budgets are off or the store cannot be read. Read only.
+    """
+    settings = settings or RateLimitSettings.from_env()
+    # One daily budget whichever model answers; ``model`` is kept for the
+    # route's shape (the final release's keys decide limits by model).
+    buckets = spend_buckets(user_id, org_id, settings)
+    if not settings.enabled or not buckets:
+        return {"limited": False}
+    try:
+        levels = build_rate_limiter(settings).levels(buckets)
+    except RateLimiterError as exc:
+        logger.error("Could not read AI usage: %s", exc.cause or exc)
+        return {"limited": False}
+    left, level, bucket = min(
+        (max(0.0, lvl) / b.burst, lvl, b) for lvl, b in zip(levels, buckets)
+    )
+    return {
+        "limited": True,
+        "left": round(left, 3),
+        # Whose day ran lowest: the company's shows when colleagues used it up.
+        "whose": "company" if bucket.key.startswith("ai:org:") else "person",
+        # Seconds until a question is let through again; 0 while it is.
+        "retry_after": round((_SPEND_NEED - level) * 60 / bucket.per_minute)
+        if level < _SPEND_NEED else 0,
+    }
 
 
 def limit_question(session, model: str | None = None) -> None:
@@ -246,8 +274,6 @@ _LIMIT_NAMES = {
     "ai:org:tout": "ai-tokens:company-output-minute",
     "ai:user:day": "ai-spend:person-day",
     "ai:org:day": "ai-spend:company-day",
-    "ai:user:mday": "ai-spend:person-model-day",
-    "ai:org:mday": "ai-spend:company-model-day",
 }
 
 

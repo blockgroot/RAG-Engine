@@ -56,6 +56,15 @@ class RateLimiter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def levels(self, buckets: Sequence[Bucket]) -> list[float]:
+        """What each bucket holds now, refilled, without taking anything (a
+        new bucket is full; an overdrawn one is below zero). For showing usage.
+
+        Raises ``core.exceptions.RateLimiterError`` when the store fails.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def acquire(self, key: str, limit: int, lease_seconds: float) -> str | None:
         """Hold one of ``limit`` places under ``key``.
 

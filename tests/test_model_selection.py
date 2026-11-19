@@ -80,7 +80,7 @@ def test_auto_is_identical_to_no_selection(routed):
 def test_selection_routes_away_from_the_default(routed):
     """A picked model must not quietly answer from the default anyway."""
     provider, default = routed
-    picked = catalog.CLAUDE_MODELS[1].id
+    picked = catalog.CLAUDE_MODELS[0].id
     use_model(picked)
     assert provider.active().model == picked
     assert default.calls == []
@@ -89,7 +89,7 @@ def test_selection_routes_away_from_the_default(routed):
 def test_client_is_built_once_per_model(routed):
     """Cached per model — a new client per request would leak connections."""
     provider, _ = routed
-    use_model(catalog.CLAUDE_MODELS[1].id)
+    use_model(catalog.CLAUDE_MODELS[0].id)
     first = provider.active()
     second = provider.active()
     assert first is second
@@ -99,7 +99,7 @@ def test_falls_back_to_default_when_its_backend_is_unconfigured():
     """A stray model on a deployment without a key must not break chat."""
     default = _Recording("default-model")
     provider = RoutedLLMProvider(default, claude=ClaudeSettings(api_key=None))
-    use_model(catalog.CLAUDE_MODELS[1].id)
+    use_model(catalog.CLAUDE_MODELS[0].id)
     assert provider.generate("hi") == "answered by default-model"
 
 
@@ -127,7 +127,7 @@ def test_answering_model_resets_between_requests(routed):
 # --------------------------------------------------------------------------
 # Validation at the trust boundary
 # --------------------------------------------------------------------------
-@pytest.mark.parametrize("value", [None, "", "auto", catalog.CLAUDE_MODELS[1].id])
+@pytest.mark.parametrize("value", [None, "", "auto", catalog.CLAUDE_MODELS[0].id])
 def test_selectable_accepts_auto_blank_and_catalogued_ids(value):
     assert catalog.is_selectable(value)
 
@@ -200,7 +200,7 @@ def test_scheduler_reports_always_use_the_configured_model(monkeypatch):
     )
 
     # Deliberately hostile: a selection is live when the run starts.
-    use_model(catalog.CLAUDE_MODELS[1].id)
+    use_model(catalog.CLAUDE_MODELS[0].id)
     runner.run_scheduler_once(scheduler, llm=_Probe())
 
     assert seen == [None], "a report must generate on the configured model"
@@ -319,7 +319,7 @@ def test_only_user_facing_stages_follow_the_selected_model():
     pipeline._llm = probe
     pipeline._llm_aux = probe
 
-    picked = catalog.CLAUDE_MODELS[1].id
+    picked = catalog.CLAUDE_MODELS[0].id
     use_model(picked)
 
     every_stage = sorted(AUX_LLM_STAGES | USER_FACING_LLM_STAGES | {"web-decision"})
@@ -408,13 +408,13 @@ def _routed(openrouter_key=None, groq_key=None, ollama_key=None, gemini_key=None
     )
 
 
-def test_production_offers_claude_sonnet_and_haiku_only():
-    """11 Nov 2026: two answering models, both paid from the Claude credit and
-    both priced for the AI spend limits. Gemini runs background work only."""
+def test_production_offers_claude_haiku_only():
+    """19 Nov 2026: one answering model, paid from the Claude credit and priced
+    for the AI spend limits. Gemini runs background work only."""
     from app.config.settings import RateLimitSettings
     from app.security.ai_spend import price_of
 
-    assert [m.id for m in catalog.ALL_MODELS] == ["claude-sonnet-5-5", "claude-haiku-5-5"]
+    assert [m.id for m in catalog.ALL_MODELS] == ["claude-haiku-5-5"]
     assert all(m.charts for m in catalog.ALL_MODELS)
     settings = RateLimitSettings.from_env()
     assert all(price_of(m.id, settings) for m in catalog.ALL_MODELS)
@@ -437,7 +437,7 @@ def test_a_claude_pick_goes_to_claude_with_thinking_off():
 def test_a_backend_without_a_key_falls_back_rather_than_erroring():
     """Offering a model whose backend is unconfigured must not break chat."""
     provider = _routed(groq_key="g", claude_key=None)
-    use_model(catalog.CLAUDE_MODELS[1].id)
+    use_model(catalog.CLAUDE_MODELS[0].id)
     assert provider.generate("hi") == "answered by default-model"
 
 
@@ -485,12 +485,13 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
     assert payload["default"] == catalog.AUTO == "auto"
     assert payload["default_label"] == "gemini-3.1-flash-lite"
 
-    # A catalogued default shows its label and is not offered a second time.
-    monkeypatch.setenv("LLM_MODEL", "claude-sonnet-5-5")
+    # A catalogued default shows its label and is not offered a second time:
+    # Haiku, the only model, is the default and the list beside it is empty.
+    monkeypatch.setenv("LLM_MODEL", "claude-haiku-5-5")
     monkeypatch.setenv("CLAUDE_API_KEY", "c")
     payload = list_models(session=SimpleNamespace(org_id="org-1"))
-    assert payload["default_label"] == "Claude Sonnet 5.5"
-    assert [m["id"] for m in payload["models"]] == ["claude-haiku-5-5"]
+    assert payload["default_label"] == "Claude Haiku 5.5"
+    assert payload["models"] == []
     # Not asserted here: the LLM_MODEL-unset case. ``build_llm_provider()``
     # raises ConfigurationError before this route can render a label, so the
     # ``or "Auto"`` fallback is unreachable belt-and-braces, not a branch.

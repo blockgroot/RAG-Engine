@@ -62,16 +62,11 @@ GROQ_MODELS: tuple[ModelChoice, ...] = ()
 GEMINI_MODELS: tuple[ModelChoice, ...] = ()
 OLLAMA_MODELS: tuple[ModelChoice, ...] = ()
 
-#: Claude, on the deployment's Claude key (``ClaudeSettings``). Both build
-#: charts and are priced in ``AI_PRICES`` (``security/ai_spend.py``).
+#: Claude, on the deployment's Claude key (``ClaudeSettings``): builds charts
+#: and is priced in ``AI_PRICES`` (``security/ai_spend.py``). Haiku only since
+#: 19 Nov 2026: the pilot answers on one model. Sonnet's thinking-off form and
+#: price stay, so re-adding it here is one entry.
 CLAUDE_MODELS: tuple[ModelChoice, ...] = (
-    ModelChoice(
-        id="claude-sonnet-5-5",
-        label="Claude Sonnet 5.5",
-        note="Strongest answers.",
-        backend=BACKEND_CLAUDE,
-        charts=True,
-    ),
     ModelChoice(
         id="claude-haiku-5-5",
         label="Claude Haiku 5.5",

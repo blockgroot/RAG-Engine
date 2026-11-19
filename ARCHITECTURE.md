@@ -197,7 +197,7 @@ Two tables can be compared ("target vs achieved", `ChartSpec.versus`), and a wor
 
 - **Rate limits** (`app/security/rate_limit.py`, buckets in `app/ratelimit/`): every router a person calls takes a request bucket; a question takes the person's and the company's bucket together; sending an email takes its own. A limiter fault lets the request through.
 - **Answers at once** (`take_place`): `CHAT_MAX_CONCURRENT` (20) across servers, `CHAT_MAX_CONCURRENT_PER_PERSON` (2). A person over their own cap is refused at once; the shared cap waits up to `CHAT_QUEUE_WAIT_SECONDS`.
-- **AI limits** (`app/security/ai_spend.py`): tokens a minute per answering model, input and output apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet (`AI_PERSON_DOLLARS_PER_DAY`, `AI_COMPANY_DOLLARS_PER_DAY`, priced by `AI_PRICES`), with a model's own share inside it (`AI_MODEL_DOLLARS_PER_DAY`: Sonnet $0.30 a person, $2.00 a company; spent, Sonnet stops and Haiku still answers). Every paid call is charged where it is made; a model with no price is not charged.
+- **AI limits** (`app/security/ai_spend.py`): tokens a minute per answering model, input and output apart, for the person and the company (`AI_TOKEN_LIMITS`), and dollars a day in one wallet (`AI_PERSON_DOLLARS_PER_DAY`, `AI_COMPANY_DOLLARS_PER_DAY`, priced by `AI_PRICES`). Every paid call is charged where it is made; a model with no price is not charged.
 
 ### 6.5 Agent mode (writes into tools)
 
@@ -323,7 +323,7 @@ All read in `app/config/` and imported through `app/config/settings.py`. The ann
 | **RAG** | `RAG_SIMILARITY_THRESHOLD` (0.35), `RETRIEVAL_REUSE_THRESHOLD` (0.85) |
 | **Second Brain** | `GRAPH_RETRIEVAL_ENABLED` (false), `LIVE_TOOLS_ENABLED` (false), `LIVE_TOOLS_PROVIDERS` (linear), `PERSONAL_MEMORY_ENABLED` (false) |
 | **Safety** | `GUARD_MODE` (off), `GUARD_API_KEY` + `GUARD_BASE_URL` (both or neither), `GUARD_SAFEGUARD_MODEL`, `RAG_AUDIT_ENABLED` (false), `MASK_IDENTIFIERS` (true) |
-| **Limits** | `RATE_LIMIT_*`, `REDIS_URL`, `CHAT_MAX_CONCURRENT` (20), `CHAT_MAX_CONCURRENT_PER_PERSON` (2), `AI_TOKEN_LIMITS`, `AI_PRICES`, `AI_PERSON_DOLLARS_PER_DAY` (0.50), `AI_COMPANY_DOLLARS_PER_DAY` (3.30), `AI_MODEL_DOLLARS_PER_DAY` (Sonnet 0.30:2.00); 0 turns a limit off |
+| **Limits** | `RATE_LIMIT_*`, `REDIS_URL`, `CHAT_MAX_CONCURRENT` (20), `CHAT_MAX_CONCURRENT_PER_PERSON` (2), `AI_TOKEN_LIMITS`, `AI_PRICES`, `AI_PERSON_DOLLARS_PER_DAY` (0.50), `AI_COMPANY_DOLLARS_PER_DAY` (3.30); 0 turns a limit off |
 | **Tables** | `DOCTABLES_TEXT_ENABLED` (true), `DOCTABLES_ANSWERS_ENABLED` (false), `DOCTABLES_BACKFILL_BATCH` (20) |
 | **Agent mode** | `ACTION_TTL_SECONDS` (900), `ACTION_RATE_PER_HOUR` (100), `ACTIONS_BLOCK_WIDER` (false), `MCP_*`, `HANDBOOK_MCP_URL` |
 | **Email** | `EMAIL_SENDER` (`console` in code; `smtp`, `resend` or `sendgrid` for real mail) |

@@ -293,8 +293,8 @@ others. In Chart mode a file's tables and figures can be charted (see §10).
 
 **Status: Live**
 
-Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Claude Haiku 5.5
-(fast and low cost). Both build charts. Admins can also add the company's own model from a list
+Answers come from Claude Haiku 5.5 (fast and low cost; it builds charts), shown as the default
+in the chat's model menu. Sonnet is not offered for the pilot (19 Nov). Admins can also add the company's own model from a list
 of provider presets; its key is tested before it is saved and stored encrypted. Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
@@ -499,9 +499,11 @@ app that issued it.
   person; the rest wait for a place, then are told Handbook is busy.
 - **AI limits, two layers.** Tokens a minute for each answering model, for the person and for the
   company, input and output counted apart; and dollars a day for the person and the company,
-  whichever model answers. Defaults: $0.50 a person and $3.30 a company a day. Sonnet may use
-  only part of that ($0.30 a person, $2.00 a company): when its share is spent, Sonnet stops
-  and the person can keep asking on Haiku.
+  whichever model answers (for the pilot, Haiku only). Defaults: $0.50 a person and $3.30 a
+  company a day.
+- **Usage ring.** A ring beside the chat's model menu shows how much of today's AI use is left (a
+  share, never dollars), names the company when its budget is the one running low, and says when
+  you can ask again once it is used up (`GET /chat/usage`).
 
 Limits are counted in Redis when it is set up, so every server shares them. Redis holds rate
 limits only: there is no answer cache, and every question is answered fresh.
