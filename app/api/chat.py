@@ -143,7 +143,8 @@ def list_models(session: SessionClaims = Depends(get_session)):
                 # Prefixed: a company model named like one of ours still runs on
                 # the company's key (`routed.COMPANY_PREFIX`).
                 "id": COMPANY_PREFIX + own["model"],
-                "label": f"Your company's model — {own['model']}",
+                # The menu says whose key under the name ("Company"), from `backend`.
+                "label": own["model"],
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
                 # Not ours to judge: offered in Chart mode with a note.
@@ -158,7 +159,7 @@ def list_models(session: SessionClaims = Depends(get_session)):
         models.append(
             {
                 "id": mine["id"],
-                "label": f"Your own model — {mine['model']}",
+                "label": mine["model"],  # shown with "User" under it
                 "note": f"Your {mine.get('preset_label') or 'own'} key. No Handbook limits.",
                 "backend": "own",
                 "charts": None,

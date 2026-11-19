@@ -305,8 +305,9 @@ every question, on the web and in Slack DMs) run on their own key, else the comp
 Handbook's. Company work (indexing, figures read from text, grouping unanswered questions,
 sentiment, reports) and Slack channel replies run on the company's key, else Handbook's, never
 a person's. Search and ranking always stay on Handbook. The chat's model menu starts on the same
-order (their own model, else the company's, else Handbook's), marked "Default"; a model the person
-picked themselves is remembered and wins. Background work
+order (their own model, else the company's, else Handbook's); a model the person picked themselves
+is remembered and wins. Each option says whose it is under its name: "Default" (Handbook's),
+"Company" or "User". Background work
 (context lines at sync, figures in paragraphs, grouping questions) runs on a separate model that
 nobody picks.
 

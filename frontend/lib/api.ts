@@ -677,6 +677,8 @@ export interface ModelChoice {
   /** Builds charts. `null` for the company's own model: not ours to judge,
    *  so Chart mode offers it with a note. */
   charts?: boolean | null;
+  /** Whose key: "custom" is the company's model, "own" the person's. */
+  backend?: string;
 }
 
 // ---------------------------------------------------------------------------
