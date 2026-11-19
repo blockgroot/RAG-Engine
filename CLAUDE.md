@@ -572,6 +572,7 @@ web chat only. A confirmed email change keeps the old address as an alias.
 `GOOGLE_GROUPS_ENABLED` stays off unless the connecting account is a Workspace
 admin; a missing optional scope must not fail the Drive connect. Indexed reports
 describe current content, never a diff. `sync_requested_at` is a flag, not a queue.
+A table that only grows (tokens, drafts, sync jobs, reports, questions) gets a rule in `jobs/retention.py`, run by `run_upkeep`: bounded per pass, never the company's data, and it keeps each connection's latest job and each schedule's latest report.
 Removing an attachment is idempotent (`deleted: false` for one already gone,
 never a 404) and answers on the row delete; the object-store purge runs after
 the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty

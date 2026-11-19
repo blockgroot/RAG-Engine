@@ -32,16 +32,19 @@ def _record(monkeypatch) -> list[str]:
     import app.api.slack_events as slack_events
 
     monkeypatch.setattr(slack_events, "purge_event_receipts", lambda: calls.append("slack_receipts") or 0)
+    import app.jobs.retention as retention
+
+    monkeypatch.setattr(retention, "purge_expired", lambda: calls.append("retention") or {})
     return calls
 
 
 def test_upkeep_does_everything_but_the_backfills(monkeypatch):
     calls = _record(monkeypatch)
     out = worker.run_upkeep()
-    assert calls == ["sync", "facts", "drive", "attachments", "chats", "audit", "injection", "slack_receipts"]
+    assert calls == ["sync", "facts", "drive", "attachments", "chats", "audit", "injection", "slack_receipts", "retention"]
     assert set(out) == {
         "syncs_queued", "facts_recorded", "drive_watches_opened",
-        "attachments_purged", "conversations_purged", "injection_scored",
+        "attachments_purged", "conversations_purged", "injection_scored", "rows_expired",
     }
 
 

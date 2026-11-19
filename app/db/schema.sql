@@ -376,6 +376,8 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_org ON ingestion_jobs (org_id);
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
+-- Each connection's latest job: Setup shows it, retention keeps it (jobs/retention.py).
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_connection_time ON ingestion_jobs (connection_id, created_at DESC);
 
 -- The space the fetched content belongs to (NULL = org-wide). After the CREATE
 -- TABLE, or a fresh database fails.
@@ -536,6 +538,9 @@ CREATE TABLE IF NOT EXISTS scheduler_reports (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Each schedule's latest report: retention keeps it (jobs/retention.py).
+CREATE INDEX IF NOT EXISTS idx_scheduler_reports_schedule_time
+    ON scheduler_reports (scheduler_id, created_at DESC);
 -- `scheduler_reports.model` was removed with `schedulers.model`.
 -- Every read is "this person's reports, newest first".
 CREATE INDEX IF NOT EXISTS idx_scheduler_reports_owner
