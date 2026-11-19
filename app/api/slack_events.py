@@ -14,6 +14,7 @@ means no answer.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import re
@@ -99,6 +100,13 @@ def _org_for_team(team_id: str) -> tuple[str, str | None] | None:
 _NO_DM_ACCESS = (
     "Slack is connected to Handbook only in spaces you're not in, so I can't answer "
     "you here. Ask in the Handbook web app, or ask your admin to connect Slack company-wide."
+)
+
+#: The web chat's limit (``api/chat.MAX_QUESTION_CHARS``), the same for Slack.
+MAX_SLACK_QUESTION_CHARS = 4000
+_TOO_LONG = (
+    f"That question is too long for me (the limit is {MAX_SLACK_QUESTION_CHARS} "
+    "characters). Ask it in a shorter form."
 )
 
 
@@ -670,6 +678,10 @@ def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
     if is_dm and token_workspace_id is not None and not _in_a_slack_space(org_id, team_id, user.id):
         post_message(token, channel, _NO_DM_ACCESS, thread_ts)
         return
+    if len(text) > MAX_SLACK_QUESTION_CHARS:
+        # The web app's cap: Slack allows ~40k characters, which went to the model whole.
+        post_message(token, channel, _TOO_LONG, thread_ts)
+        return
 
     # The same person and company limits as a question in the web app, so
     # Slack is not a way around them.
@@ -886,7 +898,7 @@ async def slack_events_own_app(
     """
     from ..auth.org_apps import org_for_app_key
 
-    found = org_for_app_key("slack", app_key)
+    found = await asyncio.to_thread(org_for_app_key, "slack", app_key)
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     org_id, secret = found
@@ -924,7 +936,9 @@ async def _receive(
     # A company's app holds its own signing secret, so its requests are trusted
     # only for a Slack workspace connected to that company.
     if org_id is not None:
-        scope = _org_for_team(payload.get("team_id") or "")
+        # Off the event loop: a pool wait here froze every request on this worker
+        # and missed Slack's 3s ack, so Slack resent.
+        scope = await asyncio.to_thread(_org_for_team, payload.get("team_id") or "")
         if scope is None or scope[0] != org_id:
             return {"ok": True}
 
@@ -955,7 +969,7 @@ async def _receive(
     # resend is answered unless that event id already was. Without an id (or
     # when the receipt cannot be written), every resend is dropped as before.
     event_id = str(payload.get("event_id") or "")
-    first = _first_delivery(event_id) if event_id else None
+    first = await asyncio.to_thread(_first_delivery, event_id) if event_id else None
     if first is False or (first is None and x_slack_retry_num):
         logger.info("slack.bot ignoring a repeat delivery (retry #%s)", x_slack_retry_num or 0)
         return {"ok": True}
