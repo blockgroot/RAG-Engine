@@ -32,6 +32,9 @@ from app.sources.base import SourceDocument, SourceRef
 
 from .conftest import requires_db
 
+# These drive the whole shared queue: never on a database with other work.
+pytestmark = pytest.mark.usefixtures("quiet_shared_queues")
+
 
 class _SlowLLM:
     """Records overlap: how many calls were in flight at the same moment."""

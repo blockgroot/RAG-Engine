@@ -19,6 +19,9 @@ from app.schedulers.store import SchedulerError
 
 from .conftest import requires_db
 
+# These drive the whole shared queue: never on a database with other work.
+pytestmark = pytest.mark.usefixtures("quiet_shared_queues")
+
 
 @pytest.fixture(autouse=True)
 def _auth_encryption_key(monkeypatch):
