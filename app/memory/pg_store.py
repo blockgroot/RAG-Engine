@@ -170,7 +170,8 @@ class PgConversationStore(ConversationStore):
     def get_last_retrieval(self, conversation_id: str) -> list[RetrievedChunkRecord]:
         with get_connection(self._settings) as conn:
             row = conn.execute(
-                "SELECT chunks FROM conversation_last_retrieval WHERE conversation_id = %s::uuid",
+                "SELECT chunks, updated_at FROM conversation_last_retrieval "
+                "WHERE conversation_id = %s::uuid",
                 (conversation_id,),
             ).fetchone()
         if not row or not row[0]:
@@ -186,6 +187,7 @@ class PgConversationStore(ConversationStore):
                 chunk_index=item["chunk_index"],
                 org_id=item["org_id"],
                 document_title=item.get("document_title"),
+                stored_at=row[1],
             )
             for item in items
         ]

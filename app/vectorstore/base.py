@@ -273,10 +273,14 @@ class VectorStore(ABC):
         *,
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
+        unchanged_since: datetime | None = None,
     ) -> list[RetrievedChunk]:
-        """The chunks at ``(document_id, chunk_index)`` positions, for neighbour reads.
+        """The chunks at ``(document_id, chunk_index)`` positions, for neighbour reads
+        and the reuse check.
 
         Same ``org_id``/``workspace_id``/``viewer`` predicate as ``query``.
+        ``unchanged_since`` drops chunks written after it: a re-sync replaces a
+        document's chunks, so a newer one means the document changed.
         ``score`` is 0.0: never ranked, must not reach the gate. Optional.
         """
         raise NotImplementedError("this vector store does not support positional reads")
