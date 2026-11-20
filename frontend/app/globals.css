@@ -12465,7 +12465,7 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .page-loader-note { max-width: 22rem; margin-top: -0.4rem; font-size: 0.8rem; line-height: 1.5; text-align: center; color: var(--ink-muted, #667085); }
 
 /* Today's AI use left, beside the model menu (UsageRing). */
-.usage-ring { position: relative; flex: none; display: inline-flex; align-items: center; margin-left: 0.1rem; cursor: help; }
+.usage-ring { position: relative; flex: none; display: inline-flex; align-items: center; margin-left: 0.1rem; }
 .usage-ring-track { fill: none; stroke: color-mix(in srgb, var(--accent) 18%, var(--border)); stroke-width: 3.5; }
 .usage-ring-fill { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linecap: round; transition: stroke-dasharray 0.4s ease; }
 .usage-ring.is-low .usage-ring-fill { stroke: #d97706; }

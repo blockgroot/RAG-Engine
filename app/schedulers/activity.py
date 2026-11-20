@@ -158,7 +158,8 @@ def fetch_indexed_activity(
     personal, and without it a digest would mail files they cannot open.
     The index, not the APIs: Notion and Drive have no "changed between" call,
     and autosync keeps ``source_last_modified`` current. Reports current
-    content, never a diff; the notes say how many were read and when synced.
+    content, never a diff; the notes say how many were read and that it is the
+    indexed copy. No sync date: beside the delivery date it read as stale.
     """
     if provider == "slack":
         # Refresh "#channel: snippet" titles so a renamed channel shows its
@@ -222,12 +223,15 @@ def fetch_indexed_activity(
             f"Only the {MAX_INDEXED_DOCS} most recently changed {plural} were "
             "read — older changes in this window were left out."
         )
-    notes.append(
-        "Read from indexed content, last synced "
-        + (_stamp(last_sync) if last_sync else "never")
-        + " — not a live read, and it describes what these "
-        + f"{plural} say now rather than what changed inside them."
-    )
+    if last_sync or items:
+        notes.append(
+            f"Read from Handbook's indexed copy of these {plural}, not opened live. "
+            f"Each summary shows what the {singular} says as of its latest sync, "
+            "not what changed inside it."
+        )
+    else:
+        # Without a sync nothing was fetched: "nothing changed" would be false.
+        notes.append("Not read: this connection has not finished a sync yet.")
     return _digest(items, notes)
 
 

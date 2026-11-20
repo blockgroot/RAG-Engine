@@ -76,12 +76,12 @@ export function ModelPicker({
         aria-expanded={open}
         // With a badge the name is read from the contents, so the ring's words are part of it.
         aria-label={badge ? undefined : `Model: ${current?.label}`}
-        title={title}
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
         <Logo label={current?.label} />
-        <span className="model-picker-name">{current?.label}</span>
+        {/* On the name, not the button: over the ring only its own card shows. */}
+        <span className="model-picker-name" title={title}>{current?.label}</span>
         {badge}
         <span className="model-picker-chevron" aria-hidden />
       </button>

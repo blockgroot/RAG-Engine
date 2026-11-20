@@ -230,35 +230,35 @@ def test_a_space_without_the_connection_raises_instead_of_falling_back(store, or
 
 
 @requires_db
-def test_coverage_always_states_that_this_is_indexed_and_when_it_synced(store, org):
-    """The load-bearing disclosure. An indexed report is only as current as the
-    last sync, and a report implying live coverage it lacks is the exact
-    failure the coverage-note rule exists to prevent."""
+def test_coverage_always_states_that_this_is_indexed(store, org):
+    """The load-bearing disclosure: a report implying live coverage it lacks is
+    the exact failure the coverage-note rule exists to prevent. No sync date:
+    beside the delivery date it read as a stale report."""
     _connect(org, "notion")
     _doc(store, org)
 
     notes = " ".join(_fetch(org).notes)
-    assert "Read from indexed content" in notes
-    assert "last synced" in notes
+    assert "indexed copy" in notes and "not opened live" in notes
+    assert "last synced" not in notes
 
 
 @requires_db
-def test_coverage_discloses_the_sync_time_even_when_nothing_changed(store, org):
-    """A quiet report is exactly when "when did this last sync?" matters most —
-    it is the difference between "nothing happened" and "nothing was fetched"."""
+def test_coverage_is_disclosed_even_when_nothing_changed(store, org):
+    """A quiet report still says where it read from."""
     _connect(org, "notion")
 
     digest = _fetch(org)
     assert digest.items == ()
-    assert any("last synced" in note for note in digest.notes)
+    assert any("not opened live" in note or "has not finished a sync" in note for note in digest.notes)
 
 
 @requires_db
-def test_a_never_synced_connection_says_never(store, org):
+def test_a_never_synced_connection_says_nothing_was_read(store, org):
+    """Without a sync nothing was fetched: the difference between "nothing
+    happened" and "nothing was read"."""
     _connect(org, "notion")
-    _doc(store, org)
 
-    assert any("last synced never" in note for note in _fetch(org).notes)
+    assert any("has not finished a sync" in note for note in _fetch(org).notes)
 
 
 @requires_db
