@@ -97,12 +97,12 @@ Who might know?
 
 - **Suggestions** (`GET /ask-friend/suggest?gap_id=`): up to 2 people, from the documents the
   asker can see that came closest to the question (below the gate is fine — they are visible,
-  just not answering), never from a document outside the asker's visibility. Emails come from:
-  an `email:` `source_editor_key` or an email in `source_meta.people`; a `slack:U…` key resolved
-  with the existing cached `slack_utils._member_email`. At most 5 such lookups per suggest call.
-  Drive sync additionally requests `lastModifyingUser.emailAddress` and stores it in
-  `source_meta`, so newly synced Drive docs give an email. A document with no email gives no
-  suggestion; that is acceptable, since the email box is always there. Only company-domain emails; never the asker themself. Each shows one reason:
+  just not answering), never from a document outside the asker's visibility. Emails come only from
+  what sync already stored in `source_meta.people` (Notion editor/creator, Drive last editor —
+  `emailAddress` is already requested —, Linear assignee/creator/commenter, Slack authors), roles
+  other than `mentioned`. No API call on the suggest path. On staging (20 Nov) 34 of 36
+  documents carry such an email. A document with none gives no suggestion; the email box is
+  always there. Only company-domain emails; never the asker themself. Each shows one reason:
   the document title, or the Slack channel name for a Slack thread. No suggestions → only the
   email box.
 - **Send** (`POST /ask-friend`): body `{gap_id, colleague_email}`. Server checks: the gap row
@@ -226,11 +226,17 @@ New package: `base.py` (`AnswerDocWriter.create(parent_id, title, body) -> url`)
   settings say "Reconnect Google Drive to allow saving" and no Save buttons are shown.
   Create a Google Doc with `files.create` (mimeType `application/vnd.google-apps.document`,
   `parents=[answers folder]`, uploaded as text). The folder is made by Handbook, so
-  `drive.file` covers the doc. **Risk, checked first (task 1):** whether `drive.file` may create
-  the answers folder *inside* the admin's synced folder, which Handbook did not create. If Google
-  refuses, Drive is dropped from v1 (Notion only) and brought back to the user with options
-  (the broader `drive` scope needs Google's verification). There is no "save in root" fallback:
-  a doc outside the synced folder is never indexed, or is indexed for one account only.
+  `drive.file` covers the doc. **Risk, checked first (task 1):** `drive.file` only reaches files
+  Handbook created (or a person opened with it), so creating the answers folder *inside* the
+  admin's synced folder will likely be refused. Order of attempts:
+  1. Create it inside the synced folder directly (works if Google allows it).
+  2. Otherwise Handbook creates "Team Answers" in the connected account's My Drive and the
+     settings page says "Move this folder into <synced folder> in Google Drive". Handbook made
+     it, so it keeps access after the move; Save stays off until Handbook sees (one
+     `files.get` of its `parents`) that it sits inside the synced folder. Once moved it inherits
+     the folder's sharing and is synced.
+  No doc is ever saved outside the synced folder: it would never be indexed, or only for one
+  account. The broader `drive` scope (Google verification) is not used.
 - The writer only creates. It has no update or delete.
 
 Token: `get_live_connection_token(org_id, provider, workspace_id)` (refreshes Google).
@@ -319,7 +325,7 @@ Topic status on the Feedback page only covers the topic window, which is shorter
 | Failures are `ProviderError` | Writers raise `ProviderError` subclasses with `cause=` |
 | Config only in `app/config/` | `AskFriendSettings.from_env()`, read through `settings.py` |
 | New capability = package with `base.py` | `app/answerdocs/` (two writers); the ask flow is an orchestrator without `base.py` |
-| Bound external walks, mark truncation | Suggestions: ≤ 10 documents, ≤ 5 Slack lookups; the Notion page picker is bounded and says when it is cut |
+| Bound external walks, mark truncation | Suggestions: ≤ 10 documents, no API calls; the Notion page picker is bounded and says when it is cut |
 | Untrusted text in prompts | No prompt in v1 sees the reply; once saved it is an ordinary document under the normal policy |
 | Links only if seen verbatim | No model writes text here; the doc URL comes from the provider's API reply |
 | Rate limits | Routes take `limit_request`; the asker email takes `limit_email`; no AI call, so no AI spend |
