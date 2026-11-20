@@ -177,7 +177,7 @@ def test_an_own_model_that_is_not_set_up_fails_closed(monkeypatch):
 
 
 def test_only_the_person_may_pick_their_own_model(monkeypatch):
-    mine = {"u-a": {"id": "own:gpt-5"}}
+    mine = {"u-a": {"id": "own:gpt-5", "ids": ["own:gpt-5"], "use_everywhere": True}}
     monkeypatch.setattr(own_model, "get_own_model_summary", lambda org, user: mine.get(user))
     assert own_model.selectable("o", "u-a", "own:gpt-5")
     assert not own_model.selectable("o", "u-b", "own:gpt-5")
@@ -239,7 +239,7 @@ def test_an_own_key_is_stored_encrypted_and_never_shown(person):
     from app.db import get_connection
 
     org, user = person
-    own_model.save_own_model(org, user, "openai", "gpt-5", "sk-secret-1234", "native")
+    own_model.save_own_model(org, user, "openai", ["gpt-5", "gpt-5-mini"], "sk-secret-1234")
     assert own_model.get_own_model_summary(org, user)["tokens_per_day"] == 0     # none by default
     assert own_model.save_own_limits(org, user, 10_000, 200_000)
     assert _read_own_limits(org, user) == (10_000, 200_000)
@@ -249,6 +249,11 @@ def test_an_own_key_is_stored_encrypted_and_never_shown(person):
     assert "sk-secret" not in stored
     summary = own_model.get_own_model_summary(org, user)
     assert summary["id"] == "own:gpt-5" and summary["key_tail"] == "1234"
+    assert summary["ids"] == ["own:gpt-5", "own:gpt-5-mini"] and summary["use_everywhere"]
+    assert own_model.get_own_model(org, user).models == ("gpt-5", "gpt-5-mini")
+    assert own_model.set_use_everywhere(org, user, False)
+    assert own_model.own_in_use(org, user) is None                    # switched off: unused
+    assert own_model.set_use_everywhere(org, user, True) and own_model.own_in_use(org, user)
     assert "sk-secret-1234" not in repr(summary)
     assert own_model.get_own_model(org, user).api_key == "sk-secret-1234"
     # Another person in the company has none.
@@ -303,15 +308,16 @@ from app.llm import routed  # noqa: E402
 @pytest.fixture
 def keys(monkeypatch):
     """Who has saved a key: set per test. The routing reads these, never the picker."""
-    saved = {"own": {}, "company": {}}
+    saved = {"own": {}, "company": {}, "off": set()}
 
     def own_summary(org, user):
         model = saved["own"].get(user)
-        return {"id": f"own:{model}", "model": model} if model else None
+        return {"id": f"own:{model}", "ids": [f"own:{model}"], "model": model, "models": [model],
+                "use_everywhere": user not in saved["off"]} if model else None
 
     def company_summary(org):
         model = saved["company"].get(org)
-        return {"model": model} if model else None
+        return {"model": model, "models": [model]} if model else None
 
     monkeypatch.setattr(own_model, "get_own_model_summary", own_summary)
     monkeypatch.setattr(org_model_module, "get_org_model_summary", company_summary)
@@ -545,17 +551,40 @@ def test_with_ours_on_nothing_changes(keys):
     assert isinstance(provider.active(), _Default)
 
 
-def test_reports_need_the_companys_model_not_a_persons(keys, handbook_off):
-    """A report runs as company work: someone's own key does not run it."""
+def test_reports_run_on_the_owners_key_only_while_it_is_used_everywhere(keys, handbook_off):
+    """A report is the person's own work: their key when switched on, else the company's."""
     from types import SimpleNamespace
 
     from fastapi import HTTPException
 
     keys["own"]["u"] = "gpt-5"
     member = SimpleNamespace(org_id="o", user_id="u", role="member")
-    rate_limit.require_model(member)                                   # they can ask on their key
+    rate_limit.require_model(member)                                   # on: their key runs it
+    assert routed.payer_choice("o", "u") == "own:gpt-5"
+    keys["off"].add("u")                                               # off: the company's, and there is none
     with pytest.raises(HTTPException) as refused:
-        rate_limit.require_company_model(member)
-    assert refused.value.status_code == 409 and "Reports are written with your company's" in refused.value.detail
-    keys["company"]["o"] = "gpt-5"
-    rate_limit.require_company_model(member)
+        rate_limit.require_model(member)
+    assert refused.value.status_code == 409
+    keys["company"]["o"] = "gpt-4.1"
+    rate_limit.require_model(member)
+    assert routed.payer_choice("o", "u") == "company:gpt-4.1"
+
+
+def test_switched_off_the_own_key_is_never_picked_or_paid_with(keys):
+    keys["own"]["u"] = "gpt-5"
+    keys["company"]["o"] = "gpt-4.1"
+    assert own_model.selectable("o", "u", "own:gpt-5")
+    assert not own_model.selectable("o", "u", "company:gpt-4.1")       # on: only theirs
+    assert not own_model.selectable("o", "u", HAIKU)
+    keys["off"].add("u")
+    assert not own_model.selectable("o", "u", "own:gpt-5")             # off: never theirs
+    assert own_model.selectable("o", "u", "company:gpt-4.1")
+    assert routed.payer_choice("o", "u") == "company:gpt-4.1"
+
+
+def test_used_everywhere_the_default_answers_on_their_key(keys):
+    keys["own"]["u"] = "gpt-5"
+    provider = routed.RoutedLLMProvider(default=_Default())
+    routed.use_payer_keys("o", "u")
+    routed.use_model(None, org_id="o", user_id="u")                    # an old page sends "auto"
+    assert (provider.active().api_key, provider.active().billing) == ("sk-u", OWN)

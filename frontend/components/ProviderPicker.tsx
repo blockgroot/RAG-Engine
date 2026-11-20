@@ -2,15 +2,7 @@
 
 import { useState } from "react";
 
-import type { ModelPreset, OrgModel } from "@/lib/api";
-
-/** Agent mode's tool-calling test, said in the admin's terms. */
-export const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
-  native: "Agent mode: works (calls tools)",
-  text: "Agent mode: works with a fallback (writes tool calls as text)",
-  none: "Agent mode: not available (this model doesn't call tools)",
-  unknown: "Agent mode: couldn't be tested — save again to retry",
-};
+import type { ModelPreset } from "@/lib/api";
 
 /** Provider logos (public/providers, from the MIT-licensed lobehub icon set).
  *  An id without a file falls back to its first letter. */

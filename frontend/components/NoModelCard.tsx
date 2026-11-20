@@ -11,12 +11,6 @@ export function noModel(me: Me | null | undefined): boolean {
   return Boolean(me?.ai && !me.ai.ready);
 }
 
-/** True when the COMPANY has no model (Handbook's off, no company key): company
- *  work such as scheduled reports never runs on a person's own key. */
-export function noCompanyModel(me: Me | null | undefined): boolean {
-  return Boolean(me?.ai && !me.ai.handbook && !me.ai.company);
-}
-
 /**
  * Shown wherever AI work starts (chat, starters, Agent, charts, reports) while
  * no model is connected. The admin can fix it, so they get the button to
@@ -27,23 +21,16 @@ export function NoModelCard({
   me,
   nudge = false,
   compact = false,
-  companyWork = false,
 }: {
   me: Me;
   nudge?: boolean;
   compact?: boolean;
-  /** For company work (reports): a person's own key does not run it, so it is not offered. */
-  companyWork?: boolean;
 }) {
   const admin = me.role === "admin";
   const title = admin ? "Connect your AI model to start" : "Your company hasn’t connected an AI model yet";
-  const text = companyWork
-    ? admin
-      ? "Reports are written with your company’s AI model. Add its key once and everyone’s reports can run."
-      : "Reports are written with your company’s AI model. Your admins have a reminder to connect one."
-    : admin
-      ? "Handbook answers with your company’s own AI model. Add its key once and everyone can ask, chart and draft."
-      : "Your admins have a reminder to connect one. Meanwhile you can use your own key.";
+  const text = admin
+    ? "Handbook answers with your company’s own AI model. Add its key once and everyone can ask, chart and draft."
+    : "Your admins have a reminder to connect one. Meanwhile you can add your own key and use it everywhere.";
   const steps = admin
     ? ["Choose a provider", "Paste its API key", "Everyone can ask"]
     : ["Add your own key", "Pick it in the model menu", "Ask away"];
@@ -55,16 +42,9 @@ export function NoModelCard({
           <Icon name="key" size={15} /> Connect model
         </Link>
       )}
-      {!companyWork && (
-        <Link className={`button button-sm${admin ? " button-secondary" : ""}`} href="/account/model">
-          {admin ? "Use my own key" : <><Icon name="key" size={15} /> Add my own key</>}
-        </Link>
-      )}
-      {companyWork && !admin && (
-        <span className="nm-chip">
-          <Icon name="bell" size={14} /> Admins reminded
-        </span>
-      )}
+      <Link className={`button button-sm${admin ? " button-secondary" : ""}`} href="/account/model">
+        {admin ? "Use my own key" : <><Icon name="key" size={15} /> Add my own key</>}
+      </Link>
     </div>
   );
 

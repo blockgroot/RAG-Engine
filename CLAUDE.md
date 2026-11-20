@@ -540,18 +540,24 @@ never answered on another key. Its key is write-only, like the company's.
 The picker offers Claude Sonnet 5.5 and Haiku 5.5 only (`catalog.CLAUDE_MODELS`); every
 model a person can pick must be priced (`test_production_offers_claude_sonnet_and_haiku_only`).
 Background work runs on the Gemini AUX model, never pickable and never charged, unless a
-key pays for it (`routed.payer_choice`): a question's machinery (`default_model_only`) and
-the aux stages run on the asker's own model, else the company's, else ours; company work
-(ingest, figures, gap topics, sentiment, reports: `on_company_key`/`payer_keys`) on the
+key pays for it (`routed.payer_choice`). A person's own key is used EVERYWHERE they act or
+nowhere: "Use my own key everywhere" (`user_llm_models.use_everywhere`, on when saved;
+`own_model.own_in_use`). On: their chat answers and checks, Slack (DMs and channel mentions)
+and the reports they schedule run on it, and the menu offers only its models. Off: the
+company's key, else ours, and their key is never picked or paid with. Company work with no
+person (ingest, figures, gap topics, sentiment: `on_company_key`/`payer_keys(org)`) runs on the
 company's, else ours, NEVER a person's (their key may vanish, and the corpus is shared).
-Slack has no picker: a DM answers on that order, a channel on the company's, else ours.
+A key offers EVERY chat model on the key's OWN list, nobody picks (`org_model.list_provider_models`:
+one request, no tokens, also proves the key; saving again with a blank key refreshes it; a
+provider with no list gets one short test per typed id); the chat menu searches past 8 models. No model is test-answered per mode: a 400 naming tools or the model says "pick
+another model" when it is used.
 A company model is picked as `company:<model>`, so one named like ours runs on its key.
 `HANDBOOK_MODEL_ENABLED=false` (a release where each company brings its model): nothing
 answers on our key, ever (`routed._ours` raises `NoModelConfigured`). Every question is
 refused BEFORE any work with a 409 that tells an admin to connect one and anyone else that
 their admins have a reminder or to use their own key (`rate_limit.require_model`, inside
-`limit_question`; Slack says the same in the thread). Report setup needs the COMPANY's model
-(`require_company_model`): reports never run on a person's key. `/me.ai` drives the card on
+`limit_question`; Slack says the same in the thread). Report setup takes the same check as a
+question (the owner's key when used everywhere, else the company's). `/me.ai` drives the card on
 every page that starts AI work (chat, starters, Agent, Chart, Reports, setup); the admin
 bell has a "Connect your company's AI model" item. Background work without a model indexes
 without context lines, leaves figures unchecked for a later sync, skips grouping and

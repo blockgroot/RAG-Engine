@@ -306,8 +306,10 @@ reconnect, because a token belongs to the app that issued it. A company's Slack 
   limits; an admin sets the company's limits in tokens a minute and a day (Admin › Model), which
   narrow ours on our key and are the only limits on the company's model. Calls on the company's
   key are no longer charged to our credit (`tests/test_own_model.py`). Whose key pays also runs
-  the work: a question's checks on the asker's key, else the company's, else ours; indexing,
-  reports and other company work on the company's, else ours; Slack DMs and channels likewise.
+  the work: with "Use my own key everywhere" on (20 Nov), everything a person does (chat, Slack
+  DMs and channel mentions, their reports) runs on their key; off, on the company's, else ours;
+  indexing and other company work on the company's, else ours. Every chat model a key lists
+  is offered in the (searchable) chat menu, nobody picks, never test-answered one by one.
   One daily budget for every model (Sonnet's own share dropped), shown as a usage ring beside
   the model menu (`GET /chat/usage`). With `HANDBOOK_MODEL_ENABLED=false` nothing answers on our
   key: a company with no key is asked to connect one wherever AI work starts (chat, starters,

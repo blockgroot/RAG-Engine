@@ -178,22 +178,6 @@ def no_model_message(role: str | None) -> str:
     return NO_MODEL_ADMIN if role == "admin" else NO_MODEL_MEMBER
 
 
-NO_COMPANY_MODEL_ADMIN = ("Reports are written with your company's AI model. Connect it in "
-                          "Admin › Model first.")
-NO_COMPANY_MODEL_MEMBER = ("Reports are written with your company's AI model, and none is "
-                           "connected yet. Your admins have a reminder to add one.")
-
-
-def require_company_model(session) -> None:
-    """409 for company work a person sets up (a scheduled report): it runs on
-    the company's key or ours, never on the person's own, so theirs does not count."""
-    from ..llm.routed import model_available
-
-    if not model_available(session.org_id):
-        raise HTTPException(status_code=409, detail=(
-            NO_COMPANY_MODEL_ADMIN if session.role == "admin" else NO_COMPANY_MODEL_MEMBER))
-
-
 def require_model(session) -> None:
     """409 before any work when nothing can answer (Handbook's model off, and
     no company or personal key): never a question that fails halfway."""

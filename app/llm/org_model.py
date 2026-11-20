@@ -156,6 +156,12 @@ class OrgModel:
     #: Bumped on every save; part of the client cache key so a rotated key is
     #: never served from an old client.
     version: str
+    #: Every model the admin offers on this key; ``model`` is the first.
+    models: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.models:  # a row saved before the list offers its one model
+            object.__setattr__(self, "models", (self.model,))
 
     # Request shape is per-preset DATA (`routed._PRESET_EXTRA_BODY`), not a bool.
 
@@ -193,6 +199,7 @@ def get_org_model(org_id: str) -> OrgModel | None:
         label=label or model,
         # No `updated_at` column; the save path rewrites created_at on upsert.
         version=str(created),
+        models=_models_of(model, config),
     )
 
 
@@ -215,15 +222,13 @@ def get_org_model_summary(org_id: str) -> dict | None:
     preset = _PRESETS_BY_ID.get(config.get("preset") or "")
     return {
         "model": model,
+        "models": list(_models_of(model, config)),
         "label": label or model,
         "preset": config.get("preset"),
         "preset_label": preset.label if preset else config.get("preset"),
         "key_tail": config.get("key_tail"),
         # Dated and past-tense: a snapshot from save time, not a live health check.
         "checked_at": config.get("checked_at"),
-        # Agent mode's tool-calling test from the same save: "native", "text",
-        # "none", "unknown"; None for a model saved before it.
-        "agent": config.get("agent"),
         "saved_at": created.isoformat() if created else None,
     }
 
@@ -236,3 +241,63 @@ def delete_org_model(org_id: str) -> None:
             "WHERE org_id = %s AND provider = %s AND workspace_id IS NULL",
             (org_id, PROVIDER),
         )
+
+
+def _models_of(model: str, config: dict) -> tuple[str, ...]:
+    """The models offered on this key; a row saved before the list is its one model."""
+    return tuple(config.get("models") or [model])
+
+
+def offers(org_id: str, model: str | None) -> bool:
+    """True only for one of THIS org's offered model ids."""
+    if not model:
+        return False
+    summary = get_org_model_summary(org_id)
+    return bool(summary and model in summary["models"])
+
+
+class ModelListUnavailable(ConfigurationError):
+    """The provider has no model list for this key: the admin types the ID."""
+
+
+#: Model ids naming what is not a chat model. Format, not intent: a vendor's
+#: list mixes in embedding, speech and image models nobody can chat with.
+_NOT_CHAT = ("embed", "tts", "whisper", "dall-e", "transcribe", "moderation", "rerank",
+             "image", "-audio", "realtime", "speech", "davinci", "babbage", "sora", "guard")
+#: Far more than any provider lists; a bound, not a filter.
+MAX_LISTED_MODELS = 1000
+LIST_TIMEOUT = 15.0
+
+
+def list_provider_models(preset: Preset, api_key: str) -> list[str]:
+    """Every chat model this key can use, sorted. One request, no tokens spent:
+    it also proves the key works. Raises ``ConfigurationError`` with the
+    provider's reason (a refused key and an unreachable provider need
+    different fixes)."""
+    import httpx
+
+    if preset.id == "anthropic":
+        # Anthropic lists models on its own API, not the OpenAI-compatible one.
+        url, headers = "https://api.anthropic.com/v1/models?limit=1000", {
+            "x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        url, headers = preset.base_url.rstrip("/") + "/models", {"Authorization": f"Bearer {api_key}"}
+    try:
+        response = httpx.get(url, headers=headers, timeout=LIST_TIMEOUT)
+    except httpx.HTTPError as exc:
+        raise ConfigurationError(f"Couldn't reach {preset.label}. Please try again.", cause=exc) from exc
+    if response.status_code in (401, 403):
+        raise ConfigurationError(f"{preset.label} refused this API key. Check it and paste it again.")
+    if response.status_code >= 400:
+        raise ModelListUnavailable(
+            f"{preset.label} couldn't list models ({response.status_code}). "
+            "Type the model ID instead.")
+    try:
+        body = response.json()
+        rows = body.get("data") if isinstance(body, dict) else body
+        ids = {str(r.get("id") or "").removeprefix("models/") for r in rows or [] if isinstance(r, dict)}
+    except (ValueError, AttributeError) as exc:
+        raise ModelListUnavailable(f"{preset.label} sent a model list we couldn't read. "
+                                 "Type the model ID instead.", cause=exc) from exc
+    chat = sorted(i for i in ids if i and not any(w in i.lower() for w in _NOT_CHAT))
+    return chat[:MAX_LISTED_MODELS]

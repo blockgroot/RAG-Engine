@@ -115,7 +115,7 @@ def run_scheduler_once(
         # No LLM on an empty context: that is where invention happens.
         # `digest` is falsy on items, not notes.
         report = NO_ACTIVITY_NOTE
-    elif llm is None and not model_available(scheduler.org_id):
+    elif llm is None and not model_available(scheduler.org_id, scheduler.user_id):
         # Said in the report, not a failed run that burns its retries.
         report = NO_MODEL_NOTE
     else:
@@ -125,8 +125,9 @@ def run_scheduler_once(
         prompt = build_scheduler_report_prompt(
             scheduler.prompt, digest, scheduler.provider
         )
-        # Unattended: never a picked model. Company work: the company's key, else ours.
-        with payer_keys(scheduler.org_id), default_model_only():
+        # Unattended: never a picked model. Whose key: the owner's own when they
+        # use it everywhere, else the company's, else ours.
+        with payer_keys(scheduler.org_id, scheduler.user_id), default_model_only():
             report = llm.generate(prompt).strip()
 
     # Items and notes stored as data, so links are never invented or dropped

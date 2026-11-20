@@ -27,60 +27,86 @@ def get_own_model(org_id: str, user_id: str) -> OrgModel | None:
     """This person's model with the key decrypted, or None."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT preset, model, api_key_encrypted, extract(epoch from saved_at)::bigint "
+            "SELECT preset, model, api_key_encrypted, extract(epoch from saved_at)::bigint, models "
             "FROM user_llm_models WHERE org_id = %s AND user_id = %s",
             (org_id, user_id),
         ).fetchone()
     if not row:
         return None
-    preset_id, model, encrypted, saved = row
+    preset_id, model, encrypted, saved, models = row
     preset = _PRESETS_BY_ID.get(preset_id)
     if preset is None:  # a preset we no longer ship: its address cannot be vouched for
         return None
     return OrgModel(model=model, api_key=decrypt(encrypted), base_url=preset.base_url,
-                    preset=preset_id, label=model, version=str(saved))
+                    preset=preset_id, label=model, version=str(saved),
+                    models=tuple(models or [model]))
 
 
 def get_own_model_summary(org_id: str, user_id: str) -> dict | None:
     """What the Account page shows. Never decrypts, never returns the key."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT preset, model, key_tail, agent, saved_at, tokens_per_minute, tokens_per_day "
+            "SELECT preset, model, key_tail, saved_at, tokens_per_minute, tokens_per_day, "
+            "models, use_everywhere "
             "FROM user_llm_models WHERE org_id = %s AND user_id = %s",
             (org_id, user_id),
         ).fetchone()
     if not row:
         return None
-    preset_id, model, key_tail, agent, saved, per_minute, per_day = row
+    preset_id, model, key_tail, saved, per_minute, per_day, models, everywhere = row
     preset = _PRESETS_BY_ID.get(preset_id)
+    models = list(models or [model])
     return {
         "tokens_per_minute": per_minute,
         "tokens_per_day": per_day,
-        "id": own_id(model),
-        "model": model,
+        "id": own_id(models[0]),
+        "ids": [own_id(m) for m in models],
+        "model": models[0],
+        "models": models,
         "preset": preset_id,
         "preset_label": preset.label if preset else preset_id,
         "key_tail": key_tail,
-        "agent": agent,
+        "use_everywhere": bool(everywhere),
         "saved_at": saved.isoformat() if saved else None,
     }
 
 
-def save_own_model(org_id: str, user_id: str, preset_id: str, model: str, api_key: str,
-                   agent: str | None, tokens_per_minute: int = 0, tokens_per_day: int = 0) -> None:
+def own_in_use(org_id: str | None, user_id: str | None) -> dict | None:
+    """The person's own model when "use my own key everywhere" is on, else
+    None: then the company's key answers for them and theirs is unused."""
+    if not (org_id and user_id):
+        return None
+    own = get_own_model_summary(org_id, user_id)
+    return own if own and own["use_everywhere"] else None
+
+
+def set_use_everywhere(org_id: str, user_id: str, on: bool) -> bool:
+    """The toggle. False when there is no own model to switch."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE user_llm_models SET use_everywhere = %s WHERE org_id = %s AND user_id = %s",
+            (on, org_id, user_id),
+        )
+    return bool(cur.rowcount)
+
+
+def save_own_model(org_id: str, user_id: str, preset_id: str, models: list[str], api_key: str,
+                   tokens_per_minute: int = 0, tokens_per_day: int = 0) -> None:
+    """Save the key and the models it offers. Saving turns "use everywhere" on:
+    a key is added to be used; the toggle turns it off."""
     get_preset(preset_id)  # raises on an unknown provider
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO user_llm_models (org_id, user_id, preset, model, api_key_encrypted, "
-            "key_tail, agent, tokens_per_minute, tokens_per_day, saved_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
+            "INSERT INTO user_llm_models (org_id, user_id, preset, model, models, api_key_encrypted, "
+            "key_tail, tokens_per_minute, tokens_per_day, use_everywhere, saved_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, now()) "
             "ON CONFLICT (org_id, user_id) DO UPDATE SET preset = EXCLUDED.preset, "
-            "model = EXCLUDED.model, api_key_encrypted = EXCLUDED.api_key_encrypted, "
-            "key_tail = EXCLUDED.key_tail, agent = EXCLUDED.agent, "
-            "tokens_per_minute = EXCLUDED.tokens_per_minute, "
-            "tokens_per_day = EXCLUDED.tokens_per_day, saved_at = now()",
+            "model = EXCLUDED.model, models = EXCLUDED.models, "
+            "api_key_encrypted = EXCLUDED.api_key_encrypted, key_tail = EXCLUDED.key_tail, "
+            "agent = NULL, tokens_per_minute = EXCLUDED.tokens_per_minute, "
+            "tokens_per_day = EXCLUDED.tokens_per_day, use_everywhere = true, saved_at = now()",
             # Last 4 only: enough to recognise the key, useless to a reader.
-            (org_id, user_id, preset_id, model, encrypt(api_key), api_key[-4:], agent,
+            (org_id, user_id, preset_id, models[0], models, encrypt(api_key), api_key[-4:],
              tokens_per_minute, tokens_per_day),
         )
     forget_own_limits(user_id)
@@ -154,21 +180,21 @@ def billing_of(model: str | None) -> str:
 
 
 def selectable(org_id: str, user_id: str | None, model: str | None) -> bool:
-    """A model this person may pick: one we ship, the company's, or their own.
-    A client-supplied id is untrusted: anything else must never reach a call."""
+    """A model this person may pick. With their own key in use, only its
+    models: it is used everywhere. Otherwise one we ship (while Handbook offers
+    its own) or one of the company's. A client-supplied id is untrusted:
+    anything else must never reach a call."""
     from . import catalog
-    from .org_model import get_org_model_summary
+    from .org_model import offers
+    from .routed import COMPANY_PREFIX, handbook_model_on
 
     if not model or model == catalog.AUTO:
-        return True  # "the default": ours, or with ours off, whoever's key pays
-    if catalog.get(model) is not None:
-        from .routed import handbook_model_on
-
-        return handbook_model_on()  # Handbook's own models only while it offers them
+        return True  # "the default": whoever's key pays (``routed.payer_choice``)
+    mine = own_in_use(org_id, user_id)
+    if mine is not None:
+        return model in mine["ids"]
     if model.startswith(OWN_PREFIX):
-        own = get_own_model_summary(org_id, user_id) if user_id else None
-        return bool(own and own["id"] == model)
-    from .routed import COMPANY_PREFIX
-
-    company = get_org_model_summary(org_id)
-    return bool(company and company["model"] == model.removeprefix(COMPANY_PREFIX))
+        return False  # their own key is switched off: the company's answers
+    if catalog.get(model) is not None:
+        return handbook_model_on()  # Handbook's own models only while it offers them
+    return offers(org_id, model.removeprefix(COMPANY_PREFIX))

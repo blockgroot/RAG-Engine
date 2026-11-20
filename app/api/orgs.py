@@ -117,14 +117,14 @@ def me(session: SessionClaims = Depends(get_session)):
 
 def _ai_status(org_id: str, user_id: str) -> dict:
     from ..llm.org_model import get_org_model_summary
-    from ..llm.own_model import get_own_model_summary
+    from ..llm.own_model import own_in_use
     from ..llm.routed import handbook_model_on
 
     handbook = handbook_model_on()
     company = own = False
     try:
         company = get_org_model_summary(org_id) is not None
-        own = get_own_model_summary(org_id, user_id) is not None
+        own = own_in_use(org_id, user_id) is not None
     except Exception:  # noqa: BLE001 - a status line, never a failed page load
         logger.warning("Could not read which models are connected", exc_info=True)
     return {"ready": handbook or company or own, "handbook": handbook,

@@ -295,22 +295,26 @@ others. In Chart mode a file's tables and figures can be charted (see §10).
 
 Members pick which AI model answers: Claude Sonnet 5.5 (strongest answers) or Claude Haiku 5.5
 (fast and low cost). Both build charts. Admins can also add the company's own model from a list
-of provider presets; its key is tested before it is saved and stored encrypted. Each person can
-also add their own model and key on its own page (Account › Your own model, or "Add your own key"
-in the chat's model menu): provider, key, model, and optional limits of their own (0 = none). Only
-they can pick it, it is billed to them, and no Handbook or company limit applies to it.
+of provider presets: they paste the key, Handbook lists every model that key can use (one quick
+request that also checks the key), and every chat model on it appears in the chat's model menu,
+which has a search box once it lists more than eight. Saving again with the key left blank
+refreshes the list. Each person can also add their own key the same way (Account › Your own model, or "Add your
+own key" in the chat's model menu), with optional limits of their own (0 = none). It is billed to
+them, and no Handbook or company limit applies to it. Models are not test-answered one by one: a
+model that can't chart or use tools says so when it is used and suggests picking another.
 
-Whose key does the work: a person's questions (the answer when picked, and the checks around
-every question, on the web and in Slack DMs) run on their own key, else the company's, else
-Handbook's. Company work (indexing, figures read from text, grouping unanswered questions,
-sentiment, reports) and Slack channel replies run on the company's key, else Handbook's, never
-a person's. Search and ranking always stay on Handbook.
+Whose key does the work: "Use my own key everywhere" (on when a person saves a key) decides. On,
+everything they do runs on their key: chat answers and the checks around them, Slack questions
+(DMs and channel mentions) and the reports they schedule, and the menu offers only their models.
+Off, all of it runs on the company's key, else Handbook's, and their key is unused. Company work
+with no person behind it (indexing, figures read from text, grouping unanswered questions,
+sentiment) always runs on the company's key, else Handbook's. Search and ranking stay on Handbook.
 
 When Handbook offers no model of its own (`HANDBOOK_MODEL_ENABLED=false`) and nobody has added a
 key, every place that starts AI work says so instead of failing: the chat's question box (and any
 starter clicked) shows "Connect your AI model to start" with a Connect model button for admins, or
-"Your company hasn't connected an AI model yet" with Add my own key for everyone else; Reports ask
-for the company's model (a report never runs on a personal key); setup shows it first; admins get
+"Your company hasn't connected an AI model yet" with Add my own key for everyone else; Reports show
+the same card; setup shows it first; admins get
 a bell item; Slack replies with the same words. Documents still index and are searchable; their AI
 context, figures, grouping and reports wait for a model. The chat's model menu starts on the same
 order (their own model, else the company's, else Handbook's); a model the person picked themselves

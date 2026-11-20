@@ -12,7 +12,6 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageLoader } from "@/components/PageLoader";
-import { AGENT_RESULT } from "@/components/ProviderPicker";
 import {
   FormFooter,
   Icon,
@@ -21,6 +20,7 @@ import {
   ModelCard,
   ModelStatus,
   ProviderGrid,
+  TypedModelIds,
   Step,
   UseTile,
 } from "@/components/ModelSetup";
@@ -142,7 +142,9 @@ export default function AdminModelPage() {
   const [saved, setSaved] = useState<OrgModel | null>(null);
 
   const [preset, setPreset] = useState("openai");
-  const [model, setModel] = useState("");
+  // Set only when the provider publishes no model list: then IDs are typed.
+  const [typeIds, setTypeIds] = useState(false);
+  const [typed, setTyped] = useState("");
   const [apiKey, setApiKey] = useState("");
 
   const [busy, setBusy] = useState(false);
@@ -179,12 +181,20 @@ export default function AdminModelPage() {
     setError(null);
     setNotice(null);
     try {
-      const { model: next } = await api.saveOrgModel(preset, model.trim(), apiKey.trim());
+      const ids = typeIds ? typed.split(/[\s,]+/).filter(Boolean) : [];
+      const res = await api.saveOrgModel(preset, apiKey.trim(), ids);
+      if (!res.model) {
+        setTypeIds(true);
+        setNotice(res.type_ids ?? "This provider doesn’t list its models. Type the model IDs.");
+        return;
+      }
+      const next = res.model;
       setSaved(next);
-      setModel("");
       setApiKey("");
+      setTypeIds(false);
+      setTyped("");
       setReplacing(false);
-      setNotice("Saved. Everyone in your company can now pick this model in chat.");
+      setNotice(`Saved. Everyone in your company can now pick from ${next.models.length} ${next.models.length === 1 ? "model" : "models"} in chat.`);
     } catch (err) {
       // The provider's own words: 401 (wrong key) vs 404 (wrong model id).
       setError(err instanceof ApiError ? err.message : "Could not save that.");
@@ -210,10 +220,7 @@ export default function AdminModelPage() {
   }
 
   const chips: { icon: "check" | "bolt"; text: string; tone?: "ok" | "warn" }[] = [];
-  if (saved?.checked_at) chips.push({ icon: "check", text: `Tested ${new Date(saved.checked_at).toLocaleDateString()}`, tone: "ok" });
-  if (saved?.agent) {
-    chips.push({ icon: "bolt", text: AGENT_RESULT[saved.agent], tone: saved.agent === "native" || saved.agent === "text" ? "ok" : "warn" });
-  }
+  if (saved?.checked_at) chips.push({ icon: "check", text: `Key checked ${new Date(saved.checked_at).toLocaleDateString()}`, tone: "ok" });
 
   return (
     <AppShell me={me} variant="admin">
@@ -221,7 +228,7 @@ export default function AdminModelPage() {
         <PageHeader
           eyebrow="Company"
           title="Company model and limits"
-          description="Connect one model for your team’s answers, and set how much AI each person and the company may use. Both are optional; Handbook’s built-in models stay available."
+          description="Connect your company’s key, every chat model it offers appears in your team’s model menu. Set how much AI each person and the company may use."
         />
 
         {error && (
@@ -239,7 +246,7 @@ export default function AdminModelPage() {
           saved={saved}
           scope={`Everyone at ${me.org_name} can pick it`}
           emptyTitle="Your team uses Handbook’s built-in models"
-          emptyText="Connect your company’s own key below. It’s tested first, then everyone can pick it in chat."
+          emptyText="Connect your company’s own key below, and every chat model it offers appears in everyone’s model menu."
           chips={chips}
           busy={busy}
           replacing={replacing}
@@ -251,11 +258,11 @@ export default function AdminModelPage() {
           <ModelCard
             icon="key"
             title={saved ? "Replace the company model" : "Connect your company’s key"}
-            description="Three steps. We test the connection before it becomes available to your team."
+            description="We check the key with the provider before your team sees anything."
           >
             <form onSubmit={save} className="mk-steps">
               <Step n={1} title="Choose a provider">
-                <ProviderGrid presets={presets} value={preset} onChange={setPreset} disabled={busy} />
+                <ProviderGrid presets={presets} value={preset} onChange={(p) => { setPreset(p); setTypeIds(false); }} disabled={busy} />
               </Step>
               <Step n={2} title="Paste the API key" hint="Encrypted before it’s stored. Only its last four characters are shown afterwards.">
                 <IconInput
@@ -264,41 +271,25 @@ export default function AdminModelPage() {
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={`Your company’s ${activePreset?.label ?? "provider"} API key`}
+                  placeholder={saved && saved.preset === preset ? `Leave blank to keep the key ending ${saved.key_tail}` : `Your company’s ${activePreset?.label ?? "provider"} API key`}
                   disabled={busy}
-                  required
+                  required={!(saved && saved.preset === preset)}
                   autoComplete="off"
                 />
               </Step>
-              <Step
-                n={3}
-                title="Enter the model ID"
-                hint={
-                  activePreset && (
-                    <a className="mk-link" href={activePreset.models_url} target="_blank" rel="noreferrer">
-                      Browse {activePreset.label} model IDs <Icon name="external" size={13} />
-                    </a>
-                  )
-                }
-              >
-                <IconInput
-                  icon="spark"
-                  id="model"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="For example, gpt-5"
-                  disabled={busy}
-                  required
-                />
-              </Step>
-              <FormFooter note="A short test runs first. Nothing is saved if it fails.">
+              {typeIds && (
+                <Step n={3} title="Type the model IDs">
+                  <TypedModelIds preset={activePreset} value={typed} onChange={setTyped} disabled={busy} />
+                </Step>
+              )}
+              <FormFooter note="We read the key’s model list from the provider; every chat model on it appears in the model menu.">
                 {saved && (
                   <button className="button button-secondary" type="button" onClick={() => setReplacing(false)} disabled={busy}>
                     Cancel
                   </button>
                 )}
-                <button className="button" type="submit" disabled={busy || !model.trim() || !apiKey.trim()}>
-                  {busy ? "Testing connection…" : saved ? "Test and replace" : "Test and connect"}
+                <button className="button" type="submit" disabled={busy || (typeIds && !typed.trim())}>
+                  {busy ? "Reading the key’s models…" : saved ? "Save" : "Connect"}
                 </button>
               </FormFooter>
             </form>

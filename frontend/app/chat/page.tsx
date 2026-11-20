@@ -98,6 +98,9 @@ export default function ChatPage() {
 // coming back to the chat, shows them at once and refreshes behind.
 const chartStarterCache = new Map<string, string[]>();
 
+/** The model menu's sections, in order: whose key answers. */
+const MENU_GROUPS = ["Your key", "Company key", "Handbook"];
+
 function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -1282,20 +1285,20 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
                 footer={{ href: "/account/model", label: models.some((m) => m.backend === "own") ? "Change your key" : "Add your own key" }}
                 options={[
-                  ...(defaultAvailable ? [{ value: "auto", label: modelName(defaultLabel), hint: "Default" }] : []),
+                  ...(defaultAvailable ? [{ value: "auto", label: modelName(defaultLabel), hint: "Default", group: "Handbook" }] : []),
                   ...pickerModels.map((m) => {
-                    // Whose key, under the name: Handbook's is "Default".
-                    const whose = m.backend === "own" ? "Your key" : m.backend === "custom" ? "Company key" : undefined;
-                    const charts = chartMode && m.charts == null ? "May not support charts" : undefined;
+                    const group = m.backend === "own" ? "Your key" : m.backend === "custom" ? "Company key" : "Handbook";
                     return {
                       value: m.id,
-                      // A key someone added shows the exact model ID they typed, so
-                      // the maker's logo is found and it reads as they named it.
-                      label: whose ? m.label : modelName(m.label),
-                      hint: [whose, charts].filter(Boolean).join(" · ") || undefined,
+                      // A key someone added shows the exact model ID, so the maker's
+                      // logo is found and it reads as the provider names it.
+                      label: group === "Handbook" ? modelName(m.label) : m.label,
+                      hint: chartMode && m.charts == null ? "May not support charts" : undefined,
+                      group,
                     };
                   }),
-                ]}
+                  // One section per key, yours first (a stable sort keeps the order within it).
+                ].sort((a, b) => MENU_GROUPS.indexOf(a.group) - MENU_GROUPS.indexOf(b.group))}
                 onChange={(next) => {
                   setModel(next);
                   setModelNote(null);

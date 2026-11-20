@@ -151,16 +151,17 @@ def default_model_only():
 
 
 def payer_choice(org_id: str | None, user_id: str | None = None) -> str | None:
-    """Whose key runs machinery: the person's own model, else the company's,
-    else None (ours). Without a person, the company's or ours. A read fault
-    is ours: the checks must still run."""
+    """Whose key runs everything this person causes: their own model when
+    "use my own key everywhere" is on, else the company's, else None (ours).
+    Without a person (indexing, company jobs), the company's or ours. A read
+    fault is ours: the checks must still run."""
     if not org_id:
         return None
     from .org_model import get_org_model_summary
-    from .own_model import get_own_model_summary
+    from .own_model import own_in_use
 
     try:
-        own = get_own_model_summary(org_id, user_id) if user_id else None
+        own = own_in_use(org_id, user_id)
         if own:
             return own["id"]
         company = get_org_model_summary(org_id)
@@ -355,7 +356,7 @@ class RoutedLLMProvider(LLMProvider):
         from .org_model import get_org_model
 
         org = get_org_model(org_id) if org_id else None
-        if org is None or org.model != model_id:
+        if org is None or model_id not in org.models:
             raise ConfigurationError(
                 f"Model {model_id!r} is not available for this organization."
             )
@@ -365,9 +366,9 @@ class RoutedLLMProvider(LLMProvider):
         if client is not None:
             return client
 
-        extra_body, extra_optional = preset_extra_body(org.preset, org.model)
+        extra_body, extra_optional = preset_extra_body(org.preset, model_id)
         client = OpenAICompatProvider(
-            model=org.model,
+            model=model_id,
             api_key=org.api_key,
             base_url=org.base_url,
             # Shorter than LLM_TIMEOUT: one org's slow endpoint must not hold the
@@ -385,16 +386,16 @@ class RoutedLLMProvider(LLMProvider):
         from .own_model import get_own_model
 
         own = get_own_model(org_id, user_id) if org_id and user_id else None
-        if own is None or own.model != model:
+        if own is None or model not in own.models:
             raise ConfigurationError(f"Your own model {model!r} is not set up.")
         # ponytail: one cached client per person who uses their own model; an LRU if that grows.
         cache_key = (f"user:{user_id}", model, own.version)
         client = self._clients.get(cache_key)
         if client is not None:
             return client
-        extra_body, extra_optional = preset_extra_body(own.preset, own.model)
+        extra_body, extra_optional = preset_extra_body(own.preset, model)
         client = OpenAICompatProvider(
-            model=own.model, api_key=own.api_key, base_url=own.base_url,
+            model=model, api_key=own.api_key, base_url=own.base_url,
             timeout=self._custom_timeout, extra_body=extra_body,
             extra_body_optional=extra_optional, billing="own",
         )
@@ -426,8 +427,13 @@ class RoutedLLMProvider(LLMProvider):
             return self._payer_client()
         model_id = selected_model()
         if model_id is None:
-            # "Default": ours, or with ours off, whoever's key pays.
-            return self._default if handbook_model_on() else self._payer_client()
+            # "Default": their own key when it is used everywhere; else ours, or
+            # with ours off, whoever's key pays.
+            from .own_model import OWN_PREFIX
+
+            if (_PAYER.get() or "").startswith(OWN_PREFIX) or not handbook_model_on():
+                return self._payer_client()
+            return self._default
         if catalog.get(model_id) is not None and not handbook_model_on():
             raise NoModelConfigured("Handbook's own models are not offered here.")
         return self._client_for(model_id)

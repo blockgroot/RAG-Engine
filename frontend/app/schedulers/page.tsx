@@ -7,7 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { SpaceMark } from "@/components/SpaceMark";
 import { useMe } from "@/lib/useMe";
-import { NoModelCard, noCompanyModel } from "@/components/NoModelCard";
+import { NoModelCard, noModel } from "@/components/NoModelCard";
 import {
   api,
   ReportRow,
@@ -415,7 +415,7 @@ export default function SchedulersPage() {
     <AppShell me={me}>
       <main className="reports-page">
         {/* Reports are written by a model: say so before anyone sets one up. */}
-        {noCompanyModel(me) && <NoModelCard me={me} compact companyWork />}
+        {noModel(me) && <NoModelCard me={me} compact />}
         <header className="spaces-hero">
           <span className="ask-scope">
             <span className="ask-scope-dot" aria-hidden />

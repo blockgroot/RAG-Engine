@@ -1097,6 +1097,11 @@ ALTER TABLE user_llm_models
     ADD COLUMN IF NOT EXISTS tokens_per_minute INTEGER NOT NULL DEFAULT 0 CHECK (tokens_per_minute >= 0);
 ALTER TABLE user_llm_models
     ADD COLUMN IF NOT EXISTS tokens_per_day INTEGER NOT NULL DEFAULT 0 CHECK (tokens_per_day >= 0);
+-- Every model the person offers themselves on their key; `model` is the first.
+ALTER TABLE user_llm_models ADD COLUMN IF NOT EXISTS models TEXT[];
+-- "Use my own key everywhere": on, every AI call they cause (chat, Slack, their
+-- reports) runs on their key; off, the company's key does and theirs is unused.
+ALTER TABLE user_llm_models ADD COLUMN IF NOT EXISTS use_everywhere BOOLEAN NOT NULL DEFAULT true;
 
 -- The limits a company's admin sets (app/security/ai_spend.py), in tokens,
 -- input and output together; 0 = no limit. No row = Handbook's defaults

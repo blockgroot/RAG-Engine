@@ -556,18 +556,18 @@ def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
         post_message(token, channel, _NO_DM_ACCESS, thread_ts)
         return
 
-    # Slack has no model picker, so whose key pays decides the model: in a DM
-    # the person's own, else the company's, else ours; in a channel the room
-    # answers, so the company's, else ours (one member's key never pays for it).
+    # Slack has no model picker, so whose key pays decides the model: the
+    # asker's own when they use it everywhere (a DM or a channel mention alike),
+    # else the company's, else ours.
     from ..llm.routed import model_available, use_model, use_payer_keys
 
-    if not model_available(org_id, user.id if is_dm else None):
+    if not model_available(org_id, user.id):
         from ..security.rate_limit import no_model_message
 
         # Said in the thread, never a silent bot: the asker learns what to do.
         post_message(token, channel, no_model_message(getattr(user, "role", None)), thread_ts)
         return
-    model = use_payer_keys(org_id, user.id if is_dm else None)
+    model = use_payer_keys(org_id, user.id)
     use_model(model, org_id=org_id, user_id=user.id)
 
     # The same person and company limits as a question in the web app, so

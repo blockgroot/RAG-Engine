@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export type ModelOption = { value: string; label: string; hint?: string };
+/** `group` heads a section of the menu ("Your key", "Company key"): whose key answers. */
+export type ModelOption = { value: string; label: string; hint?: string; group?: string };
 
 /** The maker's logo for a model name (public/providers); none for an unknown one. */
 function logoFor(label = ""): string | null {
@@ -42,8 +43,18 @@ export function ModelPicker({
   footer?: { href: string; label: string };
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  // A key can list dozens of models; past a handful, the menu searches.
+  const searchable = options.length > 8;
+  const q = query.trim().toLowerCase();
+  const shown = q ? options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q)) : options;
   const root = useRef<HTMLSpanElement>(null);
   const current = options.find((o) => o.value === value) ?? options[0];
+
+  // A long menu opens on the current choice, not at the top (it may sit in the last section).
+  useEffect(() => {
+    if (open) root.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -77,7 +88,10 @@ export function ModelPicker({
         aria-label={`Model: ${current?.label}`}
         title={title}
         disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen((v) => !v);
+          setQuery("");
+        }}
       >
         <Logo label={current?.label} />
         <span className="model-picker-name">{current?.label}</span>
@@ -85,12 +99,29 @@ export function ModelPicker({
       </button>
       {open && (
         <ul className="model-picker-menu" role="listbox" aria-label="Model" onKeyDown={move}>
-          <li className="model-picker-head" aria-hidden>Answer with</li>
-          {options.map((o, i) => (
+          {!options.some((o) => o.group) && <li className="model-picker-head" aria-hidden>Answer with</li>}
+          {searchable && (
+            <li className="model-picker-search">
+              <input
+                className="input"
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={`Search ${options.length} models`}
+                aria-label="Search models"
+              />
+            </li>
+          )}
+          {shown.map((o, i) => [
+            o.group && o.group !== shown[i - 1]?.group && (
+              <li key={`group:${o.group}`} className="model-picker-head" aria-hidden>
+                {o.group}
+              </li>
+            ),
             <li key={o.value} role="option" aria-selected={o.value === value}>
               <button
                 type="button"
-                autoFocus={o.value === value || (i === 0 && !options.some((x) => x.value === value))}
+                autoFocus={!searchable && (o.value === value || (i === 0 && !options.some((x) => x.value === value)))}
                 onClick={() => {
                   onChange(o.value);
                   setOpen(false);
@@ -103,8 +134,8 @@ export function ModelPicker({
                 </span>
                 {o.value === value && <span className="model-picker-check" aria-hidden>✓</span>}
               </button>
-            </li>
-          ))}
+            </li>,
+          ])}
           {footer && (
             <li className="model-picker-foot">
               <a href={footer.href}>{footer.label}</a>

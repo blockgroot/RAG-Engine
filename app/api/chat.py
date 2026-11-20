@@ -147,36 +147,33 @@ def list_models(session: SessionClaims = Depends(get_session)):
     from ..llm.routed import handbook_model_on
 
     handbook = handbook_model_on()
-    if not handbook:
+    from ..llm import own_model
+
+    # "Use my own key everywhere": only their models; nothing else may answer.
+    mine = own_model.own_in_use(session.org_id, session.user_id)
+    if mine or not handbook:
         models = []  # Handbook's own models are not offered: only keys added here
 
-    # The org's own model, added beside the built-ins so members have a way out
-    # when its key breaks.
-    own = org_model.get_org_model_summary(session.org_id)
-    if own:
+    own = None if mine else org_model.get_org_model_summary(session.org_id)
+    for model in own["models"] if own else []:
         models.append(
             {
-                # Company first: `note` is only a hover title, and touch has no hover.
                 # Prefixed: a company model named like one of ours still runs on
                 # the company's key (`routed.COMPANY_PREFIX`).
-                "id": COMPANY_PREFIX + own["model"],
+                "id": COMPANY_PREFIX + model,
                 # The menu says whose key under the name ("Company"), from `backend`.
-                "label": own["model"],
+                "label": model,
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
                 # Not ours to judge: offered in Chart mode with a note.
                 "charts": None,
             }
         )
-    # The person's own model: their key, only they see it.
-    from ..llm import own_model
-
-    mine = own_model.get_own_model_summary(session.org_id, session.user_id)
-    if mine:
+    for model_id, model in zip(mine["ids"], mine["models"]) if mine else []:
         models.append(
             {
-                "id": mine["id"],
-                "label": mine["model"],  # shown with "User" under it
+                "id": model_id,
+                "label": model,  # shown with "Your key" under it
                 "note": f"Your {mine.get('preset_label') or 'own'} key. No Handbook limits.",
                 "backend": "own",
                 "charts": None,
@@ -184,16 +181,16 @@ def list_models(session: SessionClaims = Depends(get_session)):
         )
 
     return {
-        # False when Handbook offers no model of its own: the menu lists only the
-        # company's and the person's, and has no "Default" option.
-        "default_available": handbook,
+        # False when Handbook's own model is not offered (off here, or their own
+        # key is used everywhere): the menu has no "Default" option.
+        "default_available": handbook and not mine,
         "default": catalog.AUTO,
         "default_label": getattr(catalog.get(default_model or ""), "label", None)
         or default_model or "Auto",
         # The default model builds charts; Chart mode always offers it.
         "default_charts": True,
-        # What the menu starts on: the person's own model, else the company's,
-        # else Handbook's ("auto"). The same order as whose key runs the checks.
+        # What the menu starts on: their own model when used everywhere, else
+        # the company's, else Handbook's ("auto"). The order whose key pays.
         "preferred": (mine and mine["id"]) or (own and COMPANY_PREFIX + own["model"]) or catalog.AUTO,
         "models": models,
     }
@@ -254,6 +251,14 @@ def _conversation_belongs_to_scope(
     return row is not None
 
 
+def _model_cannot(text: str) -> bool:
+    """A provider's 400/404 naming the model or a request field: the model
+    picked cannot do this, which another model can. Not a retry."""
+    return (("error code: 400" in text or "error code: 404" in text or "error code: 422" in text)
+            and any(w in text for w in ("tool", "function", "response_format", "json", "model",
+                                         "not supported", "unsupported", "does not exist")))
+
+
 def _user_facing_llm_error(exc: BaseException) -> str:
     """Map provider failures to a short, non-technical chat message."""
     text = str(exc).lower()
@@ -267,6 +272,9 @@ def _user_facing_llm_error(exc: BaseException) -> str:
         )
     if "timeout" in text:
         return "That took too long to answer. Please try again."
+    if _model_cannot(text):
+        return ("This model couldn't do that: it may not support this mode (charts or tools) "
+                "or isn't available on its key. Pick another model in the model menu.")
     return "I couldn't reach the answer service just now. Please try again shortly."
 
 

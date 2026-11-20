@@ -298,16 +298,34 @@ def get_own_model(session: SessionClaims = Depends(get_session)):
 
 @router.put("/llm-model")
 def put_own_model(payload: dict, session: SessionClaims = Depends(get_session)):
-    """Test the key and model with one real call, then save. Never stores one
-    that cannot answer."""
+    """Save your key with every chat model it lists. Saving turns "use my own
+    key everywhere" on. A provider with no list answers ``type_ids`` first."""
     from ..llm import own_model
-    from .llm_model import checked_model, token_limit
+    from .llm_model import checked_models, token_limit
 
     per_minute = token_limit(payload, "tokens_per_minute")
     per_day = token_limit(payload, "tokens_per_day")
-    preset_id, model, api_key, agent = checked_model(payload, own_model.OWN)
-    own_model.save_own_model(session.org_id, session.user_id, preset_id, model, api_key, agent,
+    checked = checked_models(
+        payload, own_model.get_own_model(session.org_id, session.user_id), own_model.OWN)
+    if isinstance(checked, str):
+        return {"model": None, "type_ids": checked}
+    preset, api_key, models = checked
+    own_model.save_own_model(session.org_id, session.user_id, preset.id, models, api_key,
                              per_minute, per_day)
+    return {"model": own_model.get_own_model_summary(session.org_id, session.user_id)}
+
+
+@router.put("/llm-model/use")
+def put_own_model_use(payload: dict, session: SessionClaims = Depends(get_session)):
+    """"Use my own key everywhere": on, chat, Slack and your reports run on your
+    key; off, your company's key does."""
+    from ..llm import own_model
+
+    on = payload.get("use_everywhere")
+    if not isinstance(on, bool):
+        raise HTTPException(status_code=400, detail="use_everywhere must be true or false")
+    if not own_model.set_use_everywhere(session.org_id, session.user_id, on):
+        raise HTTPException(status_code=404, detail="Add your own model first.")
     return {"model": own_model.get_own_model_summary(session.org_id, session.user_id)}
 
 

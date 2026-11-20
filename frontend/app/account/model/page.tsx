@@ -12,7 +12,6 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { PageLoader } from "@/components/PageLoader";
-import { AGENT_RESULT } from "@/components/ProviderPicker";
 import {
   FormFooter,
   Icon,
@@ -21,6 +20,7 @@ import {
   ModelCard,
   ModelStatus,
   ProviderGrid,
+  TypedModelIds,
   Step,
   UseTile,
 } from "@/components/ModelSetup";
@@ -37,7 +37,9 @@ export default function OwnModelPage() {
 
   const [preset, setPreset] = useState("anthropic");
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
+  // Set only when the provider publishes no model list: then IDs are typed.
+  const [typeIds, setTypeIds] = useState(false);
+  const [typed, setTyped] = useState("");
   const [limits, setLimits] = useState<OwnLimits>(NO_LIMITS);
   const [savedLimits, setSavedLimits] = useState<OwnLimits>(NO_LIMITS);
 
@@ -88,15 +90,31 @@ export default function OwnModelPage() {
   const save = (e: React.FormEvent) => {
     e.preventDefault();
     void run(async () => {
-      const { model: next } = await api.saveOwnModel(preset, model.trim(), apiKey.trim(), limits);
+      const ids = typeIds ? typed.split(/[\s,]+/).filter(Boolean) : [];
+      const res = await api.saveOwnModel(preset, apiKey.trim(), limits, ids);
+      if (!res.model) {
+        setTypeIds(true);
+        return res.type_ids ?? "This provider doesn’t list its models. Type the model IDs.";
+      }
+      const next = res.model;
       setSaved(next);
+      setTypeIds(false);
+      setTyped("");
       setSavedLimits(limits);
-      setModel("");
       setApiKey("");
       setReplacing(false);
-      return "Saved. Pick it in the chat’s model menu.";
+      return `Saved with ${next.models.length} ${next.models.length === 1 ? "model" : "models"}. Your key is now used everywhere: chat, Slack and your reports.`;
     });
   };
+
+  const setUse = (on: boolean) =>
+    run(async () => {
+      const { model: next } = await api.setOwnModelUse(on);
+      setSaved(next);
+      return on
+        ? "Your key is used everywhere: chat, Slack and your reports."
+        : "Your company’s key is used everywhere. Your key is kept but unused.";
+    });
 
   const saveLimits = () =>
     run(async () => {
@@ -165,8 +183,8 @@ export default function OwnModelPage() {
           saved={saved}
           scope="Only you can pick it"
           emptyTitle="You’re using your company’s models"
-          emptyText="Add a key from any provider below. It’s tested first, then appears in your chat’s model menu."
-          chips={saved?.agent ? [{ icon: "bolt", text: AGENT_RESULT[saved.agent], tone: saved.agent === "native" || saved.agent === "text" ? "ok" : "warn" }] : []}
+          emptyText="Add a key from any provider below. Every chat model it offers appears in your chat’s model menu."
+          chips={saved ? [{ icon: "bolt", text: saved.use_everywhere ? "Used everywhere" : "Switched off", tone: saved.use_everywhere ? "ok" : "warn" }] : []}
           busy={busy}
           replacing={replacing}
           onReplace={() => setReplacing(true)}
@@ -177,11 +195,11 @@ export default function OwnModelPage() {
           <ModelCard
             icon="key"
             title={saved ? "Replace your model" : "Connect your key"}
-            description="Three steps. We test the connection before anything is saved."
+            description="We check the key with the provider before anything is saved."
           >
             <form onSubmit={save} className="mk-steps">
               <Step n={1} title="Choose a provider">
-                <ProviderGrid presets={presets} value={preset} onChange={setPreset} disabled={busy} />
+                <ProviderGrid presets={presets} value={preset} onChange={(p) => { setPreset(p); setTypeIds(false); }} disabled={busy} />
               </Step>
               <Step n={2} title="Paste your API key" hint="Encrypted before it’s stored. Only its last four characters are shown afterwards.">
                 <IconInput
@@ -190,49 +208,59 @@ export default function OwnModelPage() {
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={`Your ${activePreset?.label ?? "provider"} API key`}
+                  placeholder={saved && saved.preset === preset ? `Leave blank to keep the key ending ${saved.key_tail}` : `Your ${activePreset?.label ?? "provider"} API key`}
                   disabled={busy}
-                  required
+                  required={!(saved && saved.preset === preset)}
                   autoComplete="off"
                 />
               </Step>
-              <Step
-                n={3}
-                title="Enter the model ID"
-                hint={
-                  activePreset && (
-                    <a className="mk-link" href={activePreset.models_url} target="_blank" rel="noreferrer">
-                      Browse {activePreset.label} model IDs <Icon name="external" size={13} />
-                    </a>
-                  )
-                }
-              >
-                <IconInput
-                  icon="spark"
-                  id="model"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="For example, claude-sonnet-5-5"
-                  disabled={busy}
-                  required
-                />
-              </Step>
+              {typeIds && (
+                <Step n={3} title="Type the model IDs">
+                  <TypedModelIds preset={activePreset} value={typed} onChange={setTyped} disabled={busy} />
+                </Step>
+              )}
               {!saved && (
-                <Step n={4} title="Set limits (optional)" hint="A typical question uses 10,000 to 40,000 tokens. Leave 0 for no limit.">
+                <Step n={typeIds ? 4 : 3} title="Set limits (optional)" hint="A typical question uses 10,000 to 40,000 tokens. Leave 0 for no limit.">
                   {limitTiles}
                 </Step>
               )}
-              <FormFooter note="A short test runs first. Nothing is saved if it fails.">
+              <FormFooter note="We read the key’s model list from the provider; every chat model on it appears in your model menu.">
                 {saved && (
                   <button className="button button-secondary" type="button" onClick={() => setReplacing(false)} disabled={busy}>
                     Cancel
                   </button>
                 )}
-                <button className="button" type="submit" disabled={busy || !model.trim() || !apiKey.trim()}>
-                  {busy ? "Testing connection…" : saved ? "Test and replace" : "Test and save"}
+                <button className="button" type="submit" disabled={busy || (typeIds && !typed.trim())}>
+                  {busy ? "Reading the key’s models…" : saved ? "Save" : "Save and use everywhere"}
                 </button>
               </FormFooter>
             </form>
+          </ModelCard>
+        )}
+
+        {saved && (
+          <ModelCard
+            icon="bolt"
+            title="Where your key is used"
+            description="One switch for everything you do. Indexing your company’s documents always uses your company’s key."
+          >
+            <label className="mk-toggle">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={saved.use_everywhere}
+                onChange={(e) => void setUse(e.target.checked)}
+                disabled={busy}
+              />
+              <span>
+                <strong>Use my own key everywhere</strong>
+                <small>
+                  {saved.use_everywhere
+                    ? "On: your chat answers, Slack replies and the reports you schedule run on your key."
+                    : "Off: your company’s key is used everywhere. Your key is kept, unused."}
+                </small>
+              </span>
+            </label>
           </ModelCard>
         )}
 
@@ -253,13 +281,13 @@ export default function OwnModelPage() {
 
         <ModelCard icon="shield" title="How your key is used">
           <div className="mk-uses">
-            <UseTile icon="chat" tag="On your key" title="Your questions">
-              Answers when you pick it, and the checks around every question you ask on the web and in Slack DMs.
-              The documents behind them go to {activePreset?.label ?? "your provider"}.
+            <UseTile icon="chat" tag="On your key, when switched on" title="Everything you do">
+              Your chat answers, your Slack questions (DMs and channels) and the reports you schedule. The
+              documents behind them go to {activePreset?.label ?? "your provider"}.
             </UseTile>
             <UseTile icon="doc" tag="Never on your key" title="Company work" tone="muted">
               Indexing your company&rsquo;s documents and everyone else&rsquo;s questions. Handbook&rsquo;s and your
-              company&rsquo;s limits don&rsquo;t apply to your key.
+              company&rsquo;s limits don&rsquo;t apply to your key; only the ones you set here.
             </UseTile>
           </div>
         </ModelCard>

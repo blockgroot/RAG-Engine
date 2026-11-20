@@ -7,9 +7,9 @@
  * state and API calls.
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
-import type { ModelPreset } from "@/lib/api";
+import { ApiError, type ModelPreset } from "@/lib/api";
 import { ProviderLogo } from "./ProviderPicker";
 
 type IconName = "key" | "lock" | "clock" | "calendar" | "person" | "building" | "check" | "bolt" | "gauge" | "chat" | "doc" | "shield" | "spark" | "external" | "bell";
@@ -88,7 +88,7 @@ export function ModelStatus({
   onReplace,
   onRemove,
 }: {
-  saved: { model: string; preset: string | null; preset_label: string | null; key_tail: string | null } | null;
+  saved: { models: string[]; preset: string | null; preset_label: string | null; key_tail: string | null } | null;
   /** Who can pick it: "Only you", "Everyone at Acme". */
   scope: string;
   emptyTitle: string;
@@ -124,14 +124,15 @@ export function ModelStatus({
       </div>
       <div className="mk-status-body">
         <div className="mk-status-title">
-          <h2>{saved.model}</h2>
+          <h2>{saved.preset_label ?? "Your provider"}</h2>
           <span className="mk-pill is-ok">
             <i aria-hidden /> Active
           </span>
         </div>
         <p>
-          {saved.preset_label ?? "Your provider"} · {scope}
+          {saved.models.length} {saved.models.length === 1 ? "model" : "models"} in the chat menu · {scope}
         </p>
+        <ModelChips models={saved.models} />
         <ul className="mk-chips">
           {saved.key_tail && (
             <li>
@@ -170,6 +171,27 @@ export function ModelStatus({
         )}
       </div>
     </section>
+  );
+}
+
+/** The key's models as chips; a long list folds after the first few. */
+export function ModelChips({ models }: { models: string[] }) {
+  const [all, setAll] = useState(false);
+  const FOLD = 8;
+  const shown = all ? models : models.slice(0, FOLD);
+  return (
+    <ul className="mk-models" aria-label="Models in the chat menu">
+      {shown.map((m) => (
+        <li key={m}>{m}</li>
+      ))}
+      {models.length > FOLD && (
+        <li>
+          <button type="button" className="mk-models-more" onClick={() => setAll((v) => !v)}>
+            {all ? "Show fewer" : `+${models.length - FOLD} more`}
+          </button>
+        </li>
+      )}
+    </ul>
   );
 }
 
@@ -304,5 +326,43 @@ export function UseTile({ icon, tag, title, children, tone }: { icon: IconName; 
         <p>{children}</p>
       </div>
     </article>
+  );
+}
+
+/**
+ * Shown only when the provider publishes no model list: then the IDs are typed,
+ * and each gets one short test. Otherwise every chat model the key lists is
+ * offered, nobody picks.
+ */
+export function TypedModelIds({
+  preset,
+  value,
+  onChange,
+  disabled,
+}: {
+  preset: ModelPreset | undefined;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="mk-choose">
+      <IconInput
+        icon="spark"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Model IDs, separated by commas"
+        disabled={disabled}
+        required
+      />
+      <p className="mk-hint">
+        {preset?.label ?? "This provider"} doesn&rsquo;t list its models, so each ID gets one short test.{" "}
+        {preset && (
+          <a className="mk-link" href={preset.models_url} target="_blank" rel="noreferrer">
+            Browse model IDs <Icon name="external" size={13} />
+          </a>
+        )}
+      </p>
+    </div>
   );
 }

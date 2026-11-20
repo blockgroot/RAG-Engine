@@ -639,18 +639,22 @@ export interface OrgModel {
   key_tail: string | null;
   checked_at: string | null;
   saved_at: string | null;
-  /** Agent mode's tool-calling test at save; null for a model saved before it. */
-  agent: "native" | "text" | "none" | "unknown" | null;
+  /** Every model offered on this key; ``model`` is the first. */
+  models: string[];
 }
 
 /** A person's own model; `id` is what the picker sends (`own:<model>`). */
 export interface OwnModel {
   id: string;
+  /** What the picker sends for each of ``models``. */
+  ids: string[];
   model: string;
+  models: string[];
   preset: string;
   preset_label: string | null;
   key_tail: string | null;
-  agent: OrgModel["agent"];
+  /** On: chat, Slack and their reports run on this key. Off: the company's does. */
+  use_everywhere: boolean;
   saved_at: string | null;
   /** Limits the person set on their own key, in tokens; 0 = no limit. */
   tokens_per_minute: number;
@@ -1051,10 +1055,11 @@ export const api = {
   getUpdateProgress: () => request<UpdateProgress>("/admin/updates/progress"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),
-  saveOrgModel: (preset: string, model: string, apiKey: string) =>
-    request<{ model: OrgModel }>("/admin/llm-model", {
+  /** Saves every model the key lists. `type_ids` (nothing saved): the provider has no list. */
+  saveOrgModel: (preset: string, apiKey: string, models: string[] = []) =>
+    request<{ model: OrgModel | null; type_ids?: string }>("/admin/llm-model", {
       method: "PUT",
-      body: JSON.stringify({ preset, model, api_key: apiKey }),
+      body: JSON.stringify({ preset, models, api_key: apiKey }),
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),
@@ -1066,10 +1071,16 @@ export const api = {
     }),
   getOwnModel: () =>
     request<{ model: OwnModel | null; presets: ModelPreset[] }>("/account/llm-model"),
-  saveOwnModel: (preset: string, model: string, apiKey: string, limits: OwnLimits) =>
-    request<{ model: OwnModel }>("/account/llm-model", {
+  /** Saves every model the key lists. `type_ids` (nothing saved): the provider has no list. */
+  saveOwnModel: (preset: string, apiKey: string, limits: OwnLimits, models: string[] = []) =>
+    request<{ model: OwnModel | null; type_ids?: string }>("/account/llm-model", {
       method: "PUT",
-      body: JSON.stringify({ preset, model, api_key: apiKey, ...limits }),
+      body: JSON.stringify({ preset, models, api_key: apiKey, ...limits }),
+    }),
+  setOwnModelUse: (useEverywhere: boolean) =>
+    request<{ model: OwnModel }>("/account/llm-model/use", {
+      method: "PUT",
+      body: JSON.stringify({ use_everywhere: useEverywhere }),
     }),
   saveOwnLimits: (limits: OwnLimits) =>
     request<{ model: OwnModel }>("/account/llm-model/limits", {
