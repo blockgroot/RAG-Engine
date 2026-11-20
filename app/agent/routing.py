@@ -625,6 +625,7 @@ def _try_question_route(
     chart_from_words: bool = False,
     viewer=None,
     context: str | None = None,
+    reshape: bool = False,
 ) -> RoutingDecision | None:
     """Ask's small check: a live code question, and the live-data verdict.
 
@@ -640,7 +641,8 @@ def _try_question_route(
     names_sheet = (_ROUTING_POOL.submit(_names_a_sheet, checked, org_id, workspace_id, viewer)
                    if tables_on else None)
     try:
-        intent = classify_route(checked, github="github" in connected, table=tables_on)
+        intent = classify_route(checked, github="github" in connected, table=tables_on,
+                                reshape=reshape)
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: question check failed", exc_info=True)
         return None
@@ -649,6 +651,11 @@ def _try_question_route(
     if chart_out is not None:
         chart_out.append(getattr(intent, "chart_ask", None))
     ask = getattr(intent, "chart_ask", None)
+    if getattr(intent, "reshape", False) and ask != "visual":
+        # Only the form of the last answer changes: the caller rewrites it, after
+        # re-checking its sources, instead of searching again.
+        return RoutingDecision(WORKSPACE_KEY if workspace_id is not None else POLICY_KEY,
+                               "reshape")
     if chart_from_words and ask == "visual":
         # Slack has no toggle: an ask to SEE a chart is Chart mode there. A count
         # follows the web's rule below (charted only when narrowed): "count" as
@@ -1203,6 +1210,7 @@ def choose_agent(
     uploads=None,
     user_id: str | None = None,
     channel_tag: str | None = None,
+    allow_reshape: bool = False,
 ) -> RoutingDecision:
     """Which agent answers, plus the question check's live-data verdict.
 
@@ -1217,6 +1225,7 @@ def choose_agent(
         context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
         chart_mode=chart_mode, chart_out=chart, chart_from_words=chart_from_words,
         uploads=uploads, user_id=user_id, channel_tag=channel_tag,
+        allow_reshape=allow_reshape,
     )
     return replace(decision, needs_live=live[0] if live else None,
                    chart_ask=chart[0] if chart else None)
@@ -1238,8 +1247,12 @@ def _choose_agent(
     uploads=None,
     user_id: str | None = None,
     channel_tag: str | None = None,
+    allow_reshape: bool = False,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
+
+    ``allow_reshape`` (web chat, after an earlier turn) lets the question check
+    say the question only reshapes the last answer (reason ``reshape``).
 
     ``context`` is the previous question: when no source clearly wins on the
     question alone, it is re-probed with the turn it follows (a new topic has
@@ -1297,7 +1310,7 @@ def _choose_agent(
     classified = _try_question_route(
         question, connected, org_id, workspace_id, live_out=live_out,
         chart_out=chart_out, chart_from_words=chart_from_words, viewer=viewer,
-        context=context,
+        context=context, reshape=allow_reshape and context is not None,
     )
     if classified is not None:
         return classified
