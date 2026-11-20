@@ -216,11 +216,14 @@ def create_app() -> FastAPI:
         allowed=[*settings.cors_origins, settings.frontend_url or ""],
         mode=settings.origin_check,
     )
+    attachments = AttachmentSettings.from_env()
     app.add_middleware(
         BodyLimitMiddleware,
         max_bytes=settings.max_request_bytes,
-        # The upload route's own cap, plus room for the multipart wrapping.
-        upload_max_bytes=AttachmentSettings.from_env().max_bytes + 1024 * 1024,
+        # One request carries every file picked (`frontend/lib/api.ts`), up to a
+        # chat's whole allowance, each at the per-file cap, plus multipart room.
+        upload_max_bytes=attachments.max_bytes * attachments.max_per_conversation
+        + 1024 * 1024,
     )
     app.add_middleware(RequestIdMiddleware)  # outermost: every refusal above carries an id
 

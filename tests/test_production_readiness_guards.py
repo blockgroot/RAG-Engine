@@ -58,3 +58,16 @@ def test_origin_check(mode, origin, expected):
 def test_the_request_host_itself_is_same_origin():
     client = _app(allowed=[], mode="enforce")
     assert client.post("/echo", content=b"{}", headers={"Origin": "http://testserver"}).status_code == 200
+
+
+def test_upload_cap_fits_a_full_batch_of_files(monkeypatch):
+    """The browser sends every picked file in one request: two files under the
+    per-file cap must not be refused as one oversized body."""
+    from app.api.main import create_app
+    from app.config.settings import AttachmentSettings
+    from app.security.request_guards import BodyLimitMiddleware
+
+    app = create_app()
+    guard = next(m for m in app.user_middleware if m.cls is BodyLimitMiddleware)
+    a = AttachmentSettings.from_env()
+    assert guard.kwargs["upload_max_bytes"] >= a.max_bytes * a.max_per_conversation

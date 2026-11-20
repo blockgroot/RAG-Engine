@@ -1107,17 +1107,9 @@ CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
 -- Live-read audit: one row per live read. Never the token, never the result text.
 -- Slack event ids already answered (app/api/slack_events.py). A cold start
 -- can miss Slack's 3-second ack, and Slack resends the event; this answers each
--- event once, also when only a resend reached us. No content, no tenant: just
--- Slack's id. Rows older than a day are deleted by the upkeep pass.
--- Secrets of the whole deployment (not a company's), encrypted like every
--- credential. First: the Notion webhook's verification token, which Notion
--- shows nowhere and which used to reach the logs (app/api/webhooks.py).
-CREATE TABLE IF NOT EXISTS deployment_secrets (
-    name            TEXT PRIMARY KEY,
-    value_encrypted TEXT NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
+-- event once, also when only a resend reached us. Slack's id; the question
+-- itself only while it is pending (below). Rows older than a day are deleted by
+-- the upkeep pass.
 CREATE TABLE IF NOT EXISTS slack_event_receipts (
     event_id    TEXT PRIMARY KEY,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1134,6 +1126,15 @@ ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS alive_at TIMESTAMPTZ;
 ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_slack_event_receipts_pending
     ON slack_event_receipts (alive_at) WHERE status = 'pending';
+
+-- Secrets of the whole deployment (not a company's), encrypted like every
+-- credential. First: the Notion webhook's verification token, which Notion
+-- shows nowhere and which used to reach the logs (app/api/webhooks.py).
+CREATE TABLE IF NOT EXISTS deployment_secrets (
+    name            TEXT PRIMARY KEY,
+    value_encrypted TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS live_tool_calls (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
