@@ -23,6 +23,8 @@
 - Failures raise `ProviderError` subclasses (`app/core/exceptions.py`) with `cause=` and `raise … from`. Heavy imports inside functions. `from __future__ import annotations`. Docstrings say why.
 - `app/askfriend/` imports nothing from `app/actions/` or `app/mcphost/`.
 - Tests: run ONLY the new/changed test files (`pytest tests/test_ask_friend*.py tests/test_untrusted_policy.py -q`); they use the staging DB from `.env`. Never run the full suite.
+- **One recipient per refused turn.** Once a turn has `ask_friend_sent`, any further send for it → 409 `already_sent`; the button is replaced by the "Sent to" line.
+- **Names:** a person is shown and named by `users.display_name`, falling back to their email when it is NULL — never a name guessed from the email (schema comment at `users.display_name`).
 - Commits on `feat/ask-a-friend` only; never push.
 
 ## Review Focus
@@ -31,7 +33,8 @@
 - A recipient with no Slack account in the connected team → Slack option unavailable for them; send with `via="slack"` returns 409 `slack_unavailable`, never a silent email fallback.
 - A very long conversation → only the latest `MAX_TURNS = 12` turns, each answer cut to 2000 chars, and the prompt says older turns were left out.
 - A reopened chat → the "Ask a friend" button and the "Sent to …" line both come from stored `meta`, not from the live `done` event.
-- Sending twice for the same turn → allowed (a second colleague), each records its own entry in `ask_friend_sent` (list), each takes the daily bucket.
+- Two sends racing for the same turn (double click, two tabs) → exactly one is delivered and recorded; the other gets 409 `already_sent` (the conditional UPDATE decides, before delivery is attempted).
+- A failed delivery → nothing recorded, the turn can be sent again (same or other channel) and the UI offers exactly that.
 
 ---
 
@@ -44,7 +47,7 @@
 - Test: `tests/test_ask_friend_meta.py`
 
 **Interfaces:**
-- Produces: `done` payload key `ask_friend: bool` (true exactly when `record_gap` ran); `"ask_friend"` and `"ask_friend_sent"` in `_META_KEYS`; `add_ask_friend_sent(*, conversation_id: str, org_id: str, user_id: str, question: str, entry: dict) -> bool` — appends `entry` to `meta.ask_friend_sent` (a JSON list) on the newest turn of that conversation whose `question` matches, only if the conversation belongs to `user_id` and `org_id`; returns False when no row matched.
+- Produces: `done` payload key `ask_friend: bool` (true exactly when `record_gap` ran); `"ask_friend"` and `"ask_friend_sent"` in `_META_KEYS`; `claim_ask_friend(*, conversation_id: str, org_id: str, user_id: str, question: str, entry: dict) -> bool` — sets `meta.ask_friend_sent = entry` (one object) on the newest turn of that conversation whose `question` matches, only if the conversation belongs to `user_id` and `org_id`, `meta.ask_friend` is true, and `ask_friend_sent` is not yet set; returns False otherwise. `release_ask_friend(*, conversation_id, org_id, user_id, question) -> None` removes the key again (used when delivery fails).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -53,21 +56,24 @@ def test_meta_keeps_ask_friend_flags():
     meta = meta_for_storage({"source": "notion", "ask_friend": True})
     assert meta["ask_friend"] is True
     assert meta_for_history({"source": "notion", "ask_friend": True,
-                             "ask_friend_sent": [{"to_name": "p@x.com", "via": "slack", "at": "t"}]}
-                            )["ask_friend_sent"][0]["via"] == "slack"
+                             "ask_friend_sent": {"to_name": "Priya Shah", "via": "slack", "at": "t"}}
+                            )["ask_friend_sent"]["via"] == "slack"
 
-def test_add_ask_friend_sent_appends_only_for_owner(org):  # staging DB, org fixture like tests/test_feedback.py
+def test_claim_is_once_and_owner_only(org):  # staging DB, org fixture like tests/test_feedback.py
     # conversation with one turn (question "q?") owned by user A, meta {"source":"none","ask_friend":true}
-    assert add_ask_friend_sent(conversation_id=cid, org_id=org, user_id=a, question="q?",
-                               entry={"to_name": "b@x.com", "via": "email", "at": "t1"})
-    assert add_ask_friend_sent(conversation_id=cid, org_id=org, user_id=a, question="q?",
-                               entry={"to_name": "c@x.com", "via": "slack", "at": "t2"})
-    assert not add_ask_friend_sent(conversation_id=cid, org_id=org, user_id=b, question="q?", entry={})
-    # reading the turn back: meta.ask_friend_sent has 2 entries in order
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=b, question="q?", entry={"via": "email"})
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?",
+                            entry={"to_name": "Priya Shah", "via": "email", "at": "t1"})
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?", entry={"via": "slack"})
+    release_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?")
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?", entry={"via": "slack"})
+
+def test_claim_refuses_a_turn_that_was_answered(org):  # meta without ask_friend
+    assert not claim_ask_friend(conversation_id=cid2, org_id=org, user_id=a, question="q?", entry={})
 ```
 
 - [ ] **Step 2: Run** `pytest tests/test_ask_friend_meta.py -q` — Expected: FAIL (ImportError / KeyError).
-- [ ] **Step 3: Implement.** Add the two keys to `_META_KEYS`. `add_ask_friend_sent`: one `UPDATE conversation_turns t SET meta = jsonb_set(coalesce(t.meta,'{}'), '{ask_friend_sent}', coalesce(t.meta->'ask_friend_sent','[]') || %s::jsonb) FROM conversations c WHERE …` joining on `c.user_id`/`c.org_id`, newest `turn_index` with that question, `RETURNING 1`. In `chat.py`, set a local `gap_recorded = True` inside the existing gap `if`, and add `"ask_friend": gap_recorded` to the `done` payload (the attachment path at ~1192 does the same). Add `ask_friend?: boolean; ask_friend_sent?: {to_name: string; via: "slack" | "email"; at: string}[]` to the frontend payload/meta types.
+- [ ] **Step 3: Implement.** Add the two keys to `_META_KEYS`. `claim_ask_friend`: one conditional `UPDATE conversation_turns t SET meta = jsonb_set(t.meta, '{ask_friend_sent}', %s::jsonb) FROM conversations c WHERE …` joining on `c.user_id`/`c.org_id`, newest `turn_index` with that question, `AND (t.meta->>'ask_friend')::boolean AND NOT (t.meta ? 'ask_friend_sent')`, `RETURNING 1`. `release_ask_friend`: same match, `SET meta = t.meta - 'ask_friend_sent'`. In `chat.py`, set a local `gap_recorded = True` inside the existing gap `if`, and add `"ask_friend": gap_recorded` to the `done` payload (the attachment path at ~1192 does the same). Add `ask_friend?: boolean; ask_friend_sent?: {to_name: string; via: "slack" | "email"; at: string}` to the frontend payload/meta types.
 - [ ] **Step 4: Run** `pytest tests/test_ask_friend_meta.py -q` — Expected: PASS.
 - [ ] **Step 5: Commit** `git commit -m "Ask a friend: mark refused turns, store sent record"`
 
@@ -191,11 +197,11 @@ def test_sendgrid_payload_carries_reply_to(monkeypatch):  # _send_sendgrid with 
 **Interfaces:**
 - Consumes: Tasks 1–4.
 - Produces (routes, all `Depends(get_session)` + `limit_request`):
-  - `GET /ask-friend/people?workspace_id=` → `{"people": [{"user_id", "email"}]}` (scope members minus the asker, sorted by email).
+  - `GET /ask-friend/people?workspace_id=` → `{"people": [{"user_id", "name", "email"}]}` (scope members minus the asker; `name` = `display_name` or the email; sorted by name). `list_workspace_members` / `list_members` gain `display_name` in their result (one extra column).
   - `POST /ask-friend/check` body `{conversation_id, question, recipient_user_id, workspace_id?}` → `{"needs_approval": bool, "slack_available": bool}`.
   - `POST /ask-friend/send` body `{conversation_id, question, recipient_user_id, via: "slack"|"email", approve_private: bool, model?: str, workspace_id?}` → `{"sent": {"to_name", "via", "at"}}`.
-  - Errors: 403 recipient not in scope / asker not a space member; 404 turn not found or not `ask_friend`; 409 `approval_required`; 409 `slack_unavailable`; 429 from limits; 502 `{"detail": "delivery_failed"}` on `DeliveryError`.
-- Order in `send`: validate scope and turn → `needs_approval` → `limit_ask_friend` → (email: `limit_email`) → `limit_question` → summarize → deliver → `add_ask_friend_sent`. `to_name` is the recipient's email (users have no display name); `at` is ISO UTC. Asker name = the part of their email before `@`, title-cased per dot-separated part (`rahul.verma` → `Rahul Verma`).
+  - Errors: 403 recipient not in scope / asker not a space member; 404 turn not found or not `ask_friend`; 409 `already_sent`; 409 `approval_required`; 409 `slack_unavailable`; 429 from limits; 502 `{"detail": "delivery_failed"}` on `DeliveryError`.
+- Order in `send`: validate scope and turn → `needs_approval` → limits (`limit_ask_friend`, email: `limit_email`, `limit_question`) → `claim_ask_friend` (False → 409 `already_sent`) → summarize → deliver → on any failure after the claim, `release_ask_friend` and return 502 `delivery_failed`. `to_name` and the asker's name are `display_name` or, when NULL, the email; `at` is ISO UTC.
 
 - [ ] **Step 1: Write the failing tests** (TestClient + session cookie as in `tests/test_api_github_admin.py`; monkeypatch `summary.summarize` and `deliver.send_slack/send_email`)
 
@@ -210,7 +216,9 @@ def test_private_with_approval_sends_and_records(client, ...):
     # turn meta.ask_friend_sent[-1]["via"] == "email"
 def test_slack_unavailable_is_409(client, ...): ...  # slack_token -> None
 def test_delivery_failure_is_502_and_records_nothing(client, ...): ...
-def test_daily_cap_refuses_21st(client, ..., monkeypatch): ...  # RATE_LIMIT_ASK_FRIEND_PER_DAY=1 → second send 429
+def test_second_send_for_same_turn_is_409(client, ...): ...  # already_sent, deliver called once
+def test_failed_delivery_can_be_retried_by_email(client, ...): ...  # slack raises → 502; then via=email → 200
+def test_daily_cap_refuses(client, ..., monkeypatch): ...  # RATE_LIMIT_ASK_FRIEND_PER_DAY=1, two turns → second 429
 ```
 
 - [ ] **Step 2: Run** `pytest tests/test_ask_friend_api.py -q` — Expected: FAIL.
@@ -229,8 +237,8 @@ def test_daily_cap_refuses_21st(client, ..., monkeypatch): ...  # RATE_LIMIT_ASK
 - Consumes: Task 5 routes; `message.done?.ask_friend ?? message.meta?.ask_friend`; `message.meta?.ask_friend_sent` plus any sent this session.
 - Produces: `api.askFriendPeople(workspaceId?)`, `api.askFriendCheck(body)`, `api.askFriendSend(body)`.
 
-- [ ] **Step 1:** `AskFriend` renders a `chat-chart-hint` button "Ask a friend"; clicking opens an inline panel: a `<select>` of people (email), radio Slack/Email (Slack disabled with the note "Not in your Slack" when `slack_available` is false; default Slack when available), the approval checkbox with the exact copy `The summary includes information from private documents you can access that {email} can't open. I approve sending it.` shown only when `needs_approval`, and **Send** (disabled until a person is picked and, when needed, the box is ticked; shows "Sending…" while waiting). `check` runs on each person change. Errors show inline: 429 → the server message; 502 → "Couldn't send. Try again or pick email."
-- [ ] **Step 2:** After success, and for each stored `ask_friend_sent` entry, show `Sent to {to_name} via {Slack|email} ✓` under the answer; the button stays for asking another person.
+- [ ] **Step 1:** `AskFriend` renders a `chat-chart-hint` button "Ask a friend"; clicking opens an inline panel: a `<select>` of people (display name, email as secondary text), radio Slack/Email (Slack disabled with the note "Not in your Slack" when `slack_available` is false; default Slack when available), the approval checkbox with the exact copy `The summary includes information from private documents you can access that {email} can't open. I approve sending it.` shown only when `needs_approval`, and **Send** (disabled until a person is picked and, when needed, the box is ticked; shows "Sending…" while waiting). `check` runs on each person change. Errors show inline: 429 → the server message; 409 `already_sent` → show the turn's sent line. **On 502:** `Failed to send.` with two buttons, `Send again` (same person, same channel) and — when the channel was Slack — `Send by email instead` (same person, email); both re-run send, keeping the approval tick.
+- [ ] **Step 2:** After success, or when the turn has a stored `ask_friend_sent`, show `Sent to {to_name} via {Slack|email} ✓` under the answer **instead of** the button (one recipient per turn).
 - [ ] **Step 3: Run** `cd frontend && npm run build` — Expected: build succeeds with no type errors.
 - [ ] **Step 4: Verify manually** with the app running (`run` skill): ask an unanswerable question → button → send by email (console sender prints the email with Reply-To) → "Sent to …" appears and survives reopening the chat.
 - [ ] **Step 5: Commit** `git commit -m "Ask a friend: chat button and panel"`
@@ -240,6 +248,6 @@ def test_daily_cap_refuses_21st(client, ..., monkeypatch): ...  # RATE_LIMIT_ASK
 **Files:**
 - Modify: `CLAUDE.md` (§3, after the conversation-is-personal bullet), `docs/handbook/PRODUCT_STATUS.md` (feature table + ship note)
 
-- [ ] **Step 1:** Add to CLAUDE.md §3: `- **Ask a friend** (`app/askfriend/`): from a refused web-chat turn the asker sends an AI summary of their conversation to ONE member of the chat's scope they picked (never the model), by bot Slack DM or email with Reply-To. Content the recipient cannot open (a cited document outside their `Viewer`, an attachment, a live read) needs the asker's tick, re-checked on send (`privacy.needs_approval`). It is a notification, not an Act write; replies are not tracked.`
+- [ ] **Step 1:** Add to CLAUDE.md §3: `- **Ask a friend** (`app/askfriend/`): from a refused web-chat turn the asker sends an AI summary of their conversation to ONE member of the chat's scope they picked (never the model), once per turn, by bot Slack DM or email with Reply-To. Content the recipient cannot open (a cited document outside their `Viewer`, an attachment, a live read) needs the asker's tick, re-checked on send (`privacy.needs_approval`). It is a notification, not an Act write; replies are not tracked.`
 - [ ] **Step 2:** Add a PRODUCT_STATUS row: `| Ask a friend | On "No answer found", send a colleague in your space an AI summary + the question by Slack or email; private content needs a tick | Built 20 Nov (branch) | tests/test_ask_friend_*.py | Replies not tracked; web chat only |`.
 - [ ] **Step 3: Commit** `git commit -m "Ask a friend: CLAUDE.md rule and status"`
