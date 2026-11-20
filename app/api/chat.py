@@ -111,11 +111,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 def _is_own_model(org_id: str, model: str | None) -> bool:
-    """True only for THIS org's configured model id."""
-    if not model:
-        return False
-    own = org_model.get_org_model_summary(org_id)
-    return bool(own and own["model"] == model)
+    """True only for one of THIS org's offered model ids."""
+    return org_model.offers(org_id, model)
 
 
 @router.get("/usage")
@@ -154,12 +151,12 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # The org's own model, added beside the built-ins so members have a way out
     # when its key breaks.
     own = org_model.get_org_model_summary(session.org_id)
-    if own:
+    for model in own["models"] if own else []:
         models.append(
             {
                 # Company first: `note` is only a hover title, and touch has no hover.
-                "id": own["model"],
-                "label": f"Your company's model — {own['model']}",
+                "id": model,
+                "label": f"Your company's model — {model}",
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
                 # Not ours to judge: offered in Chart mode with a note.
@@ -232,6 +229,14 @@ def _conversation_belongs_to_scope(
     return row is not None
 
 
+def _model_cannot(text: str) -> bool:
+    """A provider's 400/404 naming the model or a request field: the model
+    picked cannot do this, which another model can. Not a retry."""
+    return (("error code: 400" in text or "error code: 404" in text or "error code: 422" in text)
+            and any(w in text for w in ("tool", "function", "response_format", "json", "model",
+                                         "not supported", "unsupported", "does not exist")))
+
+
 def _user_facing_llm_error(exc: BaseException) -> str:
     """Map provider failures to a short, non-technical chat message."""
     text = str(exc).lower()
@@ -245,6 +250,9 @@ def _user_facing_llm_error(exc: BaseException) -> str:
         )
     if "timeout" in text:
         return "That took too long to answer. Please try again."
+    if _model_cannot(text):
+        return ("This model couldn't do that: it may not support this mode (charts or tools) "
+                "or isn't available on its key. Pick another model in the model menu.")
     return "I couldn't reach the answer service just now. Please try again shortly."
 
 

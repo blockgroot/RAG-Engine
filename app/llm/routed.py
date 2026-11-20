@@ -256,7 +256,7 @@ class RoutedLLMProvider(LLMProvider):
         from .org_model import get_org_model
 
         org = get_org_model(org_id) if org_id else None
-        if org is None or org.model != model_id:
+        if org is None or model_id not in org.models:
             raise ConfigurationError(
                 f"Model {model_id!r} is not available for this organization."
             )
@@ -266,9 +266,9 @@ class RoutedLLMProvider(LLMProvider):
         if client is not None:
             return client
 
-        extra_body, extra_optional = preset_extra_body(org.preset, org.model)
+        extra_body, extra_optional = preset_extra_body(org.preset, model_id)
         client = OpenAICompatProvider(
-            model=org.model,
+            model=model_id,
             api_key=org.api_key,
             base_url=org.base_url,
             # Shorter than LLM_TIMEOUT: one org's slow endpoint must not hold the

@@ -84,76 +84,73 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-#: Agent mode's test: one tool offered, one call asked for. A model that never
-#: calls a tool drafts nothing, and the admin should learn that when adding it.
-AGENT_TOOL = {"type": "function", "function": {
-    "name": "save_note", "description": "Save a short note.",
-    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}}
-AGENT_PROMPT = 'Save a note that says "ready" with the save_note tool.'
+#: Model IDs an admin may type for a provider that publishes no list.
+MAX_TYPED_MODELS = 25
 
 
-def _agent_probe(preset: org_model.Preset, model: str, api_key: str) -> str:
-    """How the model calls tools: ``"native"``, ``"text"`` (JSON text Agent mode reads), ``"none"`` or ``"unknown"`` (test failed).
-
-    Never blocks saving: the model may still answer well.
-    """
-    from ..actions.loop import _calls_in_text
-
-    extra_body, extra_optional = preset_extra_body(preset.id, model)
-    client = OpenAICompatProvider(model=model, api_key=api_key, base_url=preset.base_url,
-                                  timeout=PROBE_TIMEOUT, max_retries=0, extra_body=extra_body,
-                                  extra_body_optional=extra_optional, billing="company")
-    try:
-        result = client.generate_with_tools([{"role": "user", "content": AGENT_PROMPT}],
-                                            tools=[AGENT_TOOL], tool_choice="auto")
-    except ProviderError as exc:
-        # A provider that refuses the tools field outright cannot run Agent mode.
-        said = str(exc).lower()
-        if "tool" in said and ("support" in said or "not allowed" in said or "unknown" in said):
-            return "none"
-        logger.warning("Agent test of %s failed: %s", model, exc)
-        return "unknown"
-    if any(c.name == "save_note" for c in result.tool_calls or []):
-        return "native"
-    return "text" if _calls_in_text(result.text, [AGENT_TOOL]) else "none"
-
-
-@router.get("")
-def get_model(session: SessionClaims = Depends(require_admin)):
-    """The saved model, or ``{"model": null}``. Never includes the key."""
-    return {"model": org_model.get_org_model_summary(session.org_id)}
-
-
-@router.get("/presets")
-def list_presets(session: SessionClaims = Depends(require_admin)):
-    """The providers we will talk to, with their (fixed) base URLs."""
-    return {
-        "presets": [
-            {"id": p.id, "label": p.label, "models_url": p.models_url}
-            for p in org_model.PRESETS
-        ]
-    }
-
-
-@router.put("")
-def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
-    """Validate, probe, then save. A model that cannot answer is never stored."""
+def _key_for(payload: dict, org_id: str) -> tuple[org_model.Preset, str]:
+    """The provider and key from the form, or the saved key when the admin
+    left the key blank to refresh the models (same provider only)."""
     preset_id = bounded(payload.get("preset") or "", field="preset", limit=40)
-    model = bounded(payload.get("model") or "", field="model", limit=MAX_MODEL_CHARS)
-    api_key = bounded(payload.get("api_key") or "", field="api_key", limit=MAX_KEY_CHARS)
-
+    api_key = bounded(payload.get("api_key") or "", field="api_key", limit=MAX_KEY_CHARS,
+                      required=False).strip()
     try:
         preset = org_model.get_preset(preset_id)
     except ProviderError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if not api_key:
+        saved = org_model.get_org_model(org_id)
+        if saved is None or saved.preset != preset.id:
+            raise HTTPException(status_code=400, detail="Paste the API key.")
+        api_key = saved.api_key
+    return preset, api_key
 
-    api_key = api_key.strip()
-    model = model.strip()
 
-    # Probe BEFORE saving, so a typo never becomes a broken option in every
-    # member's dropdown.
-    _probe(preset, model, api_key)
-    agent = _agent_probe(preset, model, api_key)
+def _typed(payload: dict) -> list[str]:
+    raw = payload.get("models") or []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="models must be a list.")
+    models = [m for m in dict.fromkeys(
+        bounded(str(m), field="model", limit=MAX_MODEL_CHARS).strip() for m in raw) if m]
+    if len(models) > MAX_TYPED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Type at most {MAX_TYPED_MODELS} model IDs.")
+    return models
+
+
+def checked_models(payload: dict, org_id: str) -> tuple[org_model.Preset, str, list[str]] | str:
+    """``(preset, key, models)``: every chat model on the key's own list, from one
+    request that also proves the key. Nobody picks; the chat menu offers them all.
+
+    A provider with no list returns its message (the admin types IDs) until IDs
+    are typed; each typed ID then gets one short test call, in parallel."""
+    preset, api_key = _key_for(payload, org_id)
+    try:
+        models = org_model.list_provider_models(preset, api_key)
+    except org_model.ModelListUnavailable as exc:
+        typed = _typed(payload)
+        if not typed:
+            return str(exc)
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(8, len(typed))) as pool:
+            list(pool.map(lambda m: _probe(preset, m, api_key), typed))
+        return preset, api_key, typed
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not models:
+        raise HTTPException(status_code=400, detail=f"{preset.label} lists no chat models for this key.")
+    return preset, api_key, models
+
+
+@router.put("")
+def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
+    """Save the key and every model it lists. No test answer per model: a
+    model that cannot chart or call tools says so when it is used. A provider
+    with no list answers ``type_ids`` (nothing saved) until IDs are typed."""
+    checked = checked_models(payload, session.org_id)
+    if isinstance(checked, str):
+        return {"model": None, "type_ids": checked}
+    preset, api_key, models = checked
 
     from datetime import datetime, timezone
 
@@ -164,8 +161,8 @@ def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
             access_token=api_key,
             refresh_token=None,
             expires_at=None,
-            external_workspace_id=model,
-            external_workspace_name=f"{model} (company)",
+            external_workspace_id=models[0],
+            external_workspace_name=f"{models[0]} (company)",
         ),
         connected_by_user_id=session.user_id,
     )
@@ -173,12 +170,12 @@ def put_model(payload: dict, session: SessionClaims = Depends(require_admin)):
         session.org_id,
         org_model.PROVIDER,
         {
-            "preset": preset_id,
+            "preset": preset.id,
+            "models": models,
             # Last 4 only. Enough for an admin to recognise which key is in
             # place; useless to anyone who reads it.
             "key_tail": api_key[-4:],
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "agent": agent,
         },
     )
     return {"model": org_model.get_org_model_summary(session.org_id)}

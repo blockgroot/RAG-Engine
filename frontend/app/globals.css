@@ -11636,7 +11636,10 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
   padding: 0.4rem; list-style: none; border-radius: 16px; background: #fff;
   border: 1px solid #e3ece8; box-shadow: 0 24px 48px -18px rgba(15, 42, 38, 0.35), 0 2px 6px rgba(15, 42, 38, 0.06);
   animation: rise-in 0.18s var(--ease) both;
+  max-height: min(24rem, 60vh); overflow-y: auto;
 }
+.model-picker-search { position: sticky; top: -0.4rem; z-index: 1; background: #fff; padding: 0.2rem 0 0.4rem; margin-bottom: 0.2rem; box-shadow: 0 6px 8px -8px rgba(15, 42, 38, 0.25); }
+.model-picker-search input { width: 100%; font-size: 0.82rem; padding: 0.4rem 0.6rem; }
 .model-picker-head {
   padding: 0.4rem 0.6rem 0.3rem; font-size: 0.66rem; font-weight: 750; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--accent-strong);
@@ -12464,7 +12467,7 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .auth-v2-wake-note { margin: 0; font-size: 0.82rem; text-align: center; }
 .page-loader-note { max-width: 22rem; margin-top: -0.4rem; font-size: 0.8rem; line-height: 1.5; text-align: center; color: var(--ink-muted, #667085); }
 
-/* Today's AI use left, beside the model menu (UsageRing). */
+/* Today's AI use left, inside the model button (UsageRing). */
 .usage-ring { position: relative; flex: none; display: inline-flex; align-items: center; margin-left: 0.1rem; }
 .usage-ring-track { fill: none; stroke: color-mix(in srgb, var(--accent) 18%, var(--border)); stroke-width: 3.5; }
 .usage-ring-fill { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linecap: round; transition: stroke-dasharray 0.4s ease; }
@@ -12480,3 +12483,16 @@ button.ask-scope:hover { text-decoration: underline; text-underline-offset: 3px;
 .usage-ring-tip strong { font-size: 0.8rem; font-weight: 650; color: var(--ink); }
 .usage-ring-tip small { font-size: 0.72rem; color: var(--ink-muted); line-height: 1.35; }
 .usage-ring.is-empty .usage-ring-tip strong { color: var(--danger, #b42318); }
+
+/* Admin › Model: the key's models (ModelChips), across the connection row. */
+.model-current-provider { font-size: 1rem; color: var(--ink); }
+.model-chips { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.model-chips li {
+  padding: 0.25rem 0.65rem; border-radius: 999px; font-family: var(--font-mono); font-size: 0.74rem; color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+.model-chips li:has(button) { padding: 0; background: none; }
+.model-chips button {
+  padding: 0.25rem 0.7rem; border: 0; border-radius: 999px; cursor: pointer; font: inherit; font-size: 0.74rem;
+  font-weight: 650; color: var(--accent-strong); background: #fff; box-shadow: inset 0 0 0 1px var(--border);
+}

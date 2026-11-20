@@ -330,7 +330,7 @@ export function AppShell({
                   </span>
                   <span className="rail-link-copy">
                     <span className="rail-link-title">Model</span>
-                    <span className="rail-link-hint">Use your own key</span>
+                    <span className="rail-link-hint">Company model and limits</span>
                   </span>
                 </Link>
                 <Link

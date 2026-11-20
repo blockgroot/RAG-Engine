@@ -97,6 +97,9 @@ export default function ChatPage() {
 // coming back to the chat, shows them at once and refreshes behind.
 const chartStarterCache = new Map<string, string[]>();
 
+/** The model menu's sections, in order: whose key answers. */
+const MENU_GROUPS = ["Company key", "Handbook"];
+
 function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -1267,13 +1270,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 title={models.find((m) => m.id === model)?.note ?? `Answer with the default model (${defaultLabel})`}
                 badge={<UsageRing model={model} refresh={busy} />}
                 options={[
-                  { value: "auto", label: modelName(defaultLabel), hint: "Default" },
+                  { value: "auto", label: modelName(defaultLabel), hint: "Default", group: "Handbook" },
                   ...pickerModels.map((m) => ({
                     value: m.id,
-                    label: modelName(m.label),
+                    // The company key's models keep their exact ID, as the provider lists it.
+                    label: m.backend === "custom" ? m.label : modelName(m.label),
                     hint: chartMode && m.charts == null ? "May not support charts" : undefined,
+                    group: m.backend === "custom" ? "Company key" : "Handbook",
                   })),
-                ]}
+                  // One section per key, the company's first (a stable sort keeps the order within it).
+                ].sort((a, b) => MENU_GROUPS.indexOf(a.group) - MENU_GROUPS.indexOf(b.group))}
                 onChange={(next) => {
                   setModel(next);
                   setModelNote(null);

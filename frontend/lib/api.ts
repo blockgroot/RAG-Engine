@@ -636,8 +636,8 @@ export interface OrgModel {
   key_tail: string | null;
   checked_at: string | null;
   saved_at: string | null;
-  /** Agent mode's tool-calling test at save; null for a model saved before it. */
-  agent: "native" | "text" | "none" | "unknown" | null;
+  /** Every model offered on this key; ``model`` is the first. */
+  models: string[];
 }
 
 /** Limits an admin sets on the company's own key, in tokens; 0 = no limit. */
@@ -661,6 +661,8 @@ export type AiUsage =
 
 export interface ModelChoice {
   id: string;
+  /** "custom": on the company's own key. */
+  backend?: string;
   label: string;
   note: string;
   /** Builds charts. `null` for the company's own model: not ours to judge,
@@ -1030,10 +1032,13 @@ export const api = {
   getUpdateProgress: () => request<UpdateProgress>("/admin/updates/progress"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),
-  saveOrgModel: (preset: string, model: string, apiKey: string) =>
-    request<{ model: OrgModel }>("/admin/llm-model", {
+  /** The chat models a key can use: one request that also checks the key.
+   *  A blank key means the saved one. ``listed: false``: type the model ID. */
+  /** Saves every model the key lists. `type_ids` (nothing saved): the provider has no list. */
+  saveOrgModel: (preset: string, apiKey: string, models: string[] = []) =>
+    request<{ model: OrgModel | null; type_ids?: string }>("/admin/llm-model", {
       method: "PUT",
-      body: JSON.stringify({ preset, model, api_key: apiKey }),
+      body: JSON.stringify({ preset, models, api_key: apiKey }),
     }),
   deleteOrgModel: () =>
     request<void>("/admin/llm-model", { method: "DELETE" }),

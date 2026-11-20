@@ -14,14 +14,6 @@ import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type ModelPreset, type OrgLimits, type OrgModel } from "@/lib/api";
 
-/** Agent mode's tool-calling test, said in the admin's terms. */
-const AGENT_RESULT: Record<NonNullable<OrgModel["agent"]>, string> = {
-  native: "Agent mode: works (calls tools)",
-  text: "Agent mode: works with a fallback (writes tool calls as text)",
-  none: "Agent mode: not available (this model doesn't call tools)",
-  unknown: "Agent mode: couldn't be tested — save again to retry",
-};
-
 /** Provider logos (public/providers, from the MIT-licensed lobehub icon set).
  *  An id without a file falls back to its first letter. */
 const LOGOS = new Set(["openai", "anthropic", "openrouter", "nvidia", "google", "mistral", "deepseek", "xai", "together", "fireworks", "cerebras", "perplexity", "cohere", "groq"]);
@@ -112,6 +104,26 @@ const LIMIT_INPUTS: { key: keyof OrgLimits; label: string }[] = [
   { key: "company_tokens_per_day", label: "Whole company, per day" },
 ];
 
+/** The key's models as chips; a long list folds after the first few. */
+function ModelChips({ models }: { models: string[] }) {
+  const [all, setAll] = useState(false);
+  const FOLD = 8;
+  return (
+    <ul className="model-chips" aria-label="Models in the chat menu">
+      {(all ? models : models.slice(0, FOLD)).map((m) => (
+        <li key={m}>{m}</li>
+      ))}
+      {models.length > FOLD && (
+        <li>
+          <button type="button" onClick={() => setAll((v) => !v)}>
+            {all ? "Show fewer" : `+${models.length - FOLD} more`}
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
 export default function AdminModelPage() {
   const { me, loading } = useMe({ requireAdmin: true });
 
@@ -119,8 +131,10 @@ export default function AdminModelPage() {
   const [saved, setSaved] = useState<OrgModel | null>(null);
 
   const [preset, setPreset] = useState("openai");
-  const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
+  // Set only when the provider publishes no model list: then the admin types IDs.
+  const [typeIds, setTypeIds] = useState(false);
+  const [typed, setTyped] = useState("");
 
   const [limits, setLimits] = useState<OrgLimits>(NO_LIMITS);
   const [savedLimits, setSavedLimits] = useState<OrgLimits>(NO_LIMITS);
@@ -158,17 +172,28 @@ export default function AdminModelPage() {
 
   const activePreset = presets.find((p) => p.id === preset);
 
+  // A blank key reuses the saved one, so the models can change without pasting it again.
+  const reusingKey = !apiKey.trim() && saved?.preset === preset;
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const { model: next } = await api.saveOrgModel(preset, model.trim(), apiKey.trim());
+      const typedIds = typeIds ? typed.split(/[\s,]+/).filter(Boolean) : [];
+      const res = await api.saveOrgModel(preset, apiKey.trim(), typedIds);
+      if (!res.model) {
+        setTypeIds(true);
+        setNotice(res.type_ids ?? "This provider doesn’t list its models. Type the model IDs.");
+        return;
+      }
+      const next = res.model;
       setSaved(next);
-      setModel("");
       setApiKey("");
-      setNotice("Saved. Everyone in your company can now pick this model in chat.");
+      setTyped("");
+      setTypeIds(false);
+      setNotice(`Saved. Everyone in your company can now pick from ${next.models.length} ${next.models.length === 1 ? "model" : "models"} in chat.`);
     } catch (err) {
       // The provider's own words: 401 (wrong key) vs 404 (wrong model id).
       setError(err instanceof ApiError ? err.message : "Could not save that.");
@@ -217,7 +242,7 @@ export default function AdminModelPage() {
         <PageHeader
           eyebrow="Company"
           title="Company model"
-          description="Connect one model for your team’s chat answers. This is optional; Handbook’s built-in models remain available."
+          description="Connect your company’s AI key; every chat model it offers appears in your team’s model menu. This is optional; Handbook’s built-in model remains available."
           meta={
             <span className="hero-facts">
               {saved ? (
@@ -248,16 +273,18 @@ export default function AdminModelPage() {
             </div>
             <div className="model-current">
               <div className="model-current-identity">
-                <span className="model-current-name">{saved.model}</span>
-                <span>{saved.preset_label} · key ending {saved.key_tail}</span>
+                <strong className="model-current-provider">{saved.preset_label}</strong>
+                <span>
+                  {saved.models.length} {saved.models.length === 1 ? "model" : "models"} in the chat menu · key ending {saved.key_tail}
+                </span>
               </div>
               <span className="model-current-checked">
                 Last tested {saved.checked_at ? new Date(saved.checked_at).toLocaleDateString() : "—"}
               </span>
-              {saved.agent && <span className="model-current-checked">{AGENT_RESULT[saved.agent]}</span>}
               <button className="button button-secondary" onClick={remove} disabled={busy}>
                 Remove model
               </button>
+              <ModelChips models={saved.models} />
             </div>
           </section>
         )}
@@ -266,9 +293,9 @@ export default function AdminModelPage() {
           <section className="room-section model-setup" aria-labelledby="limits-title">
             <div className="studio-section-head">
               <p className="model-section-label">Usage limits</p>
-              <h2 id="limits-title">Limits on your key</h2>
+              <h2 id="limits-title">Limits on the company key</h2>
               <p className="muted">
-                Caps on answers from your model, so a busy day can&rsquo;t run up your bill. A typical question uses
+                Caps on answers from the company model, so a busy day can&rsquo;t run up your bill. A typical question uses
                 10,000 to 40,000 tokens. Leave 0 for no limit. Handbook&rsquo;s built-in model keeps its own limits.
               </p>
             </div>
@@ -292,7 +319,7 @@ export default function AdminModelPage() {
               ))}
               <div className="model-form-actions">
                 <div className="model-test-note">
-                  <span>Each person sees what is left of today&rsquo;s limit beside the model menu.</span>
+                  <span>Each person sees what is left of today&rsquo;s limit as a ring in the chat&rsquo;s model button.</span>
                 </div>
                 <button className="button" type="submit" disabled={busy || !limitsChanged}>
                   {busy ? "Saving…" : "Save limits"}
@@ -305,47 +332,35 @@ export default function AdminModelPage() {
         <section className="room-section model-setup" aria-labelledby="add-title">
           <div className="studio-section-head">
             <h2 id="add-title">{saved ? "Replace your model" : "Connect your model"}</h2>
-            <p className="muted">We test it before it becomes available to your team.</p>
+            <p className="muted">We check the key with the provider before your team sees anything.</p>
           </div>
 
           <form onSubmit={save} className="model-form">
             <div className="field">
               <label htmlFor="preset"><span aria-hidden>1</span> Provider</label>
-              <ProviderPicker presets={presets} value={preset} onChange={setPreset} disabled={busy} />
+              <ProviderPicker
+                presets={presets}
+                value={preset}
+                onChange={(p) => {
+                  setPreset(p);
+                  setTypeIds(false);
+                }}
+                disabled={busy}
+              />
             </div>
 
             <div className="field">
-              <label htmlFor="model"><span aria-hidden>2</span> Model ID</label>
-              <input
-                id="model"
-                className="input"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="For example, gpt-5"
-                disabled={busy}
-                required
-              />
-              <p className="muted">
-                Use the provider&rsquo;s exact ID.{" "}
-                {activePreset && (
-                  <a href={activePreset.models_url} target="_blank" rel="noreferrer">
-                    Browse model IDs
-                  </a>
-                )}
-              </p>
-            </div>
-
-            <div className="field field-wide">
-              <label htmlFor="apiKey"><span aria-hidden>3</span> API key</label>
+              <label htmlFor="apiKey"><span aria-hidden>2</span> API key</label>
               <input
                 id="apiKey"
                 className="input"
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Paste the full API key"
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                }}
+                placeholder={saved?.preset === preset ? `Leave blank to keep the key ending ${saved.key_tail}` : "Paste the full API key"}
                 disabled={busy}
-                required
                 autoComplete="off"
               />
               <p className="muted">
@@ -353,20 +368,38 @@ export default function AdminModelPage() {
               </p>
             </div>
 
+            {typeIds && (
+              <div className="field field-wide">
+                <label htmlFor="typedIds"><span aria-hidden>3</span> Model IDs</label>
+                <input
+                  id="typedIds"
+                  className="input"
+                  value={typed}
+                  onChange={(e) => setTyped(e.target.value)}
+                  placeholder="Model IDs, separated by commas"
+                  disabled={busy}
+                />
+                <p className="muted">
+                  This provider doesn&rsquo;t list its models, so each ID gets one short test.{" "}
+                  {activePreset && (
+                    <a href={activePreset.models_url} target="_blank" rel="noreferrer">
+                      Browse model IDs
+                    </a>
+                  )}
+                </p>
+              </div>
+            )}
+
             <div className="model-form-actions">
               <div className="model-test-note">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path d="m7 12 3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
                 </svg>
-                <span>A short test runs first. Nothing is saved if it fails.</span>
+                <span>We read the key&rsquo;s model list from the provider; every chat model on it appears in the chat&rsquo;s model menu.</span>
               </div>
-              <button
-                className="button"
-                type="submit"
-                disabled={busy || !model.trim() || !apiKey.trim()}
-              >
-                {busy ? "Testing connection…" : "Test and connect"}
+              <button className="button" type="submit" disabled={busy || (!apiKey.trim() && !reusingKey) || (typeIds && !typed.trim())}>
+                {busy ? "Reading the key’s models…" : saved && reusingKey ? "Refresh models" : "Connect"}
               </button>
             </div>
           </form>

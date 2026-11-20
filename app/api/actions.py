@@ -266,24 +266,11 @@ def act_status(session: SessionClaims = Depends(get_session)):
 def _selectable_model(org_id: str, model: str) -> bool:
     from ..llm import catalog, org_model
 
-    if catalog.is_selectable(model):
-        return True
-    own = org_model.get_org_model_summary(org_id)
-    return bool(own and own["model"] == model)
+    return catalog.is_selectable(model) or org_model.offers(org_id, model)
 
 
 _NO_TOOLS = ("This model can't use tools, so it can't run Agent mode. Nothing was sent. "
              "Pick another model in the model menu.")
-
-
-def _cannot_call_tools(org_id: str, model: str) -> bool:
-    """The company's own model failed Agent mode's test when it was saved
-    (``llm_model._agent_probe``): said before drafting, never a request that
-    quietly drafts nothing. Untested or unknown is allowed."""
-    from ..llm import org_model
-
-    own = org_model.get_org_model_summary(org_id)
-    return bool(own and own["model"] == model and own.get("agent") == "none")
 
 
 class ActRequest(BaseModel):
@@ -317,6 +304,9 @@ def _model_down(exc: LLMProviderError) -> str:
         return _MODEL_TOO_LARGE
     if "error code: 401" in said or "error code: 403" in said:
         return _MODEL_KEY
+    # A model that cannot call tools: no models are tested when they are added.
+    if ("error code: 400" in said or "error code: 404" in said) and ("tool" in said or "function" in said):
+        return _NO_TOOLS
     if isinstance(exc, LLMRateLimitError) or "credit balance" in said or "quota" in said:
         return _MODEL_UNPAID
     return _MODEL_DOWN
@@ -334,8 +324,6 @@ def _act_args(body: ActRequest, session: SessionClaims) -> dict:
         raise HTTPException(status_code=403, detail="Sign in again to use Agent mode.")
     if body.model and not _selectable_model(session.org_id, body.model):
         raise HTTPException(status_code=400, detail="Unknown model")
-    if body.model and _cannot_call_tools(session.org_id, body.model):
-        raise HTTPException(status_code=400, detail=_NO_TOOLS)
     workspace_id = str(body.workspace_id) if body.workspace_id else None
     if workspace_id is not None:
         try:
