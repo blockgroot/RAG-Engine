@@ -68,6 +68,8 @@ def _built_prompts() -> dict[str, str]:
         "act_intent": __import__("app.api.slack_act", fromlist=["x"]).build_intent_prompt(ATTACK),
         "act_revise": __import__("app.actions.prompts", fromlist=["x"]).build_revise_prompt({"body": ATTACK}, "shorter"),
         "gap_topic": __import__("app.feedback.topics", fromlist=["x"]).build_prompt(ATTACK, [ATTACK]),
+        "ask_friend_summary": __import__("app.askfriend.summary", fromlist=["x"]).build_summary_prompt(
+            [("q?", ATTACK)], "q?", left_out=0),
     }
 
 
