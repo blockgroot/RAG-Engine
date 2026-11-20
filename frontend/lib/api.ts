@@ -119,6 +119,16 @@ export interface TurnMeta {
   live_sources?: { provider: string; fetched_at: string }[];
   model?: string | null;
   citation_count: number;
+  /** "No answer found": Ask a friend is offered on this turn. */
+  ask_friend?: boolean;
+  /** The one colleague this turn was sent to. */
+  ask_friend_sent?: AskFriendSent;
+}
+
+export interface AskFriendSent {
+  to_name: string;
+  via: "slack" | "email";
+  at: string;
 }
 
 export interface RejectedFile {

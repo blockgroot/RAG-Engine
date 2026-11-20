@@ -1189,7 +1189,11 @@ def _stream_attachment_answer(
         if delay:
             time.sleep(delay)
 
+    # Ask a friend is offered exactly where a gap is recorded: a missing document,
+    # never a withheld one or a chart refusal.
+    ask_friend = False
     if not response.grounded and not response.access_restricted and not getattr(response, "live_withheld", False):
+        ask_friend = True
         record_gap(
             org_id=org_id,
             question=question,
@@ -1229,6 +1233,7 @@ def _stream_attachment_answer(
             # chip only for a number listed here and strips the rest.
             "cited": list(getattr(response, "cited", None) or []),
             "deep_hint": deep_hint,
+            "ask_friend": ask_friend,
             # A private GitHub repository was hidden: offer the Account page.
             "github_link_hint": bool(getattr(response, "github_link_hint", False)),
         },
@@ -1656,9 +1661,11 @@ def _stream_answer_body(
     # that sees every way to be ungrounded and the `user_id`. Not gaps: a withheld
     # document (access, not missing docs), a live read withheld as not found or
     # inaccessible, and a Chart-mode reply that is not a missing chart.
+    ask_friend = False  # offered exactly where a gap is recorded
     if (not result.grounded and not result.access_restricted
             and not getattr(result, "live_withheld", False)
             and decision.reason not in NOT_CHART_GAPS):
+        ask_friend = True
         record_gap(
             org_id=org_id,
             question=question,
@@ -1716,6 +1723,7 @@ def _stream_answer_body(
                 )
             ),
             "deep_hint": deep_hint,
+            "ask_friend": ask_friend,
             # A private GitHub repository was hidden: offer the Account page.
             "github_link_hint": bool(getattr(result, "github_link_hint", False)),
             # Personal memory saved from this question, announced so saving is

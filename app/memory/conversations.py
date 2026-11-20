@@ -50,7 +50,11 @@ def chart_for_storage(panel, period) -> dict | None:
 
 #: What a reopened answer needs to draw its provenance pill. Counts, not
 #: content: the passages themselves are never stored on the turn.
-_META_KEYS = ("source", "agent", "connected_providers", "attachments", "live_sources", "model")
+_META_KEYS = (
+    "source", "agent", "connected_providers", "attachments", "live_sources", "model",
+    # Ask a friend: offered on this refused turn, and to whom it went (one person).
+    "ask_friend", "ask_friend_sent",
+)
 
 
 def meta_for_storage(payload: dict) -> dict:
@@ -89,6 +93,47 @@ def set_last_turn_meta(conversation_id: str, question: str, meta: dict) -> None:
                                 WHERE conversation_id = %s::uuid)
             """,
             (json.dumps(meta), conversation_id, question, conversation_id),
+        )
+        conn.commit()
+
+
+_ASKER_TURN = """
+    FROM conversations c
+    WHERE c.id = t.conversation_id
+      AND t.conversation_id = %s::uuid
+      AND c.org_id = %s::uuid
+      AND c.user_id = %s::uuid
+      AND t.question = %s
+      AND t.turn_index = (SELECT MAX(turn_index) FROM conversation_turns
+                          WHERE conversation_id = %s::uuid AND question = %s)
+"""
+
+
+def claim_ask_friend(
+    *, conversation_id: str, org_id: str, user_id: str, question: str, entry: dict
+) -> bool:
+    """Record that this refused turn went to one colleague. One conditional UPDATE:
+    a second send (double click, another tab) finds the key set and gets False, so
+    exactly one is delivered. Only the asker's own turn, only one offered Ask a friend.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "UPDATE conversation_turns t SET meta = jsonb_set(t.meta, '{ask_friend_sent}', %s::jsonb)"
+            + _ASKER_TURN
+            + " AND coalesce((t.meta->>'ask_friend')::boolean, false)"
+            " AND NOT (t.meta ? 'ask_friend_sent') RETURNING 1",
+            (json.dumps(entry), conversation_id, org_id, user_id, question, conversation_id, question),
+        ).fetchone()
+        conn.commit()
+    return row is not None
+
+
+def release_ask_friend(*, conversation_id: str, org_id: str, user_id: str, question: str) -> None:
+    """Undo a claim whose delivery failed, so the asker can send again."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE conversation_turns t SET meta = t.meta - 'ask_friend_sent'" + _ASKER_TURN,
+            (conversation_id, org_id, user_id, question, conversation_id, question),
         )
         conn.commit()
 

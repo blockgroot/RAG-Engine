@@ -66,6 +66,8 @@ export interface ChatDonePayload {
   ask_hint?: boolean;
   /** Refused in normal Ask though relevant documents were found: offer Deep analysis. */
   deep_hint?: boolean;
+  /** "No answer found" (a gap was recorded): offer Ask a friend. */
+  ask_friend?: boolean;
   /** A private GitHub repository was hidden from the asker: offer the Account
    *  page, where the GitHub account that can open it is linked. */
   github_link_hint?: boolean;
