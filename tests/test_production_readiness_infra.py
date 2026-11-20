@@ -120,3 +120,36 @@ def test_boot_fails_on_missing_or_broken_secrets(monkeypatch, capsys):
     monkeypatch.setenv("AUTH_JWT_SECRET", "short")
     assert boot.check_secrets() == []
     assert "shorter than 32" in capsys.readouterr().out
+
+
+@requires_db
+def test_export_company_writes_its_rows_and_never_a_credential(store, org_cleanup, tmp_path):
+    import importlib.util
+    import json
+    import uuid
+    from pathlib import Path
+
+    from app.db.connection import get_connection
+
+    spec = importlib.util.spec_from_file_location(
+        "export_company", Path(__file__).parent.parent / "scripts" / "export_company.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    org_id = store.create_organization(f"Export {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    other = store.create_organization(f"Other {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(other)
+    with get_connection() as conn:
+        for org in (org_id, other):
+            conn.execute(
+                "INSERT INTO oauth_connections (org_id, provider, external_workspace_id, "
+                "access_token_encrypted) VALUES (%s::uuid, 'notion', %s, 'SECRET')",
+                (org, f"ws-{org}"),
+            )
+    counts = module.export_company(org_id, tmp_path)
+    assert counts["organizations"] == 1 and counts["oauth_connections"] == 1
+    text = (tmp_path / "oauth_connections.jsonl").read_text()
+    row = json.loads(text)
+    assert row["org_id"] == org_id and "access_token_encrypted" not in row
+    assert "SECRET" not in text and other not in text
