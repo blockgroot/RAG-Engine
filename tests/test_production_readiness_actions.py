@@ -66,3 +66,32 @@ def test_a_space_digest_stops_when_its_owner_leaves(monkeypatch):
     with pytest.raises(Exception, match="no longer a member"):
         runner.run_scheduler_once(scheduler)
     assert not read
+
+
+def test_a_window_already_emailed_is_not_sent_again(monkeypatch):
+    """A crash between the email and recording success sent the report twice."""
+    from datetime import datetime, timezone
+
+    from app.schedulers import runner, worker
+
+    sent_until = datetime(2026, 11, 18, tzinfo=timezone.utc)
+    monkeypatch.setattr(runner, "get_user", lambda uid: SimpleNamespace(email="a@x.com"))
+    monkeypatch.setattr(runner.reports, "delivered_window_end", lambda sid, start: sent_until)
+    fetched = []
+    monkeypatch.setattr(runner, "fetch_activity", lambda *a, **k: fetched.append(1))
+    scheduler = SimpleNamespace(id="s", user_id="u", org_id="o", workspace_id=None,
+                                frequency="daily", provider="slack",
+                                last_run_at=datetime(2026, 11, 17, tzinfo=timezone.utc))
+    monkeypatch.setattr(runner, "window_start", lambda s: s.last_run_at)
+    monkeypatch.setattr(worker.scheduler_queue, "requeue_interrupted_running", lambda **k: 0)
+    monkeypatch.setattr(worker.scheduler_queue, "claim_due", lambda limit: [scheduler])
+    recorded = []
+    monkeypatch.setattr(worker.scheduler_queue, "mark_run_success",
+                        lambda sid, freq, covered_until=None: recorded.append(covered_until))
+    monkeypatch.setattr(worker.scheduler_queue, "mark_run_failed",
+                        lambda *a, **k: recorded.append("failed"))
+
+    assert worker.run_due_schedulers_once(SimpleNamespace(enabled=True, batch_size=5,
+                                                          max_attempts=3)) == 1
+    assert recorded == [sent_until]
+    assert not fetched

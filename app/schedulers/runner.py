@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from ..auth.email import send_scheduler_report_email_safe
 from ..auth.users import get_user
 from ..config.settings import ApiSettings
-from ..core.exceptions import AuthError, ConfigurationError
+from ..core.exceptions import AuthError, ConfigurationError, ProviderError
 from ..llm import build_aux_llm_provider
 from ..llm.routed import default_model_only
 from ..llm.base import LLMProvider
@@ -28,6 +28,14 @@ from .store import Scheduler
 
 #: Output cap for one report: a ceiling sized to a long digest, never the endpoint's default.
 REPORT_MAX_TOKENS = 3000
+
+
+class AlreadyDelivered(ProviderError):
+    """This window's report was already emailed: record success, send nothing."""
+
+    def __init__(self, window_end: datetime) -> None:
+        super().__init__(f"Report already delivered up to {window_end.isoformat()}")
+        self.window_end = window_end
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +98,12 @@ def run_scheduler_once(
 
     window_end = datetime.now(timezone.utc)
     since = window_start(scheduler)
+    done_until = reports.delivered_window_end(
+        scheduler.id, since if scheduler.last_run_at is not None else None
+    )
+    if done_until is not None:
+        # The last run emailed this window and died before recording success.
+        raise AlreadyDelivered(done_until)
     # The row's own scope wins; the argument is a test/manual override only.
     scope_id = workspace_id or scheduler.workspace_id
     # Snapshotted so an archived report survives a space rename or delete.

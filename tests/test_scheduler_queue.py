@@ -291,3 +291,27 @@ def test_an_edit_resumes_a_scheduler_stopped_after_failures(scheduler_org):
     assert resumed.status == "active"
     assert resumed.attempts == 0
     assert resumed.last_error is None
+
+
+@requires_db
+def test_a_delivered_window_is_found_and_an_undelivered_one_is_not(scheduler_org):
+    from datetime import datetime, timedelta, timezone
+
+    from app.schedulers import reports
+
+    org_id, user_id, connection_id = scheduler_org
+    sched = sched_store.create_scheduler(
+        org_id, user_id, connection_id, "slack", "daily", "digest"
+    )
+    start = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    saved = reports.save_report(
+        scheduler_id=sched.id, org_id=org_id, user_id=user_id, provider="slack",
+        frequency="daily", prompt="digest", space_name=None, report_text="r",
+        items=[], notes=[], window_start=start, window_end=end,
+    )
+    assert reports.delivered_window_end(sched.id, start) is None  # saved, not sent
+    reports.mark_delivered(saved.id, "a@x.com")
+    assert reports.delivered_window_end(sched.id, start) == end
+    assert reports.delivered_window_end(sched.id, start + timedelta(hours=1)) is None
+    assert reports.delivered_window_end(sched.id, None) == end  # a first run's window

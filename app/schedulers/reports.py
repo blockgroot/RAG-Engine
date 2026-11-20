@@ -126,6 +126,25 @@ def save_report(
     return row_to_report(row)
 
 
+def delivered_window_end(scheduler_id: str, window_start: datetime | None) -> datetime | None:
+    """End of a report ALREADY emailed for this window, else None.
+
+    The run that sent it died before recording success (``last_run_at`` did not
+    move, so the next run asks for the same window): sending again was a
+    duplicate email. ``window_start`` None (a first run, whose window is not
+    fixed) matches any delivered report of this scheduler.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT window_end FROM scheduler_reports "
+            "WHERE scheduler_id = %s AND delivered_to IS NOT NULL "
+            "AND (%s::timestamptz IS NULL OR window_start = %s::timestamptz) "
+            "ORDER BY created_at DESC LIMIT 1",
+            (scheduler_id, window_start, window_start),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def mark_delivered(report_id: str, to: str) -> None:
     """Record that the mail was accepted for ``to``."""
     with get_connection() as conn:

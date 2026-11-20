@@ -93,3 +93,30 @@ def test_delete_company_needs_the_exact_name_then_removes_everything(store, org_
     with get_connection(all_orgs=True) as conn:
         assert conn.execute(
             "SELECT 1 FROM organizations WHERE id = %s::uuid", (org_id,)).fetchone() is None
+
+
+def test_boot_fails_on_missing_or_broken_secrets(monkeypatch, capsys):
+    import importlib.util
+    from pathlib import Path
+
+    from cryptography.fernet import Fernet
+
+    spec = importlib.util.spec_from_file_location(
+        "boot", Path(__file__).parent.parent / "scripts" / "boot.py")
+    boot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(boot)
+
+    monkeypatch.setenv("AUTH_JWT_SECRET", "x" * 40)
+    monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
+    assert boot.check_secrets() == []
+
+    monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", "not-a-key")
+    assert any("AUTH_ENCRYPTION_KEYS" in p for p in boot.check_secrets())
+
+    monkeypatch.delenv("AUTH_JWT_SECRET")
+    monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
+    assert any("AUTH_JWT_SECRET" in p for p in boot.check_secrets())
+
+    monkeypatch.setenv("AUTH_JWT_SECRET", "short")
+    assert boot.check_secrets() == []
+    assert "shorter than 32" in capsys.readouterr().out

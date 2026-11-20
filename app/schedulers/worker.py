@@ -32,7 +32,7 @@ def run_due_schedulers_once(settings: SchedulerSettings | None = None) -> int:
         return 0
 
     # Lazy: the runner pulls in the LLM and source readers.
-    from .runner import run_scheduler_once
+    from .runner import AlreadyDelivered, run_scheduler_once
 
     for scheduler in due:
         # Stamped before the run: the next window starts here, so the run's
@@ -40,6 +40,13 @@ def run_due_schedulers_once(settings: SchedulerSettings | None = None) -> int:
         covered_until = datetime.now(timezone.utc)
         try:
             run_scheduler_once(scheduler)
+        except AlreadyDelivered as done:
+            # Sent before a crash: record it up to what that report covered.
+            logger.info("Scheduler %s: this window was already delivered", scheduler.id)
+            scheduler_queue.mark_run_success(
+                scheduler.id, scheduler.frequency, covered_until=done.window_end
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 - see docstring
             logger.warning(
                 "Scheduler %s (%s, %s) failed: %s",
