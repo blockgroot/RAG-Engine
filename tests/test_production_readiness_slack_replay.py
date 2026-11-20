@@ -76,3 +76,23 @@ def test_an_answered_question_is_closed_and_its_text_cleared(monkeypatch):
     finally:
         with get_connection() as conn:
             conn.execute("DELETE FROM slack_event_receipts WHERE event_id = %s", (event_id,))
+
+
+@requires_db
+def test_the_notion_token_is_stored_encrypted_first_one_kept_and_cleared():
+    from app.api import webhooks
+
+    if webhooks.stored_notion_token() is not None:
+        pytest.skip("this database holds a real Notion token; never touch it")
+    try:
+        assert webhooks.store_notion_token("secret_one") is True
+        assert webhooks.store_notion_token("secret_two") is False
+        assert webhooks.stored_notion_token() == "secret_one"
+        with get_connection() as conn:
+            raw = conn.execute(
+                "SELECT value_encrypted FROM deployment_secrets WHERE name = %s",
+                (webhooks._NOTION_TOKEN,)).fetchone()[0]
+        assert "secret_one" not in raw
+    finally:
+        webhooks.forget_notion_token()
+    assert webhooks.stored_notion_token() is None

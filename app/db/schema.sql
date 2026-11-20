@@ -1109,6 +1109,15 @@ CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
 -- can miss Slack's 3-second ack, and Slack resends the event; this answers each
 -- event once, also when only a resend reached us. No content, no tenant: just
 -- Slack's id. Rows older than a day are deleted by the upkeep pass.
+-- Secrets of the whole deployment (not a company's), encrypted like every
+-- credential. First: the Notion webhook's verification token, which Notion
+-- shows nowhere and which used to reach the logs (app/api/webhooks.py).
+CREATE TABLE IF NOT EXISTS deployment_secrets (
+    name            TEXT PRIMARY KEY,
+    value_encrypted TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS slack_event_receipts (
     event_id    TEXT PRIMARY KEY,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()

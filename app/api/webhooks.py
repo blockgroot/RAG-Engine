@@ -9,6 +9,8 @@ until its secret is set, except Notion's verification handshake.
 
 from __future__ import annotations
 
+import asyncio
+
 import hashlib
 import hmac
 import json
@@ -55,6 +57,45 @@ def _json(body: bytes) -> dict:
 
 # -- Notion -------------------------------------------------------------------
 
+_NOTION_TOKEN = "notion_webhook_verification_token"
+
+
+def store_notion_token(token: str) -> bool:
+    """Keep the verification token, encrypted, unless one is kept already.
+    True when this call stored it."""
+    from ..db.connection import get_connection
+    from ..security import encrypt
+
+    with get_connection() as conn:
+        return conn.execute(
+            "INSERT INTO deployment_secrets (name, value_encrypted) VALUES (%s, %s) "
+            "ON CONFLICT (name) DO NOTHING RETURNING 1",
+            (_NOTION_TOKEN, encrypt(token)),
+        ).fetchone() is not None
+
+
+def stored_notion_token() -> str | None:
+    """The stored verification token, or None."""
+    from ..db.connection import get_connection
+    from ..security import decrypt
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value_encrypted FROM deployment_secrets WHERE name = %s", (_NOTION_TOKEN,)
+        ).fetchone()
+    return decrypt(row[0]) if row else None
+
+
+def forget_notion_token() -> bool:
+    """Clear the stored token so a new subscription's can be kept. True if one was."""
+    from ..db.connection import get_connection
+
+    with get_connection() as conn:
+        return conn.execute(
+            "DELETE FROM deployment_secrets WHERE name = %s RETURNING 1", (_NOTION_TOKEN,)
+        ).fetchone() is not None
+
+
 
 @router.post("/notion")
 async def notion_webhook(
@@ -64,9 +105,13 @@ async def notion_webhook(
 ):
     """Notion events for the whole public integration.
 
-    Notion first POSTs an unsigned ``verification_token``; it is logged for the
-    operator to paste into Notion and ``NOTION_WEBHOOK_VERIFICATION_TOKEN``, and
-    is the HMAC key for every event. Events are refused until it is set.
+    Notion first POSTs an unsigned ``verification_token``: the operator pastes
+    it into Notion's Verify form, and it is the HMAC key for every event. It is
+    stored encrypted (``deployment_secrets``) and read with
+    ``scripts/notion_webhook_token.py``, never logged. The first one stored is
+    kept (an unsigned request must not replace it; ``--reset`` clears it).
+    ``NOTION_WEBHOOK_VERIFICATION_TOKEN``, when set, wins. Events are refused
+    until one of the two exists.
     """
     body = await request.body()
     payload = _json(body)
@@ -75,23 +120,25 @@ async def notion_webhook(
     token = payload.get("verification_token")
     if token and len(payload) == 1:
         if settings.notion_verification_token:
-            # Already set up: never print the value again. It is the HMAC secret,
-            # and a re-sent verification put the live secret in the logs.
             logger.warning(
                 "notion webhook: a verification token arrived but "
-                "NOTION_WEBHOOK_VERIFICATION_TOKEN is already set; not logged. "
-                "Unset it to receive a new one."
+                "NOTION_WEBHOOK_VERIFICATION_TOKEN is already set; ignored."
+            )
+        elif await asyncio.to_thread(store_notion_token, str(token)):
+            logger.warning(
+                "notion webhook: verification token received and stored (encrypted). "
+                "Read it with `python scripts/notion_webhook_token.py` and paste it "
+                "into the subscription's Verify form."
             )
         else:
-            # The only way the operator ever sees it: Notion shows it nowhere else.
             logger.warning(
-                "notion webhook: verification token received -- paste it into the "
-                "subscription's Verify form and set NOTION_WEBHOOK_VERIFICATION_TOKEN: %s",
-                token,
+                "notion webhook: a verification token arrived but one is already "
+                "stored; kept the stored one. To register again, run "
+                "`python scripts/notion_webhook_token.py --reset` first."
             )
         return {"ok": True}
 
-    secret = settings.notion_verification_token
+    secret = settings.notion_verification_token or await asyncio.to_thread(stored_notion_token)
     if not secret:
         raise _not_found()
     expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
