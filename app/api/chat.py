@@ -19,7 +19,6 @@ from collections.abc import AsyncIterator, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import iterate_in_threadpool
 
 def _stream_word_delay_seconds() -> float:
     raw = os.getenv("CHAT_STREAM_WORD_DELAY_MS")
@@ -61,9 +60,13 @@ from ..agent.routing import (
     refusal_retry,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings
+from ..config.settings import (
+    AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings, RequestBudgetSettings,
+)
 from ..rag import progress
 from ..rag.deep import reset_deep_read, use_deep_read
+from ..llm.openai_provider import start_call_cap
+from ..rag.request_budget import watch_abandon
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
 from ..livetools import LiveRequest, current_live_request, reset_live_request, use_live_request
@@ -999,6 +1002,15 @@ _PERSON_BUSY = (
 )
 
 
+#: ``next()``'s default: the answer stream has no more events.
+_STREAM_END = object()
+
+#: A silent step sends an SSE comment this often (``frontend/lib/sse.ts`` waits
+#: ``STREAM_IDLE_MS`` for any bytes before calling the line dead).
+KEEPALIVE_SECONDS = 15
+_KEEPALIVE = ": keepalive\n\n"
+
+
 async def _in_a_slot(
     stream: Iterator[str], settings: RateLimitSettings, user_id: str
 ) -> AsyncIterator[str]:
@@ -1039,11 +1051,45 @@ async def _in_a_slot(
                     take_place, "answers:all", settings.chat_max_concurrent, settings,
                     log_refusal=False,
                 )
-        async for event in iterate_in_threadpool(stream):
+        abandoned = watch_abandon()
+        start_call_cap(RequestBudgetSettings.from_env().max_model_calls)
+        while True:
+            # One step at a time in a worker thread. On a disconnect the await is
+            # cancelled but the thread is not: that step's work goes on. So the
+            # budget is emptied (optional stages skip) and the places are held
+            # until the step really ends, or the cap undercounted live work.
+            in_flight = asyncio.ensure_future(
+                asyncio.to_thread(next, stream, _STREAM_END))
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            asyncio.shield(in_flight), timeout=KEEPALIVE_SECONDS)
+                        break
+                    except asyncio.TimeoutError:
+                        # A silent step (one long model call) still shows the line
+                        # is alive, so the browser's idle timeout and any proxy
+                        # tell a slow answer from a dead connection.
+                        yield _KEEPALIVE
+            except (asyncio.CancelledError, GeneratorExit):
+                # Cancelled at an await, or closed at a keepalive's yield.
+                abandoned.set()
+                held = (shared, mine)
+                shared = mine = None  # the finally below must not free them now
+
+                def _free(_done, held=held):
+                    give_back_place("answers:all", held[0], settings)
+                    give_back_place(mine_key, held[1], settings)
+
+                in_flight.add_done_callback(_free)
+                raise
+            if event is _STREAM_END:
+                break
             yield event
     finally:
         # Given back without awaiting: this also runs when the client leaves
-        # and the task is cancelled. Each is one quick call (or a no-op).
+        # and the task is cancelled. Each is one quick call (or a no-op). A step
+        # still running after a disconnect frees them itself (above).
         give_back_place("answers:all", shared, settings)
         give_back_place(mine_key, mine, settings)
 

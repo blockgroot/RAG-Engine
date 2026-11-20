@@ -30,7 +30,8 @@ COPY app/ ./app/
 RUN python -m compileall -q -j 0 /app/app
 # run_worker.py: the self-hosted install runs this same image as its worker.
 COPY scripts/boot.py scripts/init_db.py scripts/check_llm_config.py scripts/check_embedding_config.py \
-     scripts/run_worker.py scripts/create_company.py ./scripts/
+     scripts/run_worker.py scripts/create_company.py scripts/delete_company.py \
+     scripts/export_company.py scripts/notion_webhook_token.py ./scripts/
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
@@ -41,5 +42,10 @@ ENV HANDBOOK_IMAGE_VERSION=${HANDBOOK_IMAGE_VERSION}
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
+
+# Not root: a code-execution bug in the app is then not root in the container.
+# Nothing here writes to the image at run time (bytecode is compiled above).
+RUN useradd --system --uid 10001 --no-create-home handbook
+USER handbook
 
 ENTRYPOINT ["docker-entrypoint.sh"]

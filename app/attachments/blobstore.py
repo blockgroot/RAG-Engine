@@ -167,12 +167,9 @@ def signed_url(key: str, *, ttl_seconds: int | None = None) -> str:
     )
 
 
-def delete_object(key: str) -> bool:
-    """Remove one asset. False when it was already gone.
-
-    Never raises: called from teardown, where a storage failure must not undo
-    the row delete. A leaked object shows in a prefix listing.
-    """
+def _destroy(key: str) -> str | None:
+    """Cloudinary's answer to deleting one asset ("ok", "not found", ...), or
+    None when the call failed. Never raises."""
     try:
         cloudinary, settings = _client()
         result = cloudinary.uploader.destroy(
@@ -183,8 +180,23 @@ def delete_object(key: str) -> bool:
         )
     except Exception:  # noqa: BLE001
         logger.warning("Cloudinary: could not delete %s", key, exc_info=True)
-        return False
-    return result.get("result") == "ok"
+        return None
+    return str(result.get("result"))
+
+
+def delete_object(key: str) -> bool:
+    """Remove one asset. False when it was already gone, or the call failed.
+
+    Never raises: called from teardown, where a storage failure must not undo
+    the row delete.
+    """
+    return _destroy(key) == "ok"
+
+
+def remove_object(key: str) -> bool:
+    """True once the asset is gone (deleted now, or already absent); False when
+    the store could not say, so the caller keeps it queued for a retry."""
+    return _destroy(key) in ("ok", "not found")
 
 
 def list_keys(prefix: str = "") -> list[str]:

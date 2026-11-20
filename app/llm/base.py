@@ -46,7 +46,9 @@ class LLMProvider(ABC):
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         timeout: float | None = None,
+        max_tokens: int | None = None,
     ) -> ChatResult:
         """Run a chat turn that may request tool calls (optional capability).
-        Raises ``LLMProviderError`` on failure."""
+        ``max_tokens`` caps the reply; a provider sets ``last_truncated`` when the
+        reply was cut there. Raises ``LLMProviderError`` on failure."""
         raise NotImplementedError("this LLM provider does not support tool calling")

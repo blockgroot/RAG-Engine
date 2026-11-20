@@ -445,7 +445,7 @@ def test_a_document_with_nothing_to_capture_is_stored_as_empty_not_null(monkeypa
 
 
 class _LLM:
-    def generate(self, prompt):
+    def generate(self, prompt, **_kw):
         return "Context."
 
 

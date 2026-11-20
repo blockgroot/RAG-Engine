@@ -14,14 +14,17 @@ means no answer.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import threading
 import re
 import logging
 import time
 from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from psycopg.types.json import Json
 
 from ..agent.routing import _NO_MATCH, NOT_CHART_GAPS, choose_agent, choose_scope
 from ..feedback import record_gap
@@ -99,6 +102,13 @@ def _org_for_team(team_id: str) -> tuple[str, str | None] | None:
 _NO_DM_ACCESS = (
     "Slack is connected to Handbook only in spaces you're not in, so I can't answer "
     "you here. Ask in the Handbook web app, or ask your admin to connect Slack company-wide."
+)
+
+#: The web chat's limit (``api/chat.MAX_QUESTION_CHARS``), the same for Slack.
+MAX_SLACK_QUESTION_CHARS = 4000
+_TOO_LONG = (
+    f"That question is too long for me (the limit is {MAX_SLACK_QUESTION_CHARS} "
+    "characters). Ask it in a shorter form."
 )
 
 
@@ -593,23 +603,115 @@ _SEARCHING_LATE = "_Thank you for your patience. Searching your connected tools 
 DELAY_NOTICE_SECONDS = 15
 
 
-def _first_delivery(event_id: str) -> bool | None:
+def _first_delivery(event_id: str, team_id: str = "", event: dict | None = None) -> bool | None:
     """True for the first delivery of a Slack event, False for a repeat.
 
     None when the receipt cannot be written: the caller then falls back to
-    dropping Slack's resends, so a broken table never answers twice.
+    dropping Slack's resends, so a broken table never answers twice. With
+    ``event``, the receipt also keeps the question as 'pending' until it is
+    answered, so a restart mid-answer does not lose it (``replay_lost_questions``).
     """
     try:
         with get_connection() as conn:
             row = conn.execute(
-                "INSERT INTO slack_event_receipts (event_id) VALUES (%s) "
+                "INSERT INTO slack_event_receipts "
+                "(event_id, status, team_id, event, alive_at, attempts) "
+                "VALUES (%s, %s, %s, %s, now(), 1) "
                 "ON CONFLICT (event_id) DO NOTHING RETURNING 1",
-                (event_id,),
+                (event_id, "pending" if event is not None else "done", team_id or None,
+                 Json(event) if event is not None else None),
             ).fetchone()
         return row is not None
     except Exception:  # noqa: BLE001 - fall back to the resend rule
         logger.warning("slack.bot: could not record event %s", event_id, exc_info=True)
         return None
+
+
+#: The answering process beats this often; silent four times over, it died.
+QUESTION_HEARTBEAT_SECONDS = 30
+QUESTION_DEAD_AFTER_SECONDS = 120
+#: A lost question is re-answered within this window, at most this many times.
+REPLAY_WINDOW_MINUTES = 30
+MAX_QUESTION_ATTEMPTS = 3
+
+
+def _answer_durably(event_id: str, event: dict, team_id: str, *, waited: bool) -> None:
+    """``_handle`` with a heartbeat on its receipt, then marked done (its text
+    cleared) however it ended: only a process that DIED leaves it pending."""
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(QUESTION_HEARTBEAT_SECONDS):
+            try:
+                with get_connection() as conn:
+                    conn.execute(
+                        "UPDATE slack_event_receipts SET alive_at = now() "
+                        "WHERE event_id = %s AND status = 'pending'", (event_id,),
+                    )
+            except Exception:  # noqa: BLE001 - a missed beat, never a failed answer
+                logger.warning("slack.bot: heartbeat for %s failed", event_id, exc_info=True)
+
+    threading.Thread(target=beat, name=f"slack-alive-{event_id}", daemon=True).start()
+    try:
+        _handle(event, team_id, waited=waited)
+    finally:
+        stop.set()
+        try:
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE slack_event_receipts SET status = 'done', event = NULL "
+                    "WHERE event_id = %s", (event_id,),
+                )
+        except Exception:  # noqa: BLE001 - at worst it is replayed once, as delayed
+            logger.warning("slack.bot: could not close receipt %s", event_id, exc_info=True)
+
+
+def replay_lost_questions(limit: int = 5) -> int:
+    """Re-answer questions whose answering process died; returns how many.
+
+    Pending, silent past ``QUESTION_DEAD_AFTER_SECONDS`` (a live answer keeps
+    beating, so it is never answered twice), received within the window, under
+    the attempt cap. Claimed in one statement (``SKIP LOCKED``), so two
+    instances never take the same one. Each runs on its own thread and says
+    the answer was delayed. Past the window or the cap it is given up, its
+    text cleared.
+    """
+    with get_connection() as conn:
+        given_up = conn.execute(
+            """
+            UPDATE slack_event_receipts SET status = 'done', event = NULL
+             WHERE status = 'pending'
+               AND alive_at < now() - make_interval(secs => %s)
+               AND (received_at < now() - make_interval(mins => %s) OR attempts >= %s)
+            """,
+            (QUESTION_DEAD_AFTER_SECONDS, REPLAY_WINDOW_MINUTES, MAX_QUESTION_ATTEMPTS),
+        ).rowcount
+        lost = conn.execute(
+            """
+            WITH lost AS (
+                SELECT event_id FROM slack_event_receipts
+                 WHERE status = 'pending'
+                   AND alive_at < now() - make_interval(secs => %s)
+                 ORDER BY received_at
+                 LIMIT %s
+                 FOR UPDATE SKIP LOCKED
+            )
+            UPDATE slack_event_receipts r
+               SET attempts = r.attempts + 1, alive_at = now()
+              FROM lost WHERE r.event_id = lost.event_id
+            RETURNING r.event_id, r.team_id, r.event
+            """,
+            (QUESTION_DEAD_AFTER_SECONDS, limit),
+        ).fetchall()
+    if given_up:
+        logger.warning("slack.bot: gave up on %s question(s) lost in a restart", given_up)
+    for event_id, team_id, event in lost:
+        logger.info("slack.bot: re-answering %s, lost in a restart", event_id)
+        threading.Thread(
+            target=_answer_durably, args=(event_id, event, team_id or ""),
+            kwargs={"waited": True}, name=f"slack-replay-{event_id}", daemon=True,
+        ).start()
+    return len(lost)
 
 
 def _waited(payload: dict) -> bool:
@@ -669,6 +771,15 @@ def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
         return
     if is_dm and token_workspace_id is not None and not _in_a_slack_space(org_id, team_id, user.id):
         post_message(token, channel, _NO_DM_ACCESS, thread_ts)
+        return
+    from ..config.settings import RequestBudgetSettings
+    from ..llm.openai_provider import start_call_cap
+
+    # The same ceiling on model requests as a web question (this thread's context).
+    start_call_cap(RequestBudgetSettings.from_env().max_model_calls)
+    if len(text) > MAX_SLACK_QUESTION_CHARS:
+        # The web app's cap: Slack allows ~40k characters, which went to the model whole.
+        post_message(token, channel, _TOO_LONG, thread_ts)
         return
 
     # The same person and company limits as a question in the web app, so
@@ -886,7 +997,7 @@ async def slack_events_own_app(
     """
     from ..auth.org_apps import org_for_app_key
 
-    found = org_for_app_key("slack", app_key)
+    found = await asyncio.to_thread(org_for_app_key, "slack", app_key)
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     org_id, secret = found
@@ -924,7 +1035,9 @@ async def _receive(
     # A company's app holds its own signing secret, so its requests are trusted
     # only for a Slack workspace connected to that company.
     if org_id is not None:
-        scope = _org_for_team(payload.get("team_id") or "")
+        # Off the event loop: a pool wait here froze every request on this worker
+        # and missed Slack's 3s ack, so Slack resent.
+        scope = await asyncio.to_thread(_org_for_team, payload.get("team_id") or "")
         if scope is None or scope[0] != org_id:
             return {"ok": True}
 
@@ -955,12 +1068,16 @@ async def _receive(
     # resend is answered unless that event id already was. Without an id (or
     # when the receipt cannot be written), every resend is dropped as before.
     event_id = str(payload.get("event_id") or "")
-    first = _first_delivery(event_id) if event_id else None
+    team_id = payload.get("team_id") or ""
+    first = (await asyncio.to_thread(_first_delivery, event_id, team_id, event)
+             if event_id else None)
     if first is False or (first is None and x_slack_retry_num):
         logger.info("slack.bot ignoring a repeat delivery (retry #%s)", x_slack_retry_num or 0)
         return {"ok": True}
 
-    background.add_task(
-        _handle, event, payload.get("team_id") or "", waited=_waited(payload)
-    )
+    if first:
+        # Kept until answered: a restart mid-answer is re-answered, not lost.
+        background.add_task(_answer_durably, event_id, event, team_id, waited=_waited(payload))
+    else:
+        background.add_task(_handle, event, team_id, waited=_waited(payload))
     return {"ok": True}

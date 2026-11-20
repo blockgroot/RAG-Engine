@@ -15,16 +15,27 @@ from datetime import datetime, timedelta, timezone
 from ..auth.email import send_scheduler_report_email_safe
 from ..auth.users import get_user
 from ..config.settings import ApiSettings
-from ..core.exceptions import ConfigurationError
+from ..core.exceptions import AuthError, ConfigurationError, ProviderError
 from ..llm import build_aux_llm_provider
 from ..llm.routed import default_model_only
 from ..llm.base import LLMProvider
 from ..sources.google_groups import viewer_for_person
-from ..workspaces.store import get_workspace_name
+from ..workspaces.store import assert_member, get_workspace_name
 from . import reports
 from .activity import fetch_activity
 from .prompts import NO_ACTIVITY_NOTE, build_scheduler_report_prompt
 from .store import Scheduler
+
+#: Output cap for one report: a ceiling sized to a long digest, never the endpoint's default.
+REPORT_MAX_TOKENS = 3000
+
+
+class AlreadyDelivered(ProviderError):
+    """This window's report was already emailed: record success, send nothing."""
+
+    def __init__(self, window_end: datetime) -> None:
+        super().__init__(f"Report already delivered up to {window_end.isoformat()}")
+        self.window_end = window_end
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +86,24 @@ def run_scheduler_once(
             f"Scheduler {scheduler.id} has no deliverable owner (user "
             f"{scheduler.user_id} is gone)."
         )
+    if scheduler.workspace_id:
+        # A space's activity reaches only its members: one removed since setting
+        # this up gets nothing (raised before any read; the attempts cap retires it).
+        try:
+            assert_member(scheduler.workspace_id, scheduler.org_id, scheduler.user_id)
+        except AuthError as exc:
+            raise ConfigurationError(
+                f"Scheduler {scheduler.id}: its owner is no longer a member of the space."
+            ) from exc
 
     window_end = datetime.now(timezone.utc)
     since = window_start(scheduler)
+    done_until = reports.delivered_window_end(
+        scheduler.id, since if scheduler.last_run_at is not None else None
+    )
+    if done_until is not None:
+        # The last run emailed this window and died before recording success.
+        raise AlreadyDelivered(done_until)
     # The row's own scope wins; the argument is a test/manual override only.
     scope_id = workspace_id or scheduler.workspace_id
     # Snapshotted so an archived report survives a space rename or delete.
@@ -122,7 +148,7 @@ def run_scheduler_once(
         )
         # Unattended: always the configured model, never a picked one.
         with default_model_only():
-            report = llm.generate(prompt).strip()
+            report = llm.generate(prompt, max_tokens=REPORT_MAX_TOKENS).strip()
 
     # Items and notes stored as data, so links are never invented or dropped
     # and notes reach the reader even if the model omits them.
