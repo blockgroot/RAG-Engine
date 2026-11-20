@@ -232,3 +232,116 @@ def test_a_turn_with_its_own_worked_figures_never_reuses_the_last_turns_chunks()
     finally:
         reset_answers(token)
     assert r2.retrieval_reused is False and store.query_calls == 2
+
+
+# -- the reuse re-check: access and freshness --------------------------------
+# Sharing can be revoked and a page edited between two questions; reusing the
+# remembered chunk then would quote what the asker may no longer read, or an
+# old version. Each case must search fresh instead.
+
+
+def _two_turns(store, *, between=lambda store, memory, cid: None):
+    llm = RecordingLLM(rewrite="How many paid annual leave days do we get?")
+    memory = InMemoryConversationStore()
+    pipe = _pipeline(llm, store, memory)
+    cid = memory.create_conversation(ORG)
+    pipe.answer("How many annual leave days do we get?", ORG, conversation_id=cid)
+    between(store, memory, cid)
+    return pipe.answer("sorry, can you repeat that?", ORG, conversation_id=cid)
+
+
+def test_reuse_still_fires_when_the_chunk_is_readable_and_unchanged():
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+    r2 = _two_turns(store)
+    assert r2.retrieval_reused is True and store.query_calls == 1
+
+
+def test_a_document_the_asker_can_no_longer_open_is_not_reused():
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+
+    def revoke(store, memory, cid):
+        store.hidden = True
+
+    r2 = _two_turns(store, between=revoke)
+    assert r2.retrieval_reused is False and store.query_calls == 2
+
+
+def test_a_document_re_synced_since_the_last_turn_is_not_reused():
+    from datetime import datetime, timedelta, timezone
+
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+
+    def resync(store, memory, cid):
+        store.resynced_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+
+    r2 = _two_turns(store, between=resync)
+    assert r2.retrieval_reused is False and store.query_calls == 2
+
+
+def test_a_remembered_chunk_without_a_save_time_is_not_reused():
+    from dataclasses import replace
+
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+
+    def forget_time(store, memory, cid):
+        memory._last[cid] = [replace(r, stored_at=None) for r in memory._last[cid]]
+
+    r2 = _two_turns(store, between=forget_time)
+    assert r2.retrieval_reused is False and store.query_calls == 2
+
+
+def test_the_re_check_passes_the_asker_and_scope_to_the_store():
+    from app.vectorstore.base import Viewer
+
+    seen = {}
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+    real = store.chunks_at
+
+    def spy(org_id, positions, *, workspace_id=None, viewer=None, unchanged_since=None):
+        seen.update(workspace_id=workspace_id, viewer=viewer, since=unchanged_since)
+        return real(org_id, positions, workspace_id=workspace_id, viewer=viewer,
+                    unchanged_since=unchanged_since)
+
+    store.chunks_at = spy
+    llm = RecordingLLM(rewrite="How many paid annual leave days do we get?")
+    memory = InMemoryConversationStore()
+    pipe = _pipeline(llm, store, memory)
+    cid = memory.create_conversation(ORG)
+    asker = Viewer(email="a@example.com")
+    pipe.answer("How many annual leave days do we get?", ORG, conversation_id=cid,
+                workspace_id="ws-1", viewer=asker)
+    pipe.answer("sorry, can you repeat that?", ORG, conversation_id=cid,
+                workspace_id="ws-1", viewer=asker)
+    assert seen["workspace_id"] == "ws-1" and seen["viewer"] == asker
+    assert seen["since"] is not None
+
+
+def test_chunks_at_drops_chunks_written_after_unchanged_since():
+    """Real SQL: a re-sync rewrites a document's chunks, so ``unchanged_since``
+    before that write hides them and after it keeps them."""
+    import os
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    import pytest
+
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("needs a database")
+    from app.db.connection import get_connection
+    from app.vectorstore.pgvector_store import PgVectorStore
+
+    store = PgVectorStore()
+    vector = [0.0] * int(os.getenv("EMBEDDING_DIM", "1024"))
+    vector[0] = 1.0
+    org = store.create_organization(f"reuse-test-{uuid.uuid4().hex[:8]}")
+    try:
+        doc = store.add_document(org, "Leave", ["leave: 25 days"], [vector])
+        positions = [(doc, 0)]
+        with get_connection() as conn:
+            db_now = conn.execute("SELECT now()").fetchone()[0]
+        assert store.chunks_at(org, positions, unchanged_since=db_now + timedelta(hours=1))
+        assert store.chunks_at(org, positions, unchanged_since=db_now - timedelta(hours=1)) == []
+        assert store.chunks_at(org, positions)  # no bound: unchanged behaviour
+    finally:
+        with get_connection() as conn:
+            conn.execute("DELETE FROM organizations WHERE id = %s::uuid", (org,))
