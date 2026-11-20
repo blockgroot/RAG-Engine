@@ -1005,6 +1005,11 @@ _PERSON_BUSY = (
 #: ``next()``'s default: the answer stream has no more events.
 _STREAM_END = object()
 
+#: A silent step sends an SSE comment this often (``frontend/lib/sse.ts`` waits
+#: ``STREAM_IDLE_MS`` for any bytes before calling the line dead).
+KEEPALIVE_SECONDS = 15
+_KEEPALIVE = ": keepalive\n\n"
+
 
 async def _in_a_slot(
     stream: Iterator[str], settings: RateLimitSettings, user_id: str
@@ -1056,8 +1061,18 @@ async def _in_a_slot(
             in_flight = asyncio.ensure_future(
                 asyncio.to_thread(next, stream, _STREAM_END))
             try:
-                event = await asyncio.shield(in_flight)
-            except asyncio.CancelledError:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            asyncio.shield(in_flight), timeout=KEEPALIVE_SECONDS)
+                        break
+                    except asyncio.TimeoutError:
+                        # A silent step (one long model call) still shows the line
+                        # is alive, so the browser's idle timeout and any proxy
+                        # tell a slow answer from a dead connection.
+                        yield _KEEPALIVE
+            except (asyncio.CancelledError, GeneratorExit):
+                # Cancelled at an await, or closed at a keepalive's yield.
                 abandoned.set()
                 held = (shared, mine)
                 shared = mine = None  # the finally below must not free them now

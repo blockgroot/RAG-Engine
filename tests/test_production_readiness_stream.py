@@ -60,3 +60,23 @@ def test_a_finished_stream_frees_its_places_at_once(monkeypatch):
 
     assert asyncio.run(run()) == ["a", "b"]
     assert sorted(freed) == ["answers:all", "answers:user:u1"]
+
+
+def test_a_silent_step_sends_keepalives(monkeypatch):
+    import time
+
+    monkeypatch.setattr(chat, "take_place", lambda key, *a, **k: "")
+    monkeypatch.setattr(chat, "KEEPALIVE_SECONDS", 0.05)
+    settings = type("S", (), {"chat_max_concurrent_per_person": 1, "chat_max_concurrent": 1,
+                              "chat_queue_wait_seconds": 1})()
+
+    def slow():
+        time.sleep(0.3)
+        yield "answer"
+
+    async def run():
+        return [e async for e in chat._in_a_slot(slow(), settings, "u1")]
+
+    events = asyncio.run(run())
+    assert events[-1] == "answer"
+    assert events.count(chat._KEEPALIVE) >= 2

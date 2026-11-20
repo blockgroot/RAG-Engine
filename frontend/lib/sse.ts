@@ -123,7 +123,7 @@ export async function streamChat(
   // A dropped connection makes the read throw mid-answer. Uncaught, the chat
   // stayed busy with a spinner until a reload.
   try {
-    for await (const { event, data } of sseEvents(response.body)) {
+    for await (const { event, data } of sseEvents(response.body, STREAM_IDLE_MS)) {
       if (event === "token") {
         handlers.onToken(JSON.parse(data) as string);
       } else if (event === "status") {
@@ -145,18 +145,39 @@ export async function streamChat(
   handlers.onError("The answer stream ended unexpectedly. Please try again.");
 }
 
-/** Each ``event:``/``data:`` block of a server-sent event stream, as it arrives. */
-async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<{ event: string; data: string }> {
+/** No bytes at all for this long and the answer stream is dead. The server sends a
+ *  keepalive every 15s while a step runs (``app/api/chat.KEEPALIVE_SECONDS``), so
+ *  only a dead line (a proxy holding it open) stays silent this long. */
+const STREAM_IDLE_MS = 60_000;
+
+/** Each ``event:``/``data:`` block of a server-sent event stream, as it arrives.
+ *  ``idleMs``: give up (and cancel the stream) after that long with no bytes. */
+async function* sseEvents(
+  body: ReadableStream<Uint8Array>,
+  idleMs?: number,
+): AsyncGenerator<{ event: string; data: string }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   while (true) {
     let chunk: ReadableStreamReadResult<Uint8Array>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      chunk = await reader.read();
+      const read = reader.read();
+      chunk = idleMs
+        ? await Promise.race([
+            read,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("idle")), idleMs);
+            }),
+          ])
+        : await read;
     } catch (cause) {
-      // Network drop: one recognisable error for every caller to handle.
+      reader.cancel().catch(() => undefined);
+      // Network drop or a silent line: one recognisable error for every caller.
       throw Object.assign(new Error("The connection dropped. Please try again."), { status: 0, cause });
+    } finally {
+      if (timer) clearTimeout(timer);
     }
     const { value, done } = chunk;
     if (done) return;
