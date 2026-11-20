@@ -373,8 +373,9 @@ def test_the_purge_runs_two_clocks_and_returns_a_count(monkeypatch):
 
     class _Conn:
         def execute(self, sql, params):
-            seen["sql"] = " ".join(sql.split())
-            seen["params"] = params
+            # The purge's own DELETE; the queue's clean-up after it is not this test's.
+            seen.setdefault("sql", " ".join(sql.split()))
+            seen.setdefault("params", params)
             return self
 
         def fetchall(self):
@@ -387,6 +388,7 @@ def test_the_purge_runs_two_clocks_and_returns_a_count(monkeypatch):
             return False
 
     monkeypatch.setattr(store, "get_connection", lambda: _Conn())
+    monkeypatch.setattr(store.blobstore, "remove_object", lambda key: True)  # no real store
     assert store.purge_expired_attachments(720, 24) == 3
     assert "DELETE FROM conversation_attachments" in seen["sql"]
     # Clock 1: everything, eventually.

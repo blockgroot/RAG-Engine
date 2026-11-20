@@ -42,7 +42,8 @@ def delete_company(org_id: str, confirm_name: str) -> tuple[bool, str]:
         ).fetchall()]
         conn.execute("DELETE FROM org_signup_requests WHERE org_id = %s::uuid", (org_id,))
         conn.execute("DELETE FROM organizations WHERE id = %s::uuid", (org_id,))
-    # After the commit: a storage failure must not undo the delete.
+    # After the commit: a storage failure must not undo the delete. The cascade
+    # queued every key (storage_deletions); one that fails here is retried by upkeep.
     for key in keys:
         drop_stored(key)
     return True, f"Deleted {row[0]} and {len(keys)} uploaded file(s)."

@@ -338,6 +338,15 @@ def run_upkeep() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("Upkeep: attachment purge failed")
 
+    # Stored files whose rows are gone (every delete queues them by trigger;
+    # a failed removal is retried here, never lost).
+    try:
+        from ..attachments.store import drain_storage_deletions
+
+        drain_storage_deletions()
+    except Exception:  # noqa: BLE001
+        logger.exception("Upkeep: stored-file deletion failed")
+
     # Retention: removes whole chats (attachments and turns cascade).
     conversations_purged = 0
     try:

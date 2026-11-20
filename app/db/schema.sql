@@ -994,6 +994,31 @@ CREATE INDEX IF NOT EXISTS idx_feedback_topic ON feedback_and_gaps (topic_id);
 -- plaintext companion); the row keeps what finds them. `content` stays,
 -- NULLABLE, so older rows keep answering (`load_attachment_texts` falls back).
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS storage_key TEXT;
+
+-- Stored files whose row is gone, until the object store confirms they are.
+-- Filled by trigger on EVERY delete of an attachment row, the cascades from a
+-- chat, a user or a company included (those left their files in storage for
+-- good), in the same transaction as the delete. Drained by upkeep
+-- (`attachments.store.drain_storage_deletions`). Only keys that were ours: no
+-- folder is ever listed and swept, which could take another environment's.
+CREATE TABLE IF NOT EXISTS storage_deletions (
+    storage_key  TEXT PRIMARY KEY,
+    attempts     INT NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION queue_storage_deletion() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO storage_deletions (storage_key) VALUES (OLD.storage_key)
+    ON CONFLICT (storage_key) DO NOTHING;
+    RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS conversation_attachments_queue_storage ON conversation_attachments;
+CREATE TRIGGER conversation_attachments_queue_storage
+    AFTER DELETE ON conversation_attachments
+    FOR EACH ROW WHEN (OLD.storage_key IS NOT NULL)
+    EXECUTE FUNCTION queue_storage_deletion();
 ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
 
 -- One row per person as each CONNECTOR knows them (Slack member, Drive editor,
