@@ -130,9 +130,12 @@ Reply in this thread and Rahul will get your answer.
 ```
 
 - **Reply:** the first non-bot message in that DM thread (`thread_ts` = the ask's message ts)
-  is the answer. `slack_events._handle` checks, before anything else, whether a DM message's
-  `thread_ts` matches an open ask for that channel; if so it records the reply and stops
-  (it is not treated as a question). Later messages in the thread are ignored in v1.
+  is the answer. `slack_events._handle` checks right after `_org_for_team` — **before** the
+  sender is resolved to a Handbook user, because the colleague may have no account (today that
+  path posts "no account" and stops) — whether a DM message's `thread_ts` matches an ask of that
+  org on that channel **and** the sender is the ask's `slack_user_id`. If so it records the reply
+  and stops (not a question; no rate-limit bucket, no model). Anything else falls through to the
+  normal path unchanged. Later messages in the thread are ignored in v1.
 - **I don't know:** a button (`action_id = friend_dont_know`) closes the ask as declined.
 - After a reply, the bot posts in the thread:
 
@@ -213,9 +216,14 @@ New package: `base.py` (`AnswerDocWriter.create(parent_id, title, body) -> url`)
 
 - **Notion:** `POST /v1/pages` with `parent.page_id`, a title and paragraph blocks. Needs the
   Notion integration's **Insert content** capability (set in the integration's settings, not an
-  OAuth scope — the company's own app and `.env`'s app both need it). A 403 → `ProviderError`
+  OAuth scope — every integration a connection may use needs it: the OAuth app and the per-org
+  `NOTION_TOKEN_<NAME>` internal integrations). A 403 → `ProviderError`
   "Handbook can't write to this page".
-- **Drive:** add the `drive.file` scope to the Google connection (`app/config/sources.py`).
+- **Drive:** add the `drive.file` scope to the Google connection (`app/config/sources.py`) as an
+  **optional** scope, like Forms and Groups: Google lets a person untick it, and CLAUDE.md says a
+  missing optional scope must not fail the Drive connect (`google_oauth._verify_granted_scopes`
+  today refuses any missing scope, so it must skip this one). Without `drive.file` the admin
+  settings say "Reconnect Google Drive to allow saving" and no Save buttons are shown.
   Create a Google Doc with `files.create` (mimeType `application/vnd.google-apps.document`,
   `parents=[answers folder]`, uploaded as text). The folder is made by Handbook, so
   `drive.file` covers the doc. **Risk, checked first (task 1):** whether `drive.file` may create
@@ -293,12 +301,44 @@ Topic status on the Feedback page only covers the topic window, which is shorter
   include anything but the question and the asker's name.
 - `docs/handbook/PRODUCT_STATUS.md`: a row for Ask a friend.
 
+## 5.11 Constraint check (CLAUDE.md, rule by rule)
+
+| Rule | How Ask a friend meets it |
+|---|---|
+| `org_id` only from the session | `POST /ask-friend` and settings take it from `deps.py`; the question comes from the gap row, never the client |
+| `org_id` on every tenant table, filtered in every query | `friend_asks.org_id`; every read filters on it; Slack lookups match the ask's org to `_org_for_team` |
+| Workspace nests in org; non-member 403 | Space settings via `assert_member` + owner check; space questions only save to the space's place (5.5a) |
+| Company email domain | Colleague email checked with `assert_company_email` |
+| One visibility predicate | Suggestions read only documents passing it with the asker's `Viewer`; a public-only viewer gets none from private docs |
+| Capture fails closed (Drive) | The doc sits in the synced folder and inherits its sharing; the normal sync captures it. No root fallback |
+| Notion has no per-page permissions | The Save prompt says the doc is visible to everyone who can see that page |
+| A conversation is personal; no answer cache | The reply is shown only to the asker. A saved doc is a real document under normal access checks, not a cache |
+| Bot's own Slack traffic not indexed | Asks and replies live in DMs, which sync never reads; the Slack-channel destination is out of v1 for this reason |
+| Slack request acted on only for a connected team | Buttons go through the existing `_interact` (team checked); replies matched on org + channel + ts + sender |
+| Every write via MCP (Act) | **Exception added to CLAUDE.md** (§3, §5.10). `app/answerdocs/` imports nothing from `app/actions/` and vice versa |
+| Failures are `ProviderError` | Writers raise `ProviderError` subclasses with `cause=` |
+| Config only in `app/config/` | `AskFriendSettings.from_env()`, read through `settings.py` |
+| New capability = package with `base.py` | `app/answerdocs/` (two writers); the ask flow is an orchestrator without `base.py` |
+| Bound external walks, mark truncation | Suggestions: ≤ 10 documents, ≤ 5 Slack lookups; the Notion page picker is bounded and says when it is cut |
+| Untrusted text in prompts | No prompt in v1 sees the reply; once saved it is an ordinary document under the normal policy |
+| Links only if seen verbatim | No model writes text here; the doc URL comes from the provider's API reply |
+| Rate limits | Routes take `limit_request`; the asker email takes `limit_email`; no AI call, so no AI spend |
+| Optional scope must not fail connect | `drive.file` is optional (§5.6) |
+| Growing table → retention rule | `friend_asks` rule in `jobs/retention.py`, bounded per pass |
+| Schema conventions | `CREATE TABLE friend_asks` in `schema.sql`; `ALTER`s follow their table; no bare data fix |
+| Identifier masking (`app/privacy`) | Covers LLM, search and guard. The question goes to the company's own Slack and the reply to its own Notion/Drive, like the bot's replies today: not masked (masking would corrupt the saved doc). Said in the CLAUDE.md exception |
+| Chart refusals never shown as gaps | The button appears only where a gap is recorded (same condition as `chat.py:1659`), so chart and access refusals never get it |
+| Heavy imports inside functions | Writers import HTTP clients inside methods |
+
 ## 6. Tests (each the smallest that fails if the rule breaks)
 
 - Suggestions never come from a document outside the viewer's visibility.
 - `POST /ask-friend` refuses another user's gap, a non-company email, and the limits.
 - A DM thread reply on an open ask is recorded and is not answered as a question.
 - Only the answering colleague can Save; Save calls the writer once with verbatim text.
+- A DM reply from someone with no Handbook account is still recorded; any other DM still takes
+  the normal path.
+- A Google connect without `drive.file` still succeeds.
 - Notion/Drive writers build the right request (HTTP faked).
 - Feedback topic status from asks; no names in the payload.
 - Retention rule deletes closed asks after 90 days.
