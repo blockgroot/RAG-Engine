@@ -58,6 +58,7 @@ from ..llm.stages import (
     STAGE_WEB_DECISION,
     USER_FACING_LLM_STAGES,
 )
+from ..llm.openai_provider import last_call_truncated
 from ..llm.routed import default_model_only
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
@@ -488,10 +489,9 @@ class RagPipeline:
             # the grounding guarantees must not depend on a member's dropdown.
             with default_model_only():
                 text = provider.generate(prompt, max_tokens=max_tokens)
-        # Read at once, into this request's context: the provider is shared.
-        # ponytail: another thread's call can land between generate() and this read;
-        # a per-call return value would close it, at the cost of every caller.
-        _LAST_TRUNCATED.set(bool(getattr(provider, "last_truncated", False)))
+        # From the provider's per-request flag, never its shared attribute: another
+        # request's call could land between generate() and a read of that.
+        _LAST_TRUNCATED.set(last_call_truncated())
         log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
         return text
 

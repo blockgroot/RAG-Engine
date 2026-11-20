@@ -152,10 +152,15 @@ class RequestBudgetSettings:
 
     deadline_seconds: float = 45.0
     min_stage_seconds: float = 3.0
+    #: Model requests one question may make, all stages together (routing probes,
+    #: sub-questions, retries, audit). Each stage is bounded alone; nothing bounded
+    #: the sum. A ceiling far above a normal question's, so it only stops a loop.
+    max_model_calls: int = 40
 
     @classmethod
     def from_env(cls) -> "RequestBudgetSettings":
         return cls(
+            max_model_calls=int(os.getenv("REQUEST_MAX_MODEL_CALLS") or cls.max_model_calls),
             deadline_seconds=float(
                 os.getenv("REQUEST_DEADLINE_SECONDS") or cls.deadline_seconds
             ),

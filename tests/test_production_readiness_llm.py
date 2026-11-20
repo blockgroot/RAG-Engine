@@ -52,3 +52,51 @@ def test_every_request_is_paced_without_log_llm_call():
     p.generate("hi")
     p.generate_with_tools([{"role": "user", "content": "hi"}])
     assert pacing.calls_in_window() == 2
+
+
+def test_truncation_is_per_request_not_the_shared_attribute():
+    """Another request's call landing between generate() and the read lied."""
+    import contextvars
+
+    from app.llm.openai_provider import last_call_truncated
+
+    p = _provider("length", [])
+    ctx = contextvars.copy_context()
+    ctx.run(p.generate, "hi")
+    assert ctx.run(last_call_truncated) is True
+    other = _provider("stop", [])
+    other.generate("hi")  # a different request, another context
+    assert last_call_truncated() is False
+    assert ctx.run(last_call_truncated) is True
+
+
+def test_a_question_stops_at_its_model_call_ceiling():
+    import contextvars
+
+    import pytest
+
+    from app.core.exceptions import LLMProviderError
+    from app.llm.openai_provider import start_call_cap
+
+    def question():
+        start_call_cap(2)
+        p = _provider("stop", [])
+        p.generate("1")
+        p.generate("2")
+        with pytest.raises(LLMProviderError, match="more than 2"):
+            p.generate("3")
+
+    contextvars.copy_context().run(question)
+    _provider("stop", []).generate("outside a question: no cap")
+
+
+def test_a_runaway_prompt_is_refused_before_it_is_sent():
+    import pytest
+
+    from app.core.exceptions import LLMProviderError
+    from app.llm.openai_provider import MAX_PROMPT_CHARS
+
+    sent: list = []
+    with pytest.raises(LLMProviderError, match="too large"):
+        _provider("stop", sent).generate("x" * (MAX_PROMPT_CHARS + 1))
+    assert sent == []

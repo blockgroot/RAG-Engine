@@ -5,6 +5,7 @@ Switching provider is config only: ``base_url`` + ``model`` + key.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
 
@@ -53,6 +54,60 @@ DEFAULT_TIMEOUT = 60.0
 #: Output cap for a tool-calling turn when the caller names none. A ceiling, not a
 #: cost: without it the endpoint's own default applies, unbounded on the paid path.
 DEFAULT_TOOL_MAX_TOKENS = 4096
+
+#: Did the last reply made IN THIS CONTEXT stop at its cap? ``last_truncated`` on
+#: the provider is shared by every request; this is per request (and per thread).
+_TRUNCATED: contextvars.ContextVar[bool] = contextvars.ContextVar("llm_truncated", default=False)
+
+
+def last_call_truncated() -> bool:
+    """Whether this request's most recent model reply was cut at its token cap."""
+    return _TRUNCATED.get()
+
+
+#: ``[made, limit]`` for this question, or None outside one. A shared list, so
+#: worker threads that copied the context count into the same total.
+_CALLS: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "llm_calls", default=None)
+
+
+def start_call_cap(limit: int) -> None:
+    """Bound the model requests the rest of this question may make (0 = no cap)."""
+    _CALLS.set([0, limit] if limit > 0 else None)
+
+
+#: Refused before sending: about 150k tokens, under every model we offer (Claude
+#: 200k, Gemini 1M) and far over any prompt we build (deep reading ~30k chars).
+#: Prompts are bounded by characters stage by stage; nothing bounded the whole,
+#: so a runaway (history + attachments + context) failed at the provider, paid.
+MAX_PROMPT_CHARS = 600_000
+
+
+def _check_size(messages: list[dict]) -> None:
+    size = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            size += len(content)
+        elif isinstance(content, list):  # content parts
+            size += sum(len(str(part.get("text", ""))) for part in content if isinstance(part, dict))
+    if size > MAX_PROMPT_CHARS:
+        logger.warning("llm.prompt_too_large chars=%s limit=%s", size, MAX_PROMPT_CHARS)
+        raise LLMProviderError(
+            f"The prompt is too large to send ({size:,} characters; limit {MAX_PROMPT_CHARS:,})."
+        )
+
+
+def _count_call() -> None:
+    calls = _CALLS.get()
+    if calls is None:
+        return
+    calls[0] += 1
+    if calls[0] > calls[1]:
+        logger.warning("llm.call_cap reached: %s model requests in one question", calls[1])
+        raise LLMProviderError(
+            f"This question needed more than {calls[1]} model requests; stopped."
+        )
 
 
 # Gemini puts the delay in the body, not Retry-After: read the header, then
@@ -189,6 +244,8 @@ class OpenAICompatProvider(LLMProvider):
         """
         from openai import BadRequestError
 
+        _check_size(kwargs.get("messages") or [])
+        _count_call()
         _pace()
         try:
             return self._client.chat.completions.create(**self._with_extras(kwargs))
@@ -233,6 +290,7 @@ class OpenAICompatProvider(LLMProvider):
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         self.last_truncated = False
+        _TRUNCATED.set(False)
         kwargs: dict = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -296,6 +354,7 @@ class OpenAICompatProvider(LLMProvider):
         if getattr(choice, "finish_reason", None) == "length":
             # Non-empty but CUT at the cap: log it, nothing else says why.
             self.last_truncated = True
+            _TRUNCATED.set(True)
             logger.warning(
                 "llm.truncated model=%s max_tokens=%s completion_tokens=%s -- raise "
                 "RAG_MAX_ANSWER_TOKENS or use a non-reasoning model",
@@ -314,6 +373,7 @@ class OpenAICompatProvider(LLMProvider):
         max_tokens: int | None = None,
     ) -> ChatResult:
         self.last_truncated = False
+        _TRUNCATED.set(False)
         kwargs: dict = {
             "model": self.model,
             "messages": messages,
@@ -364,6 +424,7 @@ class OpenAICompatProvider(LLMProvider):
         if getattr(response.choices[0], "finish_reason", None) == "length":
             # A tool call cut at the cap is invalid JSON; a cut reply reads as whole.
             self.last_truncated = True
+            _TRUNCATED.set(True)
             logger.warning(
                 "llm.truncated model=%s max_tokens=%s completion_tokens=%s (tool turn)",
                 self.last_resolved_model or self.model, kwargs["max_tokens"],

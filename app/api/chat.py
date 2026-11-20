@@ -60,9 +60,12 @@ from ..agent.routing import (
     refusal_retry,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings
+from ..config.settings import (
+    AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings, RequestBudgetSettings,
+)
 from ..rag import progress
 from ..rag.deep import reset_deep_read, use_deep_read
+from ..llm.openai_provider import start_call_cap
 from ..rag.request_budget import watch_abandon
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
@@ -1044,6 +1047,7 @@ async def _in_a_slot(
                     log_refusal=False,
                 )
         abandoned = watch_abandon()
+        start_call_cap(RequestBudgetSettings.from_env().max_model_calls)
         while True:
             # One step at a time in a worker thread. On a disconnect the await is
             # cancelled but the thread is not: that step's work goes on. So the

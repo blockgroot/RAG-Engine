@@ -678,6 +678,11 @@ def _handle(event: dict, team_id: str, *, waited: bool = False) -> None:
     if is_dm and token_workspace_id is not None and not _in_a_slack_space(org_id, team_id, user.id):
         post_message(token, channel, _NO_DM_ACCESS, thread_ts)
         return
+    from ..config.settings import RequestBudgetSettings
+    from ..llm.openai_provider import start_call_cap
+
+    # The same ceiling on model requests as a web question (this thread's context).
+    start_call_cap(RequestBudgetSettings.from_env().max_model_calls)
     if len(text) > MAX_SLACK_QUESTION_CHARS:
         # The web app's cap: Slack allows ~40k characters, which went to the model whole.
         post_message(token, channel, _TOO_LONG, thread_ts)
