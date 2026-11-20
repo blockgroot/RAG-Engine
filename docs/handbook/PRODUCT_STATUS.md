@@ -453,6 +453,14 @@ edit resumes a stopped scheduler. Infra: statement and pool timeouts, `GET /read
 schema apply, bounded shutdown, a non-root image, logs that actually reach the log with a request
 id. Web search and the Lettuce audit are masked; Slack questions capped at 4000 characters; a
 dropped stream no longer freezes the chat; browser security headers; `scripts/delete_company.py`.
+Follow-up (20 Nov): at most 40 model requests per question and no prompt over 600k characters;
+answer streams send keepalives and the browser gives up after 60 s of silence; a reaped job stops
+itself; request bodies capped (2 MB) and a foreign `Origin` logged (`ORIGIN_CHECK=report`, then
+`enforce`); boot checks the session and encryption secrets; a report already emailed is not sent
+again; `scripts/export_company.py`. Stored upload files are deleted whenever their row goes (chat,
+user or company delete included), retried from `storage_deletions`; a Slack question lost in a
+restart is answered again (within 30 min, 3 tries); the Notion webhook token is stored encrypted
+and read with `scripts/notion_webhook_token.py`, never logged.
 Covered by `tests/test_production_readiness_*.py` plus updated `test_jobs.py`,
 `test_scheduler_queue.py` and `test_token_refresh.py` (staging database).
 

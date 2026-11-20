@@ -24,6 +24,8 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 - [ ] `FRONTEND_URL` is exactly `https://hand-book.vercel.app`. Every sign-in return address is built from it.
 - [ ] `https://hand-book.onrender.com/ready` returns 200 (the database answers; `/health` only proves the process is up), and `https://hand-book.vercel.app` opens with a valid certificate.
 - [ ] An uptime monitor polls `/ready`, not `/health`.
+- [ ] Notion instant updates: after creating the webhook subscription in Notion, run `python scripts/notion_webhook_token.py` in the Render shell and paste the token into Notion's Verify form (it is never in the logs).
+- [ ] `ORIGIN_CHECK` is `enforce` once a week of logs shows no `origin_check` lines for our own sites.
 - [ ] `OWNER_NOTIFICATION_EMAIL` is the Handbook team's address, so organization requests reach us.
 - [ ] `MASK_IDENTIFIERS` is not `false`, and the injection guard is on (`GUARD_MODE` is not `off`, the default). The guard runs on its own account when `GUARD_API_KEY` and `GUARD_BASE_URL` are both set (`GUARD_SAFEGUARD_MODEL` names the model there); with neither, it uses `GROQ_API_KEY`.
 - [ ] Background work runs on the Gemini model, on its own quota: `LLM_AUX_API_KEY` with `LLM_AUX_BASE_URL` or `LLM_AUX_ADAPTER`, and `LLM_AUX_MODEL`. Base URL and key are both set or neither.

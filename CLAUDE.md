@@ -543,6 +543,12 @@ offered, else a new topic. Grouping runs in the background when they open the
 bell or the page, never on the answer path. Counts are distinct
 people, never names. Chart refusals and figure failures are ours, never shown.
 
+**Durability.** A Slack question is a `pending` receipt (its text kept only until answered)
+beaten by its answering process; a dead one is re-answered within 30 minutes, at most 3 tries
+(`slack_events.replay_lost_questions`). A question makes at most `REQUEST_MAX_MODEL_CALLS` model
+requests. The Notion webhook token is a deployment secret, stored encrypted, never logged; the
+first one kept wins.
+
 **Rate limits.** Token buckets (`app/ratelimit/`), in Redis when `REDIS_URL` is
 set, else per process. Which buckets a request takes is `security/rate_limit.py`
 only: every router a person calls takes `limit_request`; a question (chat, Agent,
@@ -581,7 +587,9 @@ describe current content, never a diff. `sync_requested_at` is a flag, not a que
 A table that only grows (tokens, drafts, sync jobs, reports, questions) gets a rule in `jobs/retention.py`, run by `run_upkeep`: bounded per pass, never the company's data, and it keeps each connection's latest job and each schedule's latest report.
 Removing an attachment is idempotent (`deleted: false` for one already gone,
 never a 404) and answers on the row delete; the object-store purge runs after
-the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty
+the response. Every deleted attachment row queues its stored files by trigger
+(`storage_deletions`, cascades included); upkeep retries them. Never sweep a storage folder:
+another environment's files would look orphaned. The injection guard logs questions and never refuses them. A scrubbed-to-empty
 input stays empty.
 
 **Identifiers leaving.** Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values
