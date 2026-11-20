@@ -68,6 +68,13 @@ class ApiSettings:
     model_warmup: bool = True  # off on low-RAM machines
     #: Root log level for our own loggers (uvicorn configures only its own).
     log_level: str = "INFO"
+    #: Largest request body (uploads have their own, larger, cap). JSON bodies had
+    #: none but the proxy's.
+    max_request_bytes: int = 2 * 1024 * 1024
+    #: Origin check on state-changing requests: "report" logs a foreign Origin,
+    #: "enforce" refuses it (403), "off". Report first: an origin production uses
+    #: but this list lacks would refuse every POST.
+    origin_check: str = "report"
 
     @classmethod
     def from_env(cls) -> "ApiSettings":
@@ -80,6 +87,8 @@ class ApiSettings:
             frontend_url=os.getenv("FRONTEND_URL"),
             model_warmup=env_bool("MODEL_WARMUP_ON_STARTUP", True),
             log_level=(os.getenv("LOG_LEVEL") or cls.log_level).upper(),
+            max_request_bytes=int(os.getenv("MAX_REQUEST_BYTES") or cls.max_request_bytes),
+            origin_check=(os.getenv("ORIGIN_CHECK") or cls.origin_check).strip().lower(),
         )
 
 

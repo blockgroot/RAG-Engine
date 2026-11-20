@@ -162,11 +162,13 @@ def update_progress(
     phase: str | None = None,
     processed: int | None = None,
     total: int | None = None,
-) -> None:
+) -> bool:
     """Record live progress on a ``running`` job; only the fields passed.
 
     Best-effort: a failed write must never abort a run (worst case, a stale
-    spinner).
+    spinner). False only when the job was failed (reaped) or deleted: the
+    caller should stop. A ``succeeded`` job still reports (deferred enrichment
+    runs after success).
     """
     sets: list[str] = []
     params: list[object] = []
@@ -180,7 +182,7 @@ def update_progress(
         sets.append("total_documents = %s")
         params.append(total)
     if not sets:
-        return
+        return True
 
     # The heartbeat tells reap_stuck the job is alive.
     sets.append("progress_at = now()")
@@ -188,12 +190,14 @@ def update_progress(
     params.append(job_id)
     try:
         with get_connection() as conn:
-            conn.execute(
-                f"UPDATE ingestion_jobs SET {', '.join(sets)} WHERE id = %s",
+            row = conn.execute(
+                f"UPDATE ingestion_jobs SET {', '.join(sets)} "
+                "WHERE id = %s AND status <> 'failed' RETURNING 1",
                 tuple(params),
-            )
+            ).fetchone()
     except Exception:  # noqa: BLE001 - progress is observability, never load-bearing
-        return
+        return True
+    return row is not None
 
 
 def mark_succeeded(

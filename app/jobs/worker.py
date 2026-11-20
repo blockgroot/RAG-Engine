@@ -13,7 +13,7 @@ from ..auth.credentials import (
     mark_needs_reauth,
 )
 from ..config.settings import ContextualSettings, IngestWorkerSettings, env_bool
-from ..core.exceptions import OAuthReauthRequiredError
+from ..core.exceptions import OAuthReauthRequiredError, RunCancelled
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..insights.facts import DOCUMENT_PROVIDERS, backfill_all_document_facts, record_document_facts
 from ..sources import build_source_adapter
@@ -174,10 +174,13 @@ def _run_job(job: queue.IngestionJob) -> None:
         adapter = build_source_adapter(provider, token=token, config=config)
 
         def report(phase: str, processed: int, total: int) -> None:
-            """Persist live progress for polling clients."""
-            queue.update_progress(
+            """Persist live progress for polling clients; stop if reaped."""
+            if not queue.update_progress(
                 job.id, phase=phase, processed=processed, total=total
-            )
+            ):
+                # Failed by the reaper while still working: carrying on ran a
+                # second sync of this connection beside the next job.
+                raise RunCancelled(f"Job {job.id} is no longer running; stopped.")
 
         if provider == "slack":
             # Every sync: a rename is invisible to change detection.

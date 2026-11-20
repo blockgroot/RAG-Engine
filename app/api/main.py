@@ -206,7 +206,21 @@ def create_app() -> FastAPI:
     settings = ApiSettings.from_env()
     configure_logging(settings.log_level)
     app = FastAPI(title="RAG Engine API", lifespan=lifespan)
-    app.add_middleware(RequestIdMiddleware)
+    from ..config.settings import AttachmentSettings
+    from ..security.request_guards import BodyLimitMiddleware, OriginCheckMiddleware
+
+    app.add_middleware(
+        OriginCheckMiddleware,
+        allowed=[*settings.cors_origins, settings.frontend_url or ""],
+        mode=settings.origin_check,
+    )
+    app.add_middleware(
+        BodyLimitMiddleware,
+        max_bytes=settings.max_request_bytes,
+        # The upload route's own cap, plus room for the multipart wrapping.
+        upload_max_bytes=AttachmentSettings.from_env().max_bytes + 1024 * 1024,
+    )
+    app.add_middleware(RequestIdMiddleware)  # outermost: every refusal above carries an id
 
     app.add_middleware(
         CORSMiddleware,

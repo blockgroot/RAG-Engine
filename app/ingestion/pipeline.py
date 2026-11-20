@@ -15,6 +15,7 @@ from ..config.settings import (
     GuardSettings,
     KeywordExtractionSettings,
 )
+from ..core.exceptions import RunCancelled
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
 from ..guard import InjectionGuard, build_injection_guard
@@ -609,6 +610,8 @@ def ingest_source(
             return
         try:
             on_progress(phase, processed, total)
+        except RunCancelled:
+            raise  # the job was reaped: stop, never run beside its successor
         except Exception:  # noqa: BLE001 - a progress sink must never fail ingestion
             pass
 
@@ -937,6 +940,8 @@ def enrich_source_contextual(
             return
         try:
             on_progress(phase, processed, total)
+        except RunCancelled:
+            raise
         except Exception:  # noqa: BLE001
             pass
 

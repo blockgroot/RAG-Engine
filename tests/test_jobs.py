@@ -679,3 +679,27 @@ def test_a_reaped_job_finishing_late_stays_failed(store, org_cleanup):
         ).fetchone()[0]
     queue.mark_succeeded(job_id, 5)
     assert queue.get_job(org_id, job_id).status == "failed"
+
+
+@requires_db
+def test_a_reaped_job_is_told_to_stop_and_a_finished_one_may_still_report(store, org_cleanup):
+    """A reaped job kept working and ran beside the next sync; deferred
+    enrichment reports after success and must not be stopped."""
+    org_id = store.create_organization(f"Stop {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    ids = {}
+    for status, provider in (("failed", "notion"), ("succeeded", "google"), ("running", "slack")):
+        with get_connection() as conn:
+            connection_id = conn.execute(
+                "INSERT INTO oauth_connections (org_id, provider, external_workspace_id, "
+                "access_token_encrypted) VALUES (%s::uuid, %s, %s, 'x') RETURNING id::text",
+                (org_id, provider, f"ws-{status}"),
+            ).fetchone()[0]
+            ids[status] = conn.execute(
+                "INSERT INTO ingestion_jobs (org_id, connection_id, status) "
+                "VALUES (%s::uuid, %s::uuid, %s) RETURNING id::text",
+                (org_id, connection_id, status),
+            ).fetchone()[0]
+    assert queue.update_progress(ids["failed"], phase="x") is False
+    assert queue.update_progress(ids["succeeded"], phase="enriching") is True
+    assert queue.update_progress(ids["running"], phase="x") is True
