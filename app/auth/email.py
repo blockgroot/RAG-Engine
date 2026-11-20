@@ -38,28 +38,31 @@ def _dispatch(
     settings: EmailSettings | None,
     *,
     html_body: str | None = None,
+    reply_to: str | None = None,
 ) -> None:
     """Shared send for every template.
 
     ``html_body`` goes as ``multipart/alternative`` beside the plain ``body``;
-    console mode prints only ``body``.
+    console mode prints only ``body``. ``reply_to``: where a reply goes (Ask a
+    friend: the asker), when it is not the sender.
     """
     settings = settings or EmailSettings.from_env()
 
     if settings.sender == "console":
-        print(f"\n[email:console] To: {to}\nSubject: {subject}\n{body}")
+        reply = f"\nReply-To: {reply_to}" if reply_to else ""
+        print(f"\n[email:console] To: {to}{reply}\nSubject: {subject}\n{body}")
         return
 
     if settings.sender == "smtp":
-        _send_smtp(to, subject, body, settings, html_body=html_body)
+        _send_smtp(to, subject, body, settings, html_body=html_body, reply_to=reply_to)
         return
 
     if settings.sender == "resend":
-        _send_resend(to, subject, body, settings, html_body=html_body)
+        _send_resend(to, subject, body, settings, html_body=html_body, reply_to=reply_to)
         return
 
     if settings.sender == "sendgrid":
-        _send_sendgrid(to, subject, body, settings, html_body=html_body)
+        _send_sendgrid(to, subject, body, settings, html_body=html_body, reply_to=reply_to)
         return
 
     raise ConfigurationError(
@@ -75,6 +78,7 @@ def _send_smtp(
     settings: EmailSettings,
     *,
     html_body: str | None,
+    reply_to: str | None = None,
 ) -> None:
     if not (settings.smtp_host and settings.smtp_from):
         raise ConfigurationError(
@@ -84,6 +88,8 @@ def _send_smtp(
     message["From"] = settings.smtp_from
     message["To"] = to
     message["Subject"] = subject
+    if reply_to:
+        message["Reply-To"] = reply_to
     message.set_content(body)
     if html_body is not None:
         message.add_alternative(html_body, subtype="html")
@@ -120,6 +126,7 @@ def _send_resend(
     settings: EmailSettings,
     *,
     html_body: str | None,
+    reply_to: str | None = None,
 ) -> None:
     if not settings.resend_api_key:
         raise ConfigurationError(
@@ -138,6 +145,8 @@ def _send_resend(
     }
     if html_body is not None:
         payload["html"] = html_body
+    if reply_to:
+        payload["reply_to"] = reply_to
     try:
         with httpx.Client(timeout=_RESEND_TIMEOUT_SECONDS) as client:
             response = client.post(
@@ -161,6 +170,7 @@ def _send_sendgrid(
     settings: EmailSettings,
     *,
     html_body: str | None,
+    reply_to: str | None = None,
 ) -> None:
     """SendGrid v3 Mail Send: a verified Single Sender reaches any recipient, no domain needed."""
     if not settings.sendgrid_api_key:
@@ -190,6 +200,8 @@ def _send_sendgrid(
         # their single-use token to a third party first.
         "tracking_settings": {"click_tracking": {"enable": False, "enable_text": False}},
     }
+    if reply_to:
+        payload["reply_to"] = {"email": reply_to}
     try:
         with httpx.Client(timeout=_SENDGRID_TIMEOUT_SECONDS) as client:
             response = client.post(

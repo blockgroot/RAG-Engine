@@ -63,6 +63,37 @@ def post_message(
         return None
 
 
+def lookup_user_id(token: str, email: str) -> str | None:
+    """The Slack user id for a company email, or None (not in this Slack, or the
+    call failed). Never raises. Needs ``users:read.email``."""
+    try:
+        body = httpx.get(
+            f"{_API_BASE}/users.lookupByEmail",
+            params={"email": email},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        ).json()
+    except Exception as exc:  # noqa: BLE001 - "not found" to the caller
+        logger.warning("slack.users_lookupByEmail error: %s", exc)
+        return None
+    return ((body.get("user") or {}).get("id") or None) if body.get("ok") else None
+
+
+def open_dm(token: str, user_id: str) -> str | None:
+    """The bot's DM channel with one person, or None. Never raises. Needs ``im:write``."""
+    try:
+        body = httpx.post(
+            f"{_API_BASE}/conversations.open",
+            json={"users": user_id},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        ).json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slack.conversations_open error: %s", exc)
+        return None
+    return ((body.get("channel") or {}).get("id") or None) if body.get("ok") else None
+
+
 def update_message(token: str, channel: str, ts: str, text: str) -> bool:
     """Replace the text of a message we posted, to show progress. Never raises.
 
