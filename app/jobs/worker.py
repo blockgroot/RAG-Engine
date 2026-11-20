@@ -426,6 +426,7 @@ def run_external_tick() -> dict[str, int]:
         reaped = queue.reap_stuck()
     except Exception:  # noqa: BLE001
         logger.exception("External tick: reap failed")
+    run_slack_replay()
 
     upkeep = run_upkeep()
 
@@ -455,6 +456,21 @@ def run_external_tick() -> dict[str, int]:
         "facts_backfilled": backfilled,
         "schedulers_ran": schedulers_ran,
     }
+
+
+def run_slack_replay() -> int:
+    """Re-answer Slack questions lost when their process died. Never raises.
+
+    Run with every reap (about a minute), not hourly upkeep: a lost question is
+    re-answered while the asker still waits for it.
+    """
+    try:
+        from ..api.slack_events import replay_lost_questions
+
+        return replay_lost_questions()
+    except Exception:  # noqa: BLE001 - must never break the shared worker loop
+        logger.exception("Slack question replay failed")
+        return 0
 
 
 def run_scheduler_tick(settings=None) -> int:
@@ -524,6 +540,7 @@ def run_forever(
             last_tick = now
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
+            run_slack_replay()
             last_reap = now
         if now - last_push >= PUSH_CHECK_SECONDS:
             start_cooled_down_pushes()

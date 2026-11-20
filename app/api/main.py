@@ -64,6 +64,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
         UPKEEP_SECONDS,
         run_once,
         run_scheduler_tick,
+        run_slack_replay,
         run_upkeep,
     )
 
@@ -109,6 +110,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
                 now = time.monotonic()
                 if now - last_reap >= reap_interval:
                     queue.reap_stuck()
+                    run_slack_replay()  # a question lost in a restart, re-answered
                     last_reap = now
                 if now - last_push >= PUSH_CHECK_SECONDS:
                     # A push inside the cooldown waits ~3 min here, not ~10 for the tick.

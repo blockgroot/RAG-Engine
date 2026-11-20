@@ -1113,6 +1113,18 @@ CREATE TABLE IF NOT EXISTS slack_event_receipts (
     event_id    TEXT PRIMARY KEY,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- A question survives a restart. The answer runs in-process after the ack; a
+-- process that died mid-answer lost it, and Slack's resend was dropped as a
+-- repeat. Now the event waits here as 'pending' (its text kept ONLY until it is
+-- answered, then cleared), the answering process beats `alive_at`, and the
+-- worker re-answers one whose process stopped beating (`replay_lost_questions`).
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS team_id TEXT;
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS event JSONB;
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS alive_at TIMESTAMPTZ;
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_slack_event_receipts_pending
+    ON slack_event_receipts (alive_at) WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS live_tool_calls (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
