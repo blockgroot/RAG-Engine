@@ -335,10 +335,13 @@ class PgVectorStore(VectorStore):
         *,
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
+        unchanged_since: datetime | None = None,
     ) -> list[RetrievedChunk]:
         if not positions:
             return []
         viewer_sql, viewer_params = _viewer_clause(viewer)
+        since_sql = "AND c.created_at <= %s" if unchanged_since is not None else ""
+        since_params = [unchanged_since] if unchanged_since is not None else []
         with get_connection(self._settings, org_id=org_id) as conn:
             rows = conn.execute(
                 f"""
@@ -350,6 +353,7 @@ class PgVectorStore(VectorStore):
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND (c.document_id, c.chunk_index) IN (
                       SELECT * FROM unnest(%s::uuid[], %s::int[]))
+                  {since_sql}
                   {viewer_sql.lstrip()}
                 """,
                 (
@@ -357,6 +361,7 @@ class PgVectorStore(VectorStore):
                     workspace_id,
                     [doc for doc, _ in positions],
                     [idx for _, idx in positions],
+                    *since_params,
                     *viewer_params,
                 ),
             ).fetchall()

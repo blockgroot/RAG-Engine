@@ -678,7 +678,10 @@ class RagPipeline:
         reused = (
             None
             if date_range is not None or tags is not None or current_answers()
-            else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
+            else self._try_reuse(
+                retrieval_question, org_id, query_vec, conversation_id,
+                workspace_id=workspace_id, viewer=viewer,
+            )
         )
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
@@ -2086,10 +2089,18 @@ class RagPipeline:
         org_id: str,
         query_vec: list[float],
         conversation_id: str | None,
+        *,
+        workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> RetrievalResult | None:
         """Reuse the previous turn's chunks when the best cosine clears
         ``reuse.threshold`` (re-scored against THIS question), else ``None``.
-        No LLM call."""
+        No LLM call.
+
+        A remembered chunk is kept only if it is still there, in this scope, for
+        this viewer, and not re-ingested since the turn saved it: sharing can be
+        revoked and a page edited between two questions.
+        """
         if (
             conversation_id is None
             or self._memory is None
@@ -2099,6 +2110,9 @@ class RagPipeline:
 
         prev = self._memory.get_last_retrieval(conversation_id)
         prev = [r for r in prev if r.org_id == org_id]  # never cross a tenant boundary
+        if not prev:
+            return None
+        prev = self._still_readable(prev, org_id, workspace_id=workspace_id, viewer=viewer)
         if not prev:
             return None
 
@@ -2129,6 +2143,40 @@ class RagPipeline:
         ][: self._settings.top_k]
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
         return RetrievalResult(hits=hits, gate_score=best, gate_document_id=gate_document(hits[:1]))
+
+    def _still_readable(
+        self,
+        prev: list[RetrievedChunkRecord],
+        org_id: str,
+        *,
+        workspace_id: str | None,
+        viewer: Viewer | None,
+    ) -> list[RetrievedChunkRecord]:
+        """The remembered chunks this viewer may still read, unchanged; ``[]``
+        when that cannot be shown (no save time, a store without positional
+        reads, any error), so the caller searches fresh.
+
+        Checks the chunk at each position: a re-sync replaces every chunk of
+        the document, so this also covers the neighbours joined to it.
+        """
+        stored = {r.stored_at for r in prev}
+        if None in stored:
+            return []
+        try:
+            found = self._store.chunks_at(
+                org_id,
+                [(r.document_id, r.chunk_index) for r in prev],
+                workspace_id=workspace_id,
+                viewer=viewer,
+                # ponytail: the save time, not the retrieval time; a re-sync
+                # landing between the two is missed for one turn.
+                unchanged_since=min(stored),
+            )
+        except Exception:  # noqa: BLE001 - a shortcut must never cost an answer
+            logger.warning("reuse check skipped: could not re-check the previous turn's chunks", exc_info=True)
+            return []
+        live = {(c.document_id, c.chunk_index) for c in found}
+        return [r for r in prev if (r.document_id, r.chunk_index) in live]
 
     def _try_live_decision(
         self,
