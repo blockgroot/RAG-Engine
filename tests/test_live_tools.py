@@ -507,7 +507,7 @@ def test_a_live_withheld_refusal_is_not_a_documentation_gap(monkeypatch):
 
     monkeypatch.setattr(chat, "use_model", lambda *a, **k: None)
     monkeypatch.setattr(chat, "_conversation_attachments", lambda *a, **k: [])
-    monkeypatch.setattr(chat, "_previous_question", lambda *a, **k: None)
+    monkeypatch.setattr(chat, "_last_turn", lambda *a, **k: None)
     monkeypatch.setattr(chat, "_agent_graph", lambda: _Graph())
     monkeypatch.setattr(chat, "_start_graph_plan", lambda *a, **k: None)
     monkeypatch.setattr(chat, "viewer_for", lambda s: None)

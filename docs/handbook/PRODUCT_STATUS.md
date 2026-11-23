@@ -442,6 +442,15 @@ Open pull requests (13 Nov): a benchmark of encrypted chunk text with keyword se
 a design note on tenant direct access (PR #62); neither changes the product. The items below were
 in progress on 13 Oct and are now on `main`; the shorter entries for each are in §2–§9.
 
+**Follow-ups without a new search** (In progress, PR #73 and its follow-up, 20 Nov 2026). Web
+chat only. (1) A follow-up close to the last question reuses the last turn's passages only after
+re-checking that the asker can still open them and that they were not re-synced since. (2) A
+follow-up that only changes the FORM of the last answer ("shorter", "as a table", "in Hindi") is
+rewritten from that answer, with its citations, instead of searched again; the question check
+decides it (its quoted words must be in the question), and only while every cited document is
+still readable and unchanged. Covered by `tests/test_reuse.py` and `tests/test_reshape.py`; not
+yet walked through on staging.
+
 **Production-readiness fixes** (branch `fix/production-readiness`, 19 Nov 2026, **In progress**).
 From an audit against production AI-system practice. Model calls: no SDK retries (a 429 is the
 quota), a cap on every reply including tool turns, a cut-off chat answer says so, every request

@@ -452,6 +452,32 @@ def build_rewrite_prompt(
     )
 
 
+def build_reshape_prompt(request: str, previous_answer: str) -> str:
+    """Rewrite the last answer in the form the asker asked for, adding nothing.
+
+    The answer is fenced: it repeats document text. Its ``[n]`` markers are kept
+    so each kept sentence still points at its document (``rag/reshape.py``).
+    """
+    fenced = (
+        "<<<UNTRUSTED_PREVIOUS_ANSWER>>>\n"
+        f"{scrub_untrusted_text(previous_answer)}\n"
+        "<<<END_UNTRUSTED_PREVIOUS_ANSWER>>>"
+    )
+    return (
+        "Rewrite the previous answer below as the user asks. Change only its "
+        "form: length, layout (a list or a table), which part is kept, language "
+        "or wording. Add NO fact, number, name or link that the previous answer "
+        "does not contain. Keep a citation marker such as [1] after each "
+        "sentence or row that keeps the claim it marked; never invent a marker. "
+        "Reply with the rewritten answer only.\n\n"
+        f"{UNTRUSTED_POLICY}\n"
+        f"{fenced}\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
+        f"USER REQUEST: {scrub_untrusted_text(request)[:500]}\n\n"
+        "REWRITTEN ANSWER:"
+    )
+
+
 def build_summary_prompt(existing_summary: str | None, turns: list[tuple[str, str]]) -> str:
     """Build the prompt that compresses older turns into a running summary."""
     history = "\n".join(f"User: {q}\nAssistant: {a}" for q, a in turns)

@@ -54,6 +54,8 @@ def _built_prompts() -> dict[str, str]:
         # Memory: earlier answers repeat document text, so they are fenced too.
         "rewrite": prompts.build_rewrite_prompt("and them?", ATTACK, [("q?", ATTACK)]),
         "summary_fold": prompts.build_summary_prompt(ATTACK, [("q?", ATTACK)]),
+        "reshape": prompts.build_reshape_prompt("shorter", ATTACK),
+        "ask_question_check_reshape": _route_prompt(ATTACK, github=False, reshape=True),
         "github_decision": prompts.build_github_decision_prompt("q?", ATTACK),
         "github_decision_with_talk": prompts.build_github_decision_prompt("q?", "- r", ATTACK),
         "live_decision": prompts.build_live_decision_prompt("q?", ATTACK, "idk", web=True),

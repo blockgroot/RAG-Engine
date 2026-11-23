@@ -423,7 +423,7 @@ def chat_edge(monkeypatch):
 
     monkeypatch.setattr(chat, "use_model", lambda *a, **k: None)
     monkeypatch.setattr(chat, "_conversation_attachments", lambda *a, **k: [])
-    monkeypatch.setattr(chat, "_previous_question", lambda *a, **k: None)
+    monkeypatch.setattr(chat, "_last_turn", lambda *a, **k: None)
     monkeypatch.setattr(chat, "_agent_graph", lambda: _Graph())
     monkeypatch.setattr(chat, "viewer_for", lambda s: Viewer(email="a@x.io"))
     monkeypatch.setattr(chat, "record_gap", lambda **k: seen["gaps"].append(k))
