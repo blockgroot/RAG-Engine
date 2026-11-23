@@ -451,6 +451,29 @@ decides it (its quoted words must be in the question), and only while every cite
 still readable and unchanged. Covered by `tests/test_reuse.py` and `tests/test_reshape.py`; not
 yet walked through on staging.
 
+**Production-readiness fixes** (branch `fix/production-readiness`, 19 Nov 2026, **In progress**).
+From an audit against production AI-system practice. Model calls: no SDK retries (a 429 is the
+quota), a cap on every reply including tool turns, a cut-off chat answer says so, every request
+paced. Agent mode: a write whose connection broke after sending is "unknown" (never re-approved
+into a duplicate); stuck "Sending…" cards settle; confirm re-checks space membership; deleting a
+space expires its drafts. Token refresh: a network error no longer forces a reconnect; one
+refresh per connection at a time. Jobs: a restart requeues only jobs whose process stopped
+beating (`alive_at`), never a live instance's; a space digest stops when its owner leaves; an
+edit resumes a stopped scheduler. Infra: statement and pool timeouts, `GET /ready`, a lock on
+schema apply, bounded shutdown, a non-root image, logs that actually reach the log with a request
+id. Web search and the Lettuce audit are masked; Slack questions capped at 4000 characters; a
+dropped stream no longer freezes the chat; browser security headers; `scripts/delete_company.py`.
+Follow-up (20 Nov): at most 40 model requests per question and no prompt over 600k characters;
+answer streams send keepalives and the browser gives up after 60 s of silence; a reaped job stops
+itself; request bodies capped (2 MB) and a foreign `Origin` logged (`ORIGIN_CHECK=report`, then
+`enforce`); boot checks the session and encryption secrets; a report already emailed is not sent
+again; `scripts/export_company.py`. Stored upload files are deleted whenever their row goes (chat,
+user or company delete included), retried from `storage_deletions`; a Slack question lost in a
+restart is answered again (within 30 min, 3 tries); the Notion webhook token is stored encrypted
+and read with `scripts/notion_webhook_token.py`, never logged.
+Covered by `tests/test_production_readiness_*.py` plus updated `test_jobs.py`,
+`test_scheduler_queue.py` and `test_token_refresh.py` (staging database).
+
 **Each company's own Google and Slack app** (PR #64, 3 Nov 2026). Set up under **Sources**; see
 §6. Self-hosted installs keep using `.env`. Covered by `tests/test_own_connector_apps.py`; not yet
 walked through with real Google and Slack apps.

@@ -25,6 +25,7 @@ from ..core.exceptions import (
     ActionError,
     ActionOutcomeUnknown,
     ActionRejected,
+    AuthError,
     ConfigurationError,
     NotFoundError,
     OAuthReauthRequiredError,
@@ -618,6 +619,14 @@ def confirm(
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
+    if row.workspace_id:
+        # Drafting checked membership; removal since then must stop the write.
+        from ..workspaces.store import assert_member
+
+        try:
+            assert_member(row.workspace_id, org_id, user_id)
+        except AuthError as exc:
+            raise ActionRejected("You are no longer a member of this space.") from exc
     action = get_action(row.action, org_id)
     if action is None or not action.enabled_for(org_id, row.workspace_id):
         raise ActionRejected("Your admin has switched this action off.")

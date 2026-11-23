@@ -15,6 +15,7 @@ the payload shown.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -693,7 +694,7 @@ async def slack_interactivity_own_app(
     """The same, from a company's own Slack app (``org_apps``)."""
     from ..auth.org_apps import org_for_app_key
 
-    found = org_for_app_key("slack", app_key)
+    found = await asyncio.to_thread(org_for_app_key, "slack", app_key)
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return await _interact(
@@ -727,7 +728,8 @@ async def _interact(
         # trusted only for a Slack workspace connected to that company.
         team_id = ((payload.get("team") or {}).get("id")
                    or (payload.get("user") or {}).get("team_id") or "")
-        scope = _org_for_team(team_id)
+        # Off the event loop (a pool wait froze the worker past Slack's 3s ack).
+        scope = await asyncio.to_thread(_org_for_team, team_id)
         if scope is None or scope[0] != org_id:
             return {}
     if payload.get("type") == "view_submission" and (payload.get("view") or {}).get(

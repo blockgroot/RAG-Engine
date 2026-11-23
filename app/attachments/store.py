@@ -106,9 +106,14 @@ def save_attachment(
                 (attachment_id, attachment_id),
             )
     except AttachmentStorageError:
-        # Roll back the row and any half-written pair, or it is an orphan.
-        blobstore.delete_object(blobstore.plaintext_key(attachment_id))
-        blobstore.delete_object(attachment_id)
+        # Roll back the row and any half-written pair, or it is an orphan. Queued
+        # first: the row may not carry its key yet, so its trigger cannot.
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO storage_deletions (storage_key) VALUES (%s) "
+                "ON CONFLICT (storage_key) DO NOTHING", (attachment_id,),
+            )
+        _drop_objects([attachment_id])
         with get_connection() as conn:
             conn.execute(
                 "DELETE FROM conversation_attachments WHERE id = %s",
@@ -254,15 +259,80 @@ def drop_stored(key: str | None) -> None:
     _drop_objects([key])
 
 
+def _remove_pair(key: str) -> bool:
+    """Delete an upload's original and its plaintext companion; True once both are gone."""
+    text_gone = blobstore.remove_object(blobstore.plaintext_key(key))
+    original_gone = blobstore.remove_object(key)
+    return text_gone and original_gone
+
+
 def _drop_objects(keys: list[str | None]) -> None:
-    """Best-effort removal of the stored pair for each key, after the row
-    delete. Never raises; a leaked asset shows in a prefix listing.
+    """Remove the stored pair for each key now, after the row delete. Never raises.
+
+    The delete's trigger already queued each key in ``storage_deletions``; a key
+    removed here leaves the queue, one that failed stays for upkeep's retry.
     """
-    for key in keys:
-        if not key:
-            continue
-        blobstore.delete_object(blobstore.plaintext_key(key))
-        blobstore.delete_object(key)
+    gone = [key for key in keys if key and _remove_pair(key)]
+    if not gone:
+        return
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM storage_deletions WHERE storage_key = ANY(%s)", (gone,)
+            )
+    except Exception:  # noqa: BLE001 - upkeep finds them gone ("not found") later
+        logger.warning("Could not clear %s removed upload(s) from the queue", len(gone),
+                       exc_info=True)
+
+
+#: Tries per queued file before it is left for a person (a count in the logs).
+MAX_STORAGE_DELETE_ATTEMPTS = 10
+
+
+def drain_storage_deletions(limit: int = 100) -> int:
+    """Delete queued stored files whose rows are gone; returns how many went.
+
+    Claimed first (attempts + 1, ``SKIP LOCKED``, a CTE so ``limit`` bounds it),
+    then deleted outside the transaction, so no row lock is held over the
+    network. A failure stays queued with its error, up to
+    ``MAX_STORAGE_DELETE_ATTEMPTS``.
+    """
+    if not blobstore.configured():
+        return 0
+    with get_connection() as conn:
+        keys = [k for (k,) in conn.execute(
+            """
+            WITH due AS (
+                SELECT storage_key FROM storage_deletions
+                 WHERE attempts < %s
+                 ORDER BY created_at
+                 LIMIT %s
+                 FOR UPDATE SKIP LOCKED
+            )
+            UPDATE storage_deletions d SET attempts = d.attempts + 1
+              FROM due WHERE d.storage_key = due.storage_key
+            RETURNING d.storage_key
+            """,
+            (MAX_STORAGE_DELETE_ATTEMPTS, limit),
+        ).fetchall()]
+    gone = [key for key in keys if _remove_pair(key)]
+    failed = sorted(set(keys) - set(gone))
+    with get_connection() as conn:
+        if gone:
+            conn.execute("DELETE FROM storage_deletions WHERE storage_key = ANY(%s)", (gone,))
+        if failed:
+            conn.execute(
+                "UPDATE storage_deletions SET last_error = 'object store did not confirm' "
+                "WHERE storage_key = ANY(%s)", (failed,),
+            )
+        stuck = conn.execute(
+            "SELECT count(*) FROM storage_deletions WHERE attempts >= %s",
+            (MAX_STORAGE_DELETE_ATTEMPTS,),
+        ).fetchone()[0]
+    if stuck:
+        logger.error("%s stored upload(s) could not be deleted after %s tries "
+                     "(storage_deletions)", stuck, MAX_STORAGE_DELETE_ATTEMPTS)
+    return len(gone)
 
 
 #: How long an attachment lives. Generous: expiring early costs a re-upload.

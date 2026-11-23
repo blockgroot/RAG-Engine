@@ -82,6 +82,8 @@ def wiring(monkeypatch):
 
     monkeypatch.setattr(runner, "get_user", lambda uid: _user(uid))
     monkeypatch.setattr(runner, "get_workspace_name", lambda org_id, ws: f"Space {ws}")
+    monkeypatch.setattr(runner, "assert_member", lambda ws, org_id, user_id: "member")
+    monkeypatch.setattr(runner.reports, "delivered_window_end", lambda sid, start: None)
     monkeypatch.setattr(
         runner, "report_link", lambda report_id, *a, **k: f"https://app/reports/{report_id}"
     )
