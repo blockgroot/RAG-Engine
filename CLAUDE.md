@@ -171,7 +171,9 @@ string is never the web-search query.
 The follow-up rewrite names what a reference points to, never a figure or claim from an
 earlier answer (it may be wrong, and the rewrite is the trusted QUESTION): a figure the asker
 never typed is rewritten from their questions only, else the question is used as typed
-(`pipeline._rewrite_question`). A question naming its own subject is a new topic, unchanged.
+(`pipeline._rewrite_question`), and it adds no detail the asker did not ask about ("in Keka"
+narrowed "who approves it?" to the section that does not name the approvers). A question
+naming its own subject is a new topic, unchanged.
 
 **Model.** The grounded prompt's `MODE:` tag must be at the start of the reply or
 the audit never runs. Do not move CONTEXT or QUESTION earlier in that prompt.

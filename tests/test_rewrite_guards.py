@@ -77,3 +77,12 @@ def test_a_retry_that_still_copies_a_figure_falls_back_to_the_question():
 def test_the_prompt_forbids_copying_claims_and_attaching_old_topics():
     prompt = prompts.build_rewrite_prompt("what is the referral process?", None, WRONG)
     assert "never copy a figure" in prompt and "starts a new topic" in prompt
+
+
+def test_the_prompt_forbids_adding_details_from_an_earlier_answer():
+    """Staging: 'who has to approve it?' after a WFH answer naming Keka became
+    '...request in Keka?', and search returned only the Keka section, never the
+    one naming the approvers (Team Lead and HR)."""
+    prompt = prompts.build_rewrite_prompt("who has to approve it?", None, [
+        ("How do I request work from home?", 'Submit a "Work From Home" request in Keka.')])
+    assert "FEWEST words" in prompt and "Never add a detail the user did not ask about" in prompt
