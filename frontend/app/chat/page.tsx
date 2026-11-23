@@ -1073,6 +1073,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   // The question is the previous message; a bubble holds only one.
                   question={messages[i - 1]?.role === "user" ? messages[i - 1].text : ""}
                   workspaceId={workspaceId}
+                  model={model}
                   onEnableChart={() => toggleChartMode(true)}
                   onDisableChart={() => toggleChartMode(false)}
                   onAskDeep={() => {
