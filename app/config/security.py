@@ -187,6 +187,8 @@ class RateLimitSettings:
     # in together, not for sweeping an address book.
     emails_per_minute: float = 20.0
     email_burst: int = 10
+    # Ask a friend: notes a person may send a day (each one DMs or emails a colleague).
+    ask_friend_per_day: int = 20
     # Every API call, per person (per IP when signed out). Loose on purpose: a
     # page load sends many calls at once, and this exists only to stop scripts.
     requests_per_minute: float = 120.0
@@ -244,6 +246,9 @@ class RateLimitSettings:
             ),
             email_burst=_env_positive_int(
                 "RATE_LIMIT_EMAIL_BURST", cls.email_burst
+            ),
+            ask_friend_per_day=_env_positive_int(
+                "RATE_LIMIT_ASK_FRIEND_PER_DAY", cls.ask_friend_per_day
             ),
             requests_per_minute=rate(
                 "RATE_LIMIT_REQUESTS_PER_MINUTE", cls.requests_per_minute

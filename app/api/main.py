@@ -27,6 +27,7 @@ from . import internal as internal_router
 from . import account as account_router
 from . import actions as actions_router
 from . import mcp_actions as mcp_actions_router
+from . import ask_friend as ask_friend_router
 from . import mcp_host as mcp_host_router
 from . import slack_act as slack_act_router
 from . import notifications as notifications_router
@@ -230,6 +231,7 @@ def create_app() -> FastAPI:
         account_router,
         actions_router,
         mcp_actions_router,
+        ask_friend_router,
     ):
         app.include_router(router.router, dependencies=[Depends(limit_request)])
     # Not a person: the cron tick, our MCP servers and signed webhooks.
