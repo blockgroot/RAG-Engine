@@ -3,6 +3,7 @@
 import type { ActCard, TurnMeta } from "@/lib/api";
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerFeedback } from "./AnswerFeedback";
+import { AskFriend } from "./AskFriend";
 import { AnswerText } from "./AnswerText";
 import { AnswerProgress } from "./AnswerProgress";
 import { ChartIcon, DeepIcon } from "./ModeIcons";
@@ -24,6 +25,8 @@ export interface Message {
   chartPeriod?: string;
   /** Who answered, for an answer loaded from history. */
   meta?: TurnMeta;
+  /** This answer's stored turn, for an answer loaded from history. */
+  turnIndex?: number;
   /** Act mode: the draft to approve. Shown by the page, never stored as a turn. */
   /** Act drafts from one request, each approved on its own. */
   acts?: ActCard[] | null;
@@ -38,6 +41,7 @@ export function ChatMessageView({
   conversationId,
   question,
   workspaceId,
+  model,
   onEnableChart,
   onDisableChart,
   onAskDeep,
@@ -49,6 +53,8 @@ export function ChatMessageView({
    *  reading a downvote is not holding half an exchange. */
   question?: string;
   workspaceId?: string | null;
+  /** The model picked in the menu; Ask a friend writes its summary with it. */
+  model?: string | null;
   /** Turns on Chart mode, for the hint under an answer. Absent = no button. */
   onEnableChart?: () => void;
   /** Turns Chart mode off, for a text question asked in Chart mode. */
@@ -154,6 +160,16 @@ export function ChatMessageView({
             <a className="chat-chart-hint" href="/account">
               Link your GitHub account
             </a>
+          )}
+          {(message.done?.ask_friend ?? message.meta?.ask_friend) && conversationId && question && (
+            <AskFriend
+              conversationId={conversationId}
+              question={question}
+              workspaceId={workspaceId}
+              model={model}
+              turnIndex={message.done?.turn_index ?? message.turnIndex}
+              sent={message.meta?.ask_friend_sent}
+            />
           )}
           {message.done?.remembered && message.done.remembered.length > 0 && (
             <RememberedNote facts={message.done.remembered} />

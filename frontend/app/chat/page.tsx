@@ -407,6 +407,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             chart: t.chart?.panel ?? undefined,
             chartPeriod: t.chart?.period ?? undefined,
             meta: t.meta ?? undefined,
+            turnIndex: t.turn_index,
           },
         ]),
       );
@@ -1073,6 +1074,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   // The question is the previous message; a bubble holds only one.
                   question={messages[i - 1]?.role === "user" ? messages[i - 1].text : ""}
                   workspaceId={workspaceId}
+                  model={model}
                   onEnableChart={() => toggleChartMode(true)}
                   onDisableChart={() => toggleChartMode(false)}
                   onAskDeep={() => {

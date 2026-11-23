@@ -119,6 +119,44 @@ export interface TurnMeta {
   live_sources?: { provider: string; fetched_at: string }[];
   model?: string | null;
   citation_count: number;
+  /** "No answer found": Ask a friend is offered on this turn. */
+  ask_friend?: boolean;
+  /** The one colleague this turn was sent to. */
+  ask_friend_sent?: AskFriendSent;
+}
+
+export interface AskFriendPerson {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+export interface AskFriendInput {
+  conversationId: string;
+  question: string;
+  recipientUserId: string;
+  workspaceId?: string | null;
+  /** The bubble clicked: Deep analysis re-asks the same question. */
+  turnIndex?: number | null;
+}
+
+function askFriendBody(input: AskFriendInput) {
+  return {
+    conversation_id: input.conversationId,
+    question: input.question,
+    recipient_user_id: input.recipientUserId,
+    workspace_id: input.workspaceId ?? null,
+    ...(typeof input.turnIndex === "number" ? { turn_index: input.turnIndex } : {}),
+  };
+}
+
+export interface AskFriendSent {
+  to_name: string;
+  to_user_id?: string;
+  via: "slack" | "email";
+  at: string;
+  /** Absent on records from before statuses: delivered. "unknown": it may have arrived. */
+  status?: "sending" | "sent" | "unknown";
 }
 
 export interface RejectedFile {
@@ -820,6 +858,30 @@ export const api = {
   me: () => request<Me>("/me"),
   notifications: () =>
     request<{ items: Notification[]; count: number }>("/notifications"),
+
+  /** Ask a friend: people in the chat's scope (the asker left out). */
+  askFriendPeople: (workspaceId?: string | null) =>
+    request<{ people: AskFriendPerson[] }>(
+      `/ask-friend/people${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ""}`,
+    ),
+  askFriendCheck: (input: AskFriendInput) =>
+    request<{ needs_approval: boolean; slack_available: boolean }>("/ask-friend/check", {
+      method: "POST",
+      body: JSON.stringify(askFriendBody(input)),
+    }),
+  askFriendSend: (input: AskFriendInput & {
+    via: "slack" | "email"; approvePrivate: boolean; model?: string | null; confirmResend?: boolean;
+  }) =>
+    request<{ sent: AskFriendSent }>("/ask-friend/send", {
+      method: "POST",
+      body: JSON.stringify({
+        ...askFriendBody(input),
+        via: input.via,
+        approve_private: input.approvePrivate,
+        ...(input.confirmResend ? { confirm_resend: true } : {}),
+        model: input.model && input.model !== "auto" ? input.model : null,
+      }),
+    }),
   logout: () =>
     request<{ status: string }>("/auth/logout", { method: "POST" }),
 

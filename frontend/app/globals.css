@@ -1002,6 +1002,27 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .chat-chart-hint:hover { background: var(--surface-muted); }
 a.chat-chart-hint { text-decoration: none; }
+/* Ask a friend: under a "No answer found" reply. */
+.ask-friend-panel {
+  margin-top: 0.6rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  max-width: 34rem;
+}
+.ask-friend-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; border: 0; padding: 0; margin: 0; }
+.ask-friend-row > span:first-child { min-width: 4rem; color: var(--ink-muted, var(--ink)); }
+.ask-friend-row select { flex: 1; min-width: 0; }
+.ask-friend-note { color: var(--ink-muted, var(--ink)); font-size: 0.8rem; }
+.ask-friend-approve { display: flex; gap: 0.5rem; align-items: flex-start; line-height: 1.35; }
+.ask-friend-actions, .ask-friend-failed { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.ask-friend-actions .chat-chart-hint, .ask-friend-failed .chat-chart-hint { margin-top: 0; }
+.ask-friend-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.ask-friend-error { margin: 0; color: var(--danger, #b4441c); }
+.ask-friend-sent { margin: 0.6rem 0 0; font-size: 0.85rem; color: var(--ink-muted, var(--ink)); }
 .chat-model-note { margin: 0.45rem 0 0; font-size: 0.8rem; text-align: center; }
 
 .attach-row {

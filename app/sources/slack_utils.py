@@ -63,6 +63,100 @@ def post_message(
         return None
 
 
+def lookup_user_id(token: str, email: str) -> str | None:
+    """The Slack user id for a company email, or None (not in this Slack, or the
+    call failed). Never raises. Needs ``users:read.email``."""
+    try:
+        body = httpx.get(
+            f"{_API_BASE}/users.lookupByEmail",
+            params={"email": email},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        ).json()
+    except Exception as exc:  # noqa: BLE001 - "not found" to the caller
+        logger.warning("slack.users_lookupByEmail error: %s", exc)
+        return None
+    user = (body.get("user") or {}) if body.get("ok") else {}
+    # lookupByEmail also returns deactivated accounts and bots: neither reads a DM.
+    if user.get("deleted") or user.get("is_bot"):
+        return None
+    return user.get("id") or None
+
+
+def post_message_outcome(
+    token: str, channel: str, text: str, *, metadata: dict | None = None
+) -> tuple[str, str | None]:
+    """Post one message and say what is KNOWN about it: ``("sent", ts)``,
+    ``("rejected", error)`` (Slack refused it, or it never left us: retry is safe),
+    or ``("unknown", None)`` (it went out and no answer came back: it may have landed).
+    Never raises. ``metadata`` tags the message so an unknown can be looked up."""
+    payload: dict = {"channel": channel, "text": text, **_NO_UNFURL}
+    if metadata:
+        payload["metadata"] = metadata
+    try:
+        response = httpx.post(
+            f"{_API_BASE}/chat.postMessage",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        logger.warning("slack.chat_postMessage not sent: %s", exc)
+        return "rejected", "connect_failed"
+    except Exception as exc:  # noqa: BLE001 - sent, but no answer: unknown
+        logger.warning("slack.chat_postMessage outcome unknown: %s", exc)
+        return "unknown", None
+    try:
+        body = response.json()
+    except ValueError:
+        return "unknown", None
+    if body.get("ok"):
+        return "sent", body.get("ts")
+    return "rejected", body.get("error") or "error"
+
+
+#: How far back to look for a message whose post timed out (it would be the latest).
+_RECONCILE_LIMIT = 20
+
+
+def has_tagged_message(token: str, channel: str, event_type: str, key: str) -> bool | None:
+    """Did a message tagged ``event_type``/``key`` land in ``channel``? True/False,
+    or None when the channel could not be read (still unknown). Reads the latest
+    ``_RECONCILE_LIMIT`` messages only. Needs ``im:history`` for a DM."""
+    try:
+        body = httpx.get(
+            f"{_API_BASE}/conversations.history",
+            params={"channel": channel, "limit": _RECONCILE_LIMIT, "include_all_metadata": "true"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        ).json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slack.conversations_history error: %s", exc)
+        return None
+    if not body.get("ok"):
+        return None
+    for message in body.get("messages") or []:
+        meta = message.get("metadata") or {}
+        if meta.get("event_type") == event_type and (meta.get("event_payload") or {}).get("key") == key:
+            return True
+    return False
+
+
+def open_dm(token: str, user_id: str) -> str | None:
+    """The bot's DM channel with one person, or None. Never raises. Needs ``im:write``."""
+    try:
+        body = httpx.post(
+            f"{_API_BASE}/conversations.open",
+            json={"users": user_id},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        ).json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slack.conversations_open error: %s", exc)
+        return None
+    return ((body.get("channel") or {}).get("id") or None) if body.get("ok") else None
+
+
 def update_message(token: str, channel: str, ts: str, text: str) -> bool:
     """Replace the text of a message we posted, to show progress. Never raises.
 

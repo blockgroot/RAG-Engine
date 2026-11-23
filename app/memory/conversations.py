@@ -50,7 +50,11 @@ def chart_for_storage(panel, period) -> dict | None:
 
 #: What a reopened answer needs to draw its provenance pill. Counts, not
 #: content: the passages themselves are never stored on the turn.
-_META_KEYS = ("source", "agent", "connected_providers", "attachments", "live_sources", "model")
+_META_KEYS = (
+    "source", "agent", "connected_providers", "attachments", "live_sources", "model",
+    # Ask a friend: offered on this refused turn, and to whom it went (one person).
+    "ask_friend", "ask_friend_sent",
+)
 
 
 def meta_for_storage(payload: dict) -> dict:
@@ -75,20 +79,83 @@ def meta_for_history(raw) -> dict | None:
     return out
 
 
-def set_last_turn_meta(conversation_id: str, question: str, meta: dict) -> None:
+def set_last_turn_meta(conversation_id: str, question: str, meta: dict) -> int | None:
     """Label the latest turn, only if it is this question's (a failed save
-    must not label the turn before it).
+    must not label the turn before it). Returns its ``turn_index`` (None when
+    nothing matched), so the live answer can name its turn (Ask a friend).
     """
     with get_connection() as conn:
-        conn.execute(
+        row = conn.execute(
             """
             UPDATE conversation_turns SET meta = %s::jsonb
             WHERE conversation_id = %s::uuid
               AND question = %s
               AND turn_index = (SELECT MAX(turn_index) FROM conversation_turns
                                 WHERE conversation_id = %s::uuid)
+            RETURNING turn_index
             """,
             (json.dumps(meta), conversation_id, question, conversation_id),
+        ).fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+_ASKER_TURN = """
+    FROM conversations c
+    WHERE c.id = t.conversation_id
+      AND t.conversation_id = %s::uuid
+      AND c.org_id = %s::uuid
+      AND c.user_id = %s::uuid
+      AND t.turn_index = %s
+"""
+
+
+def claim_ask_friend(
+    *, conversation_id: str, org_id: str, user_id: str, turn_index: int, entry: dict,
+    replace_unknown: bool = False,
+) -> bool:
+    """Record that this refused turn went to one colleague. One conditional UPDATE:
+    a second send (double click, another tab) finds the key set and gets False, so
+    exactly one is delivered. Only the asker's own turn, only one offered Ask a friend.
+    By ``turn_index``: Deep analysis re-asks the same question, so the text names no one turn.
+    ``replace_unknown``: the asker chose to send again after an UNKNOWN outcome; only
+    that record may be replaced, never one that was delivered.
+    """
+    free = (
+        "(t.meta->'ask_friend_sent'->>'status') = 'unknown'" if replace_unknown
+        else "NOT (t.meta ? 'ask_friend_sent')"
+    )
+    with get_connection() as conn:
+        row = conn.execute(
+            "UPDATE conversation_turns t SET meta = jsonb_set(t.meta, '{ask_friend_sent}', %s::jsonb)"
+            + _ASKER_TURN
+            + " AND coalesce((t.meta->>'ask_friend')::boolean, false)"
+            f" AND {free} RETURNING 1",
+            (json.dumps(entry), conversation_id, org_id, user_id, turn_index),
+        ).fetchone()
+        conn.commit()
+    return row is not None
+
+
+def set_ask_friend_status(
+    *, conversation_id: str, org_id: str, user_id: str, turn_index: int, status: str
+) -> None:
+    """Move the record on: ``sending`` → ``sent`` or ``unknown``. Only the asker's turn."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE conversation_turns t SET meta = jsonb_set(t.meta, '{ask_friend_sent,status}', %s::jsonb)"
+            + _ASKER_TURN + " AND t.meta ? 'ask_friend_sent'",
+            (json.dumps(status), conversation_id, org_id, user_id, turn_index),
+        )
+        conn.commit()
+
+
+def release_ask_friend(*, conversation_id: str, org_id: str, user_id: str, turn_index: int) -> None:
+    """Undo a claim whose delivery failed, so the asker can send again."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE conversation_turns t SET meta = t.meta - 'ask_friend_sent'" + _ASKER_TURN,
+            (conversation_id, org_id, user_id, turn_index),
         )
         conn.commit()
 

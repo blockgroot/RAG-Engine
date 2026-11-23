@@ -96,6 +96,21 @@ GitHub; employees get answers from *their* data.
 - A conversation is personal (`conversations.user_id`). There is no answer cache:
   every question is answered fresh. A cache keyed on the scope would serve one person's
   answer to the next asker, so any cache must be re-justified against that.
+- **Ask a friend** (`app/askfriend/`): from a refused web-chat turn (`meta.ask_friend`,
+  set exactly where a gap is recorded) the asker sends an AI summary of their own
+  conversation to ONE member of the chat's scope they picked (never the model), once per
+  turn (`conversations.claim_ask_friend`, a conditional UPDATE; released when delivery
+  fails), by bot Slack DM or email with Reply-To = the asker. Content the recipient cannot
+  open (a cited document outside their `Viewer`, a deleted or unreadable one, an
+  attachment, a live read) needs the asker's tick, re-checked on send
+  (`privacy.needs_approval`). The question line is appended by code, never written by
+  the model. It is a notification, not an Act write; replies are not tracked.
+  A send that went out with no answer back is UNKNOWN, never retried by us: the DM
+  carries the ask's key in Slack `metadata` and the DM's latest messages are read
+  (`slack_utils.has_tagged_message`) to settle it; an email timeout after sending stays
+  unknown (`EmailOutcomeUnknown`). The record goes `sending` → `sent`/`unknown`; only an
+  unknown one may be sent again, and only on the asker's explicit `confirm_resend`.
+  A deactivated or bot Slack account is not reachable (`lookup_user_id`).
 - Notion has no per-page permission API. Say so on the Sources card. A half-enforced
   guarantee that reads as whole is worse than none.
 

@@ -169,6 +169,15 @@ def limit_email(key: str) -> None:
     )
 
 
+def limit_ask_friend(user_id: str) -> None:
+    """Ask a friend: a person's notes a day, so it cannot be used to spam colleagues."""
+    settings = RateLimitSettings.from_env()
+    per_day = settings.ask_friend_per_day
+    _raise_if_refused(
+        _take([Bucket(f"askfriend:user:{user_id}", per_day, per_day / 1440)], settings)
+    )
+
+
 def limit_request(request: Request) -> None:
     """Router dependency: every call, per person, or per IP when signed out.
 
