@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 
 from ..auth.session import SessionClaims
-from ..core.exceptions import AuthError, ProviderError
+from ..core.exceptions import AuthError
 from ..db import get_connection
 from ..memory.conversations import (
     ConversationTurnRow, claim_ask_friend, get_conversation_turns, release_ask_friend,
@@ -22,7 +22,7 @@ from ..memory.conversations import (
 from ..security.rate_limit import limit_ask_friend, limit_email, limit_question
 from ..sources.slack_utils import lookup_user_id
 from ..workspaces import assert_member
-from .deliver import DeliveryError, send_email, send_slack, slack_token
+from .deliver import send_email, send_slack, slack_token
 from .privacy import needs_approval
 from .summary import summarize
 
@@ -68,9 +68,13 @@ def _context(session: SessionClaims, body: dict) -> tuple[list[ConversationTurnR
         user_id=session.user_id, workspace_id=workspace_id,
     ) if body.get("conversation_id") else []
     question = body.get("question")
-    at = next((i for i in range(len(turns) - 1, -1, -1)
-               if turns[i].question == question and (turns[i].meta or {}).get("ask_friend")), None)
-    if at is None:
+    wanted = body.get("turn_index")
+    if isinstance(wanted, int) and not isinstance(wanted, bool):
+        # The bubble clicked: Deep analysis re-asks the same question, so the text alone is ambiguous.
+        at = next((i for i, t in enumerate(turns) if t.turn_index == wanted), None)
+    else:
+        at = next((i for i in range(len(turns) - 1, -1, -1) if turns[i].question == question), None)
+    if at is None or not (turns[at].meta or {}).get("ask_friend"):
         raise HTTPException(status_code=404, detail="not_found")
     everyone = {p["user_id"]: p for p in scope_people(session.org_id, workspace_id)}
     recipient = everyone.get(str(body.get("recipient_user_id") or ""))
@@ -128,16 +132,20 @@ def send(session: SessionClaims, body: dict) -> dict:
     entry = {"to_name": recipient["name"], "via": via,
              "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     claim = dict(conversation_id=str(body["conversation_id"]), org_id=session.org_id,
-                 user_id=session.user_id, question=question)
+                 user_id=session.user_id, turn_index=turns[-1].turn_index)
     if not claim_ask_friend(**claim, entry=entry):
         raise HTTPException(status_code=409, detail="already_sent")
+    delivered = False
     try:
         summary = _summary(turns, question, model, session)
         if via == "slack":
             send_slack(token, recipient["email"], asker["email"], asker["name"], summary)
         else:
             send_email(recipient["email"], asker["email"], asker["name"], summary)
-    except (DeliveryError, ProviderError) as exc:
-        release_ask_friend(**claim)  # nothing was sent: the asker may try again
+        delivered = True
+    except Exception as exc:  # noqa: BLE001 - any failure: nothing was sent, say so
         raise HTTPException(status_code=502, detail="delivery_failed") from exc
+    finally:
+        if not delivered:
+            release_ask_friend(**claim)  # the asker may try again
     return {"sent": entry}

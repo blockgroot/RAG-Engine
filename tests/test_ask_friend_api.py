@@ -147,3 +147,28 @@ def test_daily_cap_refuses(client, world, monkeypatch):
     assert client.post("/ask-friend/send", json=_body(world), cookies=world["cookies"]).status_code == 200
     r = client.post("/ask-friend/send", json=_body(world, question="second?"), cookies=world["cookies"])
     assert r.status_code == 429
+
+
+def test_refused_then_deep_answered_can_still_be_sent(client, world):
+    """Ask refused, Deep answered the same question: the refused turn is sendable."""
+    add_turn(world["cid"], world["org"], "What does bench-sandbox do?", "It is a sandbox.",
+             meta={"source": "github"})
+    r = client.post("/ask-friend/send", json=_body(world, turn_index=0), cookies=world["cookies"])
+    assert r.status_code == 200
+    assert "ask_friend_sent" not in (turn_meta(world["cid"]) or {})  # the newest turn is untouched
+
+
+def test_turn_index_must_be_a_refused_turn(client, world):
+    add_turn(world["cid"], world["org"], "What does bench-sandbox do?", "It is a sandbox.",
+             meta={"source": "github"})
+    r = client.post("/ask-friend/send", json=_body(world, turn_index=1), cookies=world["cookies"])
+    assert r.status_code == 404
+
+
+def test_unexpected_error_releases_the_claim(client, world, monkeypatch):
+    def crash(*a):
+        raise RuntimeError("bug")
+    monkeypatch.setattr(service, "send_slack", crash)
+    r = client.post("/ask-friend/send", json=_body(world), cookies=world["cookies"])
+    assert r.status_code == 502
+    assert "ask_friend_sent" not in turn_meta(world["cid"])

@@ -25,6 +25,8 @@ export interface Message {
   chartPeriod?: string;
   /** Who answered, for an answer loaded from history. */
   meta?: TurnMeta;
+  /** This answer's stored turn, for an answer loaded from history. */
+  turnIndex?: number;
   /** Act mode: the draft to approve. Shown by the page, never stored as a turn. */
   /** Act drafts from one request, each approved on its own. */
   acts?: ActCard[] | null;
@@ -165,6 +167,7 @@ export function ChatMessageView({
               question={question}
               workspaceId={workspaceId}
               model={model}
+              turnIndex={message.done?.turn_index ?? message.turnIndex}
               sent={message.meta?.ask_friend_sent}
             />
           )}

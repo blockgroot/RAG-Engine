@@ -407,6 +407,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             chart: t.chart?.panel ?? undefined,
             chartPeriod: t.chart?.period ?? undefined,
             meta: t.meta ?? undefined,
+            turnIndex: t.turn_index,
           },
         ]),
       );

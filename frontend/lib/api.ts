@@ -136,6 +136,8 @@ export interface AskFriendInput {
   question: string;
   recipientUserId: string;
   workspaceId?: string | null;
+  /** The bubble clicked: Deep analysis re-asks the same question. */
+  turnIndex?: number | null;
 }
 
 function askFriendBody(input: AskFriendInput) {
@@ -144,6 +146,7 @@ function askFriendBody(input: AskFriendInput) {
     question: input.question,
     recipient_user_id: input.recipientUserId,
     workspace_id: input.workspaceId ?? null,
+    ...(typeof input.turnIndex === "number" ? { turn_index: input.turnIndex } : {}),
   };
 }
 

@@ -33,14 +33,14 @@ def chat(org_cleanup):
 @requires_db
 def test_claim_is_once_and_owner_only(chat):
     org, a, b, cid = chat
-    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=b, question="q?", entry={"via": "email"})
-    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?",
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=b, turn_index=0, entry={"via": "email"})
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0,
                             entry={"to_name": "Priya Shah", "via": "email", "at": "t1"})
     assert turn_meta(cid)["ask_friend_sent"]["to_name"] == "Priya Shah"
-    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?", entry={"via": "slack"})
-    release_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?")
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0, entry={"via": "slack"})
+    release_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0)
     assert "ask_friend_sent" not in turn_meta(cid)
-    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?", entry={"via": "slack"})
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0, entry={"via": "slack"})
 
 
 @requires_db
@@ -50,4 +50,27 @@ def test_claim_refuses_a_turn_that_was_answered(org_cleanup):
     a = make_user(org)
     cid = make_conversation(org, a)
     add_turn(cid, org, "q?", "Leave is 4 weeks.", meta={"source": "notion"})
-    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, question="q?", entry={})
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0, entry={})
+
+
+@requires_db
+def test_claim_marks_the_turn_it_names_not_a_later_same_question(org_cleanup):
+    """Deep analysis re-asks the same question: the claim must land on the turn clicked."""
+    org = make_org()
+    org_cleanup.append(org)
+    a = make_user(org)
+    cid = make_conversation(org, a)
+    add_turn(cid, org, "q?", "no", meta={"source": "none", "ask_friend": True})
+    add_turn(cid, org, "q?", "no again", meta={"source": "none", "ask_friend": True})
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0, entry={"via": "email"})
+    from app.db import get_connection
+    with get_connection() as conn:
+        rows = conn.execute("SELECT turn_index, meta ? 'ask_friend_sent' FROM conversation_turns "
+                            "WHERE conversation_id = %s ORDER BY turn_index", (cid,)).fetchall()
+    assert rows == [(0, True), (1, False)]
+
+
+def test_set_last_turn_meta_returns_the_turn_index():
+    import inspect
+    from app.memory.conversations import set_last_turn_meta
+    assert "int | None" in str(inspect.signature(set_last_turn_meta).return_annotation)

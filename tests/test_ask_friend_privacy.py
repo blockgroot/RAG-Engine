@@ -18,8 +18,8 @@ from .conftest import requires_db
 pytestmark = requires_db
 
 
-def _turn(cited=None, meta=None) -> ConversationTurnRow:
-    return ConversationTurnRow(0, "q?", "a", datetime.now(timezone.utc), cited or [], None, meta)
+def _turn(cited=None, meta=None, chart=None) -> ConversationTurnRow:
+    return ConversationTurnRow(0, "q?", "a", datetime.now(timezone.utc), cited or [], chart, meta)
 
 
 def _doc(org: str, *, public: bool, viewers: list[str] | None = None) -> dict:
@@ -77,3 +77,17 @@ def test_no_turns_no_approval(org):
 
 def test_malformed_document_id_counts_as_private(org):
     assert needs_approval(org, [_turn(cited=[{"n": 1, "document_id": "not-a-uuid"}])], "b@x.com")
+
+
+def test_passages_used_but_none_cited_need_approval(org):
+    """An answer drew on passages but wrote no [n]: we cannot tell whose they were."""
+    assert needs_approval(org, [_turn(meta={"source": "notion", "citation_count": 3})], "b@x.com")
+
+
+def test_a_chart_turn_needs_approval(org):
+    """Chart figures come from rows that are never cited."""
+    assert needs_approval(org, [_turn(chart={"type": "bar"}, meta={"source": "insights"})], "b@x.com")
+
+
+def test_a_refusal_with_no_passages_needs_no_approval(org):
+    assert not needs_approval(org, [_turn(meta={"source": "none", "citation_count": 0})], "b@x.com")

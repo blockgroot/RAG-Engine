@@ -3,6 +3,17 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type AskFriendPerson, type AskFriendSent } from "@/lib/api";
 
+/** A server refusal in plain words; a rate-limit message is already plain. */
+function plain(e: unknown): string {
+  if (!(e instanceof ApiError)) return "Something went wrong. Try again.";
+  switch (e.message) {
+    case "not_found": return "This answer can't be sent any more. Reload the chat.";
+    case "not_in_scope": return "That person isn't in this space.";
+    case "not_a_member": return "You're not a member of this space.";
+    default: return e.status === 429 ? e.message : "Something went wrong. Try again.";
+  }
+}
+
 /**
  * "No answer found" → send one colleague an AI summary of this chat plus the
  * question, by Slack or email. One colleague per question: once sent, the
@@ -14,12 +25,14 @@ export function AskFriend({
   question,
   workspaceId,
   model,
+  turnIndex,
   sent: storedSent,
 }: {
   conversationId: string;
   question: string;
   workspaceId?: string | null;
   model?: string | null;
+  turnIndex?: number;
   sent?: AskFriendSent | null;
 }) {
   const [sent, setSent] = useState<AskFriendSent | null>(storedSent ?? null);
@@ -49,21 +62,23 @@ export function AskFriend({
     let live = true;
     setChecking(true);
     setApproved(false);
+    setNeedsApproval(false);
+    setSlackAvailable(false);
     setFailedVia(null);
     setError(null);
-    api.askFriendCheck({ conversationId, question, recipientUserId: recipient, workspaceId })
+    api.askFriendCheck({ conversationId, question, recipientUserId: recipient, workspaceId, turnIndex })
       .then((r) => {
         if (!live) return;
         setNeedsApproval(r.needs_approval);
         setSlackAvailable(r.slack_available);
         setVia(r.slack_available ? "slack" : "email");
       })
-      .catch((e) => live && setError(e instanceof ApiError ? e.message : "Couldn't check. Try again."))
+      .catch((e) => live && setError(plain(e)))
       .finally(() => live && setChecking(false));
     return () => {
       live = false;
     };
-  }, [recipient, conversationId, question, workspaceId]);
+  }, [recipient, conversationId, question, workspaceId, turnIndex]);
 
   if (sent) {
     return (
@@ -81,7 +96,7 @@ export function AskFriend({
     setFailedVia(null);
     try {
       const r = await api.askFriendSend({
-        conversationId, question, recipientUserId: recipient, workspaceId,
+        conversationId, question, recipientUserId: recipient, workspaceId, turnIndex,
         via: channel, approvePrivate: approved, model,
       });
       setSent(r.sent);
@@ -90,12 +105,16 @@ export function AskFriend({
         setFailedVia(channel);
       } else if (e instanceof ApiError && e.message === "already_sent") {
         setError("This question was already sent to a colleague.");
+        setOpen(false);
+      } else if (e instanceof ApiError && e.message === "approval_required") {
+        setNeedsApproval(true);
+        setError("Please confirm sharing private information first.");
       } else if (e instanceof ApiError && e.message === "slack_unavailable") {
         setError(`${person?.name ?? "They"} can't be reached on Slack. Send by email instead.`);
         setSlackAvailable(false);
         setVia("email");
       } else {
-        setError(e instanceof ApiError ? e.message : "Couldn't send. Try again.");
+        setError(plain(e));
       }
     } finally {
       setSending(false);

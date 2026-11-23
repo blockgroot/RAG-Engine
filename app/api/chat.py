@@ -1079,9 +1079,11 @@ def _done_event(conversation_id: str | None, question: str, payload: dict) -> st
     """
     if conversation_id:
         try:
-            conversation_store.set_last_turn_meta(
+            turn_index = conversation_store.set_last_turn_meta(
                 conversation_id, question, conversation_store.meta_for_storage(payload)
             )
+            if turn_index is not None:
+                payload = {**payload, "turn_index": turn_index}
         except Exception:  # noqa: BLE001 - see docstring
             logger.warning("could not label the turn", exc_info=True)
     return _sse_event("done", payload)

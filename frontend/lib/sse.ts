@@ -68,6 +68,8 @@ export interface ChatDonePayload {
   deep_hint?: boolean;
   /** "No answer found" (a gap was recorded): offer Ask a friend. */
   ask_friend?: boolean;
+  /** This answer's turn in the stored chat (names the bubble for Ask a friend). */
+  turn_index?: number;
   /** A private GitHub repository was hidden from the asker: offer the Account
    *  page, where the GitHub account that can open it is linked. */
   github_link_hint?: boolean;
