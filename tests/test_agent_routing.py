@@ -1067,7 +1067,7 @@ def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatc
         use_model(None)
     assert decision.reason == "chart-model-unsupported"
     assert decision.chart_refusal.startswith("**Gemma 4 31B doesn't support charts**")
-    assert "gemini-2.5-flash, Claude Sonnet 5.5 or Claude Haiku 5.5" in decision.chart_refusal
+    assert "gemini-2.5-flash or Claude Haiku 5.5" in decision.chart_refusal
 
 
 @pytest.mark.parametrize("model", [None, "claude-haiku-5-5", "acme-own-model"])
