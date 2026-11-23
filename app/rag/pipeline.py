@@ -145,6 +145,12 @@ logger = logging.getLogger(__name__)
 _TONE_GRACE_SECONDS = 1.0
 _AUX_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rag-aux")
 
+#: The earlier turns this answer's prompt sees (``MemorySettings.answer_turns``);
+#: set around one ``_run``, so a nested or retried answer reads the same chat.
+_EARLIER_TURNS: contextvars.ContextVar[tuple[tuple[str, str], ...]] = contextvars.ContextVar(
+    "rag_earlier_turns", default=()
+)
+
 
 def _read_order(hit) -> tuple[float, str, int]:
     """Oldest first, stable within a document. A missing timestamp sorts first,
@@ -541,6 +547,7 @@ class RagPipeline:
         gate or the prompt. The store enforces the ``org_id`` filter.
         """
         resolved = question
+        earlier: tuple[tuple[str, str], ...] = ()
         if conversation_id is not None and self._memory is not None:
             wait_for_conversation_fold(
                 conversation_id,
@@ -555,20 +562,29 @@ class RagPipeline:
                 resolved = self._rewrite_question(
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
+            keep = self._memory_settings.answer_turns
+            if keep > 0:
+                # ponytail: earlier answers are shown without re-checking their
+                # sources; gate on the cited documents before this is switched on.
+                earlier = tuple((t.question, t.answer) for t in context.recent_turns[-keep:])
 
         budget = RequestBudget.from_settings(self._budget_settings)
-        result = self._run(
-            resolved,
-            org_id,
-            conversation_id=conversation_id,
-            budget=budget,
-            workspace_id=workspace_id,
-            date_range=date_range,
-            tags=tags,
-            user_question=question,
-            attachments=attachments,
-            viewer=viewer,
-        )
+        token = _EARLIER_TURNS.set(earlier)
+        try:
+            result = self._run(
+                resolved,
+                org_id,
+                conversation_id=conversation_id,
+                budget=budget,
+                workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
+                user_question=question,
+                attachments=attachments,
+                viewer=viewer,
+            )
+        finally:
+            _EARLIER_TURNS.reset(token)
         if result.answered and viewer is not None and not viewer.is_unrestricted:
             result = self._note_withheld(result, resolved, org_id, workspace_id, viewer)
 
@@ -1656,6 +1672,7 @@ class RagPipeline:
             assemble_rule=self._settings.assemble_rule and extra_effort_on(),
             # A worked figure and the part of it the question may have meant.
             readings_rule=any(NARROWER in a.text for a in current_answers()),
+            earlier_turns=_EARLIER_TURNS.get(),
         )
         answer_cap = self._read_settings().max_answer_tokens  # extra effort may answer longer
         raw = self._generate_text(

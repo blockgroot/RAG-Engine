@@ -34,6 +34,8 @@ _CLOSE = re.compile(r"^<<<END_UNTRUSTED_[A-Z_]+>>>$", re.MULTILINE)
 def _built_prompts() -> dict[str, str]:
     return {
         "grounded": prompts.build_grounded_prompt("q?", [ATTACK, "Leave is 4 weeks."], "idk"),
+        "grounded_with_turns": prompts.build_grounded_prompt(
+            "q?", ["Leave is 4 weeks."], "idk", earlier_turns=(("q0?", ATTACK),)),
         "attachment_paging": prompts.build_attachment_paging_prompt(
             question="q?", preview_block=ATTACK
         ),
