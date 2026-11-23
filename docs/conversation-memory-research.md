@@ -179,12 +179,51 @@ company-knowledge product unless users ask for it.
   the document index. Mixing them would let old answers compete with documents
   as evidence.
 
+### G7. Skip the search on follow-ups that do not need it (agreed direction)
+
+Re-running the whole pipeline for every follow-up is wasted work when the
+answer's sources are already known. Reuse instead, behind two cheap checks:
+
+```
+follow-up → does it match the last turn's passages closely? no → search
+          → can this person still open those documents?    no → search
+          → changed since that turn?                       yes → search
+          → reuse the passages, skip the search
+```
+
+- **Similar question:** this already exists for the last turn's passages
+  (`_try_reuse`, reuse threshold 0.85), but it **skips the access and
+  freshness checks** today. Adding both is the fix; both are one lookup on
+  `documents` (visibility predicate + `updated_at` vs. the turn's time).
+- **Table follow-ups** ("and for March?", "split by team"): the table is already
+  known from the last turn, so finding tables again is not needed; reuse that
+  table (same access + freshness check on its document) and only fill a new
+  form and run new SQL. Today a turn with worked figures never reuses
+  (`pipeline.py`, "A turn with worked figures never reuses").
+- Reuse the **documents/passages and tables**, never the previous answer's
+  text as a source. Exception: reshape follow-ups ("shorter", "as a table").
+
 ## 6. Suggested next step
 
 Run an eval of G1 on 20–30 real follow-up chains (pronoun follow-ups, "shorter",
 "as a table", "what about X instead", one with a wrong earlier answer, one with
 revoked access) comparing today vs. the answer model given the last 2 turns.
 Decide G1 from that. G2 is safe to take alongside it.
+
+## 7. Outcome (23 Nov 2026)
+
+| Gap | Result |
+|---|---|
+| Reuse skipped access and freshness checks | Fixed: PR #73 |
+| G1 reshape ("shorter", "as a table") | Built: PR #74. Real model: 45/48 detection checks right, no false reshape |
+| G1 answer sees the chat | Built: PR #76, on by default (`MEMORY_ANSWER_TURNS=2`), earlier answers only while their sources are readable. 24-chat comparison: no repetition on "what else?" (4/4), nothing worse, none ungrounded |
+| Rewriter copied wrong figures / stuck topics (found by the eval) | Fixed: PR #77, 30/30 real-model checks right |
+| Rewriter added details from an earlier answer ("who approves it?" became "...in Keka?", so search missed the section naming the approvers) | Fixed on `main` (`d2ed989`): 24/24 real-model rewrites, 3/3 live answers name Team Lead and HR |
+| G7 table reuse | Not built: saves one embedding + one query |
+| G4 questions about the whole chat | Not built: nobody has asked for it; "what did you just say?" is a reshape |
+| G2 token budget, G3 compaction, G5 branching, G6 chat search | Not needed today |
+
+The reuse threshold is 0.85, not 0.72 (tuned on Jina v3); at 0.85 reuse rarely fires on real questions, so its access and freshness check is a safety fix, not a speed gain.
 
 ## Sources
 
