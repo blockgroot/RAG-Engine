@@ -448,8 +448,11 @@ re-checking that the asker can still open them and that they were not re-synced 
 follow-up that only changes the FORM of the last answer ("shorter", "as a table", "in Hindi") is
 rewritten from that answer, with its citations, instead of searched again; the question check
 decides it (its quoted words must be in the question), and only while every cited document is
-still readable and unchanged. Covered by `tests/test_reuse.py` and `tests/test_reshape.py`; not
-yet walked through on staging.
+still readable and unchanged. (3) The answer sees the last two turns (`MEMORY_ANSWER_TURNS`),
+never as evidence, an earlier answer only while its sources are readable: in a 24-chat comparison
+on staging data it stopped repeating itself on "what else?" (4 of 4) with no answer worse and
+none ungrounded. Covered by `tests/test_reuse.py`, `tests/test_reshape.py` and
+`tests/test_answer_turns.py`; not yet walked through on staging.
 
 **Production-readiness fixes** (branch `fix/production-readiness`, 19 Nov 2026, **In progress**).
 From an audit against production AI-system practice. Model calls: no SDK retries (a 429 is the
