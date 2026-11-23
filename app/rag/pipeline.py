@@ -564,9 +564,8 @@ class RagPipeline:
                 )
             keep = self._memory_settings.answer_turns
             if keep > 0:
-                # ponytail: earlier answers are shown without re-checking their
-                # sources; gate on the cited documents before this is switched on.
-                earlier = tuple((t.question, t.answer) for t in context.recent_turns[-keep:])
+                earlier = self._shown_turns(context.recent_turns[-keep:], org_id,
+                                            workspace_id=workspace_id, viewer=viewer)
 
         budget = RequestBudget.from_settings(self._budget_settings)
         token = _EARLIER_TURNS.set(earlier)
@@ -2137,6 +2136,30 @@ class RagPipeline:
         ][: self._settings.top_k]
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
         return RetrievalResult(hits=hits, gate_score=best, gate_document_id=gate_document(hits[:1]))
+
+    def _shown_turns(self, turns, org_id: str, *, workspace_id: str | None,
+                     viewer: Viewer | None) -> tuple[tuple[str, str], ...]:
+        """Earlier turns for the answer prompt: the asker's question always, the
+        answer only while every document it cited is still theirs to read, in
+        scope, and not re-synced since. An uncited answer, or any doubt, shows
+        the question alone: an old answer may quote what they can no longer open.
+        """
+        from .reshape import _UUID, readable_unchanged
+
+        shown = []
+        for t in turns:
+            ids = {c.get("document_id") for c in t.cited if isinstance(c, dict)}
+            ok = bool(ids) and t.created_at is not None and all(
+                isinstance(i, str) and _UUID.match(i) for i in ids)
+            if ok:
+                try:
+                    ok = readable_unchanged(ids, org_id=org_id, workspace_id=workspace_id,
+                                            viewer=viewer, since=t.created_at) == ids
+                except Exception:  # noqa: BLE001 - the question alone is always safe
+                    logger.warning("could not re-check an earlier answer's sources", exc_info=True)
+                    ok = False
+            shown.append((t.question, t.answer if ok else ""))
+        return tuple(shown)
 
     def _still_readable(
         self,

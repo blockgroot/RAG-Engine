@@ -346,7 +346,8 @@ def _earlier_turns_block(turns: tuple[tuple[str, str], ...]) -> str:
     from .cite import strip_citations
 
     text = "\n".join(
-        f"User: {scrub_untrusted_text(q)}\nAssistant: {scrub_untrusted_text(strip_citations(a))}"
+        f"User: {scrub_untrusted_text(q)}\n"
+        f"Assistant: {scrub_untrusted_text(strip_citations(a)) or '(answer not shown)'}"
         for q, a in turns
     )
     return (

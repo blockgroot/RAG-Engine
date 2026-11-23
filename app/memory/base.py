@@ -24,6 +24,9 @@ class Turn:
     answer: str
     cited: list = field(default_factory=list)
     chart: dict | None = None
+    #: When the turn was saved; with ``cited``, lets a later answer re-check
+    #: that its sources are unchanged before showing it to the model.
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
