@@ -142,6 +142,13 @@ _MODE_LEAD_IN_CHARS = 400
 
 logger = logging.getLogger(__name__)
 
+_NUMBER = re.compile(r"\d[\d,.]*\d|\d")
+
+
+def _numbers(text: str) -> set[str]:
+    """Every figure in ``text``, separators dropped ("5,000" == "5000")."""
+    return {re.sub(r"[,.]", "", n) for n in _NUMBER.findall(text or "")}
+
 #: Did this request's last ``_generate_text`` reply stop at its token cap?
 _LAST_TRUNCATED: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "rag_last_truncated", default=False)
@@ -2431,9 +2438,32 @@ class RagPipeline:
         conversation_id: str | None = None,
     ) -> str:
         recent = [(t.question, t.answer) for t in context.recent_turns]
-        prompt = build_rewrite_prompt(
-            question, context.summary, recent, asker_context=current_asker_context()
+        asker = current_asker_context()
+        line = self._rewrite_once(
+            build_rewrite_prompt(question, context.summary, recent, asker_context=asker),
+            org_id=org_id, conversation_id=conversation_id,
         )
+        if line is None:
+            return question
+        # The rewrite becomes the trusted QUESTION: a figure the asker never typed
+        # came from an earlier answer, which may be wrong. Rewrite again from the
+        # asker's own questions only, so no answer can put words in their mouth.
+        typed = [question, *(t.question for t in context.recent_turns), *asker]
+        if _numbers(line) - _numbers(" ".join(typed)):
+            logger.info("rewrite: a figure the asker never typed; rewriting from questions only")
+            line = self._rewrite_once(
+                build_rewrite_prompt(
+                    question, None, [(t.question, "") for t in context.recent_turns],
+                    asker_context=asker,
+                ),
+                org_id=org_id, conversation_id=conversation_id,
+            )
+            if line is None or _numbers(line) - _numbers(" ".join(typed)):
+                return question
+        return line
+
+    def _rewrite_once(self, prompt: str, *, org_id, conversation_id) -> str | None:
+        """One rewrite call: its first line when it is a question, else None."""
         try:
             rewritten = self._generate_text(
                 STAGE_REWRITE,
@@ -2442,11 +2472,10 @@ class RagPipeline:
                 conversation_id=conversation_id,
             ).strip()
         except LLMProviderError:
-            return question
-
+            return None
         first_line = rewritten.splitlines()[0].strip() if rewritten else ""
         if not first_line or len(first_line) > 300 or not first_line.endswith("?"):
-            return question
+            return None
         return first_line
 
     def _update_running_summary(self, conversation_id: str) -> None:
