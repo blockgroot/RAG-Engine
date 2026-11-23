@@ -60,13 +60,9 @@ def test_interactive_calls_count_toward_the_window():
     """Recording is what makes the reserve real. If only background calls were
     counted, live traffic would be invisible and the reserve would protect
     nothing."""
-    from app.llm.metering import log_llm_call
+    from app.llm.openai_provider import _pace
 
-    class _Provider:
-        model = "test-model"
-        last_usage = None
-
-    log_llm_call("generate", _Provider())
+    _pace()
     assert pacing.calls_in_window() == 1
 
 
@@ -187,6 +183,9 @@ def test_aux_provider_uses_its_own_endpoint_when_both_are_set(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "main-model")
     monkeypatch.setenv("LLM_API_KEY", "main-key")
     monkeypatch.setenv("LLM_BASE_URL", "https://main.example.com/v1")
+    # A developer's .env names an adapter; with a base URL it is a conflict.
+    for name in ("LLM_ADAPTER", "LLM_AUX_ADAPTER"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LLM_AUX_BASE_URL", "https://aux.example.com/v1")
     monkeypatch.setenv("LLM_AUX_API_KEY", "aux-key")
 
@@ -203,6 +202,9 @@ def test_aux_provider_falls_back_to_the_main_endpoint_by_default(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "main-model")
     monkeypatch.setenv("LLM_API_KEY", "main-key")
     monkeypatch.setenv("LLM_BASE_URL", "https://main.example.com/v1")
+    # A developer's .env names an adapter; with a base URL it is a conflict.
+    for name in ("LLM_ADAPTER", "LLM_AUX_ADAPTER"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("LLM_AUX_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_AUX_API_KEY", raising=False)
 
@@ -219,6 +221,9 @@ def test_a_half_configured_aux_provider_never_mixes_credentials(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "main-model")
     monkeypatch.setenv("LLM_API_KEY", "main-key")
     monkeypatch.setenv("LLM_BASE_URL", "https://main.example.com/v1")
+    # A developer's .env names an adapter; with a base URL it is a conflict.
+    for name in ("LLM_ADAPTER", "LLM_AUX_ADAPTER"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LLM_AUX_BASE_URL", "https://aux.example.com/v1")
     monkeypatch.delenv("LLM_AUX_API_KEY", raising=False)
 

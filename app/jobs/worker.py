@@ -13,7 +13,7 @@ from ..auth.credentials import (
     mark_needs_reauth,
 )
 from ..config.settings import ContextualSettings, IngestWorkerSettings, env_bool
-from ..core.exceptions import OAuthReauthRequiredError
+from ..core.exceptions import OAuthReauthRequiredError, RunCancelled
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..insights.facts import DOCUMENT_PROVIDERS, backfill_all_document_facts, record_document_facts
 from ..sources import build_source_adapter
@@ -159,6 +159,13 @@ def run_once() -> queue.IngestionJob | None:
     if job is None:
         return None
 
+    with queue.alive(job.id):
+        _run_job(job)
+    return queue.get_job(job.org_id, job.id)
+
+
+def _run_job(job: queue.IngestionJob) -> None:
+    """One claimed job, start to recorded outcome; never raises."""
     provider = None
     try:
         provider = queue.get_connection_provider(job.connection_id, job.org_id)
@@ -167,10 +174,13 @@ def run_once() -> queue.IngestionJob | None:
         adapter = build_source_adapter(provider, token=token, config=config)
 
         def report(phase: str, processed: int, total: int) -> None:
-            """Persist live progress for polling clients."""
-            queue.update_progress(
+            """Persist live progress for polling clients; stop if reaped."""
+            if not queue.update_progress(
                 job.id, phase=phase, processed=processed, total=total
-            )
+            ):
+                # Failed by the reaper while still working: carrying on ran a
+                # second sync of this connection beside the next job.
+                raise RunCancelled(f"Job {job.id} is no longer running; stopped.")
 
         if provider == "slack":
             # Every sync: a rename is invisible to change detection.
@@ -233,8 +243,6 @@ def run_once() -> queue.IngestionJob | None:
                     "Could not mark needs_reauth for job %s", job.id, exc_info=True
                 )
         queue.mark_failed(job.id, str(exc))
-
-    return queue.get_job(job.org_id, job.id)
 
 
 def run_maintenance() -> None:
@@ -330,6 +338,15 @@ def run_upkeep() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("Upkeep: attachment purge failed")
 
+    # Stored files whose rows are gone (every delete queues them by trigger;
+    # a failed removal is retried here, never lost).
+    try:
+        from ..attachments.store import drain_storage_deletions
+
+        drain_storage_deletions()
+    except Exception:  # noqa: BLE001
+        logger.exception("Upkeep: stored-file deletion failed")
+
     # Retention: removes whole chats (attachments and turns cascade).
     conversations_purged = 0
     try:
@@ -365,6 +382,16 @@ def run_upkeep() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a longer table, never a failed pass
         logger.exception("Upkeep: Slack event receipt purge failed")
 
+    # Agent cards: lapsed proposals say "expired"; a write whose process died
+    # says "unknown" (never retried) instead of "Sending…" for good.
+    try:
+        from ..actions import store as action_store
+
+        action_store.expire_stale()
+        action_store.settle_abandoned()
+    except Exception:  # noqa: BLE001
+        logger.exception("Upkeep: action expiry failed")
+
     # Expired tokens, old drafts, sync jobs, reports and questions (jobs/retention.py).
     rows_expired = 0
     try:
@@ -399,6 +426,7 @@ def run_external_tick() -> dict[str, int]:
         reaped = queue.reap_stuck()
     except Exception:  # noqa: BLE001
         logger.exception("External tick: reap failed")
+    run_slack_replay()
 
     upkeep = run_upkeep()
 
@@ -428,6 +456,21 @@ def run_external_tick() -> dict[str, int]:
         "facts_backfilled": backfilled,
         "schedulers_ran": schedulers_ran,
     }
+
+
+def run_slack_replay() -> int:
+    """Re-answer Slack questions lost when their process died. Never raises.
+
+    Run with every reap (about a minute), not hourly upkeep: a lost question is
+    re-answered while the asker still waits for it.
+    """
+    try:
+        from ..api.slack_events import replay_lost_questions
+
+        return replay_lost_questions()
+    except Exception:  # noqa: BLE001 - must never break the shared worker loop
+        logger.exception("Slack question replay failed")
+        return 0
 
 
 def run_scheduler_tick(settings=None) -> int:
@@ -497,6 +540,7 @@ def run_forever(
             last_tick = now
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
+            run_slack_replay()
             last_reap = now
         if now - last_push >= PUSH_CHECK_SECONDS:
             start_cooled_down_pushes()

@@ -19,7 +19,6 @@ from collections.abc import AsyncIterator, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import iterate_in_threadpool
 
 def _stream_word_delay_seconds() -> float:
     raw = os.getenv("CHAT_STREAM_WORD_DELAY_MS")
@@ -61,9 +60,14 @@ from ..agent.routing import (
     refusal_retry,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings
+from ..config.settings import (
+    AttachmentSettings, GraphSettings, RagSettings, RateLimitSettings, RequestBudgetSettings,
+)
 from ..rag import progress
+from ..rag import reshape as reshape_answers
 from ..rag.deep import reset_deep_read, use_deep_read
+from ..llm.openai_provider import start_call_cap
+from ..rag.request_budget import watch_abandon
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
 from ..livetools import LiveRequest, current_live_request, reset_live_request, use_live_request
@@ -1007,6 +1011,15 @@ _PERSON_BUSY = (
 )
 
 
+#: ``next()``'s default: the answer stream has no more events.
+_STREAM_END = object()
+
+#: A silent step sends an SSE comment this often (``frontend/lib/sse.ts`` waits
+#: ``STREAM_IDLE_MS`` for any bytes before calling the line dead).
+KEEPALIVE_SECONDS = 15
+_KEEPALIVE = ": keepalive\n\n"
+
+
 async def _in_a_slot(
     stream: Iterator[str], settings: RateLimitSettings, user_id: str
 ) -> AsyncIterator[str]:
@@ -1047,11 +1060,45 @@ async def _in_a_slot(
                     take_place, "answers:all", settings.chat_max_concurrent, settings,
                     log_refusal=False,
                 )
-        async for event in iterate_in_threadpool(stream):
+        abandoned = watch_abandon()
+        start_call_cap(RequestBudgetSettings.from_env().max_model_calls)
+        while True:
+            # One step at a time in a worker thread. On a disconnect the await is
+            # cancelled but the thread is not: that step's work goes on. So the
+            # budget is emptied (optional stages skip) and the places are held
+            # until the step really ends, or the cap undercounted live work.
+            in_flight = asyncio.ensure_future(
+                asyncio.to_thread(next, stream, _STREAM_END))
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            asyncio.shield(in_flight), timeout=KEEPALIVE_SECONDS)
+                        break
+                    except asyncio.TimeoutError:
+                        # A silent step (one long model call) still shows the line
+                        # is alive, so the browser's idle timeout and any proxy
+                        # tell a slow answer from a dead connection.
+                        yield _KEEPALIVE
+            except (asyncio.CancelledError, GeneratorExit):
+                # Cancelled at an await, or closed at a keepalive's yield.
+                abandoned.set()
+                held = (shared, mine)
+                shared = mine = None  # the finally below must not free them now
+
+                def _free(_done, held=held):
+                    give_back_place("answers:all", held[0], settings)
+                    give_back_place(mine_key, held[1], settings)
+
+                in_flight.add_done_callback(_free)
+                raise
+            if event is _STREAM_END:
+                break
             yield event
     finally:
         # Given back without awaiting: this also runs when the client leaves
-        # and the task is cancelled. Each is one quick call (or a no-op).
+        # and the task is cancelled. Each is one quick call (or a no-op). A step
+        # still running after a disconnect frees them itself (above).
         give_back_place("answers:all", shared, settings)
         give_back_place(mine_key, mine, settings)
 
@@ -1242,13 +1289,13 @@ def _stream_attachment_answer(
     )
 
 
-def _previous_question(
+def _last_turn(
     org_id: str,
     conversation_id: str | None,
     workspace_id: str | None,
     session: SessionClaims | None,
-) -> str | None:
-    """The last question in this conversation, for routing a follow-up; never raises."""
+):
+    """The last turn of this person's conversation, or None; never raises."""
     if not conversation_id or session is None:
         return None
     try:
@@ -1261,7 +1308,46 @@ def _previous_question(
     except Exception:  # noqa: BLE001
         logger.warning("could not read the previous turn for routing", exc_info=True)
         return None
-    return turns[-1].question if turns else None
+    return turns[-1] if turns else None
+
+
+def _stream_reshape(question, last, rewritten, org_id, conversation_id, decision,
+                    memory_turn, started) -> Iterator[str]:
+    """Stream and save a reshaped last answer (``rag/reshape.py``): no search ran."""
+    answer, cited = rewritten
+    if conversation_id:
+        try:
+            from ..memory import build_conversation_store
+
+            build_conversation_store().append_turn(conversation_id, question, answer, cited)
+        except Exception:  # noqa: BLE001 - the answer exists; losing the save is the old bug
+            logger.warning("could not save the reshaped turn", exc_info=True)
+    delay = _stream_word_delay_seconds()
+    for chunk in _word_chunks(answer):
+        yield _sse_event("token", chunk)
+        if delay:
+            time.sleep(delay)
+    yield _done_event(conversation_id, question, {
+        "answer": answer,
+        "grounded": True,
+        "source": (last.meta or {}).get("source") or "policy",
+        "citations": [],
+        "resolved_question": question,
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+        "agent": decision.agent_key,
+        "routing_reason": decision.reason,
+        "connected_providers": None,
+        "model": _answering_model(),
+        "chart": None,
+        "chart_period": None,
+        "live_sources": [],
+        "cited": cited,
+        "ask_hint": False,
+        "chart_hint": False,
+        "deep_hint": False,
+        "github_link_hint": False,
+        "remembered": _remembered(memory_turn),
+    })
 
 
 def _start_graph_plan(org_id, workspace_id, question, session):
@@ -1558,19 +1644,38 @@ def _stream_answer_body(
     # explicit `requested_agent`). The knowledge graph is walked ONCE beside
     # routing (app/graph/plan.py); None when GRAPH_RETRIEVAL_ENABLED is off.
     progress.report("Choosing where to look")
+    started = time.perf_counter()
     plan_future = _start_graph_plan(org_id, workspace_id, question, session)
-    decision = choose_agent(
-        question,
-        org_id,
-        workspace_id=workspace_id,
-        requested_agent=requested_agent,
-        context=_previous_question(org_id, conversation_id, workspace_id, session),
-        graph_plan=plan_future,
-        viewer=viewer_for(session),
-        chart_mode=chart_mode,
-        uploads=_upload_scope(conversation_id, session),
-        user_id=session.user_id if session is not None else None,
-    )
+    last = _last_turn(org_id, conversation_id, workspace_id, session)
+    # "Shorter", "as a table": offered only while the last answer's sources are
+    # still this asker's to read, unchanged (`rag/reshape.py`).
+    can_reshape = (not attached and not chart_mode and reshape_answers.reshapeable(
+        last, org_id=org_id, workspace_id=workspace_id, viewer=viewer_for(session)))
+
+    def route(allow_reshape: bool):
+        return choose_agent(
+            question,
+            org_id,
+            workspace_id=workspace_id,
+            requested_agent=requested_agent,
+            context=last.question if last else None,
+            graph_plan=plan_future,
+            viewer=viewer_for(session),
+            chart_mode=chart_mode,
+            uploads=_upload_scope(conversation_id, session),
+            user_id=session.user_id if session is not None else None,
+            allow_reshape=allow_reshape,
+        )
+
+    decision = route(can_reshape)
+    if decision.reason == "reshape":
+        progress.report("Rewriting the last answer")
+        rewritten = reshape_answers.reshape(question, last, org_id=org_id)
+        if rewritten is not None:
+            yield from _stream_reshape(question, last, rewritten, org_id, conversation_id,
+                                       decision, memory_turn, started)
+            return
+        decision = route(False)  # the rewrite failed its checks: answer as usual
     plan = _graph_plan_result(plan_future)
     # The live-data verdict rides the request note, reset when the stream ends.
     current = current_live_request()

@@ -443,6 +443,41 @@ Open pull requests (13 Nov): a benchmark of encrypted chunk text with keyword se
 a design note on tenant direct access (PR #62); neither changes the product. The items below were
 in progress on 13 Oct and are now on `main`; the shorter entries for each are in §2–§9.
 
+**Follow-ups without a new search** (In progress, PR #73 and its follow-up, 20 Nov 2026). Web
+chat only. (1) A follow-up close to the last question reuses the last turn's passages only after
+re-checking that the asker can still open them and that they were not re-synced since. (2) A
+follow-up that only changes the FORM of the last answer ("shorter", "as a table", "in Hindi") is
+rewritten from that answer, with its citations, instead of searched again; the question check
+decides it (its quoted words must be in the question), and only while every cited document is
+still readable and unchanged. (3) The answer sees the last two turns (`MEMORY_ANSWER_TURNS`),
+never as evidence, an earlier answer only while its sources are readable: in a 24-chat comparison
+on staging data it stopped repeating itself on "what else?" (4 of 4) with no answer worse and
+none ungrounded. Covered by `tests/test_reuse.py`, `tests/test_reshape.py` and
+`tests/test_answer_turns.py`; not yet walked through on staging.
+
+**Production-readiness fixes** (branch `fix/production-readiness`, 19 Nov 2026, **In progress**).
+From an audit against production AI-system practice. Model calls: no SDK retries (a 429 is the
+quota), a cap on every reply including tool turns, a cut-off chat answer says so, every request
+paced. Agent mode: a write whose connection broke after sending is "unknown" (never re-approved
+into a duplicate); stuck "Sending…" cards settle; confirm re-checks space membership; deleting a
+space expires its drafts. Token refresh: a network error no longer forces a reconnect; one
+refresh per connection at a time. Jobs: a restart requeues only jobs whose process stopped
+beating (`alive_at`), never a live instance's; a space digest stops when its owner leaves; an
+edit resumes a stopped scheduler. Infra: statement and pool timeouts, `GET /ready`, a lock on
+schema apply, bounded shutdown, a non-root image, logs that actually reach the log with a request
+id. Web search and the Lettuce audit are masked; Slack questions capped at 4000 characters; a
+dropped stream no longer freezes the chat; browser security headers; `scripts/delete_company.py`.
+Follow-up (20 Nov): at most 40 model requests per question and no prompt over 600k characters;
+answer streams send keepalives and the browser gives up after 60 s of silence; a reaped job stops
+itself; request bodies capped (2 MB) and a foreign `Origin` logged (`ORIGIN_CHECK=report`, then
+`enforce`); boot checks the session and encryption secrets; a report already emailed is not sent
+again; `scripts/export_company.py`. Stored upload files are deleted whenever their row goes (chat,
+user or company delete included), retried from `storage_deletions`; a Slack question lost in a
+restart is answered again (within 30 min, 3 tries); the Notion webhook token is stored encrypted
+and read with `scripts/notion_webhook_token.py`, never logged.
+Covered by `tests/test_production_readiness_*.py` plus updated `test_jobs.py`,
+`test_scheduler_queue.py` and `test_token_refresh.py` (staging database).
+
 **Each company's own Google and Slack app** (PR #64, 3 Nov 2026). Set up under **Sources**; see
 §6. Self-hosted installs keep using `.env`. Covered by `tests/test_own_connector_apps.py`; not yet
 walked through with real Google and Slack apps.

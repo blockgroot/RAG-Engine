@@ -62,6 +62,15 @@ def lettuce_score(
     if not context or sum(len(c) for c in context) > LETTUCE_MAX_CONTEXT_CHARS:
         return None
     headers = {"Authorization": f"Bearer {settings.lettuce_token}"} if settings.lettuce_token else {}
+    from ..core.exceptions import PrivacyError
+    from ..privacy import redact
+
+    # An outside service: identifiers masked, one vault so a number in a passage
+    # and in the answer get the same placeholder. A failure skips the audit.
+    try:
+        *context, question, answer = redact([*context, question, answer])
+    except PrivacyError:
+        return None
     try:
         response = httpx.post(
             settings.lettuce_url.rstrip("/") + "/check",

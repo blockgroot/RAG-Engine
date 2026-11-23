@@ -16,6 +16,9 @@ from .connection import DatabaseError
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
+#: Advisory lock key for ``apply_schema`` (any constant no other code uses).
+_SCHEMA_LOCK = 0x48424B53  # "HBKS"
+
 
 def apply_schema(settings: DatabaseSettings | None = None) -> None:
     """Create the extension and tables if they don't already exist."""
@@ -26,6 +29,10 @@ def apply_schema(settings: DatabaseSettings | None = None) -> None:
     sql = SCHEMA_PATH.read_text()
     try:
         with psycopg.connect(settings.url) as conn:
+            # One apply at a time: two instances booting together raced the
+            # CREATE ... IF NOT EXISTS statements and the schema_marks fixes.
+            # Transaction-scoped, so it is released by the commit below.
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK,))
             conn.execute(sql)
             conn.commit()
     except psycopg.Error as exc:

@@ -26,19 +26,9 @@ def log_llm_call(
 ) -> None:
     """Emit one JSON log line per LLM call for cost/usage analysis.
 
-    Also counts the call against the shared rate-limit window
-    (``app/llm/pacing.py``). Hooked here rather than in each caller because
-    every LLM call in the codebase already routes through this function, so no
-    future call site can forget to report itself — the metering choke point and
-    the pacing choke point are the same point on purpose.
+    Pacing is NOT counted here: several callers never call this, so the
+    provider counts every request itself (``openai_provider._pace``).
     """
-    try:
-        from .pacing import record
-
-        record()
-    except Exception:  # noqa: BLE001 - accounting must never fail a real call
-        pass
-
     usage = getattr(provider, "last_usage", None)
     input_tokens = getattr(usage, "input_tokens", None) if usage else None
     output_tokens = getattr(usage, "output_tokens", None) if usage else None

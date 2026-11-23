@@ -111,7 +111,14 @@ class McpSession:
             if write:
                 raise ActionOutcomeUnknown("The tool did not answer.", cause=exc) from exc
             raise ActionError("The tool did not answer.", cause=exc) from exc
+        except httpx.ConnectError as exc:
+            # Never connected: nothing was sent, so a plain failure even for a write.
+            raise ActionError("Could not reach the tool.", cause=exc) from exc
         except httpx.HTTPError as exc:
+            # Connected, then the line broke (reset, protocol error): a write may have
+            # happened. "Failed" invited a second approval and a duplicate.
+            if write:
+                raise ActionOutcomeUnknown("The connection to the tool broke.", cause=exc) from exc
             raise ActionError("Could not reach the tool.", cause=exc) from exc
         if response.status_code == 401:
             raise McpUnauthorized("Sign in to this tool again.",

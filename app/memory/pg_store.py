@@ -102,7 +102,7 @@ class PgConversationStore(ConversationStore):
             ).fetchone()
             rows = conn.execute(
                 """
-                SELECT turn_index, question, answer
+                SELECT turn_index, question, answer, cited, created_at
                 FROM conversation_turns
                 WHERE conversation_id = %s::uuid
                 ORDER BY turn_index DESC
@@ -112,7 +112,13 @@ class PgConversationStore(ConversationStore):
             ).fetchall()
 
         summary = summary_row[0] if summary_row else None
-        recent = [Turn(turn_index=r[0], question=r[1], answer=r[2]) for r in reversed(rows)]
+        from .conversations import cited_for_history
+
+        recent = [
+            Turn(turn_index=r[0], question=r[1], answer=r[2],
+                 cited=cited_for_history(r[3]), created_at=r[4])
+            for r in reversed(rows)
+        ]
         return ConversationContext(summary=summary, recent_turns=recent)
 
     def get_folded_through(self, conversation_id: str) -> int | None:
@@ -170,7 +176,8 @@ class PgConversationStore(ConversationStore):
     def get_last_retrieval(self, conversation_id: str) -> list[RetrievedChunkRecord]:
         with get_connection(self._settings) as conn:
             row = conn.execute(
-                "SELECT chunks FROM conversation_last_retrieval WHERE conversation_id = %s::uuid",
+                "SELECT chunks, updated_at FROM conversation_last_retrieval "
+                "WHERE conversation_id = %s::uuid",
                 (conversation_id,),
             ).fetchone()
         if not row or not row[0]:
@@ -186,6 +193,7 @@ class PgConversationStore(ConversationStore):
                 chunk_index=item["chunk_index"],
                 org_id=item["org_id"],
                 document_title=item.get("document_title"),
+                stored_at=row[1],
             )
             for item in items
         ]

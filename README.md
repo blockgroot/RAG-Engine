@@ -185,7 +185,7 @@ for the full list with inline documentation. The essentials:
 | `NEXT_PUBLIC_API_BASE_URL` / `API_PROXY_TARGET` | Frontend `/api` rewrite → FastAPI (see `frontend/.env.example`) |
 | `EMAIL_SENDER` | `smtp`, `resend` or `sendgrid` (`console` prints links locally, for development only) |
 | `INTERNAL_TICK_SECRET` | Authenticates the external tick that drives automatic sync |
-| `SLACK_SIGNING_SECRET`, `LINEAR_WEBHOOK_SECRET`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DRIVE_PUSH_BASE_URL` | Instant updates; each receiver is closed until set |
+| `SLACK_SIGNING_SECRET`, `LINEAR_WEBHOOK_SECRET`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DRIVE_PUSH_BASE_URL` | Instant updates; each receiver is closed until set. Notion's token needs no env var: it is stored when Notion sends it; read it with `python scripts/notion_webhook_token.py` for Notion's Verify form |
 | `GUARD_MODE` / `GUARD_API_KEY` / `GUARD_BASE_URL` | Prompt-injection guard, on its own account if set |
 | `MASK_IDENTIFIERS` | On by default; `false` is the kill switch for identifier masking |
 | `HANDBOOK_DEPLOYMENT` / `HANDBOOK_VERSION` | `cloud` or `selfhosted`, and the version running (Admin › Updates) |

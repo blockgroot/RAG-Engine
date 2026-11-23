@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,9 @@ class Turn:
     answer: str
     cited: list = field(default_factory=list)
     chart: dict | None = None
+    #: When the turn was saved; with ``cited``, lets a later answer re-check
+    #: that its sources are unchanged before showing it to the model.
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,9 @@ class RetrievedChunkRecord:
     chunk_index: int
     org_id: str
     document_title: str | None = None
+    # When the turn saved it. Reuse keeps a chunk only if it was not re-ingested
+    # since; None (unknown) means no reuse.
+    stored_at: datetime | None = None
 
 
 class ConversationStore(ABC):

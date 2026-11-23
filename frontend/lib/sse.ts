@@ -124,31 +124,66 @@ export async function streamChat(
     return;
   }
 
-  for await (const { event, data } of sseEvents(response.body)) {
-    if (event === "token") {
-      handlers.onToken(JSON.parse(data) as string);
-    } else if (event === "status") {
-      handlers.onStatus?.(JSON.parse(data) as string);
-    } else if (event === "done") {
-      handlers.onDone(JSON.parse(data) as ChatDonePayload);
-      return;
-    } else if (event === "error") {
-      const payload = JSON.parse(data) as { message?: string };
-      handlers.onError(payload.message || "Something went wrong.");
-      return;
+  // A dropped connection makes the read throw mid-answer. Uncaught, the chat
+  // stayed busy with a spinner until a reload.
+  try {
+    for await (const { event, data } of sseEvents(response.body, STREAM_IDLE_MS)) {
+      if (event === "token") {
+        handlers.onToken(JSON.parse(data) as string);
+      } else if (event === "status") {
+        handlers.onStatus?.(JSON.parse(data) as string);
+      } else if (event === "done") {
+        handlers.onDone(JSON.parse(data) as ChatDonePayload);
+        return;
+      } else if (event === "error") {
+        const payload = JSON.parse(data) as { message?: string };
+        handlers.onError(payload.message || "Something went wrong.");
+        return;
+      }
     }
+  } catch {
+    handlers.onError("The connection dropped before the answer finished. Please try again.");
+    return;
   }
 
   handlers.onError("The answer stream ended unexpectedly. Please try again.");
 }
 
-/** Each ``event:``/``data:`` block of a server-sent event stream, as it arrives. */
-async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<{ event: string; data: string }> {
+/** No bytes at all for this long and the answer stream is dead. The server sends a
+ *  keepalive every 15s while a step runs (``app/api/chat.KEEPALIVE_SECONDS``), so
+ *  only a dead line (a proxy holding it open) stays silent this long. */
+const STREAM_IDLE_MS = 60_000;
+
+/** Each ``event:``/``data:`` block of a server-sent event stream, as it arrives.
+ *  ``idleMs``: give up (and cancel the stream) after that long with no bytes. */
+async function* sseEvents(
+  body: ReadableStream<Uint8Array>,
+  idleMs?: number,
+): AsyncGenerator<{ event: string; data: string }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   while (true) {
-    const { value, done } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const read = reader.read();
+      chunk = idleMs
+        ? await Promise.race([
+            read,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("idle")), idleMs);
+            }),
+          ])
+        : await read;
+    } catch (cause) {
+      reader.cancel().catch(() => undefined);
+      // Network drop or a silent line: one recognisable error for every caller.
+      throw Object.assign(new Error("The connection dropped. Please try again."), { status: 0, cause });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const { value, done } = chunk;
     if (done) return;
     buffer += decoder.decode(value, { stream: true });
     let boundary = buffer.indexOf("\n\n");
@@ -221,10 +256,14 @@ export async function streamContinue(
     credentials: "include",
   });
   if (!response.ok || !response.body) return null;
-  for await (const { event, data } of sseEvents(response.body)) {
-    if (event === "status") onStatus(JSON.parse(data) as string);
-    else if (event === "done") return JSON.parse(data) as ActReply | null;
-    else if (event === "error") return null;
+  try {
+    for await (const { event, data } of sseEvents(response.body)) {
+      if (event === "status") onStatus(JSON.parse(data) as string);
+      else if (event === "done") return JSON.parse(data) as ActReply | null;
+      else if (event === "error") return null;
+    }
+  } catch {
+    return null; // a dropped line: nothing continues, as for any other failure
   }
   return null;
 }

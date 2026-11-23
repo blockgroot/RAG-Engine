@@ -665,6 +665,50 @@ def test_a_chart_asked_in_normal_ask_points_to_chart_mode(client_and_session, mo
     assert done["answer"].startswith("**Charts are in Chart mode**")
 
 
+def _reshape_setup(monkeypatch, rewritten):
+    from app.agent.routing import RoutingDecision
+    from app.memory.conversations import ConversationTurnRow
+
+    calls = []
+
+    def choose(*a, **k):
+        calls.append(k.get("allow_reshape"))
+        if k.get("allow_reshape"):
+            return RoutingDecision("policy", "reshape")
+        return RoutingDecision("policy", "probe")
+
+    last = ConversationTurnRow(0, "What is the leave policy?", "25 days [1].", None,
+                               [{"n": 1, "document_id": "d"}], None, {"source": "notion"})
+    monkeypatch.setattr("app.api.chat.choose_agent", choose)
+    monkeypatch.setattr("app.api.chat._last_turn", lambda *a, **k: last)
+    monkeypatch.setattr("app.api.chat.reshape_answers.reshapeable", lambda *a, **k: True)
+    monkeypatch.setattr("app.api.chat.reshape_answers.reshape", lambda *a, **k: rewritten)
+    return calls
+
+
+def test_a_reshape_answers_from_the_last_turn_without_searching(client_and_session, monkeypatch):
+    client, cookies, _, _ = client_and_session
+    calls = _reshape_setup(monkeypatch, ("Short: 25 days [1].", [{"n": 1, "document_id": "d"}]))
+    monkeypatch.setattr("app.api.chat._invoke_with_plan",
+                        lambda *a, **k: pytest.fail("a reshape must not search"))
+    response = client.post("/chat/stream", json={"question": "make it shorter"}, cookies=cookies)
+    done = json.loads([d for e, d in _parse_sse(response.text) if e == "done"][0])
+    assert done["routing_reason"] == "reshape"
+    assert done["answer"] == "Short: 25 days [1]."
+    assert done["cited"] == [{"n": 1, "document_id": "d"}]
+    assert done["source"] == "notion"
+    assert calls == [True]
+
+
+def test_a_failed_reshape_is_answered_as_usual(client_and_session, monkeypatch):
+    client, cookies, _, _ = client_and_session
+    calls = _reshape_setup(monkeypatch, None)
+    response = client.post("/chat/stream", json={"question": "make it shorter"}, cookies=cookies)
+    done = json.loads([d for e, d in _parse_sse(response.text) if e == "done"][0])
+    assert done["routing_reason"] == "probe"
+    assert calls == [True, False]  # routed again, without the reshape option
+
+
 def test_chart_mode_reaches_routing(client_and_session, monkeypatch):
     from app.agent.routing import RoutingDecision
 

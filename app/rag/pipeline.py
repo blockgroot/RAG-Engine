@@ -58,6 +58,7 @@ from ..llm.stages import (
     STAGE_WEB_DECISION,
     USER_FACING_LLM_STAGES,
 )
+from ..llm.openai_provider import last_call_truncated
 from ..llm.routed import default_model_only
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
@@ -141,9 +142,35 @@ _MODE_LEAD_IN_CHARS = 400
 
 logger = logging.getLogger(__name__)
 
+_NUMBER = re.compile(r"\d[\d,.]*\d|\d")
+
+
+def _numbers(text: str) -> set[str]:
+    """Every figure in ``text``, separators dropped ("5,000" == "5000")."""
+    return {re.sub(r"[,.]", "", n) for n in _NUMBER.findall(text or "")}
+
+#: Did this request's last ``_generate_text`` reply stop at its token cap?
+_LAST_TRUNCATED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rag_last_truncated", default=False)
+
+#: Output cap for ``generate_raw`` (the Slack recap): a ceiling, never the endpoint's default.
+RAW_MAX_TOKENS = 1500
+
+#: Written under an answer the model was cut off in.
+TRUNCATED_NOTE = (
+    "_This answer was cut off at the length limit. Ask about one part of it "
+    "for the rest._"
+)
+
 # Tone only adds an empathy opener, so it runs alongside generation, capped here.
 _TONE_GRACE_SECONDS = 1.0
 _AUX_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rag-aux")
+
+#: The earlier turns this answer's prompt sees (``MemorySettings.answer_turns``);
+#: set around one ``_run``, so a nested or retried answer reads the same chat.
+_EARLIER_TURNS: contextvars.ContextVar[tuple[tuple[str, str], ...]] = contextvars.ContextVar(
+    "rag_earlier_turns", default=()
+)
 
 
 def _read_order(hit) -> tuple[float, str, int]:
@@ -475,6 +502,9 @@ class RagPipeline:
             # the grounding guarantees must not depend on a member's dropdown.
             with default_model_only():
                 text = provider.generate(prompt, max_tokens=max_tokens)
+        # From the provider's per-request flag, never its shared attribute: another
+        # request's call could land between generate() and a read of that.
+        _LAST_TRUNCATED.set(last_call_truncated())
         log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
         return text
 
@@ -517,7 +547,7 @@ class RagPipeline:
         For a caller with its own already-fenced, scoped prompt (the Slack recap).
         No retrieval, gating or grounding: the caller owns those.
         """
-        return self._llm.generate(prompt)
+        return self._llm.generate(prompt, max_tokens=RAW_MAX_TOKENS)
 
     # -- public API --------------------------------------------------------
 
@@ -541,6 +571,7 @@ class RagPipeline:
         gate or the prompt. The store enforces the ``org_id`` filter.
         """
         resolved = question
+        earlier: tuple[tuple[str, str], ...] = ()
         if conversation_id is not None and self._memory is not None:
             wait_for_conversation_fold(
                 conversation_id,
@@ -555,20 +586,28 @@ class RagPipeline:
                 resolved = self._rewrite_question(
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
+            keep = self._memory_settings.answer_turns
+            if keep > 0:
+                earlier = self._shown_turns(context.recent_turns[-keep:], org_id,
+                                            workspace_id=workspace_id, viewer=viewer)
 
         budget = RequestBudget.from_settings(self._budget_settings)
-        result = self._run(
-            resolved,
-            org_id,
-            conversation_id=conversation_id,
-            budget=budget,
-            workspace_id=workspace_id,
-            date_range=date_range,
-            tags=tags,
-            user_question=question,
-            attachments=attachments,
-            viewer=viewer,
-        )
+        token = _EARLIER_TURNS.set(earlier)
+        try:
+            result = self._run(
+                resolved,
+                org_id,
+                conversation_id=conversation_id,
+                budget=budget,
+                workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
+                user_question=question,
+                attachments=attachments,
+                viewer=viewer,
+            )
+        finally:
+            _EARLIER_TURNS.reset(token)
         if result.answered and viewer is not None and not viewer.is_unrestricted:
             result = self._note_withheld(result, resolved, org_id, workspace_id, viewer)
 
@@ -661,7 +700,10 @@ class RagPipeline:
         reused = (
             None
             if date_range is not None or tags is not None or current_answers()
-            else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
+            else self._try_reuse(
+                retrieval_question, org_id, query_vec, conversation_id,
+                workspace_id=workspace_id, viewer=viewer,
+            )
         )
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
@@ -1653,6 +1695,7 @@ class RagPipeline:
             assemble_rule=self._settings.assemble_rule and extra_effort_on(),
             # A worked figure and the part of it the question may have meant.
             readings_rule=any(NARROWER in a.text for a in current_answers()),
+            earlier_turns=_EARLIER_TURNS.get(),
         )
         answer_cap = self._read_settings().max_answer_tokens  # extra effort may answer longer
         raw = self._generate_text(
@@ -1662,6 +1705,7 @@ class RagPipeline:
             conversation_id=conversation_id,
             max_tokens=answer_cap,
         ).strip()
+        truncated = _LAST_TRUNCATED.get()
         mode, text = _parse_tagged_mode(raw)
         if current_live_request() is not None:
             # A live handle the model echoed ("per [L1]") is machinery, never shown.
@@ -1683,6 +1727,7 @@ class RagPipeline:
                 max_tokens=answer_cap,
             ).strip()
             tone_retry_used = True
+            truncated = _LAST_TRUNCATED.get()
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)
             mode, text = retry_mode, retry_text
 
@@ -1750,6 +1795,10 @@ class RagPipeline:
             # Composed after the link rule, from the question alone: its own pass.
             opener = enforce_link_provenance(opener, [], ())
             answer = compose_supportive_answer(opener, answer)
+
+        if answered and truncated:
+            # Cut at the cap: said, never shown as whole (CLAUDE.md §5 "Model").
+            answer = f"{answer}\n\n{TRUNCATED_NOTE}"
 
         return RagResult(
             answer=answer,
@@ -2063,10 +2112,18 @@ class RagPipeline:
         org_id: str,
         query_vec: list[float],
         conversation_id: str | None,
+        *,
+        workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> RetrievalResult | None:
         """Reuse the previous turn's chunks when the best cosine clears
         ``reuse.threshold`` (re-scored against THIS question), else ``None``.
-        No LLM call."""
+        No LLM call.
+
+        A remembered chunk is kept only if it is still there, in this scope, for
+        this viewer, and not re-ingested since the turn saved it: sharing can be
+        revoked and a page edited between two questions.
+        """
         if (
             conversation_id is None
             or self._memory is None
@@ -2076,6 +2133,9 @@ class RagPipeline:
 
         prev = self._memory.get_last_retrieval(conversation_id)
         prev = [r for r in prev if r.org_id == org_id]  # never cross a tenant boundary
+        if not prev:
+            return None
+        prev = self._still_readable(prev, org_id, workspace_id=workspace_id, viewer=viewer)
         if not prev:
             return None
 
@@ -2106,6 +2166,64 @@ class RagPipeline:
         ][: self._settings.top_k]
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
         return RetrievalResult(hits=hits, gate_score=best, gate_document_id=gate_document(hits[:1]))
+
+    def _shown_turns(self, turns, org_id: str, *, workspace_id: str | None,
+                     viewer: Viewer | None) -> tuple[tuple[str, str], ...]:
+        """Earlier turns for the answer prompt: the asker's question always, the
+        answer only while every document it cited is still theirs to read, in
+        scope, and not re-synced since. An uncited answer, or any doubt, shows
+        the question alone: an old answer may quote what they can no longer open.
+        """
+        from .reshape import _UUID, readable_unchanged
+
+        shown = []
+        for t in turns:
+            ids = {c.get("document_id") for c in t.cited if isinstance(c, dict)}
+            ok = bool(ids) and t.created_at is not None and all(
+                isinstance(i, str) and _UUID.match(i) for i in ids)
+            if ok:
+                try:
+                    ok = readable_unchanged(ids, org_id=org_id, workspace_id=workspace_id,
+                                            viewer=viewer, since=t.created_at) == ids
+                except Exception:  # noqa: BLE001 - the question alone is always safe
+                    logger.warning("could not re-check an earlier answer's sources", exc_info=True)
+                    ok = False
+            shown.append((t.question, t.answer if ok else ""))
+        return tuple(shown)
+
+    def _still_readable(
+        self,
+        prev: list[RetrievedChunkRecord],
+        org_id: str,
+        *,
+        workspace_id: str | None,
+        viewer: Viewer | None,
+    ) -> list[RetrievedChunkRecord]:
+        """The remembered chunks this viewer may still read, unchanged; ``[]``
+        when that cannot be shown (no save time, a store without positional
+        reads, any error), so the caller searches fresh.
+
+        Checks the chunk at each position: a re-sync replaces every chunk of
+        the document, so this also covers the neighbours joined to it.
+        """
+        stored = {r.stored_at for r in prev}
+        if None in stored:
+            return []
+        try:
+            found = self._store.chunks_at(
+                org_id,
+                [(r.document_id, r.chunk_index) for r in prev],
+                workspace_id=workspace_id,
+                viewer=viewer,
+                # ponytail: the save time, not the retrieval time; a re-sync
+                # landing between the two is missed for one turn.
+                unchanged_since=min(stored),
+            )
+        except Exception:  # noqa: BLE001 - a shortcut must never cost an answer
+            logger.warning("reuse check skipped: could not re-check the previous turn's chunks", exc_info=True)
+            return []
+        live = {(c.document_id, c.chunk_index) for c in found}
+        return [r for r in prev if (r.document_id, r.chunk_index) in live]
 
     def _try_live_decision(
         self,
@@ -2408,9 +2526,32 @@ class RagPipeline:
         conversation_id: str | None = None,
     ) -> str:
         recent = [(t.question, t.answer) for t in context.recent_turns]
-        prompt = build_rewrite_prompt(
-            question, context.summary, recent, asker_context=current_asker_context()
+        asker = current_asker_context()
+        line = self._rewrite_once(
+            build_rewrite_prompt(question, context.summary, recent, asker_context=asker),
+            org_id=org_id, conversation_id=conversation_id,
         )
+        if line is None:
+            return question
+        # The rewrite becomes the trusted QUESTION: a figure the asker never typed
+        # came from an earlier answer, which may be wrong. Rewrite again from the
+        # asker's own questions only, so no answer can put words in their mouth.
+        typed = [question, *(t.question for t in context.recent_turns), *asker]
+        if _numbers(line) - _numbers(" ".join(typed)):
+            logger.info("rewrite: a figure the asker never typed; rewriting from questions only")
+            line = self._rewrite_once(
+                build_rewrite_prompt(
+                    question, None, [(t.question, "") for t in context.recent_turns],
+                    asker_context=asker,
+                ),
+                org_id=org_id, conversation_id=conversation_id,
+            )
+            if line is None or _numbers(line) - _numbers(" ".join(typed)):
+                return question
+        return line
+
+    def _rewrite_once(self, prompt: str, *, org_id, conversation_id) -> str | None:
+        """One rewrite call: its first line when it is a question, else None."""
         try:
             rewritten = self._generate_text(
                 STAGE_REWRITE,
@@ -2419,11 +2560,10 @@ class RagPipeline:
                 conversation_id=conversation_id,
             ).strip()
         except LLMProviderError:
-            return question
-
+            return None
         first_line = rewritten.splitlines()[0].strip() if rewritten else ""
         if not first_line or len(first_line) > 300 or not first_line.endswith("?"):
-            return question
+            return None
         return first_line
 
     def _update_running_summary(self, conversation_id: str) -> None:

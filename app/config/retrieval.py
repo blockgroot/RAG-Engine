@@ -26,6 +26,14 @@ class DatabaseSettings:
     # Keyword matches BM25 scores per query. With any-word matching, 200 kept the
     # most right documents in the candidates (94% vs 92% at 500, Benchmark 2) and is faster.
     keyword_candidate_limit: int = 200
+    #: Server-side cap on one statement, every pooled connection. A runaway chart
+    #: or table query held a connection forever; ten of them were the whole pool.
+    #: 0 turns it off. Schema apply uses its own connection, so is never capped.
+    statement_timeout_seconds: int = 120
+    #: A transaction left open (a crash between statements) frees its locks.
+    idle_in_transaction_seconds: int = 300
+    #: How long a caller waits for a free pooled connection before failing.
+    pool_wait_seconds: float = 15.0
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
@@ -37,6 +45,13 @@ class DatabaseSettings:
             keyword_candidate_limit=_env_positive_int(
                 "KEYWORD_CANDIDATE_LIMIT", cls.keyword_candidate_limit
             ),
+            statement_timeout_seconds=int(
+                os.getenv("DB_STATEMENT_TIMEOUT_SECONDS") or cls.statement_timeout_seconds
+            ),
+            idle_in_transaction_seconds=int(
+                os.getenv("DB_IDLE_IN_TRANSACTION_SECONDS") or cls.idle_in_transaction_seconds
+            ),
+            pool_wait_seconds=float(os.getenv("DB_POOL_WAIT_SECONDS") or cls.pool_wait_seconds),
         )
 
 
@@ -335,6 +350,10 @@ class MemorySettings:
 
     recent_turns: int = 3
     fold_wait_seconds: float = 2.0
+    #: Earlier turns the ANSWER prompt sees, to read the question in context
+    #: and not repeat itself; an answer only while its sources are readable.
+    #: 0 = off (the prompt is unchanged). Never evidence.
+    answer_turns: int = 2
 
     @classmethod
     def from_env(cls) -> "MemorySettings":
@@ -343,6 +362,7 @@ class MemorySettings:
             fold_wait_seconds=float(
                 os.getenv("MEMORY_FOLD_WAIT_SECONDS") or cls.fold_wait_seconds
             ),
+            answer_turns=int(os.getenv("MEMORY_ANSWER_TURNS") or cls.answer_turns),
         )
 
 

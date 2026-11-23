@@ -67,8 +67,38 @@ def _remember(url: str, key: str) -> None:
         )
 
 
+def check_secrets() -> list[str]:
+    """Problems with the secrets every request needs; empty when fine.
+
+    Run on EVERY boot, not behind the hash: the hash covers only the schema and
+    the model settings, so a missing or broken session or encryption secret
+    passed boot and failed the first sign-in instead of the deploy.
+    """
+    from app.config.settings import AuthSettings
+
+    problems: list[str] = []
+    auth = AuthSettings.from_env()
+    if not auth.jwt_secret:
+        problems.append("AUTH_JWT_SECRET is not set: no session can be signed.")
+    elif len(auth.jwt_secret) < 32:
+        # A warning only: refusing would stop a deploy that works today.
+        print("Boot: warning: AUTH_JWT_SECRET is shorter than 32 characters; use a longer one.")
+    try:
+        from app.security.crypto import _build_multi_fernet
+
+        _build_multi_fernet(auth)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        problems.append(f"AUTH_ENCRYPTION_KEYS: {exc}")
+    return problems
+
+
 def main() -> int:
     load_dotenv()
+    problems = check_secrets()
+    if problems:
+        for problem in problems:
+            print(f"Boot: {problem}")
+        return 1
     url = DatabaseSettings.from_env().url or ""
     key = boot_key()
     if url and _already_booted(url, key):

@@ -871,7 +871,7 @@ def _receipts(monkeypatch) -> set:
     """Slack event receipts in memory, as the table would keep them."""
     seen: set = set()
 
-    def first(event_id):
+    def first(event_id, *_args):
         if event_id in seen:
             return False
         seen.add(event_id)
@@ -912,7 +912,7 @@ def test_a_resend_of_an_answered_event_is_ignored(client, monkeypatch):
 
 def test_without_receipts_every_resend_is_still_dropped(client, monkeypatch):
     """If the table cannot be written, never risk answering twice."""
-    monkeypatch.setattr(slack_events, "_first_delivery", lambda event_id: None)
+    monkeypatch.setattr(slack_events, "_first_delivery", lambda event_id, *_a: None)
     called = []
     monkeypatch.setattr(slack_events, "_handle", lambda *a, **_: called.append(a))
     raw, headers = _signed(_mention("Ev3"))

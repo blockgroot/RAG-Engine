@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 # Short, so a transient outage still delivers the report the same day.
 RETRY_BACKOFF = "1 hour"
 
+#: A run claimed this long ago is dead (a batch of runs, each one model call and
+#: an email, ends well within it): requeued, never one a live instance holds.
+DEAD_AFTER = "30 minutes"
+
 
 def claim_due(limit: int = 5) -> list[Scheduler]:
     """Claim up to ``limit`` due schedulers, flipping them to ``running``.
@@ -37,7 +41,7 @@ def claim_due(limit: int = 5) -> list[Scheduler]:
                 LIMIT %s
             )
             UPDATE schedulers AS s
-            SET status = 'running', attempts = s.attempts + 1
+            SET status = 'running', claimed_at = now(), attempts = s.attempts + 1
             FROM due
             WHERE s.id = due.id
             RETURNING {", ".join("s." + c.strip() for c in COLUMNS.split(","))}
@@ -101,8 +105,15 @@ def requeue_interrupted_running(max_attempts: int = 3) -> int:
 
     Capped: a run that kills the process never reaches ``mark_run_failed``,
     so without this an OOMing scheduler would crash the worker forever.
+    Only runs claimed over ``DEAD_AFTER`` ago: at boot, every ``running`` row
+    included a live instance's run, which then sent its report twice. Also run
+    with each tick, which reaps a hung run.
     Returns how many were requeued.
     """
+    dead = (
+        "status = 'running' AND coalesce(claimed_at, 'epoch'::timestamptz)"
+        f" < now() - interval '{DEAD_AFTER}'"
+    )
     with get_connection() as conn:
         exhausted = conn.execute(
             """
@@ -110,15 +121,14 @@ def requeue_interrupted_running(max_attempts: int = 3) -> int:
             SET status = 'failed',
                 last_error = 'Abandoned after ' || attempts || ' interrupted '
                              || 'attempts — the worker did not survive this run.'
-            WHERE status = 'running' AND attempts >= %s
+            WHERE """ + dead + """ AND attempts >= %s
             RETURNING id
             """,
             (max_attempts,),
         ).fetchall()
 
         rows = conn.execute(
-            "UPDATE schedulers SET status = 'active' WHERE status = 'running' "
-            "RETURNING id"
+            "UPDATE schedulers SET status = 'active' WHERE " + dead + " RETURNING id"
         ).fetchall()
 
     if exhausted:

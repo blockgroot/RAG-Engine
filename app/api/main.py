@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import ApiSettings, IngestWorkerSettings, SchedulerSettings
+from ..core.logs import RequestIdMiddleware, configure_logging
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from ..security.rate_limit import limit_request, report_store
@@ -64,6 +65,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
         UPKEEP_SECONDS,
         run_once,
         run_scheduler_tick,
+        run_slack_replay,
         run_upkeep,
     )
 
@@ -109,6 +111,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
                 now = time.monotonic()
                 if now - last_reap >= reap_interval:
                     queue.reap_stuck()
+                    run_slack_replay()  # a question lost in a restart, re-answered
                     last_reap = now
                 if now - last_push >= PUSH_CHECK_SECONDS:
                     # A push inside the cooldown waits ~3 min here, not ~10 for the tick.
@@ -196,13 +199,34 @@ async def lifespan(_app: FastAPI):
             worker.join(timeout=8)
         # Finish any in-flight summary folds before dropping the pool
         # so a mid-shutdown request doesn't silently lose bookkeeping.
-        shutdown_summary_folds(wait=True, timeout=30.0)
+        # 10s, not 30: with uvicorn's 10s graceful window and the worker's 8s join
+        # this ends inside the platform's 30s grace, so close_pool() still runs.
+        shutdown_summary_folds(wait=True, timeout=10.0)
         close_pool()
 
 
 def create_app() -> FastAPI:
     settings = ApiSettings.from_env()
+    configure_logging(settings.log_level)
     app = FastAPI(title="RAG Engine API", lifespan=lifespan)
+    from ..config.settings import AttachmentSettings
+    from ..security.request_guards import BodyLimitMiddleware, OriginCheckMiddleware
+
+    app.add_middleware(
+        OriginCheckMiddleware,
+        allowed=[*settings.cors_origins, settings.frontend_url or ""],
+        mode=settings.origin_check,
+    )
+    attachments = AttachmentSettings.from_env()
+    app.add_middleware(
+        BodyLimitMiddleware,
+        max_bytes=settings.max_request_bytes,
+        # One request carries every file picked (`frontend/lib/api.ts`), up to a
+        # chat's whole allowance, each at the per-file cap, plus multipart room.
+        upload_max_bytes=attachments.max_bytes * attachments.max_per_conversation
+        + 1024 * 1024,
+    )
+    app.add_middleware(RequestIdMiddleware)  # outermost: every refusal above carries an id
 
     app.add_middleware(
         CORSMiddleware,
@@ -244,7 +268,25 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
+        """Liveness: the process answers. Says nothing about the database."""
         return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready():
+        """Readiness: the database answers. ``/health`` stayed 200 while every
+        chat failed on a full pool or a rotated password. Redis is not checked:
+        a limiter fault lets requests through by design."""
+        from fastapi.responses import JSONResponse
+
+        from ..db.connection import get_pool
+
+        try:
+            with get_pool().connection(timeout=3) as conn:
+                conn.execute("SELECT 1")
+        except Exception:  # noqa: BLE001 - any failure is "not ready"; the log says why
+            logger.warning("Readiness check failed: database", exc_info=True)
+            return JSONResponse({"status": "unavailable", "database": "down"}, status_code=503)
+        return {"status": "ok", "database": "ok"}
 
     return app
 

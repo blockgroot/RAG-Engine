@@ -44,6 +44,7 @@ class MaskingLLMProvider(LLMProvider):
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         timeout: float | None = None,
+        max_tokens: int | None = None,
     ) -> ChatResult:
         vault = Vault(self._detector)
         try:
@@ -53,7 +54,9 @@ class MaskingLLMProvider(LLMProvider):
         if vault.used and sent and isinstance(sent[0].get("content"), str):
             sent[0] = {**sent[0], "content": PLACEHOLDER_NOTE + sent[0]["content"]}
         result = self._inner.generate_with_tools(
-            sent, tools=tools, tool_choice=tool_choice, timeout=timeout
+            sent, tools=tools, tool_choice=tool_choice, timeout=timeout,
+            # Only when set: a provider (or test fake) may not take the keyword.
+            **({"max_tokens": max_tokens} if max_tokens else {}),
         )
         return ChatResult(
             text=vault.restore(result.text),

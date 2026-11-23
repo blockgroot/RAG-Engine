@@ -23,6 +23,8 @@ checks. These fakes make the decisions observable and reproducible:
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from datetime import datetime, timezone
 
 from app.core.exceptions import LLMProviderError
 from app.llm.base import LLMProvider
@@ -192,7 +194,8 @@ class InMemoryConversationStore(ConversationStore):
         turns = self._turns[conversation_id]
         index = (turns[-1].turn_index + 1) if turns else 0
         turns.append(Turn(turn_index=index, question=question, answer=answer,
-                          cited=list(cited or []), chart=chart or None))
+                          cited=list(cited or []), chart=chart or None,
+                          created_at=datetime.now(timezone.utc)))
         return index
 
     def get_turns(self, conversation_id: str) -> list[Turn]:
@@ -223,7 +226,8 @@ class InMemoryConversationStore(ConversationStore):
     def set_last_retrieval(
         self, conversation_id: str, org_id: str, chunks: list[RetrievedChunkRecord]
     ) -> None:
-        self._last[conversation_id] = list(chunks)
+        now = datetime.now(timezone.utc)
+        self._last[conversation_id] = [replace(c, stored_at=now) for c in chunks]
 
     def get_last_retrieval(self, conversation_id: str) -> list[RetrievedChunkRecord]:
         return list(self._last.get(conversation_id, []))
@@ -236,9 +240,21 @@ class RecordingVectorStore(VectorStore):
         self._org_id = org_id
         self._content = content
         self.query_calls = 0
+        # The reuse re-check: ``hidden`` = the viewer lost access (or the page
+        # was deleted); ``resynced_at`` = the page was re-ingested at that time.
+        self.hidden = False
+        self.resynced_at: datetime | None = None
 
     def list_chunk_texts(self, org_id: str) -> list[str]:
         return [self._content] if org_id == self._org_id else []
+
+    def chunks_at(self, org_id, positions, *, workspace_id=None, viewer=None, unchanged_since=None):
+        if org_id != self._org_id or self.hidden or ("doc-fresh", 0) not in positions:
+            return []
+        if self.resynced_at and unchanged_since and self.resynced_at > unchanged_since:
+            return []
+        return [RetrievedChunk(content=self._content, score=0.0, document_id="doc-fresh",
+                               chunk_index=0, org_id=org_id)]
 
     def create_organization(self, name: str) -> str:  # pragma: no cover - unused
         return self._org_id
