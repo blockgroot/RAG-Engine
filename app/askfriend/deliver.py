@@ -8,15 +8,24 @@ from __future__ import annotations
 import logging
 
 from ..auth.credentials import get_live_connection_token
-from ..auth.email import _dispatch
+from ..auth.email import EmailOutcomeUnknown, _dispatch
 from ..core.exceptions import ProviderError
-from ..sources.slack_utils import lookup_user_id, open_dm, post_message
+from ..sources.slack_utils import has_tagged_message, lookup_user_id, open_dm, post_message_outcome
 
 logger = logging.getLogger(__name__)
 
 
 class DeliveryError(ProviderError):
     """The note did not reach the colleague; nothing was recorded, so the asker can retry."""
+
+
+class DeliveryUnknown(ProviderError):
+    """It went out and no answer came back: it may have arrived. Never retried
+    automatically (a retry could send it twice); the asker is told and decides."""
+
+
+#: Tags our DM so a post whose answer never came back can be looked up.
+_SLACK_EVENT = "handbook_ask_friend"
 
 
 def slack_token(org_id: str, workspace_id: str | None) -> str | None:
@@ -44,8 +53,11 @@ def compose(asker_name: str, summary: str, asker_mention: str | None, *, via: st
     )
 
 
-def send_slack(token: str, recipient_email: str, asker_email: str, asker_name: str, summary: str) -> None:
-    """DM the colleague. Raises ``DeliveryError`` when it did not arrive."""
+def send_slack(token: str, recipient_email: str, asker_email: str, asker_name: str, summary: str,
+               *, key: str) -> None:
+    """DM the colleague. ``DeliveryError``: it did not arrive (retry is safe);
+    ``DeliveryUnknown``: it may have. ``key`` names this ask: the DM carries it, so
+    a timed-out post is looked up in the DM before anyone decides it failed."""
     recipient = lookup_user_id(token, recipient_email)
     if not recipient:
         raise DeliveryError("The colleague is not in this Slack")
@@ -54,8 +66,19 @@ def send_slack(token: str, recipient_email: str, asker_email: str, asker_name: s
         raise DeliveryError("Could not open a Slack DM")
     asker = lookup_user_id(token, asker_email)
     text = compose(asker_name, summary, f"<@{asker}>" if asker else None, via="slack")
-    if post_message(token, channel, text) is None:
+    outcome, _ = post_message_outcome(
+        token, channel, text, metadata={"event_type": _SLACK_EVENT, "event_payload": {"key": key}}
+    )
+    if outcome == "sent":
+        return
+    if outcome == "rejected":
         raise DeliveryError("Slack did not accept the message")
+    landed = has_tagged_message(token, channel, _SLACK_EVENT, key)
+    if landed:
+        return
+    if landed is False:
+        raise DeliveryError("Slack did not keep the message")
+    raise DeliveryUnknown("Slack did not answer; the message may have arrived")
 
 
 def send_email(recipient_email: str, asker_email: str, asker_name: str, summary: str) -> None:
@@ -68,5 +91,7 @@ def send_email(recipient_email: str, asker_email: str, asker_name: str, summary:
             None,
             reply_to=asker_email,
         )
+    except EmailOutcomeUnknown as exc:
+        raise DeliveryUnknown("The email may have been sent", cause=exc) from exc
     except ProviderError as exc:
         raise DeliveryError("The email was not sent", cause=exc) from exc

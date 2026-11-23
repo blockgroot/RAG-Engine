@@ -47,6 +47,8 @@ export function AskFriend({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedVia, setFailedVia] = useState<"slack" | "email" | null>(null);
+  /** Sending again after an unknown outcome: the asker accepted a possible duplicate. */
+  const [resending, setResending] = useState(false);
 
   useEffect(() => setSent(storedSent ?? null), [storedSent]);
 
@@ -80,7 +82,29 @@ export function AskFriend({
     };
   }, [recipient, conversationId, question, workspaceId, turnIndex]);
 
-  if (sent) {
+  if (sent && sent.status === "unknown" && !resending) {
+    return (
+      <div className="ask-friend-failed" role="status">
+        <span>
+          We couldn&apos;t confirm the message reached {sent.to_name}. Check with them before
+          sending again.
+        </span>
+        {sent.to_user_id && (
+          <button type="button" className="chat-chart-hint" onClick={() => {
+            setResending(true);
+            setOpen(true);
+            setRecipient(sent.to_user_id ?? "");
+          }}>
+            Send again anyway
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (sent && sent.status === "sending") {
+    return <p className="ask-friend-sent">Sending to {sent.to_name}…</p>;
+  }
+  if (sent && !resending) {
     return (
       <p className="ask-friend-sent">
         Sent to {sent.to_name} via {sent.via === "slack" ? "Slack" : "email"} ✓
@@ -97,8 +121,9 @@ export function AskFriend({
     try {
       const r = await api.askFriendSend({
         conversationId, question, recipientUserId: recipient, workspaceId, turnIndex,
-        via: channel, approvePrivate: approved, model,
+        via: channel, approvePrivate: approved, model, confirmResend: resending,
       });
+      setResending(false);
       setSent(r.sent);
     } catch (e) {
       if (e instanceof ApiError && e.status === 502) {
@@ -179,12 +204,12 @@ export function AskFriend({
         </div>
       ) : (
         <div className="ask-friend-actions">
-          <button type="button" className="chat-chart-hint" onClick={() => setOpen(false)} disabled={sending}>
+          <button type="button" className="chat-chart-hint" onClick={() => { setOpen(false); setResending(false); }} disabled={sending}>
             Cancel
           </button>
           <button type="button" className="chat-chart-hint ask-friend-send" disabled={!ready}
                   onClick={() => send(via)}>
-            {sending ? "Sending…" : "Send"}
+            {sending ? "Sending…" : resending ? "Send again anyway" : "Send"}
           </button>
         </div>
       )}

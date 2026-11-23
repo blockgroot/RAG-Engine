@@ -31,6 +31,18 @@ _SENDGRID_URL = "https://api.sendgrid.com/v3/mail/send"
 _SENDGRID_TIMEOUT_SECONDS = 20
 
 
+class EmailOutcomeUnknown(ProviderError):
+    """The message went out and no answer came back: it may have been delivered.
+    A caller must not retry it silently (a retry could send it twice)."""
+
+
+def _http_failure(service: str, exc: Exception) -> ProviderError:
+    """A connection that never opened did not send; anything later may have."""
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return ProviderError(f"Failed to send email via {service}: {exc}", cause=exc)
+    return EmailOutcomeUnknown(f"No answer from {service} after sending: {exc}", cause=exc)
+
+
 def _dispatch(
     to: str,
     subject: str,
@@ -104,7 +116,14 @@ def _send_smtp(
             smtp.ehlo()
             if settings.smtp_username and settings.smtp_password:
                 smtp.login(settings.smtp_username, settings.smtp_password)
-            smtp.send_message(message)
+            try:
+                smtp.send_message(message)
+            except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError) as exc:
+                # The server answered "no": nothing was accepted.
+                raise ProviderError(f"Failed to send email via SMTP: {exc}", cause=exc) from exc
+            except (OSError, TimeoutError) as exc:
+                # Dropped mid-send: the server may have accepted it.
+                raise EmailOutcomeUnknown(f"SMTP dropped while sending: {exc}", cause=exc) from exc
     except OSError as exc:
         if getattr(exc, "errno", None) == 101 or "unreachable" in str(exc).lower():
             raise ProviderError(
@@ -155,7 +174,7 @@ def _send_resend(
                 json=payload,
             )
     except httpx.HTTPError as exc:
-        raise ProviderError(f"Failed to send email via Resend: {exc}", cause=exc) from exc
+        raise _http_failure("Resend", exc) from exc
     if response.status_code >= 400:
         raise ProviderError(
             f"Resend rejected the send ({response.status_code}) "
@@ -210,7 +229,7 @@ def _send_sendgrid(
                 json=payload,
             )
     except httpx.HTTPError as exc:
-        raise ProviderError(f"Failed to send email via SendGrid: {exc}", cause=exc) from exc
+        raise _http_failure("SendGrid", exc) from exc
     if response.status_code >= 400:
         raise ProviderError(
             f"SendGrid rejected the send ({response.status_code}) "

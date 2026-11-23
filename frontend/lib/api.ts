@@ -152,8 +152,11 @@ function askFriendBody(input: AskFriendInput) {
 
 export interface AskFriendSent {
   to_name: string;
+  to_user_id?: string;
   via: "slack" | "email";
   at: string;
+  /** Absent on records from before statuses: delivered. "unknown": it may have arrived. */
+  status?: "sending" | "sent" | "unknown";
 }
 
 export interface RejectedFile {
@@ -866,13 +869,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(askFriendBody(input)),
     }),
-  askFriendSend: (input: AskFriendInput & { via: "slack" | "email"; approvePrivate: boolean; model?: string | null }) =>
+  askFriendSend: (input: AskFriendInput & {
+    via: "slack" | "email"; approvePrivate: boolean; model?: string | null; confirmResend?: boolean;
+  }) =>
     request<{ sent: AskFriendSent }>("/ask-friend/send", {
       method: "POST",
       body: JSON.stringify({
         ...askFriendBody(input),
         via: input.via,
         approve_private: input.approvePrivate,
+        ...(input.confirmResend ? { confirm_resend: true } : {}),
         model: input.model && input.model !== "auto" ? input.model : null,
       }),
     }),

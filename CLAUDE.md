@@ -105,6 +105,12 @@ GitHub; employees get answers from *their* data.
   attachment, a live read) needs the asker's tick, re-checked on send
   (`privacy.needs_approval`). The question line is appended by code, never written by
   the model. It is a notification, not an Act write; replies are not tracked.
+  A send that went out with no answer back is UNKNOWN, never retried by us: the DM
+  carries the ask's key in Slack `metadata` and the DM's latest messages are read
+  (`slack_utils.has_tagged_message`) to settle it; an email timeout after sending stays
+  unknown (`EmailOutcomeUnknown`). The record goes `sending` → `sent`/`unknown`; only an
+  unknown one may be sent again, and only on the asker's explicit `confirm_resend`.
+  A deactivated or bot Slack account is not reachable (`lookup_user_id`).
 - Notion has no per-page permission API. Say so on the Sources card. A half-enforced
   guarantee that reads as whole is worse than none.
 

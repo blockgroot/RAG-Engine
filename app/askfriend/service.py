@@ -18,11 +18,12 @@ from ..core.exceptions import AuthError
 from ..db import get_connection
 from ..memory.conversations import (
     ConversationTurnRow, claim_ask_friend, get_conversation_turns, release_ask_friend,
+    set_ask_friend_status,
 )
 from ..security.rate_limit import limit_ask_friend, limit_email, limit_question
 from ..sources.slack_utils import lookup_user_id
 from ..workspaces import assert_member
-from .deliver import send_email, send_slack, slack_token
+from .deliver import DeliveryUnknown, send_email, send_slack, slack_token
 from .privacy import needs_approval
 from .summary import summarize
 
@@ -113,7 +114,10 @@ def _summary(turns: list[ConversationTurnRow], question: str, model: str | None,
 def send(session: SessionClaims, body: dict) -> dict:
     turns, recipient, asker = _context(session, body)
     question = turns[-1].question
-    if (turns[-1].meta or {}).get("ask_friend_sent"):
+    earlier = (turns[-1].meta or {}).get("ask_friend_sent")
+    resend = body.get("confirm_resend") is True
+    # Once sent, never again; after an UNKNOWN outcome, only when the asker says so.
+    if earlier and not (resend and earlier.get("status") == "unknown"):
         raise HTTPException(status_code=409, detail="already_sent")
     via = body.get("via")
     if via not in ("slack", "email"):
@@ -129,23 +133,29 @@ def send(session: SessionClaims, body: dict) -> dict:
         limit_email(f"user:{session.user_id}")
     limit_question(session, model)
 
-    entry = {"to_name": recipient["name"], "via": via,
-             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    entry = {"to_name": recipient["name"], "to_user_id": recipient["user_id"], "via": via,
+             "status": "sending", "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     claim = dict(conversation_id=str(body["conversation_id"]), org_id=session.org_id,
                  user_id=session.user_id, turn_index=turns[-1].turn_index)
-    if not claim_ask_friend(**claim, entry=entry):
+    if not claim_ask_friend(**claim, entry=entry, replace_unknown=bool(earlier)):
         raise HTTPException(status_code=409, detail="already_sent")
-    delivered = False
+    # The record stays only once the note went out (sent) or may have (unknown).
+    outcome = None
     try:
         summary = _summary(turns, question, model, session, asker["name"])
         if via == "slack":
-            send_slack(token, recipient["email"], asker["email"], asker["name"], summary)
+            send_slack(token, recipient["email"], asker["email"], asker["name"], summary,
+                       key=f"{claim['conversation_id']}:{claim['turn_index']}")
         else:
             send_email(recipient["email"], asker["email"], asker["name"], summary)
-        delivered = True
-    except Exception as exc:  # noqa: BLE001 - any failure: nothing was sent, say so
+        outcome = "sent"
+    except DeliveryUnknown:
+        outcome = "unknown"  # may have arrived: never retried by us, the asker is told
+    except Exception as exc:  # noqa: BLE001 - any other failure: nothing was sent, say so
         raise HTTPException(status_code=502, detail="delivery_failed") from exc
     finally:
-        if not delivered:
+        if outcome is None:
             release_ask_friend(**claim)  # the asker may try again
-    return {"sent": entry}
+        else:
+            set_ask_friend_status(**claim, status=outcome)
+    return {"sent": {**entry, "status": outcome}}

@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from app.memory.conversations import (
-    claim_ask_friend, meta_for_history, meta_for_storage, release_ask_friend,
+    claim_ask_friend, meta_for_history, meta_for_storage, release_ask_friend, set_ask_friend_status,
 )
 from .ask_friend_support import add_turn, make_conversation, make_org, make_user, turn_meta
 from .conftest import requires_db
@@ -74,3 +74,18 @@ def test_set_last_turn_meta_returns_the_turn_index():
     import inspect
     from app.memory.conversations import set_last_turn_meta
     assert "int | None" in str(inspect.signature(set_last_turn_meta).return_annotation)
+
+
+@requires_db
+def test_an_unknown_outcome_can_be_reclaimed_only_on_purpose(chat):
+    org, a, b, cid = chat
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0,
+                            entry={"via": "slack", "status": "sending"})
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0,
+                                entry={"via": "slack", "status": "sending"}, replace_unknown=True)
+    set_ask_friend_status(conversation_id=cid, org_id=org, user_id=a, turn_index=0, status="unknown")
+    assert turn_meta(cid)["ask_friend_sent"]["status"] == "unknown"
+    assert not claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0, entry={"status": "sending"})
+    assert claim_ask_friend(conversation_id=cid, org_id=org, user_id=a, turn_index=0,
+                            entry={"via": "email", "status": "sending"}, replace_unknown=True)
+    assert turn_meta(cid)["ask_friend_sent"]["via"] == "email"

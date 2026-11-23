@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.askfriend import service
-from app.askfriend.deliver import DeliveryError
+from app.askfriend.deliver import DeliveryError, DeliveryUnknown
 from app.auth import create_admin, create_session_token
 from app.workspaces.store import create_workspace
 from .ask_friend_support import add_turn, make_conversation, make_org, make_user, turn_meta
@@ -47,7 +47,7 @@ def world(org_cleanup, monkeypatch):
     monkeypatch.setattr(service, "_summary", lambda turns, question, model, session, asker_name="": "S")
     monkeypatch.setattr(service, "slack_token", lambda org_id, ws: "xoxb")
     monkeypatch.setattr(service, "lookup_user_id", lambda token, email: "U1")
-    monkeypatch.setattr(service, "send_slack", lambda *a: sent.append(("slack", *a)))
+    monkeypatch.setattr(service, "send_slack", lambda *a, **k: sent.append(("slack", *a)))
     monkeypatch.setattr(service, "send_email", lambda *a: sent.append(("email", *a)))
     return {"org": org, "asker": asker, "b": b, "cid": cid, "sent": sent,
             "cookies": {"session": create_session_token(asker)}}
@@ -172,3 +172,36 @@ def test_unexpected_error_releases_the_claim(client, world, monkeypatch):
     r = client.post("/ask-friend/send", json=_body(world), cookies=world["cookies"])
     assert r.status_code == 502
     assert "ask_friend_sent" not in turn_meta(world["cid"])
+
+
+def test_record_says_sending_until_delivered(client, world, monkeypatch):
+    seen = {}
+    def slack(*a, **k):
+        seen["status"] = turn_meta(world["cid"])["ask_friend_sent"]["status"]
+        seen["key"] = k.get("key")
+    monkeypatch.setattr(service, "send_slack", slack)
+    r = client.post("/ask-friend/send", json=_body(world), cookies=world["cookies"])
+    assert r.json()["sent"]["status"] == "sent" and seen["status"] == "sending"
+    assert seen["key"] == f"{world['cid']}:0"
+    assert turn_meta(world["cid"])["ask_friend_sent"]["status"] == "sent"
+
+
+def test_unknown_outcome_is_kept_and_said(client, world, monkeypatch):
+    def unknown(*a, **k):
+        raise DeliveryUnknown("no answer")
+    monkeypatch.setattr(service, "send_slack", unknown)
+    r = client.post("/ask-friend/send", json=_body(world), cookies=world["cookies"])
+    assert r.status_code == 200 and r.json()["sent"]["status"] == "unknown"
+    assert turn_meta(world["cid"])["ask_friend_sent"]["status"] == "unknown"
+    # never retried by accident…
+    r = client.post("/ask-friend/send", json=_body(world, via="email"), cookies=world["cookies"])
+    assert r.status_code == 409 and r.json()["detail"] == "already_sent"
+    # …only when the asker says so
+    r = client.post("/ask-friend/send", json=_body(world, via="email", confirm_resend=True), cookies=world["cookies"])
+    assert r.status_code == 200 and r.json()["sent"]["status"] == "sent"
+
+
+def test_confirm_resend_does_not_resend_a_delivered_note(client, world):
+    assert client.post("/ask-friend/send", json=_body(world), cookies=world["cookies"]).status_code == 200
+    r = client.post("/ask-friend/send", json=_body(world, confirm_resend=True), cookies=world["cookies"])
+    assert r.status_code == 409 and len(world["sent"]) == 1
