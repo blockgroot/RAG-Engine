@@ -290,22 +290,62 @@ def _notion_sig(raw: bytes) -> str:
     return "sha256=" + hmac.new(NOTION_TOKEN.encode(), raw, hashlib.sha256).hexdigest()
 
 
-def test_notion_handshake_is_accepted_before_any_secret_exists(hooks, caplog):
+def _token_store(monkeypatch) -> dict:
+    """The stored-token table, in memory: a test must never write the shared
+    database's real deployment secret."""
+    from app.api import webhooks
+
+    kept: dict = {}
+
+    def store(token):
+        if "token" in kept:
+            return False
+        kept["token"] = token
+        return True
+
+    monkeypatch.setattr(webhooks, "store_notion_token", store)
+    monkeypatch.setattr(webhooks, "stored_notion_token", lambda: kept.get("token"))
+    return kept
+
+
+def test_notion_handshake_stores_the_token_and_never_logs_it(hooks, caplog, monkeypatch):
     client, flagged = hooks
+    kept = _token_store(monkeypatch)
     response = client.post("/webhooks/notion", json={"verification_token": NOTION_TOKEN})
     assert response.status_code == 200
-    assert NOTION_TOKEN in caplog.text  # the operator copies it from here
+    assert kept == {"token": NOTION_TOKEN}
+    assert NOTION_TOKEN not in caplog.text  # it is the HMAC secret
+    assert "notion_webhook_token.py" in caplog.text
     assert flagged == []
 
 
-def test_notion_events_are_closed_until_the_token_is_set(hooks):
+def test_a_second_unsigned_token_never_replaces_the_stored_one(hooks, monkeypatch):
     client, _ = hooks
+    kept = _token_store(monkeypatch)
+    client.post("/webhooks/notion", json={"verification_token": NOTION_TOKEN})
+    client.post("/webhooks/notion", json={"verification_token": "attacker"})
+    assert kept == {"token": NOTION_TOKEN}
+
+
+def test_notion_events_are_closed_until_a_token_exists(hooks, monkeypatch):
+    client, _ = hooks
+    _token_store(monkeypatch)
     raw = json.dumps({"type": "page.content_updated", "workspace_id": "W1"}).encode()
     assert client.post("/webhooks/notion", content=raw, headers={"X-Notion-Signature": _notion_sig(raw)}).status_code == 404
 
 
+def test_a_notion_event_is_checked_against_the_stored_token(hooks, monkeypatch):
+    client, flagged = hooks
+    _token_store(monkeypatch)["token"] = NOTION_TOKEN
+    raw = json.dumps({"type": "page.content_updated", "workspace_id": "W1"}).encode()
+    assert client.post("/webhooks/notion", content=raw, headers={"X-Notion-Signature": _notion_sig(raw)}).status_code == 200
+    assert client.post("/webhooks/notion", content=raw, headers={"X-Notion-Signature": "sha256=00"}).status_code == 401
+    assert flagged == [("notion", "W1")]
+
+
 def test_notion_rejects_a_bad_signature(hooks, monkeypatch):
     client, flagged = hooks
+    _token_store(monkeypatch)
     monkeypatch.setenv("NOTION_WEBHOOK_VERIFICATION_TOKEN", NOTION_TOKEN)
     raw = json.dumps({"type": "page.content_updated", "workspace_id": "W1"}).encode()
     assert client.post("/webhooks/notion", content=raw, headers={"X-Notion-Signature": "sha256=00"}).status_code == 401
@@ -314,6 +354,7 @@ def test_notion_rejects_a_bad_signature(hooks, monkeypatch):
 
 def test_a_signed_notion_event_flags_its_workspace(hooks, monkeypatch):
     client, flagged = hooks
+    _token_store(monkeypatch)
     monkeypatch.setenv("NOTION_WEBHOOK_VERIFICATION_TOKEN", NOTION_TOKEN)
     raw = json.dumps({"type": "page.content_updated", "workspace_id": "W1", "entity": {"id": "p"}}).encode()
     assert client.post("/webhooks/notion", content=raw, headers={"X-Notion-Signature": _notion_sig(raw)}).status_code == 200

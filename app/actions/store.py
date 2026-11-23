@@ -231,6 +231,36 @@ def reject(org_id: str, user_id: str, action_id: str) -> bool:
         return (cur.rowcount or 0) > 0
 
 
+#: A claimed write older than this never got its outcome recorded: the process
+#: died mid-send. Well past any tool timeout.
+ABANDONED_AFTER_MINUTES = 15
+
+
+def settle_abandoned(limit: int = 500) -> int:
+    """Move ``executing`` rows whose process died to ``unknown``: the write may
+    have gone out, so never ``failed`` and never retried. Without this a card
+    showed "Sending…" for good and its run could not resume."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            WITH stale AS (
+                SELECT id FROM actions
+                 WHERE status = 'executing'
+                   AND decided_at < now() - make_interval(mins => %s)
+                 ORDER BY decided_at
+                 LIMIT %s
+                 FOR UPDATE SKIP LOCKED
+            )
+            UPDATE actions a
+               SET status = 'unknown', executed_at = now(),
+                   result = '{"error": "Handbook stopped while sending this. Check the tool to see whether it went through."}'::jsonb
+              FROM stale WHERE a.id = stale.id
+            """,
+            (ABANDONED_AFTER_MINUTES, limit),
+        )
+        return cur.rowcount or 0
+
+
 def expire_stale(limit: int = 500) -> int:
     """Mark timed-out proposals ``expired``, bounded by a CTE (a ``LIMIT`` in an
     ``IN`` subquery does not bound an UPDATE). ``claim`` already refuses them."""

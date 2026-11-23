@@ -51,7 +51,10 @@ class RemoteEmbeddingProvider(EmbeddingProvider):
         # start, and the SDK is a slow import on a cold start's small CPU.
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        # One retry, not the SDK's two: every question embeds its query, and two
+        # retries held a request for ~3x `timeout` on a shared threadpool.
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout,
+                              max_retries=1)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
         from openai import APIConnectionError, APIError, APITimeoutError

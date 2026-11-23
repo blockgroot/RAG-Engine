@@ -146,7 +146,8 @@ def test_every_route_a_person_calls_is_limited():
     not_people = ("/slack", "/webhooks", "/internal", "/mcp")
     unlimited = []
     for route in create_app().routes:
-        if not isinstance(route, APIRoute) or route.path == "/health":
+        # Probes: a monitor polling them must never read a 429 as "down".
+        if not isinstance(route, APIRoute) or route.path in ("/health", "/ready"):
             continue
         limited = any(d.dependency is rate_limit.limit_request for d in route.dependencies)
         if route.path.startswith(not_people):

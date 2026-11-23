@@ -105,3 +105,11 @@ class RateLimiterError(ProviderError):
 
     Callers let the request through: a limiter fault must not take the product down.
     """
+
+
+class RunCancelled(ProviderError):
+    """This run's job is no longer ``running`` (the reaper failed it): stop.
+
+    Raised from a progress callback; the one exception a progress sink lets
+    through, because carrying on ran a second sync beside the next one.
+    """

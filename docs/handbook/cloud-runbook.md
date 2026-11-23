@@ -14,7 +14,7 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 | API and worker | Render service **Hand-Book**, Singapore | Settings live in the Render dashboard only; `render.yaml` does not configure it. |
 | Database | Supabase, Mumbai (`ap-south-1`) | Session pooler (`*.pooler.supabase.com`, port 5432), never the transaction pooler. |
 | Rate limits and AI budgets | Render Key Value (Valkey 8) | `REDIS_URL`. Holds counters only, every key with a TTL. |
-| Scheduler | GitHub Actions `tick` workflow, every 10 minutes | Starts the hourly re-sync and clean-up jobs. |
+| Scheduler | The in-API worker while the service is awake. The GitHub Actions `tick` workflow is manual-only since 16 Nov 2026 (`.github/workflows/tick.yml`); on Starter the service never sleeps, so it is not needed | Starts the hourly re-sync and clean-up jobs. |
 
 ## 2. Platform readiness (before a new company starts)
 
@@ -22,8 +22,10 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 - [ ] Render Key Value is on **Starter**, and `REDIS_URL` is set on Hand-Book.
 - [ ] Supabase is on **Pro** with daily backups on, and `DATABASE_URL` uses the session pooler.
 - [ ] `FRONTEND_URL` is exactly `https://hand-book.vercel.app`. Every sign-in return address is built from it.
-- [ ] `https://hand-book.onrender.com/health` returns 200, and `https://hand-book.vercel.app` opens with a valid certificate.
-- [ ] The latest `tick` run succeeded within the last 20 minutes.
+- [ ] `https://hand-book.onrender.com/ready` returns 200 (the database answers; `/health` only proves the process is up), and `https://hand-book.vercel.app` opens with a valid certificate.
+- [ ] An uptime monitor polls `/ready`, not `/health`.
+- [ ] Notion instant updates: after creating the webhook subscription in Notion, run `python scripts/notion_webhook_token.py` in the Render shell and paste the token into Notion's Verify form (it is never in the logs).
+- [ ] `ORIGIN_CHECK` is `enforce` once a week of logs shows no `origin_check` lines for our own sites.
 - [ ] `OWNER_NOTIFICATION_EMAIL` is the Handbook team's address, so organization requests reach us.
 - [ ] `MASK_IDENTIFIERS` is not `false`, and the injection guard is on (`GUARD_MODE` is not `off`, the default). The guard runs on its own account when `GUARD_API_KEY` and `GUARD_BASE_URL` are both set (`GUARD_SAFEGUARD_MODEL` names the model there); with neither, it uses `GROQ_API_KEY`.
 - [ ] Background work runs on the Gemini model, on its own quota: `LLM_AUX_API_KEY` with `LLM_AUX_BASE_URL` or `LLM_AUX_ADAPTER`, and `LLM_AUX_MODEL`. Base URL and key are both set or neither.
@@ -35,7 +37,7 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 - [ ] `CHAT_MAX_CONCURRENT` (default 20) is no higher than the Anthropic and Jina plans serve at once.
 - [ ] `AUTH_ENCRYPTION_KEYS` is in the team's password manager. Without it, every saved tool connection is unreadable after a database restore.
 
-**Done when:** health returns 200, the tick is green, the plans are upgraded and the company's limits are set. Then tell the company's admin the platform is ready.
+**Done when:** `/ready` returns 200, the plans are upgraded and the company's limits are set. Then tell the company's admin the platform is ready.
 
 ## 3. Email delivery
 
@@ -46,7 +48,7 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 
 | How often | Task |
 | --- | --- |
-| Weekly | Check the `tick` workflow is green and Render shows no repeated errors |
+| Weekly | Check Render's logs show no repeated `ERROR` lines (each line carries a request id; a user's `X-Request-ID` finds their request) |
 | Monthly | Check Supabase backups exist and the database size fits the plan |
 | Monthly | Check Anthropic and Jina usage against their plans, and Render logs for repeated "Too many requests" refusals |
 | Every 60 days | Make at least one commit; GitHub turns off scheduled workflows after 60 days without activity |
@@ -56,7 +58,7 @@ The customer-facing rollout checklist (for example [syvora-rollout-checklist.md]
 
 | What happened | First action | How fast |
 | --- | --- | --- |
-| Handbook is down | Check `/health`, Render and Supabase status; send an incident notice from the support email, and another when resolved | Within 4 working hours |
+| Handbook is down | Check `/ready` (503 = the database), Render and Supabase status; send an incident notice from the support email, and another when resolved | Within 4 working hours |
 | People are often told "Too many requests" | Find the refusing limit in the Render logs; raise it on Render, or upgrade the Anthropic or Jina plan | Within 1 working day |
 | Sign-in links not arriving | Check the SendGrid activity for that address | Same day |
 | The SendGrid key was exposed | Create a new key in SendGrid, update it on Render, delete the old key | Same day |

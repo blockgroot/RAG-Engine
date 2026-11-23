@@ -7,7 +7,7 @@ provider can drop in behind the same interface. Every failure becomes a
 
 from __future__ import annotations
 
-from ..core.exceptions import ConfigurationError, WebSearchError
+from ..core.exceptions import ConfigurationError, PrivacyError, WebSearchError
 from .base import SearchResult, WebSearchProvider
 
 
@@ -29,6 +29,15 @@ class DuckDuckGoSearch(WebSearchProvider):
     ) -> list[SearchResult]:
         from ddgs import DDGS
 
+        from ..privacy import redact
+
+        # Identifiers never reach the search engine readable (CLAUDE.md
+        # "Identifiers leaving"): the masking provider had already restored the
+        # model's query. A detector failure blocks the search, never sends unmasked.
+        try:
+            query = redact([query])[0]
+        except PrivacyError as exc:
+            raise WebSearchError("Web search skipped: masking failed.", cause=exc) from exc
         try:
             with DDGS(timeout=timeout) as ddgs:
                 raw = ddgs.text(query, max_results=max_results)

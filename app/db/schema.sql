@@ -397,6 +397,10 @@ ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAUL
 -- Liveness heartbeat, written on every progress report: `reap_stuck()` judges
 -- a job dead by silence, not by how long it has run.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ;
+-- Process liveness, beaten every 30s while a worker holds the job (apart from
+-- progress, which a slow document stalls): a restart requeues only jobs whose
+-- process stopped beating, never one another live instance is running.
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS alive_at TIMESTAMPTZ;
 
 -- Files this run could not read the SHARING of. On the job, not the
 -- connection, so the notification (latest job only) clears itself on a later 0.
@@ -513,6 +517,9 @@ CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE 
 -- (always with org_id).
 ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS workspace_id UUID
     REFERENCES workspaces (id) ON DELETE CASCADE;
+-- When the running run was claimed: a restart requeues only runs old enough to
+-- be dead, never one a live instance is still sending.
+ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 
 -- A `schedulers.model` column briefly existed and was removed (reports run on
 -- the configured model); old databases keep an unused nullable column.
@@ -987,6 +994,31 @@ CREATE INDEX IF NOT EXISTS idx_feedback_topic ON feedback_and_gaps (topic_id);
 -- plaintext companion); the row keeps what finds them. `content` stays,
 -- NULLABLE, so older rows keep answering (`load_attachment_texts` falls back).
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS storage_key TEXT;
+
+-- Stored files whose row is gone, until the object store confirms they are.
+-- Filled by trigger on EVERY delete of an attachment row, the cascades from a
+-- chat, a user or a company included (those left their files in storage for
+-- good), in the same transaction as the delete. Drained by upkeep
+-- (`attachments.store.drain_storage_deletions`). Only keys that were ours: no
+-- folder is ever listed and swept, which could take another environment's.
+CREATE TABLE IF NOT EXISTS storage_deletions (
+    storage_key  TEXT PRIMARY KEY,
+    attempts     INT NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION queue_storage_deletion() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO storage_deletions (storage_key) VALUES (OLD.storage_key)
+    ON CONFLICT (storage_key) DO NOTHING;
+    RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS conversation_attachments_queue_storage ON conversation_attachments;
+CREATE TRIGGER conversation_attachments_queue_storage
+    AFTER DELETE ON conversation_attachments
+    FOR EACH ROW WHEN (OLD.storage_key IS NOT NULL)
+    EXECUTE FUNCTION queue_storage_deletion();
 ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
 
 -- One row per person as each CONNECTOR knows them (Slack member, Drive editor,
@@ -1075,11 +1107,33 @@ CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
 -- Live-read audit: one row per live read. Never the token, never the result text.
 -- Slack event ids already answered (app/api/slack_events.py). A cold start
 -- can miss Slack's 3-second ack, and Slack resends the event; this answers each
--- event once, also when only a resend reached us. No content, no tenant: just
--- Slack's id. Rows older than a day are deleted by the upkeep pass.
+-- event once, also when only a resend reached us. Slack's id; the question
+-- itself only while it is pending (below). Rows older than a day are deleted by
+-- the upkeep pass.
 CREATE TABLE IF NOT EXISTS slack_event_receipts (
     event_id    TEXT PRIMARY KEY,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- A question survives a restart. The answer runs in-process after the ack; a
+-- process that died mid-answer lost it, and Slack's resend was dropped as a
+-- repeat. Now the event waits here as 'pending' (its text kept ONLY until it is
+-- answered, then cleared), the answering process beats `alive_at`, and the
+-- worker re-answers one whose process stopped beating (`replay_lost_questions`).
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS team_id TEXT;
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS event JSONB;
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS alive_at TIMESTAMPTZ;
+ALTER TABLE slack_event_receipts ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_slack_event_receipts_pending
+    ON slack_event_receipts (alive_at) WHERE status = 'pending';
+
+-- Secrets of the whole deployment (not a company's), encrypted like every
+-- credential. First: the Notion webhook's verification token, which Notion
+-- shows nowhere and which used to reach the logs (app/api/webhooks.py).
+CREATE TABLE IF NOT EXISTS deployment_secrets (
+    name            TEXT PRIMARY KEY,
+    value_encrypted TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- The limits a company's admin sets on its OWN key (Admin > Model;
@@ -1205,6 +1259,20 @@ ALTER TABLE actions ADD CONSTRAINT actions_surface_check
 -- Editable drafts: the model's draft as first proposed, kept on the first
 -- edit so the log shows both what the model wrote and what was approved.
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS original_payload JSONB;
+-- A deleted space must not turn its pending drafts company-wide: the FK sets
+-- workspace_id NULL, and a NULL draft is then checked against the company's
+-- switches only. Expired first, so no one can approve them.
+CREATE OR REPLACE FUNCTION expire_space_drafts() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE actions SET status = 'expired'
+     WHERE workspace_id = OLD.id AND status = 'proposed';
+    RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS workspaces_expire_drafts ON workspaces;
+CREATE TRIGGER workspaces_expire_drafts
+    BEFORE DELETE ON workspaces
+    FOR EACH ROW EXECUTE FUNCTION expire_space_drafts();
 
 -- Chains: a request whose next step needs an approved card's result. The
 -- model's conversation waits for the cards; pinned to org and user, and

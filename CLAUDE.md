@@ -160,6 +160,8 @@ the audit never runs. Do not move CONTEXT or QUESTION earlier in that prompt.
 are never throttled; background work keeps `LLM_RESERVE_RPM` free. A 429 is the
 quota, not a blip. Do not name the routing wrapper in `build_aux_llm_provider`'s
 docstring; a test reads that source.
+The SDK's own retries stay off (`max_retries=0`; the embedder keeps one): they waited out
+429s on a shared thread. Every request is paced inside the provider (`_pace`), not by callers.
 Reasoning stays OFF on every call, or the lowest effort a model accepts when it
 cannot be off (`routed.py` per-vendor extras; a model that names another "off" form
 in its 400 gets that). A call's `max_tokens` is sized to its whole reply plus the
@@ -174,7 +176,9 @@ only what it could have listed. Drive and GitHub 404 means "not found or not
 accessible", never "deleted". A connector that needs a folder, channel or team list must
 show its picker before anything is configured (`autosync.SCOPE_KEYS`; Linear's
 sign-in grants every team, so its teams are picked in Handbook). `last_sync_at` is stamped on attempt.
-`needs_reauth` rows are not retried. A host that cannot refresh must not flag the
+`needs_reauth` rows are not retried. Only a definitive refusal sets it: a refresh that
+failed on the network, a 429 or a 5xx is retried (`credentials._transient`), one refresh per
+connection at a time (advisory lock). A host that cannot refresh must not flag the
 tenant's token (`ConfigurationError` re-raises).
 Google and Slack (sync, sign-in and Agent mode) use the company's OWN app (`auth/org_apps.py`),
 else `.env`'s; hosted leaves `.env`'s unset, so there the own app is required. Saving an app
@@ -184,7 +188,9 @@ the key only picks the signing secret, and a request is acted on only for a Slac
 connected to that company (the company holds that secret, so it could sign anything).
 
 **SQL and jobs.** `WHERE id IN (SELECT … SKIP LOCKED LIMIT n)` does not bound an
-UPDATE; use a CTE. Cap requeue attempts. `ALTER TABLE … ADD COLUMN` follows that
+UPDATE; use a CTE. Cap requeue attempts. Requeue only DEAD work: a job whose process stopped beating
+`alive_at` (a live instance's job ran twice), a scheduler run claimed over 30 minutes ago.
+Every pooled connection has `statement_timeout`; a long job raises it, never removes it. `ALTER TABLE … ADD COLUMN` follows that
 table's `CREATE TABLE` in `schema.sql`. Partial unique indexes where `NULL` means
 org-wide. `python -m app.db.migrate` does nothing; call `apply_schema()`.
 `register_vector` runs once per physical connection. Every process calls `close_pool()`.
@@ -537,6 +543,12 @@ offered, else a new topic. Grouping runs in the background when they open the
 bell or the page, never on the answer path. Counts are distinct
 people, never names. Chart refusals and figure failures are ours, never shown.
 
+**Durability.** A Slack question is a `pending` receipt (its text kept only until answered)
+beaten by its answering process; a dead one is re-answered within 30 minutes, at most 3 tries
+(`slack_events.replay_lost_questions`). A question makes at most `REQUEST_MAX_MODEL_CALLS` model
+requests. The Notion webhook token is a deployment secret, stored encrypted, never logged; the
+first one kept wins.
+
 **Rate limits.** Token buckets (`app/ratelimit/`), in Redis when `REDIS_URL` is
 set, else per process. Which buckets a request takes is `security/rate_limit.py`
 only: every router a person calls takes `limit_request`; a question (chat, Agent,
@@ -576,7 +588,9 @@ describe current content, never a diff. `sync_requested_at` is a flag, not a que
 A table that only grows (tokens, drafts, sync jobs, reports, questions) gets a rule in `jobs/retention.py`, run by `run_upkeep`: bounded per pass, never the company's data, and it keeps each connection's latest job and each schedule's latest report.
 Removing an attachment is idempotent (`deleted: false` for one already gone,
 never a 404) and answers on the row delete; the object-store purge runs after
-the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty
+the response. Every deleted attachment row queues its stored files by trigger
+(`storage_deletions`, cascades included); upkeep retries them. Never sweep a storage folder:
+another environment's files would look orphaned. The injection guard logs questions and never refuses them. A scrubbed-to-empty
 input stays empty.
 
 **Identifiers leaving.** Aadhaar, Virtual ID, PAN, card, mobile, IFSC and UPI values

@@ -48,6 +48,8 @@ def _safe_derived(text: str) -> str | None:
 
 # Offline batch: retries are cheap and recover transient blips.
 _MAX_ATTEMPTS = 3
+#: Output cap: a context line plus a few questions, with room for prose before them.
+_MAX_TOKENS = 800
 _RETRY_BACKOFF_SECONDS = 0.5
 
 # A 429 is the quota, not a blip: honour the server's named delay up to a cap
@@ -130,7 +132,7 @@ def contextualize_chunk(
         if not wait_for_background_slot():
             return chunk
         try:
-            raw = llm.generate(prompt).strip()
+            raw = llm.generate(prompt, max_tokens=_MAX_TOKENS).strip()
             log_llm_call(STAGE_INGEST_CONTEXT, llm, org_id=org_id)
             if not raw:
                 return chunk

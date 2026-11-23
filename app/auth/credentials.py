@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg.types.json import Json
 
-from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError
+from ..core.exceptions import ConfigurationError, OAuthError, OAuthReauthRequiredError
 from ..db.connection import get_connection
 from ..security import decrypt, encrypt
 from .base import OAuthTokens
@@ -184,37 +184,69 @@ def get_live_connection_token(
         # Nothing to refresh with: return what we have; the API call will fail if stale.
         return access_token
 
-    refresh_token = decrypt(refresh_encrypted)
-
-    try:
-        new_tokens = build_oauth_provider(provider, org_id=org_id).refresh(refresh_token)
-    except NotImplementedError:
-        # Provider doesn't support/need refresh (e.g. Notion) — stored token
-        # stands unchanged.
-        return access_token
-    except OAuthReauthRequiredError as exc:
-        mark_needs_reauth(org_id, provider, workspace_id, str(exc))
-        raise
-    except ConfigurationError:
-        # This HOST cannot refresh (e.g. a secret unset): that says nothing about the
-        # tenant's token, so it is not flagged for reauth.
-        raise
-    except Exception as exc:  # noqa: BLE001 - map any other refresh failure to a terminal error
-        wrapped = OAuthReauthRequiredError(
-            f"Refreshing the {provider!r} connection failed; reconnect it to continue.",
-            cause=exc,
-        )
-        mark_needs_reauth(org_id, provider, workspace_id, str(wrapped))
-        raise wrapped from exc
-
-    new_access_encrypted = encrypt(new_tokens.access_token)
-    # Don't overwrite a stored refresh token with None — Google frequently
-    # omits it on refresh responses after the first exchange.
-    new_refresh_encrypted = (
-        encrypt(new_tokens.refresh_token) if new_tokens.refresh_token else refresh_encrypted
-    )
-
     with get_connection() as conn:
+        # One refresh per connection at a time: Linear rotates its refresh token,
+        # so a second concurrent refresh sent a spent one, was refused, and
+        # flagged a healthy connection for reconnect. Held for this transaction.
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"oauth-refresh:{org_id}:{provider}:{workspace_id or ''}",),
+        )
+        row = conn.execute(
+            "SELECT access_token_encrypted, refresh_token_encrypted, expires_at "
+            "FROM oauth_connections "
+            "WHERE org_id = %s AND provider = %s AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, provider, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise ConfigurationError(
+                f"No {provider!r} connection for this organization. Connect it first."
+            )
+        access_encrypted, refresh_encrypted, expires_at = row
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at - datetime.now(timezone.utc) > _REFRESH_SAFETY_MARGIN:
+                # Another caller refreshed while we waited for the lock.
+                return decrypt(access_encrypted)
+        if not refresh_encrypted:
+            return decrypt(access_encrypted)
+        refresh_token = decrypt(refresh_encrypted)
+
+        try:
+            new_tokens = build_oauth_provider(provider, org_id=org_id).refresh(refresh_token)
+        except NotImplementedError:
+            # Provider doesn't support/need refresh (e.g. Notion) — stored token
+            # stands unchanged.
+            return decrypt(access_encrypted)
+        except OAuthReauthRequiredError as exc:
+            mark_needs_reauth(org_id, provider, workspace_id, str(exc))
+            raise
+        except ConfigurationError:
+            # This HOST cannot refresh (e.g. a secret unset): that says nothing about the
+            # tenant's token, so it is not flagged for reauth.
+            raise
+        except Exception as exc:  # noqa: BLE001 - classified below
+            if _transient(exc):
+                # A timeout, a dropped line, a 429 or a 5xx says nothing about the
+                # grant. Flagging it stopped autosync until an admin reconnected.
+                raise OAuthError(
+                    f"Refreshing the {provider!r} connection failed for now; it will be "
+                    "retried.", cause=exc,
+                ) from exc
+            wrapped = OAuthReauthRequiredError(
+                f"Refreshing the {provider!r} connection failed; reconnect it to continue.",
+                cause=exc,
+            )
+            mark_needs_reauth(org_id, provider, workspace_id, str(wrapped))
+            raise wrapped from exc
+
+        new_access_encrypted = encrypt(new_tokens.access_token)
+        # Don't overwrite a stored refresh token with None — Google frequently
+        # omits it on refresh responses after the first exchange.
+        new_refresh_encrypted = (
+            encrypt(new_tokens.refresh_token) if new_tokens.refresh_token else refresh_encrypted
+        )
         conn.execute(
             "UPDATE oauth_connections SET "
             "access_token_encrypted = %s, refresh_token_encrypted = %s, expires_at = %s "
@@ -230,6 +262,28 @@ def get_live_connection_token(
         )
 
     return new_tokens.access_token
+
+
+def _transient(exc: BaseException) -> bool:
+    """Is this refresh failure the network or the provider, not the grant?
+
+    Walks the cause chain: an ``httpx`` transport error (timeout, refused, reset)
+    or an HTTP 429/5xx. Anything else (400/401, ``invalid_grant``, a reply with no
+    token) is about the grant, and needs a reconnect.
+    """
+    import httpx
+
+    seen: BaseException | None = exc
+    for _ in range(10):  # bounded: a cause chain can loop
+        if seen is None:
+            return False
+        if isinstance(seen, httpx.TransportError):
+            return True
+        if isinstance(seen, httpx.HTTPStatusError):
+            status = seen.response.status_code
+            return status == 429 or status >= 500
+        seen = seen.__cause__ or getattr(seen, "cause", None)
+    return False
 
 
 def _github_installation_token(org_id: str, workspace_id: str | None = None) -> str:
@@ -260,8 +314,10 @@ def _github_installation_token(org_id: str, workspace_id: str | None = None) -> 
         minted = mint_installation_token(str(installation_id))
     except Exception as exc:  # noqa: BLE001 - mint failure is terminal for this install
         # No App, bad PEM, or GitHub 401/404: reconnect, not a retry.
-        from ..core.exceptions import ConfigurationError, OAuthError
-
+        if _transient(exc):
+            # GitHub down or the line dropped: retried later, never a reconnect.
+            raise OAuthError("GitHub could not issue a token just now; it will be retried.",
+                             cause=exc) from exc
         if isinstance(exc, (OAuthError, ConfigurationError, OAuthReauthRequiredError)) or looks_like_auth_failure(
             exc
         ):
