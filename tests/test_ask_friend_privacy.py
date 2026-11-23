@@ -91,3 +91,10 @@ def test_a_chart_turn_needs_approval(org):
 
 def test_a_refusal_with_no_passages_needs_no_approval(org):
     assert not needs_approval(org, [_turn(meta={"source": "none", "citation_count": 0})], "b@x.com")
+
+
+def test_a_refusal_that_saw_passages_needs_no_approval(org):
+    """The refused reply repeats no passage ("I found related material, but…"), so it
+    alone must not ask for the tick: that would ask on nearly every Ask a friend."""
+    meta = {"source": "notion", "citation_count": 4, "ask_friend": True}
+    assert not needs_approval(org, [_turn(meta=meta)], "b@x.com")

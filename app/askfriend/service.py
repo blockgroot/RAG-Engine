@@ -99,7 +99,7 @@ def check(session: SessionClaims, body: dict) -> dict:
 
 
 def _summary(turns: list[ConversationTurnRow], question: str, model: str | None,
-             session: SessionClaims) -> str:
+             session: SessionClaims, asker_name: str = "The person") -> str:
     """The asker's picked model writes it, charged to them like any question."""
     from ..llm import build_llm_provider
     from ..llm.routed import use_model
@@ -107,7 +107,7 @@ def _summary(turns: list[ConversationTurnRow], question: str, model: str | None,
 
     use_model(model, org_id=session.org_id)
     charge_to(session.user_id, session.org_id)
-    return summarize(turns, question, build_llm_provider())
+    return summarize(turns, question, build_llm_provider(), asker_name=asker_name)
 
 
 def send(session: SessionClaims, body: dict) -> dict:
@@ -137,7 +137,7 @@ def send(session: SessionClaims, body: dict) -> dict:
         raise HTTPException(status_code=409, detail="already_sent")
     delivered = False
     try:
-        summary = _summary(turns, question, model, session)
+        summary = _summary(turns, question, model, session, asker["name"])
         if via == "slack":
             send_slack(token, recipient["email"], asker["email"], asker["name"], summary)
         else:

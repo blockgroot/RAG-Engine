@@ -33,7 +33,8 @@ def needs_approval(org_id: str, turns: list[ConversationTurnRow], recipient_emai
         if turn.chart or meta.get("agent") == "insights":
             return True
         # Passages were shown but none was cited: we cannot tell whose they were.
-        if (meta.get("citation_count") or 0) > 0 and not turn.cited:
+        # A refused reply (the one offering Ask a friend) repeats none of them.
+        if (meta.get("citation_count") or 0) > 0 and not turn.cited and not meta.get("ask_friend"):
             return True
         doc_ids.update(c["document_id"] for c in turn.cited if c.get("document_id"))
     if not doc_ids:

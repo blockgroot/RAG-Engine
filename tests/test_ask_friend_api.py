@@ -44,7 +44,7 @@ def world(org_cleanup, monkeypatch):
     add_turn(cid, org, "What does bench-sandbox do?", "I couldn't find that.",
              meta={"source": "github", "ask_friend": True})
     sent: list[tuple] = []
-    monkeypatch.setattr(service, "_summary", lambda turns, question, model, session: "S")
+    monkeypatch.setattr(service, "_summary", lambda turns, question, model, session, asker_name="": "S")
     monkeypatch.setattr(service, "slack_token", lambda org_id, ws: "xoxb")
     monkeypatch.setattr(service, "lookup_user_id", lambda token, email: "U1")
     monkeypatch.setattr(service, "send_slack", lambda *a: sent.append(("slack", *a)))

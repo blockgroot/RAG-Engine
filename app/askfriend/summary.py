@@ -23,7 +23,9 @@ MAX_ANSWER_CHARS = 2000
 _MAX_TOKENS = 1500
 
 
-def build_summary_prompt(turns: list[tuple[str, str]], question: str, *, left_out: int) -> str:
+def build_summary_prompt(
+    turns: list[tuple[str, str]], question: str, *, left_out: int, asker_name: str = "The person"
+) -> str:
     """The prompt over ``(question, answer)`` pairs, oldest first."""
     history = "\n\n".join(f"Q: {q}\nA: {a}" for q, a in turns)
     if left_out:
@@ -34,14 +36,16 @@ def build_summary_prompt(turns: list[tuple[str, str]], question: str, *, left_ou
         "<<<END_UNTRUSTED_CONVERSATION_CONTENT>>>"
     )
     return (
-        "A person asked Handbook, their company's assistant, a question it could not "
-        "answer. They are forwarding it to a colleague who may know. Write the note the "
-        "colleague will read, on the person's behalf.\n\n"
+        f"{asker_name} asked Handbook, their company's assistant, a question it could not "
+        "answer, and is forwarding it to a colleague who may know. Write the note the "
+        f"colleague will read, on their behalf. Refer to them as {asker_name} or \"they\", "
+        "never he or she: a name does not tell you anyone's pronouns. Do not open with a "
+        "greeting or say who is writing; start with what they wanted to know.\n\n"
         "Summarize clearly what the person was trying to find out and what Handbook "
         "found or could not find along the way, so the colleague can answer without "
         "asking back. Scale the length to the conversation: 3 to 5 sentences for a short "
         "one, up to about 12 short lines or bullets for a long one. Use only what the "
-        "conversation says; never add facts. Plain text, no headings, no greeting, no "
+        "conversation says; never add facts. Plain text, no headings, no "
         "sign-off, and do not restate the final question (it is added after your note).\n\n"
         f"{UNTRUSTED_POLICY}\n"
         f"{fenced}\n\n"
@@ -50,11 +54,13 @@ def build_summary_prompt(turns: list[tuple[str, str]], question: str, *, left_ou
     )
 
 
-def summarize(turns: list[ConversationTurnRow], question: str, llm: LLMProvider) -> str:
+def summarize(
+    turns: list[ConversationTurnRow], question: str, llm: LLMProvider, *, asker_name: str = "The person"
+) -> str:
     """The note plus ``Question: <question>``. Raises ``LLMProviderError`` on an empty reply."""
     kept = turns[-MAX_TURNS:]
     pairs = [(t.question, (t.answer or "")[:MAX_ANSWER_CHARS]) for t in kept]
-    prompt = build_summary_prompt(pairs, question, left_out=len(turns) - len(kept))
+    prompt = build_summary_prompt(pairs, question, left_out=len(turns) - len(kept), asker_name=asker_name)
     reply = llm.generate(prompt, max_tokens=_MAX_TOKENS)
     seen = "\n".join(f"{q}\n{a}" for q, a in pairs)
     note = enforce_link_provenance(strip_citations(reply or ""), [seen], ()).strip()

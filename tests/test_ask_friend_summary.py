@@ -69,3 +69,17 @@ def test_reply_cap_fits_a_medium_summary():
 def test_empty_reply_raises():
     with pytest.raises(ProviderError):
         summarize([_row("q", "a")], "q", FakeLLM("  "))
+
+
+def test_prompt_names_the_asker():
+    """The note reads "Sana asked…", not "The person asked…"."""
+    fake = FakeLLM()
+    summarize([_row("q", "a")], "q", fake, asker_name="Sana Asiwal")
+    assert "Sana Asiwal" in fake.prompt.split("<<<UNTRUSTED")[0]
+
+
+def test_prompt_forbids_guessing_pronouns():
+    """The model wrote "She asked…" from a name: a guessed gender, sent in their name."""
+    p = build_summary_prompt([("q", "a")], "q", left_out=0, asker_name="Sana")
+    head = p.split("<<<UNTRUSTED")[0]
+    assert "never he or she" in head and "Do not open with a greeting" in head
