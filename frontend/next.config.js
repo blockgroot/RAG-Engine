@@ -35,6 +35,23 @@ const nextConfig = {
   // The Docker image (frontend/Dockerfile) needs a self-contained server;
   // Vercel builds without it, so production there is unchanged.
   ...(process.env.NEXT_STANDALONE === "1" ? { output: "standalone" } : {}),
+  // Browser hardening on every page: never framed (the Agent-mode Approve
+  // button is a clickjacking target), no MIME sniffing, no full-URL referrer
+  // to other sites, HTTPS only once seen (ignored on plain-http localhost).
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [
       {

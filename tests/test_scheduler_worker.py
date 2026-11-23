@@ -24,6 +24,9 @@ from app.schedulers import worker as sched_worker
 
 from .conftest import requires_db, requires_llm
 
+# These drive the whole shared queue: never on a database with other work.
+pytestmark = pytest.mark.usefixtures("quiet_shared_queues")
+
 SETTINGS = SchedulerSettings(enabled=True, poll_seconds=1, max_attempts=3, batch_size=10)
 
 

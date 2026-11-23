@@ -13,4 +13,8 @@ echo "Applying database schema and checking config..."
 python scripts/boot.py
 
 echo "Starting API on port ${PORT:-8000}..."
-exec uvicorn app.api.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+# Graceful shutdown is bounded: an open answer stream otherwise held uvicorn until
+# the platform's SIGKILL, and the lifespan cleanup (worker stop, summary folds,
+# close_pool) never ran. 10s here + ~18s of cleanup fits Render's 30s grace.
+exec uvicorn app.api.main:app --host 0.0.0.0 --port "${PORT:-8000}" \
+    --timeout-graceful-shutdown "${GRACEFUL_SHUTDOWN_SECONDS:-10}"

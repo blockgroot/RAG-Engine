@@ -5,6 +5,7 @@ Switching provider is config only: ``base_url`` + ``model`` + key.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
 
@@ -33,7 +34,80 @@ def _charge(model: str, usage: TokenUsage, billing: str = "ours") -> None:
     except Exception:  # noqa: BLE001 - accounting must never fail a real call
         logger.warning("Could not charge AI spend", exc_info=True)
 
+
+def _pace() -> None:
+    """Count one request against the shared rate-limit window (``pacing.py``).
+
+    Here, before the request, like ``_charge``: callers that skipped
+    ``log_llm_call`` (Agent, charts, Slack, GitHub) were invisible to the
+    reserve, and a refused (429) request spent the quota too.
+    """
+    try:
+        from .pacing import record
+
+        record()
+    except Exception:  # noqa: BLE001 - accounting must never fail a real call
+        pass
+
 DEFAULT_TIMEOUT = 60.0
+
+#: Output cap for a tool-calling turn when the caller names none. A ceiling, not a
+#: cost: without it the endpoint's own default applies, unbounded on the paid path.
+DEFAULT_TOOL_MAX_TOKENS = 4096
+
+#: Did the last reply made IN THIS CONTEXT stop at its cap? ``last_truncated`` on
+#: the provider is shared by every request; this is per request (and per thread).
+_TRUNCATED: contextvars.ContextVar[bool] = contextvars.ContextVar("llm_truncated", default=False)
+
+
+def last_call_truncated() -> bool:
+    """Whether this request's most recent model reply was cut at its token cap."""
+    return _TRUNCATED.get()
+
+
+#: ``[made, limit]`` for this question, or None outside one. A shared list, so
+#: worker threads that copied the context count into the same total.
+_CALLS: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "llm_calls", default=None)
+
+
+def start_call_cap(limit: int) -> None:
+    """Bound the model requests the rest of this question may make (0 = no cap)."""
+    _CALLS.set([0, limit] if limit > 0 else None)
+
+
+#: Refused before sending: about 150k tokens, under every model we offer (Claude
+#: 200k, Gemini 1M) and far over any prompt we build (deep reading ~30k chars).
+#: Prompts are bounded by characters stage by stage; nothing bounded the whole,
+#: so a runaway (history + attachments + context) failed at the provider, paid.
+MAX_PROMPT_CHARS = 600_000
+
+
+def _check_size(messages: list[dict]) -> None:
+    size = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            size += len(content)
+        elif isinstance(content, list):  # content parts
+            size += sum(len(str(part.get("text", ""))) for part in content if isinstance(part, dict))
+    if size > MAX_PROMPT_CHARS:
+        logger.warning("llm.prompt_too_large chars=%s limit=%s", size, MAX_PROMPT_CHARS)
+        raise LLMProviderError(
+            f"The prompt is too large to send ({size:,} characters; limit {MAX_PROMPT_CHARS:,})."
+        )
+
+
+def _count_call() -> None:
+    calls = _CALLS.get()
+    if calls is None:
+        return
+    calls[0] += 1
+    if calls[0] > calls[1]:
+        logger.warning("llm.call_cap reached: %s model requests in one question", calls[1])
+        raise LLMProviderError(
+            f"This question needed more than {calls[1]} model requests; stopped."
+        )
 
 
 # Gemini puts the delay in the body, not Retry-After: read the header, then
@@ -105,7 +179,7 @@ class OpenAICompatProvider(LLMProvider):
         timeout: float = DEFAULT_TIMEOUT,
         extra_body: dict | None = None,
         extra_body_optional: bool = False,
-        max_retries: int | None = None,
+        max_retries: int = 0,
         default_headers: dict | None = None,
         billing: str = "ours",
     ) -> None:
@@ -148,9 +222,10 @@ class OpenAICompatProvider(LLMProvider):
             base_url=base_url,
             timeout=timeout,
             default_headers=default_headers or None,
-            # The SDK retries twice, so `timeout` is ~3x wall clock; shared threadpool,
-            # so fail fast.
-            **({} if max_retries is None else {"max_retries": max_retries}),
+            # The SDK's default retries twice, waiting out 429s: `timeout` became ~3x
+            # wall clock on a shared threadpool, and a 429 is the quota, not a blip.
+            # Fail fast; a caller that wants a retry owns it.
+            max_retries=max_retries,
         )
 
     def _with_extras(self, kwargs: dict) -> dict:
@@ -172,6 +247,9 @@ class OpenAICompatProvider(LLMProvider):
         """
         from openai import BadRequestError
 
+        _check_size(kwargs.get("messages") or [])
+        _count_call()
+        _pace()
         try:
             return self._client.chat.completions.create(**self._with_extras(kwargs))
         except BadRequestError as exc:
@@ -180,6 +258,7 @@ class OpenAICompatProvider(LLMProvider):
                 raise
             # Kept only if the retry works: a 400 about something else (prompt too
             # long) must not cost our fields for good.
+            _pace()
             response = self._client.chat.completions.create(
                 **({**kwargs, "extra_body": {**fixed, **kwargs.get("extra_body", {})}} if fixed else kwargs))
             logger.warning("%s / %s: our request fields %s did not work; using %s from now on.",
@@ -214,6 +293,7 @@ class OpenAICompatProvider(LLMProvider):
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         self.last_truncated = False
+        _TRUNCATED.set(False)
         kwargs: dict = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -277,6 +357,7 @@ class OpenAICompatProvider(LLMProvider):
         if getattr(choice, "finish_reason", None) == "length":
             # Non-empty but CUT at the cap: log it, nothing else says why.
             self.last_truncated = True
+            _TRUNCATED.set(True)
             logger.warning(
                 "llm.truncated model=%s max_tokens=%s completion_tokens=%s -- raise "
                 "RAG_MAX_ANSWER_TOKENS or use a non-reasoning model",
@@ -292,8 +373,15 @@ class OpenAICompatProvider(LLMProvider):
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         timeout: float | None = None,
+        max_tokens: int | None = None,
     ) -> ChatResult:
-        kwargs: dict = {"model": self.model, "messages": messages}
+        self.last_truncated = False
+        _TRUNCATED.set(False)
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens if max_tokens and max_tokens > 0 else DEFAULT_TOOL_MAX_TOKENS,
+        }
         if tools is not None:
             kwargs["tools"] = tools
         if tool_choice is not None:
@@ -336,6 +424,15 @@ class OpenAICompatProvider(LLMProvider):
         )
         _charge(self.model, self.last_usage, self.billing)
 
+        if getattr(response.choices[0], "finish_reason", None) == "length":
+            # A tool call cut at the cap is invalid JSON; a cut reply reads as whole.
+            self.last_truncated = True
+            _TRUNCATED.set(True)
+            logger.warning(
+                "llm.truncated model=%s max_tokens=%s completion_tokens=%s (tool turn)",
+                self.last_resolved_model or self.model, kwargs["max_tokens"],
+                self.last_usage.output_tokens,
+            )
         message = response.choices[0].message
         tool_calls = [
             ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)

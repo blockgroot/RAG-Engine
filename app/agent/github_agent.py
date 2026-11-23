@@ -37,6 +37,9 @@ from ..core.exceptions import (
 )
 from ..llm.routed import default_model_only
 from ..core.streaming import chunk_answer
+
+#: Output cap for the GitHub answer (the paid model; uncapped was the endpoint's default).
+GITHUB_ANSWER_MAX_TOKENS = 2000
 from ..githublive.base import (
     CommitDetail,
     CommitSummary,
@@ -230,7 +233,9 @@ class GitHubAgent(Agent):
         """One generation over the evidence. ``None`` on failure/empty."""
         try:
             raw = self._llm.generate(
-                build_github_answer_prompt(question, evidence_block, conversation)
+                build_github_answer_prompt(question, evidence_block, conversation),
+                # A ceiling, not a cost: code answers run longer than a document's.
+                max_tokens=GITHUB_ANSWER_MAX_TOKENS,
             )
         except LLMProviderError:
             return None

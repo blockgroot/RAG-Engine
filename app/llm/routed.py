@@ -313,11 +313,14 @@ class RoutedLLMProvider(LLMProvider):
         tools: list[dict] | None = None,
         tool_choice: str | None = None,
         timeout: float | None = None,
+        max_tokens: int | None = None,
     ) -> ChatResult:
         active = self.active()
+        self.last_truncated = False
         try:
             return active.generate_with_tools(
-                messages, tools=tools, tool_choice=tool_choice, timeout=timeout
+                messages, tools=tools, tool_choice=tool_choice, timeout=timeout,
+                **({"max_tokens": max_tokens} if max_tokens else {}),
             )
         except NotImplementedError:
             # A selected provider without tools is a configuration problem; surface it,
@@ -327,6 +330,7 @@ class RoutedLLMProvider(LLMProvider):
                 "tool calling."
             ) from None
         finally:
+            self.last_truncated = bool(getattr(active, "last_truncated", False))
             self._record(active)
 
     # -- proxied diagnostics ---------------------------------------------

@@ -269,3 +269,27 @@ def _reset_llm_pacing():
     pacing.reset_for_tests()
     yield
     pacing.reset_for_tests()
+
+
+@pytest.fixture
+def quiet_shared_queues():
+    """Skip when the database holds work that is not this test's.
+
+    ``claim_next``, ``run_once``, ``claim_due`` and the requeue/reap passes act on
+    the WHOLE queue. On the shared staging database they claimed real companies'
+    sync jobs and ran them through test fakes (job rows overwritten, needs_reauth
+    cleared). Use with ``pytestmark = pytest.mark.usefixtures("quiet_shared_queues")``.
+    """
+    if not os.getenv("DATABASE_URL"):
+        return
+    with get_connection(all_orgs=True) as conn:
+        jobs = conn.execute(
+            "SELECT count(*) FROM ingestion_jobs WHERE status IN ('queued', 'running')"
+        ).fetchone()[0]
+        runs = conn.execute(
+            "SELECT count(*) FROM schedulers WHERE status = 'running' "
+            "OR (status = 'active' AND next_run_at <= now())"
+        ).fetchone()[0]
+    if jobs or runs:
+        pytest.skip(f"shared queue busy ({jobs} job(s), {runs} due run(s) not ours); "
+                    "these tests would take them")

@@ -58,6 +58,7 @@ from ..llm.stages import (
     STAGE_WEB_DECISION,
     USER_FACING_LLM_STAGES,
 )
+from ..llm.openai_provider import last_call_truncated
 from ..llm.routed import default_model_only
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
@@ -140,6 +141,19 @@ _MODE_LEAD_IN_CHARS = 400
 
 
 logger = logging.getLogger(__name__)
+
+#: Did this request's last ``_generate_text`` reply stop at its token cap?
+_LAST_TRUNCATED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rag_last_truncated", default=False)
+
+#: Output cap for ``generate_raw`` (the Slack recap): a ceiling, never the endpoint's default.
+RAW_MAX_TOKENS = 1500
+
+#: Written under an answer the model was cut off in.
+TRUNCATED_NOTE = (
+    "_This answer was cut off at the length limit. Ask about one part of it "
+    "for the rest._"
+)
 
 # Tone only adds an empathy opener, so it runs alongside generation, capped here.
 _TONE_GRACE_SECONDS = 1.0
@@ -481,6 +495,9 @@ class RagPipeline:
             # the grounding guarantees must not depend on a member's dropdown.
             with default_model_only():
                 text = provider.generate(prompt, max_tokens=max_tokens)
+        # From the provider's per-request flag, never its shared attribute: another
+        # request's call could land between generate() and a read of that.
+        _LAST_TRUNCATED.set(last_call_truncated())
         log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
         return text
 
@@ -523,7 +540,7 @@ class RagPipeline:
         For a caller with its own already-fenced, scoped prompt (the Slack recap).
         No retrieval, gating or grounding: the caller owns those.
         """
-        return self._llm.generate(prompt)
+        return self._llm.generate(prompt, max_tokens=RAW_MAX_TOKENS)
 
     # -- public API --------------------------------------------------------
 
@@ -1681,6 +1698,7 @@ class RagPipeline:
             conversation_id=conversation_id,
             max_tokens=answer_cap,
         ).strip()
+        truncated = _LAST_TRUNCATED.get()
         mode, text = _parse_tagged_mode(raw)
         if current_live_request() is not None:
             # A live handle the model echoed ("per [L1]") is machinery, never shown.
@@ -1702,6 +1720,7 @@ class RagPipeline:
                 max_tokens=answer_cap,
             ).strip()
             tone_retry_used = True
+            truncated = _LAST_TRUNCATED.get()
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)
             mode, text = retry_mode, retry_text
 
@@ -1769,6 +1788,10 @@ class RagPipeline:
             # Composed after the link rule, from the question alone: its own pass.
             opener = enforce_link_provenance(opener, [], ())
             answer = compose_supportive_answer(opener, answer)
+
+        if answered and truncated:
+            # Cut at the cap: said, never shown as whole (CLAUDE.md §5 "Model").
+            answer = f"{answer}\n\n{TRUNCATED_NOTE}"
 
         return RagResult(
             answer=answer,
