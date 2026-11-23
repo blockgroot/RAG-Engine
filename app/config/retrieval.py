@@ -335,9 +335,10 @@ class MemorySettings:
 
     recent_turns: int = 3
     fold_wait_seconds: float = 2.0
-    #: Earlier turns the ANSWER prompt sees, to read the question in context.
+    #: Earlier turns the ANSWER prompt sees, to read the question in context
+    #: and not repeat itself; an answer only while its sources are readable.
     #: 0 = off (the prompt is unchanged). Never evidence.
-    answer_turns: int = 0
+    answer_turns: int = 2
 
     @classmethod
     def from_env(cls) -> "MemorySettings":

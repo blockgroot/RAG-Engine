@@ -1,4 +1,4 @@
-"""The answer prompt may see earlier turns (MEMORY_ANSWER_TURNS), off by default.
+"""The answer prompt sees the last turns (MEMORY_ANSWER_TURNS, 2; 0 turns it off).
 
 When on, the turns sit after CONTEXT (MODE first, CONTEXT not moved earlier),
 fenced, labelled as not evidence, with their old [n] markers removed so they
@@ -54,8 +54,8 @@ def _grounded_prompts(turns):
     return [p for p in llm.prompts if "CONTEXT:" in p and "QUESTION:" in p]
 
 
-def test_off_by_default_the_answer_never_sees_the_chat():
-    assert MemorySettings().answer_turns == 0
+def test_two_turns_by_default_and_zero_turns_it_off():
+    assert MemorySettings().answer_turns == 2
     assert all("CONVERSATION SO FAR" not in p for p in _grounded_prompts(0))
 
 
